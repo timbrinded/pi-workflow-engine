@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { Text } from "@earendil-works/pi-tui";
 import { discoverWorkflows } from "./discovery.ts";
 import { runWorkflow } from "./engine.ts";
+import type { WorkflowModule, WorkflowRunOptions } from "./types.ts";
 import { isWorkflowResult, renderWorkflowResult, type WorkflowResultEnvelope } from "./ui/workflow-result-renderer.ts";
 
 /** Repo root (this file lives in <repo>/src/index.ts). */
@@ -24,6 +25,52 @@ function workflowEnvelope(name: string, result: unknown): WorkflowResultEnvelope
   return { name, result, completedAt: Date.now() };
 }
 
+interface WorkflowInvocation {
+  name: string;
+  args: string;
+  options: WorkflowRunOptions;
+}
+
+function parseWorkflowInvocation(input: string): WorkflowInvocation {
+  const trimmed = input.trim();
+  const space = trimmed.indexOf(" ");
+  const name = space === -1 ? trimmed : trimmed.slice(0, space);
+  const rest = space === -1 ? "" : trimmed.slice(space + 1).trim();
+  const inspect = /(?:^|\s)--inspect(?:\s|$)/.test(rest);
+  const cleanedArgs = rest.replace(/(?:^|\s)--inspect(?=\s|$)/g, " ").trim();
+  return { name, args: cleanedArgs, options: inspect ? { inspect: true } : {} };
+}
+
+async function pickWorkflow(
+  workflows: ReadonlyMap<string, WorkflowModule>,
+  ctx: ExtensionCommandContext,
+): Promise<WorkflowInvocation | undefined> {
+  const choices = [...workflows.values()].map((mod) => `${mod.meta.name} — ${mod.meta.description}`);
+  const choice = await ctx.ui.select("Run workflow", choices);
+  if (!choice) return undefined;
+
+  const separator = choice.indexOf(" — ");
+  const name = separator === -1 ? choice : choice.slice(0, separator);
+  const args = name === "code-review" ? (await ctx.ui.input("Code-review target/instructions", "Blank = auto-detect diff"))?.trim() ?? "" : "";
+  const inspect = await ctx.ui.confirm("Open inspector?", "Open a live workflow inspector while this workflow runs?");
+  return { name, args, options: { inspect } };
+}
+
+async function sendWorkflowResult(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  name: string,
+  mod: WorkflowModule,
+  args: string,
+  options: WorkflowRunOptions,
+): Promise<void> {
+  const result = await runWorkflow(ctx, mod, args, options);
+  pi.sendMessage(
+    { customType: "workflow-result", content: formatReport(name, result), display: true, details: workflowEnvelope(name, result) },
+    { triggerTurn: false },
+  );
+}
+
 export default function workflowEngine(pi: ExtensionAPI): void {
   pi.registerMessageRenderer("workflow-result", (message, { expanded }, theme) => {
     const details = message.details;
@@ -35,29 +82,23 @@ export default function workflowEngine(pi: ExtensionAPI): void {
   pi.registerCommand("workflow", {
     description: "Run a multi-agent workflow: /workflow <name> [args]",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
-      const trimmed = args.trim();
-      const space = trimmed.indexOf(" ");
-      const name = space === -1 ? trimmed : trimmed.slice(0, space);
-      const rest = space === -1 ? "" : trimmed.slice(space + 1).trim();
-
       const workflows = await discoverWorkflows(REPO_DIR);
       const available = [...workflows.keys()].join(", ") || "(none)";
+      const direct = parseWorkflowInvocation(args);
+      const invocation = direct.name ? direct : ctx.hasUI ? await pickWorkflow(workflows, ctx) : undefined;
 
-      if (!name) {
+      if (!invocation) {
         ctx.ui.notify(`Usage: /workflow <name> [args]. Available: ${available}`, "warning");
         return;
       }
-      const mod = workflows.get(name);
+
+      const mod = workflows.get(invocation.name);
       if (!mod) {
-        ctx.ui.notify(`Unknown workflow "${name}". Available: ${available}`, "error");
+        ctx.ui.notify(`Unknown workflow "${invocation.name}". Available: ${available}`, "error");
         return;
       }
 
-      const result = await runWorkflow(ctx, mod, rest);
-      pi.sendMessage(
-        { customType: "workflow-result", content: formatReport(name, result), display: true, details: workflowEnvelope(name, result) },
-        { triggerTurn: false },
-      );
+      await sendWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, invocation.options);
     },
   });
 

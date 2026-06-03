@@ -16,6 +16,10 @@ export interface WorkflowRunStats {
   [key: string]: string | number;
 }
 
+export interface WorkflowRunOptions {
+  inspect?: boolean;
+}
+
 /** Options for a single `agent()` call. */
 export type WorkflowLaneItemStatus = "pending" | "running" | "success" | "warning" | "error";
 
