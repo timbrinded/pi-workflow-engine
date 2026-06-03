@@ -1,0 +1,248 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { matchesKey, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../progress.ts";
+import { formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
+
+type Section = "Overview" | "Agents" | "Findings" | "Logs";
+
+interface InspectorLine {
+  text: string;
+  selectable?: boolean;
+  key?: string;
+}
+
+const SECTIONS: readonly Section[] = ["Overview", "Agents", "Findings", "Logs"];
+
+export class WorkflowInspector {
+  private sectionIndex = 0;
+  private readonly selected: Record<Section, number> = { Overview: 0, Agents: 0, Findings: 0, Logs: 0 };
+  private readonly expanded = new Set<string>();
+
+  constructor(
+    private readonly snapshotProvider: () => WorkflowProgressSnapshot,
+    private readonly tui: Pick<TUI, "requestRender" | "terminal">,
+    private readonly theme: Theme,
+    private readonly close: () => void,
+  ) {}
+
+  handleInput(data: string): void {
+    if (matchesKey(data, "escape") || data === "q") {
+      this.close();
+      return;
+    }
+
+    if (matchesKey(data, "tab")) {
+      this.sectionIndex = (this.sectionIndex + 1) % SECTIONS.length;
+      this.requestRender();
+      return;
+    }
+
+    const section = this.currentSection();
+    const count = this.itemCount(section);
+    if (matchesKey(data, "up")) {
+      this.selected[section] = Math.max(0, this.selected[section] - 1);
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, "down")) {
+      this.selected[section] = Math.min(Math.max(0, count - 1), this.selected[section] + 1);
+      this.requestRender();
+      return;
+    }
+    if (matchesKey(data, "return") || matchesKey(data, "enter")) {
+      const key = this.selectedKey(section);
+      if (key) {
+        if (this.expanded.has(key)) this.expanded.delete(key);
+        else this.expanded.add(key);
+        this.requestRender();
+      }
+    }
+  }
+
+  render(width: number): string[] {
+    const w = Math.max(24, width);
+    const inner = Math.max(1, w - 4);
+    const th = this.theme;
+    const snapshot = this.snapshotProvider();
+    const body = this.sectionLines(this.currentSection(), snapshot, inner);
+    const maxBody = Math.max(6, Math.floor(this.tui.terminal.rows * 0.8) - 6);
+    const selectedLine = this.selectedLineIndex(body);
+    const maxStart = Math.max(0, body.length - maxBody);
+    const start = Math.min(maxStart, Math.max(0, selectedLine - Math.floor(maxBody / 2)));
+    const visible = body.slice(start, start + maxBody);
+    const lines: string[] = [];
+
+    lines.push(th.fg("border", `╭${"─".repeat(w - 2)}╮`));
+    lines.push(this.row(` ${th.fg("accent", th.bold("Workflow Inspector"))} ${th.fg("dim", snapshot.title)}`, inner));
+    lines.push(this.row(` ${this.tabs()}`, inner));
+    lines.push(this.row(th.fg("dim", "─".repeat(inner)), inner));
+
+    for (const line of visible) lines.push(this.row(line.text, inner));
+    while (visible.length < maxBody) {
+      visible.push({ text: "" });
+      lines.push(this.row("", inner));
+    }
+
+    lines.push(this.row(th.fg("dim", "─".repeat(inner)), inner));
+    const pct = body.length <= maxBody ? "100%" : `${Math.round(((start + visible.length) / body.length) * 100)}%`;
+    const selected = this.selected[this.currentSection()] + 1;
+    const count = Math.max(1, this.itemCount(this.currentSection()));
+    lines.push(
+      this.row(
+        `${th.fg("dim", `${body.length} lines · ${pct} · ${selected}/${count}`)} ${th.fg("dim", "· tab sections · ↑↓ select · enter expand · q/esc close")}`,
+        inner,
+      ),
+    );
+    lines.push(th.fg("border", `╰${"─".repeat(w - 2)}╯`));
+    return lines.map((line) => truncateDisplay(line, w));
+  }
+
+  invalidate(): void {}
+
+  private currentSection(): Section {
+    return SECTIONS[this.sectionIndex] ?? "Overview";
+  }
+
+  private requestRender(): void {
+    this.tui.requestRender();
+  }
+
+  private tabs(): string {
+    return SECTIONS.map((section, index) => {
+      const label = index === this.sectionIndex ? this.theme.fg("accent", this.theme.bold(section)) : this.theme.fg("muted", section);
+      return label;
+    }).join(this.theme.fg("dim", "  |  "));
+  }
+
+  private row(content: string, innerWidth: number): string {
+    const padded = padRight(truncateDisplay(content, innerWidth), innerWidth);
+    return this.theme.fg("border", "│") + " " + padded + " " + this.theme.fg("border", "│");
+  }
+
+  private itemCount(section: Section): number {
+    return this.sectionLines(section, this.snapshotProvider(), 80).filter((line) => line.selectable).length;
+  }
+
+  private selectedKey(section: Section): string | undefined {
+    let index = -1;
+    for (const line of this.sectionLines(section, this.snapshotProvider(), 80)) {
+      if (!line.selectable) continue;
+      index++;
+      if (index === this.selected[section]) return line.key;
+    }
+    return undefined;
+  }
+
+  private selectedLineIndex(lines: readonly InspectorLine[]): number {
+    let index = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].selectable) continue;
+      index++;
+      if (index === this.selected[this.currentSection()]) return i;
+    }
+    return 0;
+  }
+
+  private sectionLines(section: Section, snapshot: WorkflowProgressSnapshot, width: number): InspectorLine[] {
+    switch (section) {
+      case "Overview":
+        return this.overviewLines(snapshot, width);
+      case "Agents":
+        return this.agentLines(snapshot, width);
+      case "Findings":
+        return this.findingLines(snapshot, width);
+      case "Logs":
+        return this.logLines(snapshot);
+    }
+  }
+
+  private overviewLines(snapshot: WorkflowProgressSnapshot, width: number): InspectorLine[] {
+    const elapsed = formatDuration((snapshot.doneAt ?? Date.now()) - snapshot.startedAt);
+    const lines: InspectorLine[] = [
+      { text: `${this.theme.fg("muted", "Phase")} ${this.theme.fg("accent", snapshot.currentPhase)}`, selectable: true, key: "overview:phase" },
+      { text: `${this.theme.fg("muted", "Elapsed")} ${elapsed}`, selectable: true, key: "overview:elapsed" },
+    ];
+    if (snapshot.counters.length > 0) {
+      lines.push({ text: this.theme.fg("dim", "Counters") });
+      for (const counter of snapshot.counters) {
+        lines.push({ text: `  ${counter.label}: ${formatCount(counter.value)}`, selectable: true, key: `counter:${counter.key}` });
+      }
+    }
+    if (snapshot.summary.length > 0) {
+      lines.push({ text: this.theme.fg("dim", "Summary") });
+      for (const [key, value] of snapshot.summary) {
+        lines.push({ text: truncateDisplay(`  ${key}: ${value}`, width), selectable: true, key: `summary:${key}` });
+      }
+    }
+    return lines;
+  }
+
+  private agentLines(snapshot: WorkflowProgressSnapshot, _width: number): InspectorLine[] {
+    const lines: InspectorLine[] = [];
+    let selectableIndex = -1;
+    for (const phase of snapshot.phases) {
+      if (phase.agents.length === 0) continue;
+      lines.push({ text: this.theme.fg("dim", phase.title) });
+      for (const agent of phase.agents) {
+        selectableIndex++;
+        const key = `agent:${agent.id}`;
+        const selected = this.currentSection() === "Agents" && this.selected.Agents === selectableIndex;
+        lines.push({ text: this.agentLine(agent, selected), selectable: true, key });
+        if (this.expanded.has(key)) lines.push(...this.agentDetails(agent));
+      }
+    }
+    return lines.length > 0 ? lines : [{ text: this.theme.fg("dim", "No agents yet.") }];
+  }
+
+  private agentLine(agent: AgentRowSnapshot, selected: boolean): string {
+    const elapsed = agent.startedAt === undefined ? "queued" : formatDuration((agent.doneAt ?? Date.now()) - agent.startedAt);
+    const details = [`${agent.toolUses} tools`, elapsed];
+    if (agent.lastTool) details.unshift(agent.lastTool);
+    const text = `${statusIcon(agent.status, this.theme)} ${agent.label} ${this.theme.fg("dim", `· ${details.join(" · ")}`)}`;
+    return selected ? this.theme.bg("selectedBg", text) : text;
+  }
+
+  private agentDetails(agent: AgentRowSnapshot): InspectorLine[] {
+    const lines: InspectorLine[] = [];
+    if (agent.error) lines.push({ text: `    ${this.theme.fg("error", `Error: ${agent.error}`)}` });
+    if (agent.lastTool) lines.push({ text: `    ${this.theme.fg("dim", `Last tool: ${agent.lastTool}`)}` });
+    return lines.length > 0 ? lines : [{ text: `    ${this.theme.fg("dim", "No details yet.")}` }];
+  }
+
+  private findingLines(snapshot: WorkflowProgressSnapshot, _width: number): InspectorLine[] {
+    const lines: InspectorLine[] = [];
+    let selectableIndex = -1;
+    for (const [lane, items] of snapshot.lanes) {
+      lines.push({ text: this.theme.fg("dim", `${lane} (${items.length})`) });
+      items.forEach((item, index) => {
+        selectableIndex++;
+        const key = `finding:${lane}:${index}:${item.createdAt}`;
+        const selected = this.currentSection() === "Findings" && this.selected.Findings === selectableIndex;
+        lines.push({ text: this.findingLine(item, selected), selectable: true, key });
+        if (this.expanded.has(key) && item.details) lines.push({ text: `    ${this.theme.fg("dim", item.details)}` });
+      });
+    }
+    return lines.length > 0 ? lines : [{ text: this.theme.fg("dim", "No findings lanes yet.") }];
+  }
+
+  private findingLine(item: WorkflowLaneItemSnapshot, selected: boolean): string {
+    const subtitle = item.subtitle ? ` ${this.theme.fg("accent", item.subtitle)}` : "";
+    const text = `${statusIcon(item.status, this.theme)} ${item.title}${subtitle}`;
+    return selected ? this.theme.bg("selectedBg", text) : text;
+  }
+
+  private logLines(snapshot: WorkflowProgressSnapshot): InspectorLine[] {
+    if (snapshot.logs.length === 0) return [{ text: this.theme.fg("dim", "No logs yet.") }];
+    return snapshot.logs.map((log, index) => {
+      const key = `log:${index}`;
+      const selected = this.currentSection() === "Logs" && this.selected.Logs === index;
+      const text = selected ? this.theme.bg("selectedBg", log) : log;
+      return { text, selectable: true, key };
+    });
+  }
+}
+
+function padRight(text: string, width: number): string {
+  const visible = visibleWidth(text);
+  return text + " ".repeat(Math.max(0, width - visible));
+}
