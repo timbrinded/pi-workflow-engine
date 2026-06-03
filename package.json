@@ -1,0 +1,22 @@
+{
+  "name": "pi-workflow-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A customisable multi-agent workflow-orchestration engine for the pi coding agent.",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.75.4",
+    "@earendil-works/pi-ai": "^0.75.4",
+    "@earendil-works/pi-coding-agent": "^0.75.4",
+    "@earendil-works/pi-tui": "^0.75.4",
+    "@types/node": "^22",
+    "typebox": "^1.1.38",
+    "typescript": "^5.6.0"
+  }
+}
