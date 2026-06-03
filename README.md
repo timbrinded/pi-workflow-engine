@@ -60,6 +60,9 @@ In a pi session, from inside a git repo with changes:
 ```text
 /workflow code-review            # review the current branch or open PR
 /workflow code-review HEAD~3     # review a ref range, target, or focus area
+/workflow refactor-scout src/    # find safe refactor opportunities
+/workflow diagnose "typecheck fails after the schema change"
+/workflow perf-review "workflow startup latency"
 /workflow code-review --inspect  # open the live workflow inspector
 /workflow ping                   # quick engine smoke test
 ```
@@ -70,26 +73,37 @@ The host agent can also invoke the `workflow` tool mid-conversation:
 Run the code-review workflow on this PR and use the result before deciding what to fix.
 ```
 
-`code-review` returns a verified, ranked report:
+The advisory workflows inspect and report only; they do not edit files. They return a shared verified, ranked report shape:
 
 ```json
 {
-  "summary": "1 confirmed bug: off-by-one loop boundary in sum.js ...",
+  "summary": "1 high-confidence bug finding in sum.js ...",
   "findings": [
     {
-      "file": "sum.js",
-      "line": 3,
-      "severity": "bug",
-      "verdict": "CONFIRMED",
-      "summary": "Off-by-one: `i <= arr.length` should be `i < arr.length`; accesses arr[arr.length] (undefined) -> NaN."
+      "summary": "Off-by-one in the loop boundary reads past the end of the array.",
+      "category": "bug",
+      "severity": "high",
+      "confidence": "high",
+      "locations": [{ "file": "sum.js", "line": 3, "symbol": "sum" }],
+      "evidence": ["line 3 uses `i <= arr.length`, so the final iteration reads `arr[arr.length]`"],
+      "impact": "The extra read produces `undefined`, causing numeric sums to become `NaN`.",
+      "recommendation": "Change the loop bound after adding a regression test for a non-empty array."
     }
-  ]
+  ],
+  "nextSteps": ["Add a regression test for summing [1, 2, 3].", "Change the loop condition to `i < arr.length`."]
 }
 ```
 
+## Built-in advisory workflows
+
+- `code-review`: reviews the current branch, open PR, ref range, or target through correctness and cleanup lenses.
+- `refactor-scout`: finds safe, evidence-backed refactor opportunities without rewriting code.
+- `diagnose`: investigates a bug, failing command, or regression using competing root-cause hypotheses.
+- `perf-review`: surfaces bottleneck hypotheses, measurement gaps, and safe optimization directions.
+
 ## The code-review workflow
 
-The bundled workflow is deliberately shaped like a serious review process:
+The bundled review workflow is deliberately shaped like a serious review process:
 
 1. **Scope**: detect the open PR or branch diff, list changed files, and read relevant project conventions.
 2. **Find**: fan out across focused review lenses such as logic bugs, error paths, edge cases, simplification, and conventions.
@@ -180,8 +194,11 @@ src/
   progress.ts      live phase/agent tree via ctx.ui.setWidget
   discovery.ts     static registry + best-effort drop-in loading
 workflows/
-  code-review.ts   scope -> find -> verify -> synthesize
-  ping.ts          minimal smoke workflow
+  code-review.ts     scope -> find -> verify -> synthesize
+  refactor-scout.ts  advisory refactor opportunities
+  diagnose.ts        advisory bug diagnosis
+  perf-review.ts     advisory performance investigation
+  ping.ts            minimal smoke workflow
 ```
 
 ## License
