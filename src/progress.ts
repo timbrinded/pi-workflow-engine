@@ -1,5 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 import type { WorkflowLaneItemStatus, WorkflowProgressEvent } from "./types.ts";
+import { createWorkflowWidget, type WorkflowWidget } from "./ui/workflow-widget.ts";
 
 export type AgentRowStatus = "queued" | "running" | "done" | "failed";
 
@@ -93,6 +95,10 @@ export class ProgressTracker {
   private doneAt: number | undefined;
   private currentPhase = "Workflow";
   private nextAgentId = 1;
+  private widget: WorkflowWidget | undefined;
+  private widgetRegistered = false;
+  private tui: Pick<TUI, "requestRender"> | undefined;
+  private widgetInterval: ReturnType<typeof setInterval> | undefined;
 
   constructor(
     private readonly ctx: ExtensionContext,
@@ -270,15 +276,54 @@ export class ProgressTracker {
   }
 
   private render(): void {
-    if (this.ctx.hasUI) this.ctx.ui.setWidget("workflow", this.lines());
+    if (!this.ctx.hasUI) return;
+    this.ensureWidget();
+    this.widget?.invalidate();
+    this.tui?.requestRender();
+  }
+
+  private ensureWidget(): void {
+    if (this.widgetRegistered) return;
+    this.widget = createWorkflowWidget(() => this.snapshot());
+    this.ctx.ui.setWidget(
+      "workflow",
+      (tui, theme) => {
+        this.tui = tui;
+        return {
+          render: (width?: number) => this.widget?.render(width ?? tui.terminal.columns, theme) ?? [],
+          invalidate: () => this.widget?.invalidate(),
+        };
+      },
+      { placement: "aboveEditor" },
+    );
+    this.widgetRegistered = true;
+    this.startWidgetTimer();
+  }
+
+  private startWidgetTimer(): void {
+    if (this.widgetInterval !== undefined) return;
+    this.widgetInterval = setInterval(() => {
+      this.widget?.nextFrame();
+      this.tui?.requestRender();
+    }, 100);
+  }
+
+  private stopWidgetTimer(): void {
+    if (this.widgetInterval === undefined) return;
+    clearInterval(this.widgetInterval);
+    this.widgetInterval = undefined;
   }
 
   /** Clear live workflow surfaces; optionally leave a one-line final status. */
   done(status?: string): void {
     this.doneAt = Date.now();
+    this.stopWidgetTimer();
     if (!this.ctx.hasUI) return;
     this.ctx.ui.setWidget("workflow", undefined);
     this.ctx.ui.setStatus("workflow", status);
+    this.widgetRegistered = false;
+    this.widget = undefined;
+    this.tui = undefined;
   }
 }
 
