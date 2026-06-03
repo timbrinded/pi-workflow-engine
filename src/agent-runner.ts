@@ -49,11 +49,13 @@ function lastAssistantText(state: AgentState): string {
 export async function runAgent(rc: RunContext, prompt: string, opts: AgentOptions = {}): Promise<unknown> {
   const label = opts.label ?? "agent";
 
-  // Acquire a global concurrency slot before spawning the session.
+  // Track queued agents before acquiring a global concurrency slot.
+  const rowId = rc.progress.agentQueued(opts.phase, label);
   return rc.semaphore.run(async () => {
-    rc.progress.agentStart(opts.phase, label);
+    rc.progress.agentStart(opts.phase, label, rowId);
 
     let captured: unknown = null;
+    let failed = false;
     const customTools: ToolDefinition[] = opts.schema
       ? [
           defineTool({
@@ -92,7 +94,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
 
     const unsubscribe = session.subscribe((event) => {
       if (event.type === "tool_execution_start" && event.toolName !== FINAL_TOOL) {
-        rc.progress.agentTool(label, event.toolName);
+        rc.progress.agentTool(label, event.toolName, rowId);
       }
     });
 
@@ -107,12 +109,14 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
       }
       return lastAssistantText(session.state);
     } catch (error) {
+      failed = true;
+      rc.progress.agentFailed(label, error, rowId);
       rc.progress.log(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
     } finally {
       unsubscribe();
       session.dispose();
-      rc.progress.agentDone(label);
+      if (!failed) rc.progress.agentDone(label, rowId);
     }
   });
 }
