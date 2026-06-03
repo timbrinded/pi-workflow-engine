@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="assets/preview.png" width="200" alt="pi-workflow-engine — a central agent orchestrating a ring of subagents" />
-</p>
+![agents](assets/preview.png)
 
 # pi-workflow-engine
 
