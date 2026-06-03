@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/preview.png" width="200" alt="pi-workflow-engine — a central agent orchestrating a ring of subagents" />
+</p>
+
 # pi-workflow-engine
 
 A customisable multi-agent workflow-orchestration engine for the [pi](https://pi.dev) coding agent — your own version of Claude Code's built-in `/code-review`, built on pi's SDK. Workflows fan out to many subagents, pass validated structured data between stages, and synthesise a result.
@@ -119,3 +123,7 @@ workflows/
   code-review.ts   the example: scope → find → verify → synthesize
   ping.ts          minimal smoke workflow
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
