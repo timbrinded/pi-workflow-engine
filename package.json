@@ -3,15 +3,32 @@
   "version": "0.3.0",
   "type": "module",
   "description": "A customisable multi-agent workflow-orchestration engine for the pi coding agent.",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-workflow",
+    "workflow-engine",
+    "multi-agent",
+    "coding-agent"
+  ],
   "license": "MIT",
+  "homepage": "https://github.com/timbrinded/pi-workflow-engine#readme",
+  "bugs": {
+    "url": "https://github.com/timbrinded/pi-workflow-engine/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/timbrinded/pi-workflow-engine.git"
   },
-  "files": ["src", "workflows"],
+  "files": [
+    ".pi/extensions/pi-workflow-engine",
+    ".pi/settings.json",
+    "assets",
+    "README.md",
+    "LICENSE"
+  ],
   "pi": {
-    "extensions": ["./src/index.ts"],
+    "extensions": [".pi/extensions/pi-workflow-engine/index.ts"],
     "image": "https://raw.githubusercontent.com/timbrinded/pi-workflow-engine/master/assets/preview.png"
   },
   "scripts": {

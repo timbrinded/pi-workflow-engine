@@ -12,5 +12,5 @@
     "lib": ["ESNext"],
     "types": ["node"]
   },
-  "include": ["src", "workflows", "scripts", "tests"]
+  "include": [".pi/extensions/pi-workflow-engine/**/*.ts", "scripts", "tests"]
 }
