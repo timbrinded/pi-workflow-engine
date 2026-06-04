@@ -16,8 +16,12 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:ui": "bun scripts/test-workflow-ui.ts",
-    "prepublishOnly": "tsc --noEmit"
+    "test": "bun tests/run.ts",
+    "test:changedlines": "bun tests/run.ts tests/changedlines.test.ts",
+    "test:concurrency": "bun tests/run.ts tests/concurrency.test.ts",
+    "test:smoke": "bun tests/run.ts tests/discovery.test.ts",
+    "test:ui": "bun tests/run.ts tests/workflow-ui.test.ts",
+    "prepublishOnly": "tsc --noEmit && bun run test"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

@@ -12,5 +12,5 @@
     "lib": ["ESNext"],
     "types": ["node"]
   },
-  "include": ["src", "workflows", "scripts"]
+  "include": ["src", "workflows", "scripts", "tests"]
 }
