@@ -2,13 +2,13 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { discoverWorkflows } from "./discovery.ts";
-import { runWorkflow } from "./engine.ts";
-import type { WorkflowModule, WorkflowRunOptions } from "./types.ts";
-import { isWorkflowResult, renderWorkflowResult, type WorkflowResultEnvelope } from "./ui/workflow-result-renderer.ts";
+import { discoverWorkflows } from "./src/discovery.ts";
+import { runWorkflow } from "./src/engine.ts";
+import type { WorkflowModule, WorkflowRunOptions } from "./src/types.ts";
+import { isWorkflowResult, renderWorkflowResult, type WorkflowResultEnvelope } from "./src/ui/workflow-result-renderer.ts";
 
-/** Repo root (this file lives in <repo>/src/index.ts). */
-const REPO_DIR = fileURLToPath(new URL("..", import.meta.url));
+/** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
+const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 
 function summarize(result: unknown): string {
   if (result && typeof result === "object" && typeof (result as { summary?: unknown }).summary === "string") {
@@ -82,7 +82,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
   pi.registerCommand("workflow", {
     description: "Run a multi-agent workflow: /workflow <name> [args]",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
-      const workflows = await discoverWorkflows(REPO_DIR);
+      const workflows = await discoverWorkflows(EXTENSION_DIR);
       const available = [...workflows.keys()].join(", ") || "(none)";
       const direct = parseWorkflowInvocation(args);
       const invocation = direct.name ? direct : ctx.hasUI ? await pickWorkflow(workflows, ctx) : undefined;
@@ -125,7 +125,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       return new Text(theme.fg("muted", text), 0, 0);
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const workflows = await discoverWorkflows(REPO_DIR);
+      const workflows = await discoverWorkflows(EXTENSION_DIR);
       const mod = workflows.get(params.name);
       if (!mod) {
         const available = [...workflows.keys()].join(", ") || "(none)";
