@@ -71,6 +71,7 @@ function createSnapshot(config: { agents: number; laneItems: number; phases: num
     ],
     summary: [["mode", "synthetic"]],
     lanes: [["Findings", items]],
+    laneOverflow: [],
     logs: ["synthetic render benchmark"],
   };
 }

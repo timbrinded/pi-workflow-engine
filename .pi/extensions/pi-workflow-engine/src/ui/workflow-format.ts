@@ -82,22 +82,51 @@ export function agentLabelColor(agent: AgentRowSnapshot): WorkflowThemeColor {
   return agent.status === "running" ? "text" : "muted";
 }
 
+export interface WorkflowStatusCounts {
+  readonly queued: number;
+  readonly running: number;
+  readonly done: number;
+  readonly failed: number;
+  readonly total: number;
+}
+
+export interface WorkflowStatusSource {
+  readonly title: string;
+  readonly doneAt?: number;
+  readonly currentPhase: string;
+  readonly counters: readonly { readonly key: string; readonly label: string; readonly value: number }[];
+}
+
 export function statusText(snapshot: WorkflowProgressSnapshot, theme: Theme): string | undefined {
+  const counts = countSnapshotAgents(snapshot);
+  return statusTextFromCounts(snapshot, counts, theme);
+}
+
+export function statusTextFromCounts(snapshot: WorkflowStatusSource, counts: WorkflowStatusCounts, theme: Theme): string | undefined {
   if (snapshot.doneAt !== undefined) return undefined;
 
-  const agents = snapshot.phases.flatMap((phase) => phase.agents);
-  const complete = agents.filter((agent) => agent.status === "done" || agent.status === "failed").length;
-  const active = agents.filter((agent) => agent.status === "running" || agent.status === "queued").length;
-  const total = agents.length;
+  const complete = counts.done + counts.failed;
+  const active = counts.running + counts.queued;
   const kept = snapshot.counters.find((counter) => counter.key === "kept" || counter.label.toLowerCase() === "kept");
   const displayName = snapshot.title === "code-review" ? "review" : snapshot.title;
 
   const parts = [theme.fg("accent", displayName), theme.fg("muted", snapshot.currentPhase)];
-  if (total > 0) parts.push(theme.fg("muted", `${complete}/${total}`));
+  if (counts.total > 0) parts.push(theme.fg("muted", `${complete}/${counts.total}`));
   if (kept) parts.push(theme.fg("success", `${formatCount(kept.value)} kept`));
   else if (active > 0) parts.push(theme.fg("muted", `${active} active`));
 
   return parts.join(theme.fg("dim", " · "));
+}
+
+function countSnapshotAgents(snapshot: WorkflowProgressSnapshot): WorkflowStatusCounts {
+  const counts = { queued: 0, running: 0, done: 0, failed: 0, total: 0 };
+  for (const phase of snapshot.phases) {
+    for (const agent of phase.agents) {
+      counts[agent.status]++;
+      counts.total++;
+    }
+  }
+  return counts;
 }
 
 function formatCompact(value: number): string {

@@ -211,8 +211,11 @@ export class WorkflowInspector {
   private findingLines(snapshot: WorkflowProgressSnapshot, _width: number): InspectorLine[] {
     const lines: InspectorLine[] = [];
     let selectableIndex = -1;
+    const overflowByLane = new Map(snapshot.laneOverflow);
     for (const [lane, items] of snapshot.lanes) {
-      lines.push({ text: this.theme.fg("dim", `${lane} (${items.length})`) });
+      const hidden = overflowByLane.get(lane) ?? 0;
+      const countText = hidden > 0 ? `${items.length} shown, ${hidden} hidden` : `${items.length}`;
+      lines.push({ text: this.theme.fg("dim", `${lane} (${countText})`) });
       items.forEach((item, index) => {
         selectableIndex++;
         const key = `finding:${lane}:${index}:${item.createdAt}`;

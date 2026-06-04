@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { WorkflowLaneItemStatus, WorkflowProgressEvent } from "./types.ts";
-import { statusText } from "./ui/workflow-format.ts";
+import { statusTextFromCounts, type WorkflowStatusCounts } from "./ui/workflow-format.ts";
 import { createWorkflowWidget, type WorkflowWidget } from "./ui/workflow-widget.ts";
 
 export type AgentRowStatus = "queued" | "running" | "done" | "failed";
@@ -46,6 +46,7 @@ export interface WorkflowProgressSnapshot {
   readonly counters: readonly WorkflowCounterSnapshot[];
   readonly summary: readonly [string, string | number][];
   readonly lanes: readonly [string, readonly WorkflowLaneItemSnapshot[]][];
+  readonly laneOverflow: readonly [string, number][];
   readonly logs: readonly string[];
 }
 
@@ -81,6 +82,7 @@ interface WorkflowLaneItem {
 }
 
 const LOG_LIMIT = 24;
+export const DEFAULT_LANE_ITEM_LIMIT = 200;
 
 /**
  * Tracks live workflow state for widgets, footer/status text, result renderers,
@@ -92,7 +94,11 @@ export class ProgressTracker {
   private readonly counters = new Map<string, WorkflowCounter>();
   private readonly summary = new Map<string, string | number>();
   private readonly lanes = new Map<string, WorkflowLaneItem[]>();
+  private readonly laneOverflow = new Map<string, number>();
+  private readonly rowsById = new Map<number, AgentRow>();
+  private readonly agentCounts: Record<AgentRowStatus, number> = { queued: 0, running: 0, done: 0, failed: 0 };
   private readonly startedAt = Date.now();
+  private readonly laneItemLimit = laneItemLimitFromEnv();
   private doneAt: number | undefined;
   private currentPhase = "Workflow";
   private nextAgentId = 1;
@@ -156,6 +162,7 @@ export class ProgressTracker {
           details: event.details,
           createdAt: Date.now(),
         });
+        this.pruneLane(event.lane, lane);
         this.lanes.set(event.lane, lane);
         break;
       }
@@ -168,7 +175,10 @@ export class ProgressTracker {
 
   agentQueued(phase: string | undefined, label: string): number {
     const id = this.nextAgentId++;
-    this.ensurePhase(phase ?? this.currentPhase).agents.push({ label, id, status: "queued", toolUses: 0 });
+    const row = { label, id, status: "queued" as const, toolUses: 0 };
+    this.ensurePhase(phase ?? this.currentPhase).agents.push(row);
+    this.rowsById.set(id, row);
+    this.agentCounts.queued++;
     this.render();
     return id;
   }
@@ -176,17 +186,20 @@ export class ProgressTracker {
   agentStart(phase: string | undefined, label: string, id?: number): void {
     const row = id === undefined ? undefined : this.findRowById(id);
     if (row) {
-      row.status = "running";
+      this.transitionAgentStatus(row, "running");
       row.startedAt = Date.now();
       row.error = undefined;
     } else {
-      this.ensurePhase(phase ?? this.currentPhase).agents.push({
+      const nextRow = {
         label,
         id: this.nextAgentId++,
-        status: "running",
+        status: "running" as const,
         startedAt: Date.now(),
         toolUses: 0,
-      });
+      };
+      this.ensurePhase(phase ?? this.currentPhase).agents.push(nextRow);
+      this.rowsById.set(nextRow.id, nextRow);
+      this.agentCounts.running++;
     }
     this.render();
   }
@@ -203,7 +216,7 @@ export class ProgressTracker {
   agentDone(label: string, id?: number): void {
     const row = this.findRow(label, id);
     if (row && row.status !== "failed") {
-      row.status = "done";
+      this.transitionAgentStatus(row, "done");
       row.doneAt = Date.now();
     }
     this.render();
@@ -212,7 +225,7 @@ export class ProgressTracker {
   agentFailed(label: string, error: unknown, id?: number): void {
     const row = this.findRow(label, id);
     if (row) {
-      row.status = "failed";
+      this.transitionAgentStatus(row, "failed");
       row.doneAt = Date.now();
       row.error = errorMessage(error);
     }
@@ -232,8 +245,38 @@ export class ProgressTracker {
       counters: [...this.counters.values()].map((counter) => ({ ...counter })),
       summary: [...this.summary.entries()],
       lanes: [...this.lanes.entries()].map(([lane, items]) => [lane, items.map((item) => ({ ...item }))]),
+      laneOverflow: [...this.laneOverflow.entries()],
       logs: [...this.logs],
     };
+  }
+
+  statusCounts(): WorkflowStatusCounts {
+    return this.statusCountsSnapshot();
+  }
+
+  private statusCountsSnapshot(): WorkflowStatusCounts {
+    return {
+      queued: this.agentCounts.queued,
+      running: this.agentCounts.running,
+      done: this.agentCounts.done,
+      failed: this.agentCounts.failed,
+      total: this.agentCounts.queued + this.agentCounts.running + this.agentCounts.done + this.agentCounts.failed,
+    };
+  }
+
+  private transitionAgentStatus(row: AgentRow, nextStatus: AgentRowStatus): void {
+    if (row.status === nextStatus) return;
+    this.agentCounts[row.status]--;
+    row.status = nextStatus;
+    this.agentCounts[nextStatus]++;
+  }
+
+  private pruneLane(laneName: string, lane: WorkflowLaneItem[]): void {
+    if (this.laneItemLimit <= 0) return;
+    while (lane.length > this.laneItemLimit) {
+      lane.shift();
+      this.laneOverflow.set(laneName, (this.laneOverflow.get(laneName) ?? 0) + 1);
+    }
   }
 
   private findRow(label: string, id?: number): AgentRow | undefined {
@@ -252,13 +295,8 @@ export class ProgressTracker {
   }
 
   private findRowById(id: number): AgentRow | undefined {
-    for (const phase of this.phases) {
-      const row = phase.agents.find((agent) => agent.id === id);
-      if (row) return row;
-    }
-    return undefined;
+    return this.rowsById.get(id);
   }
-
 
   private render(): void {
     if (!this.ctx.hasUI) return;
@@ -269,7 +307,16 @@ export class ProgressTracker {
   }
 
   private publishStatus(): void {
-    const next = statusText(this.snapshot(), this.ctx.ui.theme);
+    const next = statusTextFromCounts(
+      {
+        title: this.title,
+        doneAt: this.doneAt,
+        currentPhase: this.currentPhase,
+        counters: [...this.counters.values()].map((counter) => ({ ...counter })),
+      },
+      this.statusCountsSnapshot(),
+      this.ctx.ui.theme,
+    );
     if (next === this.lastStatusText) return;
     this.ctx.ui.setStatus("workflow", next);
     this.lastStatusText = next;
@@ -319,6 +366,12 @@ export class ProgressTracker {
     this.widget = undefined;
     this.tui = undefined;
   }
+}
+
+function laneItemLimitFromEnv(): number {
+  const parsed = Number(process.env.PI_WORKFLOW_LANE_ITEM_LIMIT ?? "");
+  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_LANE_ITEM_LIMIT;
+  return Math.trunc(parsed);
 }
 
 function errorMessage(error: unknown): string {
