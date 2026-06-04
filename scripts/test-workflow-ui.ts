@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { formatCount, formatDuration, truncateDisplay } from "../src/ui/workflow-format.ts";
+import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../src/ui/workflow-format.ts";
 import { isAdvisoryReport, renderWorkflowResultText } from "../src/ui/workflow-result-renderer.ts";
 
 type ThemeBg = Parameters<Theme["bg"]>[0];
@@ -72,6 +72,11 @@ assert.equal(formatDuration(3_600_000), "1h");
 assert.equal(formatCount(999), "999");
 assert.equal(formatCount(1_200), "1.2k");
 assert.equal(formatCount(1_200_000), "1.2m");
+
+const queuedAgent = { id: 1, label: "scope", status: "queued" as const, toolUses: 0 };
+assert.deepEqual(agentDetailParts(queuedAgent), ["queued"]);
+assert.deepEqual(agentDetailParts(queuedAgent, { includeQueuedStatus: false }), []);
+assert.deepEqual(agentDetailParts({ id: 2, label: "find", status: "running" as const, startedAt: 0, toolUses: 0 }, 1_500), ["1s"]);
 
 const ascii = truncateDisplay("abcdef", 4);
 assert.ok(visibleWidth(ascii) <= 4);

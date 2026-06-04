@@ -105,6 +105,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     api: { agent, parallel, pipeline, progress, log },
     lenses: PERF_LENSES,
     perLens: PER_LENS,
+    tools: TOOLS,
     finderPrompt: (lens) =>
       `## Perf-review finder — ${lens.label}\n\n${scopeBlock}\n` +
       "This workflow is advisory-only: identify bottleneck hypotheses, measurement gaps, and safe optimization directions, but do not edit files.\n" +

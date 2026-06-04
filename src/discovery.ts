@@ -2,15 +2,35 @@ import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { WorkflowModule } from "./types.ts";
+import type { WorkflowMeta, WorkflowModule } from "./types.ts";
 import { BUILTIN_WORKFLOWS } from "./workflows.ts";
 
-function isWorkflowModule(value: unknown): value is WorkflowModule {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as { meta?: { name?: unknown; description?: unknown; phases?: unknown }; default?: unknown };
-  if (typeof candidate.meta?.name !== "string" || typeof candidate.meta.description !== "string") return false;
-  if (candidate.meta.phases !== undefined && !isWorkflowPhases(candidate.meta.phases)) return false;
-  return typeof candidate.default === "function";
+type WorkflowModuleCandidate = {
+  meta?: { name?: unknown; description?: unknown; phases?: unknown };
+  default?: unknown;
+};
+
+function parseWorkflowModule(value: unknown): { module: WorkflowModule } | { reason: string } {
+  if (!value || typeof value !== "object") return { reason: "module export is not an object" };
+  const candidate = value as WorkflowModuleCandidate;
+  const meta = candidate.meta;
+  if (!meta || typeof meta !== "object") return { reason: "missing meta export" };
+  if (typeof meta.name !== "string") return { reason: "meta.name must be a string" };
+
+  const description = meta.description;
+  if (description !== undefined && typeof description !== "string") return { reason: "meta.description must be a string when provided" };
+
+  const phases = meta.phases;
+  if (phases !== undefined && !isWorkflowPhases(phases)) return { reason: "meta.phases must be an array of { title: string }" };
+  if (!isWorkflowRun(candidate.default)) return { reason: "default export must be a function" };
+
+  const workflowMeta: WorkflowMeta = { name: meta.name, description: description ?? "" };
+  if (phases !== undefined) workflowMeta.phases = phases;
+  return { module: { meta: workflowMeta, default: candidate.default } };
+}
+
+function isWorkflowRun(value: unknown): value is WorkflowModule["default"] {
+  return typeof value === "function";
 }
 
 function isWorkflowPhases(value: unknown): value is Array<{ title: string }> {
@@ -31,7 +51,9 @@ async function loadDir(dir: string): Promise<WorkflowModule[]> {
     if (!name.endsWith(".ts") || name.startsWith("_") || name.startsWith(".")) continue;
     try {
       const loaded: unknown = await import(pathToFileURL(join(dir, name)).href);
-      if (isWorkflowModule(loaded)) modules.push(loaded);
+      const parsed = parseWorkflowModule(loaded);
+      if ("module" in parsed) modules.push(parsed.module);
+      else console.error(`[workflow-engine] skipped ${name}: ${parsed.reason}`);
     } catch (error) {
       // Drop-in loading depends on the runtime resolving TS + the bundled typebox.
       // Failures here are non-fatal: the static registry still works.

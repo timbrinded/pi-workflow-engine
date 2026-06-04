@@ -1,5 +1,5 @@
 import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type AdvisoryFinding, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
-import type { WorkflowApi, WorkflowProgressEvent } from "./types.ts";
+import type { AgentOptions, WorkflowApi, WorkflowProgressEvent } from "./types.ts";
 
 export interface AdvisoryLens {
   label: string;
@@ -20,10 +20,13 @@ export interface LensVerificationPipelineResult<Verified> {
   refuted: number;
 }
 
+const DEFAULT_ADVISORY_TOOLS = ["read", "bash"];
+
 export interface LensVerificationPipelineOptions<Lens extends AdvisoryLens, Verified extends AdvisoryVerified> {
   api: Pick<WorkflowApi, "agent" | "parallel" | "pipeline" | "progress" | "log">;
   lenses: readonly Lens[];
   perLens: number;
+  tools?: AgentOptions["tools"];
   finderPhase?: string;
   verifierPhase?: string;
   finderPrompt(lens: Lens): string;
@@ -39,7 +42,17 @@ export interface AdvisoryBackfillDefaults {
 export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Verified extends AdvisoryVerified>(
   options: LensVerificationPipelineOptions<Lens, Verified>,
 ): Promise<LensVerificationPipelineResult<Verified>> {
-  const { api, lenses, perLens, finderPhase = "Find", verifierPhase = "Verify", finderPrompt, verifierPrompt, makeVerified } = options;
+  const {
+    api,
+    lenses,
+    perLens,
+    tools = DEFAULT_ADVISORY_TOOLS,
+    finderPhase = "Find",
+    verifierPhase = "Verify",
+    finderPrompt,
+    verifierPrompt,
+    makeVerified,
+  } = options;
   const seen = new Set<string>();
   let rawCandidates = 0;
   let dropped = 0;
@@ -51,7 +64,7 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
       const found = await api.agent(finderPrompt(lens), {
         phase: finderPhase,
         label: `find:${lens.label}`,
-        tools: ["read", "bash"],
+        tools,
         thinkingLevel: "low",
         schema: AdvisoryCandidatesSchema,
       });
@@ -90,7 +103,7 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
           const judged = await api.agent(verifierPrompt(candidate), {
             phase: verifierPhase,
             label: `verify:${location.file.split("/").pop() ?? location.file}`,
-            tools: ["read", "bash"],
+            tools,
             thinkingLevel: "low",
             schema: AdvisoryVerdictSchema,
           });
@@ -204,7 +217,7 @@ export function backfillAdvisoryFindings<Source extends AdvisoryVerified>(
       ...finding,
       evidence: finding.evidence.length > 0 ? finding.evidence : (source?.evidence ?? []),
       impact: finding.impact || source?.impact || defaults.impact,
-      recommendation: finding.recommendation || source?.recommendation || defaults.recommendation || finding.recommendation,
+      recommendation: finding.recommendation || source?.recommendation || defaults.recommendation || "",
     };
   });
 }

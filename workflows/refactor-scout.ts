@@ -102,6 +102,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     api: { agent, parallel, pipeline, progress, log },
     lenses: REFACTOR_LENSES,
     perLens: PER_LENS,
+    tools: TOOLS,
     finderPrompt: (lens) =>
       `## Refactor-scout finder — ${lens.label}\n\n${scopeBlock}\n` +
       "This workflow is advisory-only: do not edit files and do not propose broad rewrites.\n" +

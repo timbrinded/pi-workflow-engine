@@ -123,7 +123,7 @@ function phaseLines(phase: PhaseSnapshot, theme: Theme): string[] {
 }
 
 function agentLine(agent: AgentRowSnapshot, theme: Theme): string {
-  const detailParts = agentDetailParts(agent).filter((part) => agent.status !== "queued" || part !== "queued");
+  const detailParts = agentDetailParts(agent, { includeQueuedStatus: false });
   const activity = detailParts.length > 0 ? ` ${theme.fg("dim", `· ${detailParts.join(" · ")}`)}` : "";
   return `${theme.fg("dim", "│  ")} ${statusIcon(agent.status, theme)} ${theme.fg(agentLabelColor(agent), agent.label)}${activity}`;
 }

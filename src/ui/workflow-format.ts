@@ -58,12 +58,22 @@ export function truncateDisplay(text: string, width: number): string {
   return truncateToWidth(text, width);
 }
 
-export function agentDetailParts(agent: AgentRowSnapshot, now = Date.now()): string[] {
+export interface AgentDetailOptions {
+  now?: number;
+  includeQueuedStatus?: boolean;
+}
+
+export function agentDetailParts(agent: AgentRowSnapshot, now?: number): string[];
+export function agentDetailParts(agent: AgentRowSnapshot, options?: AgentDetailOptions): string[];
+export function agentDetailParts(agent: AgentRowSnapshot, optionsOrNow: AgentDetailOptions | number = {}): string[] {
+  const options = typeof optionsOrNow === "number" ? { now: optionsOrNow } : optionsOrNow;
+  const now = options.now ?? Date.now();
+  const includeQueuedStatus = options.includeQueuedStatus ?? true;
   const parts: string[] = [];
   if (agent.toolUses > 0) parts.push(`${agent.toolUses} tool${agent.toolUses === 1 ? "" : "s"}`);
   if (agent.lastTool) parts.push(agent.lastTool);
   if (agent.startedAt !== undefined) parts.push(formatDuration((agent.doneAt ?? now) - agent.startedAt));
-  else if (agent.status === "queued") parts.push("queued");
+  else if (includeQueuedStatus && agent.status === "queued") parts.push("queued");
   if (agent.status === "failed" && agent.error) parts.push(agent.error);
   return parts;
 }

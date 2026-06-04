@@ -57,6 +57,10 @@ export async function pipeline<Item, A, B, C>(
 export async function pipeline(
   items: readonly unknown[],
   ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
+): Promise<unknown[]>;
+export async function pipeline(
+  items: readonly unknown[],
+  ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
 ): Promise<unknown[]> {
   return Promise.all(
     items.map(async (item, index) => {
@@ -68,3 +72,5 @@ export async function pipeline(
     }),
   );
 }
+
+export type Pipeline = typeof pipeline;
