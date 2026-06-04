@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { parallel, pipeline, Semaphore } from "../src/concurrency.ts";
+import { parallel, pipeline, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

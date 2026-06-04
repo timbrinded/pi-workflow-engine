@@ -4,21 +4,21 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { discoverWorkflows } from "../src/discovery.ts";
+import { discoverWorkflows } from "../.pi/extensions/pi-workflow-engine/src/discovery.ts";
 
-const repoDir = fileURLToPath(new URL("..", import.meta.url));
+const extensionDir = fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/", import.meta.url));
 
 test("workflow UI modules load without LLM calls", async () => {
   await Promise.all([
-    import("../src/ui/workflow-format.ts"),
-    import("../src/ui/workflow-inspector.ts"),
-    import("../src/ui/workflow-result-renderer.ts"),
-    import("../src/ui/workflow-widget.ts"),
+    import("../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts"),
+    import("../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts"),
+    import("../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts"),
+    import("../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts"),
   ]);
 });
 
 test("built-in workflows are discovered", async () => {
-  const workflows = await discoverWorkflows(repoDir);
+  const workflows = await discoverWorkflows(extensionDir);
   const expectedBuiltins = ["code-review", "ping", "refactor-scout", "diagnose", "perf-review"];
 
   for (const name of expectedBuiltins) {

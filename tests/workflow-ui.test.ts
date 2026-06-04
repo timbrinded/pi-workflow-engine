@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createTestTheme } from "./fixtures/theme.ts";
-import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../src/ui/workflow-format.ts";
-import { isAdvisoryReport, renderWorkflowResultText } from "../src/ui/workflow-result-renderer.ts";
+import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
+import { isAdvisoryReport, renderWorkflowResultText } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts";
 
 test("workflow formatting helpers format durations, counts, agents, and truncation", () => {
   assert.equal(formatDuration(0), "0s");
