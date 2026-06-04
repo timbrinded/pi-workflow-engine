@@ -35,7 +35,7 @@ Or from npm:
 pi install npm:pi-workflow-engine
 ```
 
-That's all. pi fetches the package and serves its core dependencies from its own bundle, so there is no clone, install, or build step. Restart pi, or run `/reload` in an open session, then confirm it is registered:
+That's all. pi fetches the package and serves its core dependencies from its own bundle, so there is no clone, install, or build step. The package entrypoint is the canonical pi extension module at `.pi/extensions/pi-workflow-engine/index.ts`. Restart pi, or run `/reload` in an open session, then confirm it is registered:
 
 ```bash
 pi list
@@ -93,7 +93,7 @@ The bundled review workflow is deliberately shaped like a serious review process
 4. **Verify**: send each survivor to an independent verifier that must confirm, mark plausible, or refute with evidence.
 5. **Synthesize**: produce one ranked report with stats, verdicts, and concrete locations.
 
-The review lenses live in `workflows/code-review.ts`. That is where your repo's real failure modes belong.
+The review lenses live in `.pi/extensions/pi-workflow-engine/workflows/code-review.ts`. That is where your repo's real failure modes belong.
 
 ## Authoring workflows
 
@@ -156,33 +156,39 @@ bun run test
 
 The test suite is no-LLM and uses Bun's built-in `bun test` runner, not a third-party test framework.
 
-Load your working copy into a session without installing it. This is ephemeral and overrides nothing:
+Load your working copy through the package manifest without installing it. This is ephemeral and exercises the same `.pi/extensions/pi-workflow-engine/index.ts` entrypoint that installed packages use:
 
 ```bash
-pi -e ./src/index.ts -p "/workflow ping"
+pi -e . -p "/workflow ping"
 ```
 
-Add a workflow by creating `workflows/<name>.ts`, importing it in `src/workflows.ts`, and adding it to `BUILTIN_WORKFLOWS`. Statically imported workflows share pi's bundled `typebox`, which guarantees schema validation. Files in `workflows/` and `~/.pi/agent/workflows/` are also discovered dynamically at runtime on a best-effort basis.
+This repo also includes `.pi/settings.json` for project-local auto-discovery. If you also have the global package installed, pi may report duplicate `/workflow` or `workflow` tool diagnostics; remove one source or test with `--no-extensions -e .` when you need a single loaded copy.
 
-Tune the built-in review workflow by editing the `ANGLES` array in `workflows/code-review.ts`. Tune `model`, `thinkingLevel`, and `tools` per `agent()` call, and tune `DEFAULT_CONCURRENCY` in `src/engine.ts`.
+Add a built-in workflow by creating `.pi/extensions/pi-workflow-engine/workflows/<name>.ts`, importing it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`, and adding it to `BUILTIN_WORKFLOWS`. Statically imported workflows share pi's bundled `typebox`, which guarantees schema validation. Files in `.pi/extensions/pi-workflow-engine/workflows/` and `~/.pi/agent/workflows/` are also discovered dynamically at runtime on a best-effort basis.
+
+Tune the built-in review workflow by editing the `ANGLES` array in `.pi/extensions/pi-workflow-engine/workflows/code-review.ts`. Tune `model`, `thinkingLevel`, and `tools` per `agent()` call, and tune `DEFAULT_CONCURRENCY` in `.pi/extensions/pi-workflow-engine/src/engine.ts`.
 
 ### Layout
 
 ```text
-src/
-  index.ts         extension entry; registers the command and tool
-  types.ts         WorkflowApi / WorkflowModule contracts
-  agent-runner.ts  createAgentSession + terminating-tool schema bridge
-  concurrency.ts   Semaphore, parallel(), pipeline()
-  engine.ts        runWorkflow(); binds primitives to one run
-  progress.ts      live phase/agent tree via ctx.ui.setWidget
-  discovery.ts     static registry + best-effort drop-in loading
-workflows/
-  code-review.ts     scope -> find -> verify -> synthesize
-  refactor-scout.ts  advisory refactor opportunities
-  diagnose.ts        advisory bug diagnosis
-  perf-review.ts     advisory performance investigation
-  ping.ts            minimal smoke workflow
+.pi/
+  settings.json                         project-local pi resource settings
+  extensions/pi-workflow-engine/
+    index.ts                            canonical extension entry; registers the command and tool
+    src/
+      types.ts                          WorkflowApi / WorkflowModule contracts
+      agent-runner.ts                   createAgentSession + terminating-tool schema bridge
+      concurrency.ts                    Semaphore, parallel(), pipeline()
+      engine.ts                         runWorkflow(); binds primitives to one run
+      progress.ts                       live phase/agent tree via ctx.ui.setWidget
+      discovery.ts                      static registry + best-effort drop-in loading
+      workflows.ts                      statically registered built-in workflows
+    workflows/
+      code-review.ts                    scope -> find -> verify -> synthesize
+      refactor-scout.ts                 advisory refactor opportunities
+      diagnose.ts                       advisory bug diagnosis
+      perf-review.ts                    advisory performance investigation
+      ping.ts                           minimal smoke workflow
 ```
 
 ## License
