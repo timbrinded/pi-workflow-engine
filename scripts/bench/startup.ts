@@ -11,6 +11,7 @@ const options = parseBenchArgs();
 const targets: ImportTarget[] = [
   { name: "extension_index", path: "./.pi/extensions/pi-workflow-engine/index.ts" },
   { name: "discovery", path: "./.pi/extensions/pi-workflow-engine/src/discovery.ts" },
+  { name: "workflows", path: "./.pi/extensions/pi-workflow-engine/src/workflows.ts" },
   { name: "engine", path: "./.pi/extensions/pi-workflow-engine/src/engine.ts" },
 ];
 

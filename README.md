@@ -170,7 +170,9 @@ pi -ne -e .
 
 Add a built-in workflow by creating `.pi/extensions/pi-workflow-engine/workflows/<name>.ts`, importing it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`, and adding it to `BUILTIN_WORKFLOWS`. Statically imported workflows share pi's bundled `typebox`, which guarantees schema validation. Files in `.pi/extensions/pi-workflow-engine/workflows/` and `~/.pi/agent/workflows/` are also discovered dynamically at runtime on a best-effort basis.
 
-Tune the built-in review workflow by editing the `ANGLES` array in `.pi/extensions/pi-workflow-engine/workflows/code-review.ts`. Tune `model`, `thinkingLevel`, and `tools` per `agent()` call, and tune `DEFAULT_CONCURRENCY` in `.pi/extensions/pi-workflow-engine/src/engine.ts`.
+Keep guaranteed built-ins statically imported. Optimize cold startup at the extension entrypoint or discovery boundary first; do not lazy-load built-in workflow modules unless a test proves pi/jiti preserves the same bundled `typebox` identity for dynamically imported built-ins.
+
+Tune the built-in review workflow by editing the `ANGLES` array in `.pi/extensions/pi-workflow-engine/workflows/code-review.ts`. Tune `model`, `thinkingLevel`, and `tools` per `agent()` call, and use `PI_WORKFLOW_CONCURRENCY` or `/workflow <name> --concurrency=N` for measured per-run concurrency experiments.
 
 ### Layout
 
