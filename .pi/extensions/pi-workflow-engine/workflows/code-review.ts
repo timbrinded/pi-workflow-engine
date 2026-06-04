@@ -1,4 +1,3 @@
-import { execSync } from "node:child_process";
 import { Type } from "typebox";
 import {
   AdvisoryCandidatesSchema,
@@ -16,6 +15,7 @@ import {
   recordVerdictProgress,
   verdictConfidence,
 } from "../src/workflow-advisory-utils.ts";
+import { captureDiff } from "../src/diff-capture.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -91,7 +91,7 @@ export function inDiff(changed: Map<string, Set<number>>, file: string, line?: n
 }
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
-  const { agent, parallel, phase, log, progress, args, cwd } = api;
+  const { agent, parallel, phase, log, progress, args, cwd, signal } = api;
   const target = args.trim();
   let fileCount = 0;
   let rawCandidateCount = 0;
@@ -142,15 +142,13 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   // Capture the diff once, deterministically, so findings can be bounded to changed lines in code.
   let changed: Map<string, Set<number>> | null = null;
   let diffText = "";
-  if (/^(git diff|gh pr diff)\b/.test(scope.diffCommand)) {
-    try {
-      diffText = execSync(scope.diffCommand, { cwd, encoding: "utf8", maxBuffer: 16 << 20 });
-      changed = changedLines(diffText);
-    } catch (error) {
-      log(`diff capture failed (${error instanceof Error ? error.message : String(error)}) — reviewing without the line gate`);
-    }
+  const capturedDiff = await captureDiff(scope.diffCommand, { cwd, signal, timeoutMs: 30_000, maxBufferBytes: 16 << 20 });
+  if (capturedDiff.ok) {
+    diffText = capturedDiff.stdout;
+    changed = changedLines(diffText);
+    progress({ type: "summary", key: "diffBytes", value: capturedDiff.bytes });
   } else {
-    log("diffCommand not in the git/gh allowlist — reviewing without the line gate");
+    log(`diff capture failed (${capturedDiff.error ?? "unknown error"}) — reviewing without the line gate`);
   }
 
   const diffBlock = diffText
