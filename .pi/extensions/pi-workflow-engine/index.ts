@@ -15,8 +15,8 @@ function summarize(result: unknown): string {
   return typeof result === "string" ? result : "Workflow finished.";
 }
 
-function formatReport(name: string, result: unknown): string {
-  return [`## Workflow: ${name}`, "", "```json", JSON.stringify(result, null, 2), "```"].join("\n");
+function formatMessageContent(name: string, result: unknown): string {
+  return `## Workflow: ${name}\n\n${summarize(result)}`;
 }
 
 function workflowEnvelope(name: string, result: unknown): WorkflowResultEnvelope {
@@ -122,7 +122,7 @@ async function sendWorkflowResult(
   const { runWorkflow } = await loadEngine();
   const result = await runWorkflow(ctx, mod, args, options);
   pi.sendMessage(
-    { customType: "workflow-result", content: formatReport(name, result), display: true, details: workflowEnvelope(name, result) },
+    { customType: "workflow-result", content: formatMessageContent(name, result), display: true, details: workflowEnvelope(name, result) },
     { triggerTurn: false },
   );
 }

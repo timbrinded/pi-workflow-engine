@@ -142,7 +142,7 @@ function renderGenericWorkflowResult(name: string, result: unknown, expanded: bo
   const summary = extractSummary(result);
   if (summary) lines.push(theme.fg("muted", summary));
   if (expanded) lines.push(theme.fg("dim", safeJson(result)));
-  else if (!summary) lines.push(theme.fg("dim", compactJson(result)));
+  else if (!summary) lines.push(theme.fg("dim", "Result available in expanded view."));
   return lines.join("\n");
 }
 
@@ -162,11 +162,6 @@ function extractSummary(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (isRecord(value) && typeof value.summary === "string") return value.summary;
   return undefined;
-}
-
-function compactJson(value: unknown): string {
-  const json = safeJson(value).replace(/\s+/g, " ").trim();
-  return json.length > 240 ? `${json.slice(0, 237)}...` : json;
 }
 
 function safeJson(value: unknown): string {

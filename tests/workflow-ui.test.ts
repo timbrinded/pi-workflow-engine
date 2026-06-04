@@ -35,6 +35,23 @@ test("advisory reports are structurally recognized", () => {
   assert.equal(isAdvisoryReport({ summary: "generic workflow", value: 42 }), false);
 });
 
+test("generic workflow results stringify raw JSON only when expanded", () => {
+  const theme = createTestTheme();
+  const large = {
+    deeplyNestedFieldThatShouldNotAppearCollapsed: "x".repeat(1_000),
+    values: Array.from({ length: 100 }, (_value, index) => ({ index, payload: `payload-${index}` })),
+  };
+
+  const collapsed = renderWorkflowResultText("generic", large, false, theme);
+  assert.match(collapsed, /Result available in expanded view/);
+  assert.doesNotMatch(collapsed, /deeplyNestedFieldThatShouldNotAppearCollapsed/);
+  assert.doesNotMatch(collapsed, /payload-99/);
+
+  const expanded = renderWorkflowResultText("generic", large, true, theme);
+  assert.match(expanded, /deeplyNestedFieldThatShouldNotAppearCollapsed/);
+  assert.match(expanded, /payload-99/);
+});
+
 test("workflow result text renders advisory reports collapsed and expanded", () => {
   const theme = createTestTheme();
 
