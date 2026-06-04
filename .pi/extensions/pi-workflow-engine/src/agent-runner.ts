@@ -167,9 +167,10 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             tags,
           );
           session = created.session;
+          const activeSession = session;
           throwIfAborted(rc.signal);
 
-          unsubscribe = session.subscribe((event) => {
+          unsubscribe = activeSession.subscribe((event) => {
             if (event.type === "tool_execution_start" && event.toolName !== undefined && event.toolName !== FINAL_TOOL) {
               rc.progress.agentTool(label, event.toolName, rowId);
             }
@@ -179,9 +180,9 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             ? `${prompt}\n\nWhen finished, return your result by calling the ${FINAL_TOOL} tool.`
             : prompt;
           throwIfAborted(rc.signal);
-          const unlinkPromptAbort = linkSessionAbort(rc.signal, session);
+          const unlinkPromptAbort = linkSessionAbort(rc.signal, activeSession);
           try {
-            await rc.perf.time("agent.prompt_ms", () => session.prompt(finalPrompt), tags);
+            await rc.perf.time("agent.prompt_ms", () => activeSession.prompt(finalPrompt), tags);
           } finally {
             unlinkPromptAbort();
           }
@@ -197,7 +198,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
                 }
                 return captured;
               }
-              return lastAssistantText(session.state);
+              return lastAssistantText(activeSession.state);
             },
             tags,
           );
@@ -207,12 +208,13 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           rc.progress.log(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
           throw error;
         } finally {
-          if (session) {
+          const disposable = session;
+          if (disposable) {
             rc.perf.timeSync(
               "agent.dispose_ms",
               () => {
                 unsubscribe?.();
-                session.dispose();
+                disposable.dispose();
               },
               tags,
             );

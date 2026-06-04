@@ -156,6 +156,39 @@ bun run test
 
 The test suite is no-LLM and uses Bun's built-in `bun test` runner, not a third-party test framework.
 
+### Performance controls and benchmarks
+
+The workflow engine is measurement-first: tune only after checking queue wait, local orchestration, discovery, and UI render costs on the machine where you run pi.
+
+Runtime controls:
+
+- `PI_WORKFLOW_PERF=1` enables the internal per-run performance recorder used by the orchestration instrumentation.
+- `PI_WORKFLOW_CONCURRENCY=N` sets the per-run agent semaphore cap. The default remains `min(8, max(2, CPU count))`.
+- `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` limits how many `parallel()` thunks are submitted at once; this is separate from the running-agent semaphore cap.
+- `PI_WORKFLOW_LANE_ITEM_LIMIT=N` caps retained progress lane items per lane; snapshots report how many older items are hidden.
+- Slash commands can override selected controls per run: `/workflow <name> --concurrency=N --parallel-limit=N ...`.
+
+No-LLM benchmark scripts:
+
+```bash
+bun run bench:concurrency -- --items 200 --concurrency 8 --json
+bun run bench:discovery -- --iterations 3 --json
+bun run bench:startup -- --json
+bun run bench:ui -- --agents 1000 --lane-items 1000 --json
+```
+
+Add `--out` to write machine-local JSON under `.artifacts/benchmarks/`. These timings are advisory, not portable thresholds. Optional LLM smoke timing is separate from the required gates:
+
+```bash
+pi -e . -p "/workflow ping"
+```
+
+Guardrails:
+
+- Do not pool or reuse subagent sessions until `agent.create_session_ms` is proven material and isolation semantics are reviewed.
+- Do not lazy-load guaranteed built-in workflow modules until pi/jiti bundled `typebox` identity is proven for that path.
+- Do not raise the default concurrency without queue-wait versus run-time evidence.
+
 Load your working copy through the package manifest without installing it. This is ephemeral and exercises the same `.pi/extensions/pi-workflow-engine/index.ts` entrypoint that installed packages use:
 
 ```bash

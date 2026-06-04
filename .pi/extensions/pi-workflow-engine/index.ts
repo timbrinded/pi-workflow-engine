@@ -194,6 +194,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
           details: { error: "unknown_workflow", available },
         };
       }
+      const { runWorkflow } = await loadEngine();
       const result = await runWorkflow(ctx, mod, params.args ?? "", {
         concurrency: params.concurrency,
         parallelSubmissionLimit: params.parallelSubmissionLimit,
