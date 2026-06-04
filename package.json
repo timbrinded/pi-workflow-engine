@@ -38,6 +38,8 @@
     "test:concurrency": "bun test tests/concurrency.test.ts",
     "test:smoke": "bun test tests/discovery.test.ts",
     "test:ui": "bun test tests/workflow-ui.test.ts",
+    "bench": "bun run bench:concurrency && bun run bench:discovery && bun run bench:ui",
+    "bench:concurrency": "bun run scripts/bench/concurrency.ts",
     "prepublishOnly": "tsc --noEmit && bun run test"
   },
   "peerDependencies": {
