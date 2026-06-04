@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import process from "node:process";
 
-const child = spawn(process.execPath, ["test", "tests/discovery.test.ts"], { stdio: "inherit" });
+const child = spawn(process.execPath, ["test", "tests/discovery.test.ts", "tests/package-recognition.test.ts"], { stdio: "inherit" });
 
 process.exitCode = await new Promise<number>((resolve) => {
   child.on("error", (error) => {
