@@ -151,8 +151,10 @@ git clone https://github.com/timbrinded/pi-workflow-engine
 cd pi-workflow-engine
 bun install
 bun run typecheck
-bun scripts/smoke.ts
+bun run test
 ```
+
+The test suite is no-LLM and runs through the repo-local dependency-free harness in `tests/run.ts`, not a third-party test framework.
 
 Load your working copy into a session without installing it. This is ephemeral and overrides nothing:
 

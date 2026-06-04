@@ -52,7 +52,8 @@ Example: `workflows/code-review.ts` — Scope → per-angle Find → independent
 ```bash
 bun install            # installs peers + devDeps (tsc, @types/node) for typecheck
 bun run typecheck      # tsc --noEmit — must be clean before commit
-bun scripts/smoke.ts   # no-LLM check: module graph loads + discovery resolves
+bun run test           # no-LLM dependency-free test suite
+bun run test:smoke     # optional focused discovery smoke
 pi -e ./src/index.ts -p "/workflow ping"   # load this working copy ephemerally
 ```
 
@@ -62,7 +63,7 @@ Add a workflow: create `workflows/<name>.ts`, import it in `src/workflows.ts`, a
 
 Git installs pin to a ref (tag or commit); `pi update` reconciles an existing clone to its configured ref. To cut a release:
 
-1. `bun run typecheck` passes; all changes committed.
+1. `bun run typecheck` and `bun run test` pass; all changes committed.
 2. Bump `version` in `package.json` (semver).
 3. `git commit -am "chore(release): vX.Y.Z"`
 4. `git tag -a vX.Y.Z -m "vX.Y.Z"`
