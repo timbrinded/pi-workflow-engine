@@ -25,20 +25,60 @@ function workflowEnvelope(name: string, result: unknown): WorkflowResultEnvelope
   return { name, result, completedAt: Date.now() };
 }
 
-interface WorkflowInvocation {
+export interface WorkflowInvocation {
   name: string;
   args: string;
   options: WorkflowRunOptions;
 }
 
-function parseWorkflowInvocation(input: string): WorkflowInvocation {
+export function parseWorkflowInvocation(input: string): WorkflowInvocation {
   const trimmed = input.trim();
   const space = trimmed.indexOf(" ");
   const name = space === -1 ? trimmed : trimmed.slice(0, space);
   const rest = space === -1 ? "" : trimmed.slice(space + 1).trim();
-  const inspect = /(?:^|\s)--inspect(?:\s|$)/.test(rest);
-  const cleanedArgs = rest.replace(/(?:^|\s)--inspect(?=\s|$)/g, " ").trim();
-  return { name, args: cleanedArgs, options: inspect ? { inspect: true } : {} };
+  const { args, options } = parseWorkflowOptions(rest);
+  return { name, args, options };
+}
+
+function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions } {
+  const tokens = input.split(/\s+/).filter(Boolean);
+  const kept: string[] = [];
+  const options: WorkflowRunOptions = {};
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "--inspect") {
+      options.inspect = true;
+      continue;
+    }
+    if (token.startsWith("--concurrency=")) {
+      options.concurrency = parseNumericOption(token.slice("--concurrency=".length));
+      continue;
+    }
+    if (token === "--concurrency") {
+      const next = tokens[i + 1];
+      options.concurrency = parseNumericOption(next);
+      if (next !== undefined) i++;
+      continue;
+    }
+    if (token.startsWith("--parallel-limit=")) {
+      options.parallelSubmissionLimit = parseNumericOption(token.slice("--parallel-limit=".length));
+      continue;
+    }
+    if (token === "--parallel-limit") {
+      const next = tokens[i + 1];
+      options.parallelSubmissionLimit = parseNumericOption(next);
+      if (next !== undefined) i++;
+      continue;
+    }
+    kept.push(token);
+  }
+  return { args: kept.join(" ").trim(), options };
+}
+
+function parseNumericOption(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 async function pickWorkflow(
@@ -111,6 +151,8 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     parameters: Type.Object({
       name: Type.String({ description: "Workflow name, e.g. code-review" }),
       args: Type.Optional(Type.String({ description: "Arguments for the workflow (e.g. target or focus)" })),
+      concurrency: Type.Optional(Type.Number({ description: "Optional per-run agent concurrency cap" })),
+      parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
     }),
     renderCall(args, theme) {
       const suffix = args.args ? ` ${theme.fg("dim", args.args)}` : "";
@@ -134,7 +176,10 @@ export default function workflowEngine(pi: ExtensionAPI): void {
           details: { error: "unknown_workflow", available },
         };
       }
-      const result = await runWorkflow(ctx, mod, params.args ?? "");
+      const result = await runWorkflow(ctx, mod, params.args ?? "", {
+        concurrency: params.concurrency,
+        parallelSubmissionLimit: params.parallelSubmissionLimit,
+      });
       return { content: [{ type: "text", text: summarize(result) }], details: workflowEnvelope(params.name, result) };
     },
   });

@@ -20,6 +20,8 @@ export interface WorkflowRunStats {
 export interface WorkflowRunOptions {
   inspect?: boolean;
   perf?: boolean;
+  concurrency?: number;
+  parallelSubmissionLimit?: number;
 }
 
 /** Options for a single `agent()` call. */

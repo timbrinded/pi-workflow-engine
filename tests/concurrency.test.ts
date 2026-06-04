@@ -58,6 +58,29 @@ test("parallel preserves input order", async () => {
   assert.deepEqual(results, ["first", "second", "third"]);
 });
 
+test("parallel limits eager submission while preserving order", async () => {
+  let started = 0;
+  let active = 0;
+  let maxActive = 0;
+  const running = parallel(
+    [0, 1, 2, 3, 4].map((value) => async () => {
+      started++;
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await delay(5);
+      active--;
+      return value;
+    }),
+    { limit: 2 },
+  );
+
+  await delay(1);
+  assert.equal(started, 2);
+  const results = await running;
+  assert.deepEqual(results, [0, 1, 2, 3, 4]);
+  assert.equal(maxActive, 2);
+});
+
 test("pipeline passes previous result, original item, and index through stages", async () => {
   interface StageRecord {
     readonly stage: 1 | 2;

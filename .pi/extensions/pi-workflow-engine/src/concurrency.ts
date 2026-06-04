@@ -65,6 +65,7 @@ export class Semaphore {
 export interface ParallelOptions {
   readonly signal?: AbortSignal;
   readonly abortController?: AbortController;
+  readonly limit?: number;
 }
 
 /** Run every thunk concurrently and wait for all results (a barrier). */
@@ -74,8 +75,12 @@ export async function parallel<T>(thunks: Array<() => Promise<T>>, options: Para
   let remaining = thunks.length;
   if (remaining === 0) return results;
 
+  const limit = normalizeLimit(options.limit, thunks.length);
   return await new Promise<T[]>((resolve, reject) => {
     let rejected = false;
+    let active = 0;
+    let next = 0;
+    const cleanup = () => options.signal?.removeEventListener("abort", onAbort);
     const rejectOnce = (error: unknown) => {
       if (rejected) return;
       rejected = true;
@@ -84,29 +89,41 @@ export async function parallel<T>(thunks: Array<() => Promise<T>>, options: Para
       reject(error);
     };
     const onAbort = () => rejectOnce(abortReason(options.signal));
-    const cleanup = () => options.signal?.removeEventListener("abort", onAbort);
-    options.signal?.addEventListener("abort", onAbort, { once: true });
+    const launchMore = () => {
+      while (!rejected && active < limit && next < thunks.length) {
+        const index = next++;
+        active++;
+        void Promise.resolve()
+          .then(() => {
+            throwIfAborted(options.signal);
+            return thunks[index]();
+          })
+          .then(
+            (value) => {
+              if (rejected) return;
+              active--;
+              results[index] = value;
+              remaining--;
+              if (remaining === 0) {
+                cleanup();
+                resolve(results);
+                return;
+              }
+              launchMore();
+            },
+            (error: unknown) => rejectOnce(error),
+          );
+      }
+    };
 
-    thunks.forEach((thunk, index) => {
-      void Promise.resolve()
-        .then(() => {
-          throwIfAborted(options.signal);
-          return thunk();
-        })
-        .then(
-          (value) => {
-            if (rejected) return;
-            results[index] = value;
-            remaining--;
-            if (remaining === 0) {
-              cleanup();
-              resolve(results);
-            }
-          },
-          (error: unknown) => rejectOnce(error),
-        );
-    });
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    launchMore();
   });
+}
+
+function normalizeLimit(limit: number | undefined, itemCount: number): number {
+  if (limit === undefined || !Number.isFinite(limit)) return Math.max(1, itemCount);
+  return Math.max(1, Math.min(itemCount, Math.trunc(limit)));
 }
 
 /**

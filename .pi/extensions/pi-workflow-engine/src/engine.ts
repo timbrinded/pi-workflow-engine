@@ -1,15 +1,15 @@
-import { cpus } from "node:os";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parallel, pipeline, Semaphore } from "./concurrency.ts";
 import { linkAbortSignal } from "./cancellation.ts";
 import { runAgent, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
 import { createPerfRecorder } from "./perf.ts";
+import { defaultConcurrency, resolveWorkflowRunOptions } from "./options.ts";
 import type { AgentOptions, WorkflowApi, WorkflowModule, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
 
 /** Default global cap on concurrent agents per run. */
-const DEFAULT_CONCURRENCY = Math.min(8, Math.max(2, cpus().length));
+const DEFAULT_CONCURRENCY = defaultConcurrency();
 
 /**
  * Run a workflow module: build the per-run primitives (binding agent/parallel/pipeline
@@ -21,8 +21,9 @@ export async function runWorkflow(
   args: string,
   options: WorkflowRunOptions = {},
 ): Promise<unknown> {
+  const resolvedOptions = resolveWorkflowRunOptions(options);
   const progress = new ProgressTracker(ctx, mod.meta.name);
-  if (options.inspect && ctx.hasUI) {
+  if (resolvedOptions.inspect && ctx.hasUI) {
     void ctx.ui
       .custom<void>(
         (tui, theme, _keybindings, done) => new WorkflowInspector(() => progress.snapshot(), tui, theme, () => done(undefined)),
@@ -31,14 +32,14 @@ export async function runWorkflow(
       .catch((error: unknown) => progress.log(`inspector failed: ${error instanceof Error ? error.message : String(error)}`));
   }
 
-  const perf = createPerfRecorder(options.perf ?? process.env.PI_WORKFLOW_PERF === "1");
+  const perf = createPerfRecorder(resolvedOptions.perf);
   const runAbortController = new AbortController();
   const unlinkAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
   const rc: RunContext = {
     cwd: ctx.cwd,
     hostModel: ctx.model,
     modelRegistry: ctx.modelRegistry,
-    semaphore: new Semaphore(DEFAULT_CONCURRENCY),
+    semaphore: new Semaphore(resolvedOptions.concurrency ?? DEFAULT_CONCURRENCY),
     progress,
     signal: runAbortController.signal,
     perf,
@@ -48,7 +49,12 @@ export async function runWorkflow(
 
   const api: WorkflowApi = {
     agent,
-    parallel: (thunks) => parallel(thunks, { signal: runAbortController.signal, abortController: runAbortController }),
+    parallel: (thunks) =>
+      parallel(thunks, {
+        signal: runAbortController.signal,
+        abortController: runAbortController,
+        limit: resolvedOptions.parallelSubmissionLimit ?? resolvedOptions.concurrency * 2,
+      }),
     pipeline,
     phase: (title) => progress.phase(title),
     log: (message) => progress.log(message),

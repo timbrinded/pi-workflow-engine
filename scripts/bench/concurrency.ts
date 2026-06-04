@@ -23,6 +23,7 @@ const scenarios: ScenarioResult[] = [];
 for (const items of selectedItems) {
   scenarios.push(await runSemaphoreScenario(items, concurrency));
   scenarios.push(await runParallelScenario(items));
+  scenarios.push(await runParallelScenario(items, concurrency));
   for (const stages of [1, 2, 3]) scenarios.push(await runPipelineScenario(items, stages));
 }
 
@@ -59,13 +60,14 @@ async function runSemaphoreScenario(items: number, concurrencyLimit: number): Pr
   };
 }
 
-async function runParallelScenario(items: number): Promise<ScenarioResult> {
+async function runParallelScenario(items: number, limit?: number): Promise<ScenarioResult> {
   const start = performance.now();
   const results = await parallel(
     Array.from({ length: items }, (_value, index) => async () => {
       await delay(0);
       return index;
     }),
+    limit === undefined ? undefined : { limit },
   );
   const totalMs = performance.now() - start;
   if (results.length !== items || results[0] !== 0 || results[results.length - 1] !== items - 1) {
@@ -74,9 +76,10 @@ async function runParallelScenario(items: number): Promise<ScenarioResult> {
   return {
     scenario: "parallel",
     items,
+    concurrency: limit,
     totalMs,
     throughputPerSecond: throughput(items, totalMs),
-    mode: "eager",
+    mode: limit === undefined ? "eager" : "bounded",
   };
 }
 
