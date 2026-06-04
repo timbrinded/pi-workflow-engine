@@ -2,8 +2,6 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import { discoverWorkflows } from "./src/discovery.ts";
-import { runWorkflow } from "./src/engine.ts";
 import type { WorkflowModule, WorkflowRunOptions } from "./src/types.ts";
 import { isWorkflowResult, renderWorkflowResult, type WorkflowResultEnvelope } from "./src/ui/workflow-result-renderer.ts";
 
@@ -23,6 +21,17 @@ function formatReport(name: string, result: unknown): string {
 
 function workflowEnvelope(name: string, result: unknown): WorkflowResultEnvelope {
   return { name, result, completedAt: Date.now() };
+}
+
+type DiscoveryModule = typeof import("./src/discovery.ts");
+type EngineModule = typeof import("./src/engine.ts");
+
+async function loadDiscovery(): Promise<DiscoveryModule> {
+  return await import("./src/discovery.ts");
+}
+
+async function loadEngine(): Promise<EngineModule> {
+  return await import("./src/engine.ts");
 }
 
 export interface WorkflowInvocation {
@@ -104,6 +113,7 @@ async function sendWorkflowResult(
   args: string,
   options: WorkflowRunOptions,
 ): Promise<void> {
+  const { runWorkflow } = await loadEngine();
   const result = await runWorkflow(ctx, mod, args, options);
   pi.sendMessage(
     { customType: "workflow-result", content: formatReport(name, result), display: true, details: workflowEnvelope(name, result) },
@@ -122,6 +132,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
   pi.registerCommand("workflow", {
     description: "Run a multi-agent workflow: /workflow <name> [args]",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const { discoverWorkflows } = await loadDiscovery();
       const workflows = await discoverWorkflows(EXTENSION_DIR);
       const available = [...workflows.keys()].join(", ") || "(none)";
       const direct = parseWorkflowInvocation(args);
@@ -167,6 +178,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       return new Text(theme.fg("muted", text), 0, 0);
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const { discoverWorkflows } = await loadDiscovery();
       const workflows = await discoverWorkflows(EXTENSION_DIR);
       const mod = workflows.get(params.name);
       if (!mod) {
