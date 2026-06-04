@@ -107,6 +107,7 @@ export class ProgressTracker {
   private tui: Pick<TUI, "requestRender"> | undefined;
   private widgetInterval: ReturnType<typeof setInterval> | undefined;
   private lastStatusText: string | undefined;
+  private renderQueued = false;
 
   constructor(
     private readonly ctx: ExtensionContext,
@@ -302,8 +303,17 @@ export class ProgressTracker {
     if (!this.ctx.hasUI) return;
     this.ensureWidget();
     this.widget?.invalidate();
-    this.tui?.requestRender();
+    this.requestRenderSoon();
     this.publishStatus();
+  }
+
+  private requestRenderSoon(): void {
+    if (this.renderQueued) return;
+    this.renderQueued = true;
+    queueMicrotask(() => {
+      this.renderQueued = false;
+      this.tui?.requestRender();
+    });
   }
 
   private publishStatus(): void {
@@ -362,6 +372,7 @@ export class ProgressTracker {
     this.ctx.ui.setWidget("workflow", undefined);
     this.ctx.ui.setStatus("workflow", status);
     this.lastStatusText = status;
+    this.renderQueued = false;
     this.widgetRegistered = false;
     this.widget = undefined;
     this.tui = undefined;

@@ -22,19 +22,15 @@ export function renderWorkflowWidgetLines(
   theme: Theme,
 ): string[] {
   const safeWidth = Math.max(1, width);
-  const agents = snapshot.phases.flatMap((phase) => phase.agents);
-  const running = agents.filter((agent) => agent.status === "running").length;
-  const queued = agents.filter((agent) => agent.status === "queued").length;
-  const done = agents.filter((agent) => agent.status === "done").length;
-  const failed = agents.filter((agent) => agent.status === "failed").length;
-  const active = running + queued;
+  const counts = countAgents(snapshot.phases);
+  const active = counts.running + counts.queued;
   const elapsed = formatDuration((snapshot.doneAt ?? Date.now()) - snapshot.startedAt);
   const spinner = active > 0 ? theme.fg("accent", SPINNER[frame % SPINNER.length]) : theme.fg("success", "✓");
 
-  const headingParts = [`${done}/${agents.length} done`, elapsed];
-  if (running > 0) headingParts.unshift(`${running} running`);
-  if (queued > 0) headingParts.unshift(`${queued} queued`);
-  if (failed > 0) headingParts.unshift(theme.fg("error", `${failed} failed`));
+  const headingParts = [`${counts.done}/${counts.total} done`, elapsed];
+  if (counts.running > 0) headingParts.unshift(`${counts.running} running`);
+  if (counts.queued > 0) headingParts.unshift(`${counts.queued} queued`);
+  if (counts.failed > 0) headingParts.unshift(theme.fg("error", `${counts.failed} failed`));
 
   const lines: string[] = [
     truncateDisplay(
@@ -45,11 +41,12 @@ export function renderWorkflowWidgetLines(
 
   const footer = footerLine(snapshot, theme);
   const bodyBudget = Math.max(0, MAX_WIDGET_LINES - lines.length - (footer ? 1 : 0));
-  const bodyLines = prioritizedBodyLines(snapshot.phases, theme);
-  const visibleBody = bodyLines.slice(0, bodyBudget);
-  const hidden = bodyLines.length - visibleBody.length;
+  const body = visibleBodyLines(snapshot.phases, bodyBudget, theme);
+  const reserveHiddenLine = body.hidden > 0 && bodyBudget > 0;
+  const visibleBodyLinesToRender = reserveHiddenLine ? body.lines.slice(0, Math.max(0, bodyBudget - 1)) : body.lines;
+  const hidden = body.hidden + (body.lines.length - visibleBodyLinesToRender.length);
 
-  for (const line of visibleBody) lines.push(truncateDisplay(line, safeWidth));
+  for (const line of visibleBodyLinesToRender) lines.push(truncateDisplay(line, safeWidth));
   if (hidden > 0 && lines.length < MAX_WIDGET_LINES) {
     lines.push(truncateDisplay(`${theme.fg("dim", "└─")} ${theme.fg("dim", `+${hidden} more`)}`, safeWidth));
   }
@@ -98,28 +95,75 @@ class LiveWorkflowWidget implements WorkflowWidget {
   }
 }
 
-function prioritizedBodyLines(phases: readonly PhaseSnapshot[], theme: Theme): string[] {
-  const activePhases = phases.filter((phase) => phase.agents.some((agent) => agent.status === "running" || agent.status === "queued"));
-  const inactivePhases = phases.filter((phase) => !activePhases.includes(phase));
-  return [...activePhases, ...inactivePhases].flatMap((phase) => phaseLines(phase, theme));
+interface AgentCounts {
+  queued: number;
+  running: number;
+  done: number;
+  failed: number;
+  total: number;
 }
 
-function phaseLines(phase: PhaseSnapshot, theme: Theme): string[] {
-  if (phase.agents.length === 0 && phase.title === "Workflow") return [];
-  const running = phase.agents.filter((agent) => agent.status === "running").length;
-  const done = phase.agents.filter((agent) => agent.status === "done").length;
-  const failed = phase.agents.filter((agent) => agent.status === "failed").length;
-  const parts: string[] = [];
-  if (running > 0) parts.push(`${running} running`);
-  if (done > 0) parts.push(`${done} done`);
-  if (failed > 0) parts.push(`${failed} failed`);
+function countAgents(phases: readonly PhaseSnapshot[]): AgentCounts {
+  const counts: AgentCounts = { queued: 0, running: 0, done: 0, failed: 0, total: 0 };
+  for (const phase of phases) {
+    for (const agent of phase.agents) {
+      counts[agent.status]++;
+      counts.total++;
+    }
+  }
+  return counts;
+}
 
-  const lines = [`${theme.fg("dim", "├─")} ${theme.fg(running > 0 ? "accent" : "muted", phase.title)}${parts.length ? ` ${theme.fg("dim", `(${parts.join(" · ")})`)}` : ""}`];
-  const active = phase.agents.filter((agent) => agent.status === "running" || agent.status === "queued");
-  const failedAgents = phase.agents.filter((agent) => agent.status === "failed");
-  const completed = phase.agents.filter((agent) => agent.status === "done");
-  for (const agent of [...active, ...failedAgents, ...completed]) lines.push(agentLine(agent, theme));
-  return lines;
+function visibleBodyLines(phases: readonly PhaseSnapshot[], budget: number, theme: Theme): { lines: string[]; hidden: number } {
+  const lines: string[] = [];
+  let totalRows = 0;
+  const visit = (phase: PhaseSnapshot): void => {
+    if (phase.agents.length === 0 && phase.title === "Workflow") return;
+    const counts = countPhaseAgents(phase);
+    totalRows++;
+    if (lines.length < budget) lines.push(phaseLine(phase.title, counts, theme));
+    appendAgentGroup(phase.agents, (agent) => agent.status === "running" || agent.status === "queued", lines, budget, theme, () => totalRows++);
+    appendAgentGroup(phase.agents, (agent) => agent.status === "failed", lines, budget, theme, () => totalRows++);
+    appendAgentGroup(phase.agents, (agent) => agent.status === "done", lines, budget, theme, () => totalRows++);
+  };
+
+  for (const phase of phases) {
+    if (phase.agents.some((agent) => agent.status === "running" || agent.status === "queued")) visit(phase);
+  }
+  for (const phase of phases) {
+    if (!phase.agents.some((agent) => agent.status === "running" || agent.status === "queued")) visit(phase);
+  }
+
+  return { lines, hidden: Math.max(0, totalRows - lines.length) };
+}
+
+function appendAgentGroup(
+  agents: readonly AgentRowSnapshot[],
+  include: (agent: AgentRowSnapshot) => boolean,
+  lines: string[],
+  budget: number,
+  theme: Theme,
+  countRow: () => void,
+): void {
+  for (const agent of agents) {
+    if (!include(agent)) continue;
+    countRow();
+    if (lines.length < budget) lines.push(agentLine(agent, theme));
+  }
+}
+
+function countPhaseAgents(phase: PhaseSnapshot): AgentCounts {
+  const counts: AgentCounts = { queued: 0, running: 0, done: 0, failed: 0, total: phase.agents.length };
+  for (const agent of phase.agents) counts[agent.status]++;
+  return counts;
+}
+
+function phaseLine(title: string, counts: AgentCounts, theme: Theme): string {
+  const parts: string[] = [];
+  if (counts.running > 0) parts.push(`${counts.running} running`);
+  if (counts.done > 0) parts.push(`${counts.done} done`);
+  if (counts.failed > 0) parts.push(`${counts.failed} failed`);
+  return `${theme.fg("dim", "├─")} ${theme.fg(counts.running > 0 ? "accent" : "muted", title)}${parts.length ? ` ${theme.fg("dim", `(${parts.join(" · ")})`)}` : ""}`;
 }
 
 function agentLine(agent: AgentRowSnapshot, theme: Theme): string {

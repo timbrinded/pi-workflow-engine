@@ -4,6 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { createTestTheme } from "./fixtures/theme.ts";
 import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
 import { isAdvisoryReport, renderWorkflowResultText } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts";
+import { renderWorkflowWidgetLines } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
 
 test("workflow formatting helpers format durations, counts, agents, and truncation", () => {
   assert.equal(formatDuration(0), "0s");
@@ -27,6 +28,37 @@ test("workflow formatting helpers format durations, counts, agents, and truncati
 
   const wide = truncateDisplay("漢字かな", 4);
   assert.ok(visibleWidth(wide) <= 4);
+});
+
+test("workflow widget renders bounded rows for large snapshots", () => {
+  const theme = createTestTheme();
+  const snapshot = {
+    title: "large",
+    startedAt: Date.now() - 1_000,
+    currentPhase: "Fan-out",
+    phases: [
+      {
+        title: "Find",
+        agents: Array.from({ length: 1_000 }, (_value, index) => ({
+          id: index + 1,
+          label: `agent:${index}`,
+          status: index % 3 === 0 ? "running" as const : "done" as const,
+          startedAt: Date.now() - 500,
+          doneAt: index % 3 === 0 ? undefined : Date.now(),
+          toolUses: index % 2,
+        })),
+      },
+    ],
+    counters: [],
+    summary: [],
+    lanes: [],
+    laneOverflow: [],
+    logs: [],
+  };
+
+  const lines = renderWorkflowWidgetLines(snapshot, 0, 100, theme);
+  assert.ok(lines.length <= 12);
+  assert.match(lines.join("\n"), /more/);
 });
 
 test("advisory reports are structurally recognized", () => {
