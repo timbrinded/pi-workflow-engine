@@ -15,7 +15,7 @@ export function createWorkflowWidget(snapshotProvider: () => WorkflowProgressSna
   return new LiveWorkflowWidget(snapshotProvider);
 }
 
-function renderWorkflowWidgetLines(
+export function renderWorkflowWidgetLines(
   snapshot: WorkflowProgressSnapshot,
   frame: number,
   width: number,

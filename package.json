@@ -42,6 +42,7 @@
     "bench:concurrency": "bun run scripts/bench/concurrency.ts",
     "bench:discovery": "bun run scripts/bench/discovery.ts",
     "bench:startup": "bun run scripts/bench/startup.ts",
+    "bench:ui": "bun run scripts/bench/ui.ts",
     "prepublishOnly": "tsc --noEmit && bun run test"
   },
   "peerDependencies": {
