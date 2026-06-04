@@ -154,7 +154,7 @@ bun run typecheck
 bun run test
 ```
 
-The test suite is no-LLM and runs through the repo-local dependency-free harness in `tests/run.ts`, not a third-party test framework.
+The test suite is no-LLM and uses Bun's built-in `bun test` runner, not a third-party test framework.
 
 Load your working copy into a session without installing it. This is ephemeral and overrides nothing:
 

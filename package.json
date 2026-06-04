@@ -16,11 +16,11 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun tests/run.ts",
-    "test:changedlines": "bun tests/run.ts tests/changedlines.test.ts",
-    "test:concurrency": "bun tests/run.ts tests/concurrency.test.ts",
-    "test:smoke": "bun tests/run.ts tests/discovery.test.ts",
-    "test:ui": "bun tests/run.ts tests/workflow-ui.test.ts",
+    "test": "bun test",
+    "test:changedlines": "bun test tests/changedlines.test.ts",
+    "test:concurrency": "bun test tests/concurrency.test.ts",
+    "test:smoke": "bun test tests/discovery.test.ts",
+    "test:ui": "bun test tests/workflow-ui.test.ts",
     "prepublishOnly": "tsc --noEmit && bun run test"
   },
   "peerDependencies": {

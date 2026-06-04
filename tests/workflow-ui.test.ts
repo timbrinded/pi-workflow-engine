@@ -1,5 +1,6 @@
+import assert from "node:assert/strict";
+import { test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { assert, test } from "./_harness.ts";
 import { createTestTheme } from "./fixtures/theme.ts";
 import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../src/ui/workflow-format.ts";
 import { isAdvisoryReport, renderWorkflowResultText } from "../src/ui/workflow-result-renderer.ts";

@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assert, test } from "./_harness.ts";
+import assert from "node:assert/strict";
+import { test } from "bun:test";
 import { discoverWorkflows } from "../src/discovery.ts";
 
 const repoDir = fileURLToPath(new URL("..", import.meta.url));

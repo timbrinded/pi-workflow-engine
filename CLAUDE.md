@@ -52,7 +52,7 @@ Example: `workflows/code-review.ts` — Scope → per-angle Find → independent
 ```bash
 bun install            # installs peers + devDeps (tsc, @types/node) for typecheck
 bun run typecheck      # tsc --noEmit — must be clean before commit
-bun run test           # no-LLM dependency-free test suite
+bun run test           # no-LLM test suite via Bun's built-in test runner
 bun run test:smoke     # optional focused discovery smoke
 pi -e ./src/index.ts -p "/workflow ping"   # load this working copy ephemerally
 ```

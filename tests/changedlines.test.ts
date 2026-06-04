@@ -1,4 +1,5 @@
-import { assert, test } from "./_harness.ts";
+import assert from "node:assert/strict";
+import { test } from "bun:test";
 import { changedLines, inDiff } from "../workflows/code-review.ts";
 
 function lines(map: Map<string, Set<number>>, file: string): number[] {
