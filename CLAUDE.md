@@ -61,13 +61,22 @@ Add a workflow: create `workflows/<name>.ts`, import it in `src/workflows.ts`, a
 
 ## How to make a release
 
-Git installs pin to a ref (tag or commit); `pi update` reconciles an existing clone to its configured ref. To cut a release:
+This package ships through **three channels that must stay in lockstep**: the npm package (`npm publish`), a git **tag**, and a **GitHub Release**. `pi install git:…@vX.Y.Z` pins to the tag; `pi update` reconciles a clone to its ref. A release is only "done" when `package.json`, the git tag, npm's `latest` dist-tag, and the GitHub Release all read the same `vX.Y.Z`.
 
 1. `bun run typecheck` and `bun run test` pass; all changes committed.
 2. Bump `version` in `package.json` (semver).
 3. `git commit -am "chore(release): vX.Y.Z"`
 4. `git tag -a vX.Y.Z -m "vX.Y.Z"`
 5. `git push origin master --follow-tags`
-6. (Optional) `gh release create vX.Y.Z --generate-notes`
+6. `npm publish` (runs the `prepublishOnly` typecheck). Confirm with `npm view pi-workflow-engine version`.
+7. **Write release notes and publish the GitHub Release — mandatory, not optional.** Seed a bullet list from the commit range, curate it (group feat/fix/chore; drop noise like `rollback:`/scaffolding commits), then publish:
+   ```bash
+   git log --pretty='- %s' v<prev>..vX.Y.Z   # seed the notes
+   gh release create vX.Y.Z --title vX.Y.Z --notes-file <notes.md>   # or --notes "…"
+   ```
+   **Do not use `--generate-notes`.** It only summarises merged PRs; this repo commits directly to `master`, so it yields nothing but a bare "Full Changelog" link (why v0.1.0–v0.2.0 read as empty). The notes must describe what changed in human terms.
+
+**Consistency check before calling it done** — all four must match `vX.Y.Z`:
+`package.json` version · `git tag -l | sort -V | tail -1` · `npm view pi-workflow-engine version` · `gh release view vX.Y.Z`.
 
 Users pin a release with `pi install git:github.com/timbrinded/pi-workflow-engine@vX.Y.Z`; existing users run `pi update`.
