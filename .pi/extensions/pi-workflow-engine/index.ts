@@ -5,6 +5,7 @@ import { Text } from "@earendil-works/pi-tui";
 import type { WorkflowModule, WorkflowRunOptions } from "./src/types.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
 import { registerDynamax } from "./src/dynamax.ts";
+import { handleReviewViewerAction } from "./src/review/review-actions.ts";
 import { decideReviewResultsPresentation, extensionContextMode, maybeShowReviewResultsViewer } from "./src/review/review-results-flow.ts";
 import { isWorkflowResult, renderWorkflowResult, type WorkflowPerfDetails, type WorkflowResultEnvelope } from "./src/ui/workflow-result-renderer.ts";
 
@@ -244,7 +245,10 @@ async function sendWorkflowResult(
     hasUI: ctx.hasUI,
     resultViewer: options.resultViewer ?? "ask",
   });
-  await maybeShowReviewResultsViewer(ctx, reviewDecision);
+  const reviewAction = await maybeShowReviewResultsViewer(ctx, reviewDecision);
+  if (reviewDecision.kind !== "send") {
+    await handleReviewViewerAction(pi, ctx, reviewAction, reviewDecision.issues, reviewDecision.report.reviewContext);
+  }
   pi.sendMessage(
     { customType: "workflow-result", content: formatMessageContent(name, result, perf), display: true, details: workflowEnvelope(name, result, perf) },
     { triggerTurn: false },
