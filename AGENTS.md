@@ -28,7 +28,7 @@ A **workflow** (`.pi/extensions/pi-workflow-engine/workflows/*.ts`) exports `met
 - `pipeline(items, ...stages)` — each item through all stages independently; no barrier between stages.
 - `phase(title)` / `log(msg)` — drive the live progress tree.
 
-Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope → per-angle Find → independent Verify → Synthesize. `.pi/extensions/pi-workflow-engine/workflows/ping.ts` — a one-agent smoke workflow.
+Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope → per-angle Find → independent Verify → Synthesize.
 
 ## Architecture / key files
 
@@ -60,7 +60,7 @@ bun install            # installs peers + devDeps (tsc, @types/node) for typeche
 bun run typecheck      # tsc --noEmit — must be clean before commit
 bun run test           # no-LLM test suite via Bun's built-in test runner
 bun run test:smoke     # optional focused discovery smoke
-pi -e . -p "/workflow ping"                # load this package manifest/entrypoint ephemerally
+pi -e .                                      # load this package manifest/entrypoint ephemerally
 ```
 
 Add a workflow: create `.pi/extensions/pi-workflow-engine/workflows/<name>.ts`, import it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`, add it to `BUILTIN_WORKFLOWS`. Customise review lenses via the `ANGLES` array in `.pi/extensions/pi-workflow-engine/workflows/code-review.ts`.

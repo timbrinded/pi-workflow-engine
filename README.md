@@ -66,7 +66,6 @@ In a pi session, from inside a git repo with changes:
 /workflow diagnose "typecheck fails after the schema change"
 /workflow perf-review "workflow startup latency"
 /workflow code-review --inspect  # open the live workflow inspector
-/workflow ping                   # quick engine smoke test
 ```
 
 The host agent can also invoke the `workflow` tool mid-conversation. It accepts either a registered workflow `name` or a one-off inline workflow `script`:
@@ -94,7 +93,6 @@ The advisory workflows inspect and report only; they do not edit files. They ret
 - `refactor-scout`: Looks for small, safe refactor opportunities: duplication, complexity, weak types, boundary leaks, dead code, and convention drift.
 - `diagnose`: Investigates a symptom, failing command, or regression. It generates competing root-cause hypotheses, verifies them, and returns the most likely causes with next validation steps.
 - `perf-review`: Reviews a slow path or workload for bottleneck hypotheses, measurement gaps, and safe optimization directions. It avoids claiming certainty when measurement evidence is missing.
-- `ping`: Minimal smoke workflow for checking that the engine can run one structured agent call.
 
 ## The code-review workflow
 
@@ -211,11 +209,7 @@ bun run bench:startup -- --json
 bun run bench:ui -- --agents 1000 --lane-items 1000 --json
 ```
 
-Add `--out` to write machine-local JSON under `.artifacts/benchmarks/`. These timings are advisory, not portable thresholds. Optional LLM smoke timing is separate from the required gates:
-
-```bash
-pi -e . -p "/workflow ping"
-```
+Add `--out` to write machine-local JSON under `.artifacts/benchmarks/`. These timings are advisory, not portable thresholds.
 
 Guardrails:
 
@@ -226,7 +220,7 @@ Guardrails:
 Load your working copy through the package manifest without installing it. This is ephemeral and exercises the same `.pi/extensions/pi-workflow-engine/index.ts` entrypoint that installed packages use:
 
 ```bash
-pi -e . -p "/workflow ping"
+pi -e .
 ```
 
 This repo also includes `.pi/settings.json` for project-local auto-discovery. If you also have the global package installed, pi may report duplicate `/workflow` or `workflow` tool diagnostics; remove one source or force pi to ignore discovered extensions and load this working copy instead:
@@ -261,7 +255,6 @@ Tune the built-in review workflow by editing the `ANGLES` array in `.pi/extensio
       refactor-scout.ts                 advisory refactor opportunities
       diagnose.ts                       advisory bug diagnosis
       perf-review.ts                    advisory performance investigation
-      ping.ts                           minimal smoke workflow
 ```
 
 ## License

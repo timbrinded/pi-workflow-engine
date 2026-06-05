@@ -15,7 +15,6 @@ From inside a repo:
 /workflow refactor-scout src/
 /workflow diagnose "typecheck fails after the schema change"
 /workflow perf-review "workflow startup latency"
-/workflow ping
 ```
 
 The built-in workflows are advisory. They inspect, verify, and report; they do **not** edit files.

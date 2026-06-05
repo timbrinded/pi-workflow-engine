@@ -22,7 +22,7 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
 }
 
 test("normalizeWorkflowToolRequest accepts named workflow requests", () => {
-  assert.deepEqual(normalizeWorkflowToolRequest({ name: " ping " }), { kind: "named", name: "ping" });
+  assert.deepEqual(normalizeWorkflowToolRequest({ name: " code-review " }), { kind: "named", name: "code-review" });
 });
 
 test("normalizeWorkflowToolRequest accepts inline workflow requests", () => {
@@ -31,7 +31,7 @@ test("normalizeWorkflowToolRequest accepts inline workflow requests", () => {
 });
 
 test("normalizeWorkflowToolRequest rejects both or neither workflow target", () => {
-  assert.equal(normalizeWorkflowToolRequest({ name: "ping", script: "export const meta = {};" }).kind, "error");
+  assert.equal(normalizeWorkflowToolRequest({ name: "code-review", script: "export const meta = {};" }).kind, "error");
   assert.equal(normalizeWorkflowToolRequest({}).kind, "error");
   assert.equal(normalizeWorkflowToolRequest({ name: "   ", script: "   " }).kind, "error");
 });

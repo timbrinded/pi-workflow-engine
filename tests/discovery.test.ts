@@ -19,7 +19,7 @@ test("workflow UI modules load without LLM calls", async () => {
 
 test("built-in workflows are discovered", async () => {
   const workflows = await discoverWorkflows(extensionDir);
-  const expectedBuiltins = ["code-review", "ping", "refactor-scout", "diagnose", "perf-review"];
+  const expectedBuiltins = ["code-review", "refactor-scout", "diagnose", "perf-review"];
 
   for (const name of expectedBuiltins) {
     assert.ok(workflows.has(name), `expected built-in workflow ${name} to be discovered`);
@@ -85,10 +85,10 @@ test("dynamic discovery skips bundled workflow basenames in repo workflow dir", 
   try {
     const workflowDir = join(tempRepo, "workflows");
     await mkdir(workflowDir);
-    await writeFile(join(workflowDir, "ping.ts"), 'throw new Error("repo bundled ping should not import");\n');
+    await writeFile(join(workflowDir, "code-review.ts"), 'throw new Error("repo bundled code-review should not import");\n');
 
     const workflows = await discoverWorkflows(tempRepo, { refresh: true });
-    assert.equal(workflows.get("ping")?.meta.name, "ping");
+    assert.equal(workflows.get("code-review")?.meta.name, "code-review");
   } finally {
     await rm(tempRepo, { recursive: true, force: true });
   }

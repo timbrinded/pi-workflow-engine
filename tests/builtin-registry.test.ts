@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { BUILTIN_WORKFLOW_FILES, BUILTIN_WORKFLOW_NAMES, BUILTIN_WORKFLOWS } from "../.pi/extensions/pi-workflow-engine/src/workflows.ts";
 
-const expectedNames = ["code-review", "ping", "refactor-scout", "diagnose", "perf-review"];
-const expectedFiles = ["code-review.ts", "ping.ts", "refactor-scout.ts", "diagnose.ts", "perf-review.ts"];
+const expectedNames = ["code-review", "refactor-scout", "diagnose", "perf-review"];
+const expectedFiles = ["code-review.ts", "refactor-scout.ts", "diagnose.ts", "perf-review.ts"];
 
 test("built-in registry names and files stay explicit and duplicate-free", () => {
   assert.deepEqual([...BUILTIN_WORKFLOW_NAMES].sort(), [...expectedNames].sort());

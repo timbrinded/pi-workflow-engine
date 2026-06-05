@@ -252,7 +252,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     promptSnippet: "Run an existing named workflow or an inline one-off workflow script",
     promptGuidelines: [
       "Use workflow only when the user opted into workflow orchestration via `dynamax`, `/dynamax on`, an explicit request to run/author a workflow, or a command/skill instruction.",
-      "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, perf-review, or ping.",
+      "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, or perf-review.",
       "Use workflow with `script` for a new one-off inline workflow; the script must start with `export const meta = { ... }` and default-export an async workflow function.",
       "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
       "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
