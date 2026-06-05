@@ -63,6 +63,13 @@ test("workflow widget renders bounded rows for large snapshots", () => {
 
 test("advisory reports are structurally recognized", () => {
   assert.equal(isAdvisoryReport(validReport), true);
+  assert.equal(
+    isAdvisoryReport({
+      ...validReport,
+      reviewContext: { workflowName: "code-review", target: "", diffCommand: "git diff HEAD~1", files: ["src/app.ts"], summary: "Review" },
+    }),
+    true,
+  );
   assert.equal(isAdvisoryReport({ summary: "bad", findings: [{ file: 123, summary: "x" }], nextSteps: [] }), false);
   assert.equal(isAdvisoryReport({ summary: "generic workflow", value: 42 }), false);
 });

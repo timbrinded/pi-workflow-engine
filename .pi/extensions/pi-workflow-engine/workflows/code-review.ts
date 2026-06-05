@@ -16,6 +16,7 @@ import {
   verdictConfidence,
 } from "../src/workflow-advisory-utils.ts";
 import { captureDiff } from "../src/diff-capture.ts";
+import type { ReviewContext } from "../src/review/review-issues.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -137,6 +138,15 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   if (scope.files.length === 0) {
     return { summary: "No changes found to review.", findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) };
   }
+
+  const reviewContext: ReviewContext = {
+    workflowName: "code-review",
+    target,
+    diffCommand: scope.diffCommand,
+    files: scope.files,
+    summary: scope.summary,
+  };
+
   log(`${scope.files.length} changed files`);
 
   // Capture the diff once, deterministically, so findings can be bounded to changed lines in code.
@@ -259,7 +269,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   log(`${verified.length} verified → ${surviving.length} kept`);
 
   if (surviving.length === 0) {
-    return { summary: "No findings survived verification.", findings: [], nextSteps: ["No code-review action is recommended from this workflow run."], stats };
+    return { summary: "No findings survived verification.", findings: [], nextSteps: ["No code-review action is recommended from this workflow run."], stats, reviewContext };
   }
 
   // ─── Synthesize: rank, merge, report ───
@@ -283,10 +293,10 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     { phase: "Synthesize", label: "synthesize", thinkingLevel: "medium", schema: AdvisoryReportSchema },
   );
 
-  if (!report) return { summary: "Synthesis produced no output.", findings: [], nextSteps: ["Re-run the workflow or inspect verifier evidence manually."], stats };
+  if (!report) return { summary: "Synthesis produced no output.", findings: [], nextSteps: ["Re-run the workflow or inspect verifier evidence manually."], stats, reviewContext };
 
   const findings = backfillAdvisoryFindings(report.findings, ranked, {
     impact: "Impact not restated by synthesis.",
   });
-  return { ...report, findings, stats };
+  return { ...report, findings, stats, reviewContext };
 }

@@ -3,7 +3,7 @@ import { Box, type Component, Text } from "@earendil-works/pi-tui";
 import type { AdvisoryFinding, AdvisoryLocation, AdvisoryReport } from "../advisory-schema.ts";
 import type { PerfAggregate } from "../perf.ts";
 import { renderIssueDetails, renderIssuesTable } from "../review/review-format.ts";
-import { toReviewIssues } from "../review/review-issues.ts";
+import { toReviewIssues, type ReviewContext } from "../review/review-issues.ts";
 import { formatCount } from "./workflow-format.ts";
 
 export interface WorkflowPerfDetails {
@@ -21,6 +21,7 @@ export interface WorkflowResultEnvelope {
 
 export interface AdvisoryWorkflowResult extends AdvisoryReport {
   stats?: Record<string, string | number>;
+  reviewContext?: ReviewContext;
 }
 
 export function isWorkflowResult(value: unknown): value is WorkflowResultEnvelope {
