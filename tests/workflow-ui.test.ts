@@ -91,15 +91,20 @@ test("workflow result text renders advisory reports collapsed and expanded", () 
   assert.match(collapsed, /Workflow: refactor-scout/);
   assert.match(collapsed, /Review complete/);
   assert.match(collapsed, /files 2/);
-  assert.match(collapsed, /\[bug\]/);
-  assert.match(collapsed, /\[high\]/);
-  assert.match(collapsed, /\[high confidence\]/);
+  assert.match(collapsed, /ID/);
+  assert.match(collapsed, /Sev/);
+  assert.match(collapsed, /Conf/);
+  assert.match(collapsed, /Cat/);
+  assert.match(collapsed, /Location/);
+  assert.match(collapsed, /Summary/);
+  assert.match(collapsed, /R001/);
   assert.match(collapsed, /src\/app\.ts:10 \(retry\)/);
 
   const expanded = renderWorkflowResultText("refactor-scout", validReport, true, theme);
-  assert.match(expanded, /Impact: A final retry is skipped/);
-  assert.match(expanded, /Evidence: line 10 increments before checking the limit/);
-  assert.match(expanded, /Recommendation: Change the loop boundary/);
+  assert.match(expanded, /R001.*Off-by-one in retry loop/);
+  assert.match(expanded, /Impact:.*A final retry is skipped/);
+  assert.match(expanded, /Evidence:.*line 10 increments before checking the limit/);
+  assert.match(expanded, /Recommendation:.*Change the loop boundary/);
   assert.match(expanded, /Next steps:/);
   assert.match(expanded, /Inspect src\/app\.ts retry loop/);
 });

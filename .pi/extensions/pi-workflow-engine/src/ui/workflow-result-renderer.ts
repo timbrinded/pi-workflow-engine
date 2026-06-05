@@ -2,7 +2,9 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Text } from "@earendil-works/pi-tui";
 import type { AdvisoryFinding, AdvisoryLocation, AdvisoryReport } from "../advisory-schema.ts";
 import type { PerfAggregate } from "../perf.ts";
-import { badge, formatCount, type WorkflowThemeColor } from "./workflow-format.ts";
+import { renderIssueDetails, renderIssuesTable } from "../review/review-format.ts";
+import { toReviewIssues } from "../review/review-issues.ts";
+import { formatCount } from "./workflow-format.ts";
 
 export interface WorkflowPerfDetails {
   readonly enabled: boolean;
@@ -82,66 +84,22 @@ function renderAdvisoryResult(name: string, result: AdvisoryWorkflowResult, expa
     return lines.join("\n");
   }
 
-  const findings = expanded ? result.findings : result.findings.slice(0, 3);
-  lines.push(theme.fg("dim", expanded ? "Findings:" : "Top findings:"));
-  for (const finding of findings) {
-    lines.push(renderAdvisoryFinding(finding, expanded, theme));
-  }
-  if (!expanded && result.findings.length > findings.length) {
-    lines.push(theme.fg("dim", `… ${result.findings.length - findings.length} more finding(s)`));
+  const issues = toReviewIssues(name, result);
+  lines.push(theme.fg("dim", "Findings:"));
+  lines.push(renderIssuesTable(issues, theme, { maxRows: expanded ? issues.length : 12 }));
+  if (expanded) {
+    for (const issue of issues) {
+      lines.push(renderIssueDetails(issue, theme));
+    }
   }
   if (expanded && result.nextSteps.length > 0) renderNextSteps(result.nextSteps, lines, theme);
   return lines.join("\n");
-}
-
-function renderAdvisoryFinding(finding: AdvisoryFinding, expanded: boolean, theme: Theme): string {
-  const location = formatLocation(finding.locations[0]);
-  let text =
-    `  ${badge(finding.category, "accent", theme)} ` +
-    `${badge(finding.severity, severityColor(finding.severity), theme)} ` +
-    `${badge(`${finding.confidence} confidence`, confidenceColor(finding.confidence), theme)} ` +
-    `${theme.fg("accent", location)} ${theme.fg("muted", finding.summary)}`;
-  if (expanded) {
-    text += `\n    ${theme.fg("dim", `Impact: ${finding.impact}`)}`;
-    text += `\n    ${theme.fg("dim", `Evidence: ${finding.evidence.join("; ") || "(none cited)"}`)}`;
-    text += `\n    ${theme.fg("dim", `Recommendation: ${finding.recommendation}`)}`;
-  }
-  return text;
 }
 
 function renderNextSteps(nextSteps: string[], lines: string[], theme: Theme): void {
   lines.push(theme.fg("dim", "Next steps:"));
   for (const step of nextSteps) {
     lines.push(`  - ${theme.fg("muted", step)}`);
-  }
-}
-
-function formatLocation(location: AdvisoryLocation | undefined): string {
-  if (!location) return "(no location)";
-  const line = location.line != null ? `:${location.line}` : "";
-  const symbol = location.symbol ? ` (${location.symbol})` : "";
-  return `${location.file}${line}${symbol}`;
-}
-
-function severityColor(severity: AdvisoryFinding["severity"]): WorkflowThemeColor {
-  switch (severity) {
-    case "high":
-      return "error";
-    case "medium":
-      return "warning";
-    case "low":
-      return "muted";
-  }
-}
-
-function confidenceColor(confidence: AdvisoryFinding["confidence"]): WorkflowThemeColor {
-  switch (confidence) {
-    case "high":
-      return "success";
-    case "medium":
-      return "warning";
-    case "low":
-      return "muted";
   }
 }
 
