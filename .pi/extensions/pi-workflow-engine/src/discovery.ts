@@ -2,14 +2,10 @@ import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { WorkflowMeta, WorkflowModule } from "./types.ts";
+import type { WorkflowModule } from "./types.ts";
 import type { PerfSink } from "./perf.ts";
+import { parseWorkflowModule } from "./workflow-module.ts";
 import { BUILTIN_WORKFLOW_FILES, BUILTIN_WORKFLOWS } from "./workflows.ts";
-
-type WorkflowModuleCandidate = {
-  meta?: { name?: unknown; description?: unknown; phases?: unknown };
-  default?: unknown;
-};
 
 export interface DiscoverWorkflowsOptions {
   readonly refresh?: boolean;
@@ -18,33 +14,6 @@ export interface DiscoverWorkflowsOptions {
 }
 
 const discoveryCache = new Map<string, Map<string, WorkflowModule>>();
-
-function parseWorkflowModule(value: unknown): { module: WorkflowModule } | { reason: string } {
-  if (!value || typeof value !== "object") return { reason: "module export is not an object" };
-  const candidate = value as WorkflowModuleCandidate;
-  const meta = candidate.meta;
-  if (!meta || typeof meta !== "object") return { reason: "missing meta export" };
-  if (typeof meta.name !== "string") return { reason: "meta.name must be a string" };
-
-  const description = meta.description;
-  if (description !== undefined && typeof description !== "string") return { reason: "meta.description must be a string when provided" };
-
-  const phases = meta.phases;
-  if (phases !== undefined && !isWorkflowPhases(phases)) return { reason: "meta.phases must be an array of { title: string }" };
-  if (!isWorkflowRun(candidate.default)) return { reason: "default export must be a function" };
-
-  const workflowMeta: WorkflowMeta = { name: meta.name, description: description ?? "" };
-  if (phases !== undefined) workflowMeta.phases = phases;
-  return { module: { meta: workflowMeta, default: candidate.default } };
-}
-
-function isWorkflowRun(value: unknown): value is WorkflowModule["default"] {
-  return typeof value === "function";
-}
-
-function isWorkflowPhases(value: unknown): value is Array<{ title: string }> {
-  return Array.isArray(value) && value.every((phase) => typeof phase === "object" && phase !== null && typeof (phase as { title?: unknown }).title === "string");
-}
 
 /** Best-effort dynamic load of every `*.ts` workflow in a directory. */
 async function loadDir(dir: string, excludeFiles: ReadonlySet<string> = new Set()): Promise<WorkflowModule[]> {
