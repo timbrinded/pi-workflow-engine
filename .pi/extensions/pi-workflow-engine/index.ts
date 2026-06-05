@@ -132,6 +132,40 @@ function compactInlinePreview(script: string | undefined): string {
   return compact.length > 60 ? `${compact.slice(0, 57)}…` : compact;
 }
 
+export interface WorkflowToolRequestParams {
+  readonly name?: string;
+  readonly script?: string;
+}
+
+export type WorkflowToolRequest =
+  | { readonly kind: "named"; readonly name: string }
+  | { readonly kind: "inline"; readonly script: string }
+  | { readonly kind: "error"; readonly error: "invalid_workflow_invocation"; readonly message: string };
+
+export interface WorkflowToolErrorResult {
+  readonly content: Array<{ readonly type: "text"; readonly text: string }>;
+  readonly details: { readonly error: "invalid_workflow_invocation" } | { readonly error: "inline_compile_error"; readonly message: string };
+}
+
+const INVALID_WORKFLOW_INVOCATION_MESSAGE = "Provide exactly one workflow name or inline workflow script.";
+
+export function normalizeWorkflowToolRequest(params: WorkflowToolRequestParams): WorkflowToolRequest {
+  const name = params.name?.trim() ?? "";
+  const script = params.script?.trim() ?? "";
+  const hasName = name.length > 0;
+  const hasScript = script.length > 0;
+  if (hasName === hasScript) return { kind: "error", error: "invalid_workflow_invocation", message: INVALID_WORKFLOW_INVOCATION_MESSAGE };
+  return hasName ? { kind: "named", name } : { kind: "inline", script };
+}
+
+export function invalidWorkflowInvocationResult(): WorkflowToolErrorResult {
+  return { content: [{ type: "text", text: INVALID_WORKFLOW_INVOCATION_MESSAGE }], details: { error: "invalid_workflow_invocation" } };
+}
+
+export function inlineCompileErrorResult(message: string): WorkflowToolErrorResult {
+  return { content: [{ type: "text", text: `Inline workflow did not compile: ${message}` }], details: { error: "inline_compile_error", message } };
+}
+
 async function pickWorkflow(
   workflows: ReadonlyMap<string, WorkflowModule>,
   ctx: ExtensionCommandContext,
@@ -249,16 +283,8 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       return new Text(theme.fg("muted", text), 0, 0);
     },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const name = params.name?.trim() ?? "";
-      const script = params.script?.trim() ?? "";
-      const hasName = name.length > 0;
-      const hasScript = script.length > 0;
-      if (hasName === hasScript) {
-        return {
-          content: [{ type: "text", text: "Provide exactly one workflow name or inline workflow script." }],
-          details: { error: "invalid_workflow_invocation" },
-        };
-      }
+      const request = normalizeWorkflowToolRequest(params);
+      if (request.kind === "error") return invalidWorkflowInvocationResult();
 
       const runOptions: WorkflowRunOptions = {
         concurrency: params.concurrency,
@@ -270,30 +296,25 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       let mod: WorkflowModule;
       let resultName: string;
 
-      if (hasName) {
+      if (request.kind === "named") {
         const { discoverWorkflows } = await loadDiscovery();
         const workflows = await discoverWorkflows(EXTENSION_DIR, { perf: perfRecorder });
-        const named = workflows.get(name);
+        const named = workflows.get(request.name);
         if (!named) {
           const available = [...workflows.keys()].join(", ") || "(none)";
           return {
-            content: [{ type: "text", text: `Unknown workflow "${name}". Available: ${available}` }],
+            content: [{ type: "text", text: `Unknown workflow "${request.name}". Available: ${available}` }],
             details: { error: "unknown_workflow", available },
           };
         }
         mod = named;
-        resultName = name;
+        resultName = request.name;
       } else {
         const inline = await loadInlineWorkflow();
         try {
-          mod = inline.compileInlineWorkflow(script);
+          mod = inline.compileInlineWorkflow(request.script);
         } catch (error) {
-          if (error instanceof inline.InlineWorkflowCompileError) {
-            return {
-              content: [{ type: "text", text: `Inline workflow did not compile: ${error.message}` }],
-              details: { error: "inline_compile_error", message: error.message },
-            };
-          }
+          if (error instanceof inline.InlineWorkflowCompileError) return inlineCompileErrorResult(error.message);
           throw error;
         }
         resultName = mod.meta.name;
