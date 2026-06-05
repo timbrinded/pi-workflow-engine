@@ -5,6 +5,7 @@ import { Text } from "@earendil-works/pi-tui";
 import type { WorkflowModule, WorkflowRunOptions } from "./src/types.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
 import { registerDynamax } from "./src/dynamax.ts";
+import { decideReviewResultsPresentation, extensionContextMode, maybeShowReviewResultsViewer } from "./src/review/review-results-flow.ts";
 import { isWorkflowResult, renderWorkflowResult, type WorkflowPerfDetails, type WorkflowResultEnvelope } from "./src/ui/workflow-result-renderer.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
@@ -236,6 +237,14 @@ async function sendWorkflowResult(
     },
   });
   const perf = compactPerfSnapshot(perfSnapshot);
+  const reviewDecision = decideReviewResultsPresentation({
+    workflowName: name,
+    result,
+    mode: extensionContextMode(ctx),
+    hasUI: ctx.hasUI,
+    resultViewer: options.resultViewer ?? "ask",
+  });
+  await maybeShowReviewResultsViewer(ctx, reviewDecision);
   pi.sendMessage(
     { customType: "workflow-result", content: formatMessageContent(name, result, perf), display: true, details: workflowEnvelope(name, result, perf) },
     { triggerTurn: false },
