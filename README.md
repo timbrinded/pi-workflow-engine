@@ -55,6 +55,8 @@ pi remove git:github.com/timbrinded/pi-workflow-engine
 
 ## Usage
 
+For the complete installation, invocation, authoring, tuning, and troubleshooting guide, see [USAGE.md](USAGE.md).
+
 In a pi session, from inside a git repo with changes:
 
 ```text

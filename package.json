@@ -25,6 +25,7 @@
     ".pi/settings.json",
     "assets",
     "README.md",
+    "USAGE.md",
     "LICENSE"
   ],
   "pi": {
