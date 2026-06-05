@@ -1,6 +1,6 @@
 {
   "name": "pi-workflow-engine",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "description": "A customisable multi-agent workflow-orchestration engine for the pi coding agent.",
   "keywords": [
