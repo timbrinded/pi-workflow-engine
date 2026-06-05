@@ -26,9 +26,16 @@ test("fix handoff prompt includes selected issue JSON", async () => {
     sendUserMessage(content, options) {
       sent.push({ content: typeof content === "string" ? content : "non-text", deliverAs: options?.deliverAs });
     },
+    async exec() {
+      return { code: 1, stdout: "", stderr: "not used", killed: false };
+    },
   };
   const ctx: ReviewActionContext = {
+    cwd: "/repo",
     ui: {
+      async confirm() {
+        return true;
+      },
       notify(message) {
         notifications.push(message);
       },
@@ -41,6 +48,45 @@ test("fix handoff prompt includes selected issue JSON", async () => {
   assert.equal(sent[0]?.deliverAs, "followUp");
   assert.match(sent[0]?.content ?? "", /"id":"R001"/);
   assert.deepEqual(notifications, ["Queued fix request for 1 selected finding(s)"]);
+});
+
+test("comment action falls back to parent agent when gh context is unavailable", async () => {
+  const issues = toReviewIssues("code-review", createReport());
+  const context: ReviewContext = { workflowName: "code-review", target: "", diffCommand: "git diff main...HEAD", files: ["src/app.ts"], summary: "No PR context" };
+  const sent: Array<{ content: string; deliverAs: string | undefined }> = [];
+  const notifications: string[] = [];
+  const pi: ReviewActionPi = {
+    sendUserMessage(content, options) {
+      sent.push({ content: typeof content === "string" ? content : "non-text", deliverAs: options?.deliverAs });
+    },
+    async exec() {
+      return { code: 1, stdout: "", stderr: "no pull request found", killed: false };
+    },
+  };
+  const ctx: ReviewActionContext = {
+    cwd: "/repo",
+    ui: {
+      async confirm(title, message) {
+        assert.equal(title, "Post inline PR comments?");
+        assert.match(message, /Post 1 selected finding\(s\)/);
+        return true;
+      },
+      notify(message) {
+        notifications.push(message);
+      },
+    },
+  };
+
+  await handleReviewViewerAction(pi, ctx, { action: "comment", issueIds: ["R001"] }, issues, context);
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.deliverAs, "followUp");
+  assert.match(sent[0]?.content ?? "", /Mode: post inline GitHub PR comments/);
+  assert.match(sent[0]?.content ?? "", /Prefer installed GitHub MCP\/tools/);
+  assert.match(sent[0]?.content ?? "", /otherwise use the GitHub CLI \(gh\)/);
+  assert.match(sent[0]?.content ?? "", /Do not edit files/);
+  assert.match(sent[0]?.content ?? "", /"id":"R001"/);
+  assert.deepEqual(notifications, ["Queued PR comment request for 1 selected finding(s)"]);
 });
 
 function createReport(): AdvisoryReport {

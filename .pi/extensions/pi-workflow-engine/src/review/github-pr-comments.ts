@@ -9,7 +9,7 @@ export interface ExecResultLike {
 
 export type ExecLike = (
   command: string,
-  args: readonly string[],
+  args: string[],
   options?: { readonly cwd?: string; readonly timeout?: number; readonly signal?: AbortSignal },
 ) => Promise<ExecResultLike>;
 
@@ -127,7 +127,7 @@ function parsePrNumber(diffCommand: string | undefined): number | undefined {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-async function runJson(exec: ExecLike, cwd: string, args: readonly string[]): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly reason: string }> {
+async function runJson(exec: ExecLike, cwd: string, args: string[]): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly reason: string }> {
   const result = await runCommand(exec, cwd, args);
   if (!result.ok) return result;
   try {
@@ -137,7 +137,7 @@ async function runJson(exec: ExecLike, cwd: string, args: readonly string[]): Pr
   }
 }
 
-async function runCommand(exec: ExecLike, cwd: string, args: readonly string[]): Promise<{ readonly ok: true; readonly stdout: string } | { readonly ok: false; readonly reason: string }> {
+async function runCommand(exec: ExecLike, cwd: string, args: string[]): Promise<{ readonly ok: true; readonly stdout: string } | { readonly ok: false; readonly reason: string }> {
   try {
     const result = await exec("gh", args, { cwd, timeout: 30_000 });
     if (result.code !== 0) return { ok: false, reason: result.stderr?.trim() || `gh exited with code ${result.code}` };
