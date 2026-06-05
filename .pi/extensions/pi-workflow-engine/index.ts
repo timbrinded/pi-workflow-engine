@@ -38,6 +38,7 @@ function formatPerfLine(perf: WorkflowPerfDetails | undefined): string | undefin
 
 type DiscoveryModule = typeof import("./src/discovery.ts");
 type EngineModule = typeof import("./src/engine.ts");
+type InlineWorkflowModule = typeof import("./src/inline-workflow.ts");
 
 async function loadDiscovery(): Promise<DiscoveryModule> {
   return await import("./src/discovery.ts");
@@ -45,6 +46,10 @@ async function loadDiscovery(): Promise<DiscoveryModule> {
 
 async function loadEngine(): Promise<EngineModule> {
   return await import("./src/engine.ts");
+}
+
+async function loadInlineWorkflow(): Promise<InlineWorkflowModule> {
+  return await import("./src/inline-workflow.ts");
 }
 
 async function createInvocationPerf(options: WorkflowRunOptions): Promise<PerfSink | undefined> {
@@ -118,6 +123,12 @@ function parseNumericOption(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function compactInlinePreview(script: string | undefined): string {
+  if (!script) return "";
+  const compact = script.replace(/\s+/g, " ").trim();
+  return compact.length > 60 ? `${compact.slice(0, 57)}…` : compact;
 }
 
 async function pickWorkflow(
@@ -200,9 +211,11 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     name: "workflow",
     label: "Workflow",
     description:
-      "Run a named multi-agent workflow (fan-out → verify → synthesize) and return its structured result. Use for thorough reviews or audits.",
+      "Run a named or inline multi-agent workflow (fan-out → verify → synthesize) and return its structured result. Use for thorough reviews or audits.",
+    promptSnippet: "Run an existing named workflow or an inline one-off workflow script",
     parameters: Type.Object({
-      name: Type.String({ description: "Workflow name, e.g. code-review" }),
+      name: Type.Optional(Type.String({ description: "Workflow name, e.g. code-review. Provide exactly one of name or script." })),
+      script: Type.Optional(Type.String({ description: "Inline workflow script. Provide exactly one of script or name." })),
       args: Type.Optional(Type.String({ description: "Arguments for the workflow (e.g. target or focus)" })),
       concurrency: Type.Optional(Type.Number({ description: "Optional per-run agent concurrency cap" })),
       parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
@@ -210,7 +223,12 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     }),
     renderCall(args, theme) {
       const suffix = args.args ? ` ${theme.fg("dim", args.args)}` : "";
-      return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", args.name)}${suffix}`, 0, 0);
+      if (args.name?.trim()) {
+        return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", args.name.trim())}${suffix}`, 0, 0);
+      }
+      const preview = compactInlinePreview(args.script);
+      const previewSuffix = preview ? ` ${theme.fg("dim", preview)}` : "";
+      return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", "inline")}${suffix}${previewSuffix}`, 0, 0);
     },
     renderResult(result, { expanded, isPartial }, theme) {
       if (isPartial) return new Text(theme.fg("accent", "Running workflow…"), 0, 0);
@@ -221,6 +239,17 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       return new Text(theme.fg("muted", text), 0, 0);
     },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const name = params.name?.trim() ?? "";
+      const script = params.script?.trim() ?? "";
+      const hasName = name.length > 0;
+      const hasScript = script.length > 0;
+      if (hasName === hasScript) {
+        return {
+          content: [{ type: "text", text: "Provide exactly one workflow name or inline workflow script." }],
+          details: { error: "invalid_workflow_invocation" },
+        };
+      }
+
       const runOptions: WorkflowRunOptions = {
         concurrency: params.concurrency,
         parallelSubmissionLimit: params.parallelSubmissionLimit,
@@ -228,16 +257,38 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         signal,
       };
       const perfRecorder = await createInvocationPerf(runOptions);
-      const { discoverWorkflows } = await loadDiscovery();
-      const workflows = await discoverWorkflows(EXTENSION_DIR, { perf: perfRecorder });
-      const mod = workflows.get(params.name);
-      if (!mod) {
-        const available = [...workflows.keys()].join(", ") || "(none)";
-        return {
-          content: [{ type: "text", text: `Unknown workflow "${params.name}". Available: ${available}` }],
-          details: { error: "unknown_workflow", available },
-        };
+      let mod: WorkflowModule;
+      let resultName: string;
+
+      if (hasName) {
+        const { discoverWorkflows } = await loadDiscovery();
+        const workflows = await discoverWorkflows(EXTENSION_DIR, { perf: perfRecorder });
+        const named = workflows.get(name);
+        if (!named) {
+          const available = [...workflows.keys()].join(", ") || "(none)";
+          return {
+            content: [{ type: "text", text: `Unknown workflow "${name}". Available: ${available}` }],
+            details: { error: "unknown_workflow", available },
+          };
+        }
+        mod = named;
+        resultName = name;
+      } else {
+        const inline = await loadInlineWorkflow();
+        try {
+          mod = inline.compileInlineWorkflow(script);
+        } catch (error) {
+          if (error instanceof inline.InlineWorkflowCompileError) {
+            return {
+              content: [{ type: "text", text: `Inline workflow did not compile: ${error.message}` }],
+              details: { error: "inline_compile_error", message: error.message },
+            };
+          }
+          throw error;
+        }
+        resultName = mod.meta.name;
       }
+
       const { runWorkflow } = await loadEngine();
       let perfSnapshot: PerfSnapshot | undefined;
       const result = await runWorkflow(ctx, mod, params.args ?? "", {
@@ -250,7 +301,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       });
       const perf = compactPerfSnapshot(perfSnapshot);
       const perfLine = formatPerfLine(perf);
-      return { content: [{ type: "text", text: `${summarize(result)}${perfLine ? `\n\n${perfLine}` : ""}` }], details: workflowEnvelope(params.name, result, perf) };
+      return { content: [{ type: "text", text: `${summarize(result)}${perfLine ? `\n\n${perfLine}` : ""}` }], details: workflowEnvelope(resultName, result, perf) };
     },
   });
 }
