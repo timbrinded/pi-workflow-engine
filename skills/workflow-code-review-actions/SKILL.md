@@ -1,6 +1,6 @@
 ---
 name: workflow-code-review-actions
-description: Act on selected code-review findings from pi-workflow-engine: make minimal fixes or post GitHub PR inline comments using gh, GitHub MCP/tools, or project-specific tools.
+description: "Act on selected code-review findings from pi-workflow-engine: make minimal fixes or post GitHub PR inline comments using gh, GitHub MCP/tools, or project-specific tools."
 ---
 
 Use this skill when the parent agent receives selected code-review finding JSON from `pi-workflow-engine`.

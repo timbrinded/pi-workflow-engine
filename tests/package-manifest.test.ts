@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
+import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 
 const repoDir = fileURLToPath(new URL("..", import.meta.url));
 const skillPath = "skills/workflow-code-review-actions/SKILL.md";
@@ -36,4 +37,12 @@ test("package manifest includes code-review actions skill", async () => {
   assert.match(skill, /GitHub PR inline comments/);
   assert.match(skill, /gh/);
   assert.match(skill, /GitHub MCP\/tools/);
+});
+
+test("package skills parse cleanly with pi's strict skill loader", () => {
+  const result = loadSkillsFromDir({ dir: join(repoDir, "skills"), source: "path" });
+
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.skills.length, 1);
+  assert.equal(result.skills[0]?.name, "workflow-code-review-actions");
 });
