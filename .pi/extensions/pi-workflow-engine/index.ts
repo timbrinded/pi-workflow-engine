@@ -210,7 +210,7 @@ export function inlineCompileErrorResult(message: string): WorkflowToolErrorResu
   return { content: [{ type: "text", text: `Inline workflow did not compile: ${message}` }], details: { error: "inline_compile_error", message } };
 }
 
-async function pickWorkflow(
+export async function pickWorkflow(
   workflows: ReadonlyMap<string, WorkflowModule>,
   ctx: ExtensionCommandContext,
 ): Promise<WorkflowInvocation | undefined> {
@@ -231,8 +231,7 @@ async function pickWorkflow(
   const separator = choice.indexOf(" — ");
   const name = separator === -1 ? choice : choice.slice(0, separator);
   const args = name === "code-review" ? (await ctx.ui.input("Code-review target/instructions", "Blank = auto-detect diff"))?.trim() ?? "" : "";
-  const inspect = await ctx.ui.confirm("Open inspector?", "Open a live workflow inspector while this workflow runs?");
-  return { name, args, options: { inspect } };
+  return { name, args, options: {} };
 }
 
 async function sendWorkflowResult(

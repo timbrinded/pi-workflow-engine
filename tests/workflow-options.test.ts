@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { defaultConcurrency, resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
-import { buildTemporaryWorkflowAuthorPrompt, parseWorkflowInvocation } from "../.pi/extensions/pi-workflow-engine/index.ts";
+import type { WorkflowModule } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import { buildTemporaryWorkflowAuthorPrompt, parseWorkflowInvocation, pickWorkflow } from "../.pi/extensions/pi-workflow-engine/index.ts";
 
 test("defaultConcurrency preserves existing formula", () => {
   assert.equal(defaultConcurrency(1), 2);
@@ -49,6 +51,42 @@ test("parses result viewer workflow options", () => {
   const normalText = parseWorkflowInvocation("code-review result viewer should inspect docs only");
   assert.equal(normalText.args, "result viewer should inspect docs only");
   assert.deepEqual(normalText.options, {});
+});
+
+test("pickWorkflow does not prompt for inspector by default", async () => {
+  let confirmCalls = 0;
+  const workflows = new Map<string, WorkflowModule>([
+    [
+      "code-review",
+      {
+        meta: { name: "code-review", description: "Review code" },
+        default: async () => "ok",
+      },
+    ],
+  ]);
+  const ctx = {
+    hasUI: true,
+    ui: {
+      async select() {
+        return "code-review — Review code";
+      },
+      async input() {
+        return " review src ";
+      },
+      async editor() {
+        return "";
+      },
+      async confirm() {
+        confirmCalls++;
+        throw new Error("inspector prompt should not be shown");
+      },
+    },
+  } as unknown as ExtensionCommandContext;
+
+  const invocation = await pickWorkflow(workflows, ctx);
+
+  assert.equal(confirmCalls, 0);
+  assert.deepEqual(invocation, { name: "code-review", args: "review src", options: {} });
 });
 
 test("buildTemporaryWorkflowAuthorPrompt asks for an inline one-shot workflow", () => {
