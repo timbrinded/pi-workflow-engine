@@ -3,7 +3,8 @@
 `pi-workflow-engine` adds multi-agent workflows to pi. Most users only need two surfaces:
 
 - `/workflow <name> [args]` to run a saved workflow directly.
-- `dynamax` when you want the host agent to author a one-off inline workflow for investigation/review.
+- `/workflow:*` commands for related actions such as inspector reopening and dynamax sticky mode.
+- `dynamax` as a literal one-shot opt-in token when you want the host agent to author a one-off inline workflow for investigation/review.
 
 ## Run a workflow
 
@@ -23,7 +24,7 @@ Useful flags:
 
 ```text
 /workflow code-review --inspect          # show the live inspector while the run is active
-/workflow-inspector                      # reopen the last completed workflow inspector
+/workflow:inspector                      # reopen the last completed workflow inspector
 /workflow code-review --result-viewer    # explicitly open the findings viewer
 /workflow code-review --review-viewer    # alias for --result-viewer
 /workflow code-review --concurrency=4    # cap concurrent subagents
@@ -60,9 +61,9 @@ dynamax use parallel agents to review this design and report the risks
 Sticky for the session:
 
 ```text
-/dynamax on
-/dynamax off
-/dynamax status
+/workflow:dynamax on
+/workflow:dynamax off
+/workflow:dynamax status
 ```
 
 With dynamax enabled, the host agent usually calls the `workflow` tool with `script`: a one-off inline workflow. It can still call a saved workflow by `name` when one already fits.
@@ -78,7 +79,7 @@ Workflow results are rendered in pi with:
 - next steps;
 - run stats when available.
 
-During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow-inspector` if you want to bring the last completed inspector back up afterward.
+During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow:inspector` if you want to bring the last completed inspector back up afterward.
 
 Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding.
 

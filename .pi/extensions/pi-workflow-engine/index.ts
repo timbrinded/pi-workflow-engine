@@ -75,6 +75,10 @@ export interface LastWorkflowInspection {
 
 let lastWorkflowInspection: LastWorkflowInspection | undefined;
 
+export function getLastWorkflowInspection(): LastWorkflowInspection | undefined {
+  return lastWorkflowInspection;
+}
+
 export async function openWorkflowInspector(ctx: ExtensionCommandContext, inspection: LastWorkflowInspection): Promise<void> {
   await ctx.ui.custom<void>(
     (tui, theme, _keybindings, done) => new WorkflowInspector(() => inspection.snapshot, tui, theme, () => done(undefined)),
@@ -234,7 +238,7 @@ export async function pickWorkflow(
   return { name, args, options: {} };
 }
 
-async function sendWorkflowResult(
+export async function sendWorkflowResult(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
   name: string,
@@ -245,7 +249,6 @@ async function sendWorkflowResult(
 ): Promise<void> {
   const { runWorkflow } = await loadEngine();
   let perfSnapshot: PerfSnapshot | undefined;
-  let progressSnapshot: WorkflowProgressSnapshot | undefined;
   const result = await runWorkflow(ctx, mod, args, {
     ...options,
     perf: options.perf ?? perfRecorder !== undefined,
@@ -255,11 +258,10 @@ async function sendWorkflowResult(
       options.onPerfSnapshot?.(snapshot);
     },
     onProgressSnapshot(snapshot) {
-      progressSnapshot = snapshot;
+      lastWorkflowInspection = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
       options.onProgressSnapshot?.(snapshot);
     },
   });
-  if (progressSnapshot) lastWorkflowInspection = { name, args, completedAt: progressSnapshot.doneAt ?? Date.now(), snapshot: progressSnapshot };
   const perf = compactPerfSnapshot(perfSnapshot);
   const reviewDecision = decideReviewResultsPresentation({
     workflowName: name,
@@ -288,12 +290,12 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     return renderWorkflowResult("workflow", details ?? message.content, expanded, theme);
   });
 
-  pi.registerCommand("workflow-inspector", {
+  pi.registerCommand("workflow:inspector", {
     description: "Open the last completed workflow inspector",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const trimmed = args.trim();
       if (trimmed && trimmed !== "last") {
-        ctx.ui.notify("Usage: /workflow-inspector [last]", "warning");
+        ctx.ui.notify("Usage: /workflow:inspector [last]", "warning");
         return;
       }
       if (!ctx.hasUI) {
@@ -345,10 +347,10 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     name: "workflow",
     label: "Workflow",
     description:
-      "ONLY call workflow when the user opted into multi-agent orchestration via the literal token `dynamax`, sticky `/dynamax on`, an explicit request to run or author a workflow, or a command/skill instruction. Runs either a registered named workflow or an inline one-off workflow script (fan-out → verify → synthesize) and returns its structured result.",
+      "ONLY call workflow when the user opted into multi-agent orchestration via the literal token `dynamax`, sticky `/workflow:dynamax on`, an explicit request to run or author a workflow, or a command/skill instruction. Runs either a registered named workflow or an inline one-off workflow script (fan-out → verify → synthesize) and returns its structured result.",
     promptSnippet: "Run an existing named workflow or an inline one-off workflow script",
     promptGuidelines: [
-      "Use workflow only when the user opted into workflow orchestration via `dynamax`, `/dynamax on`, an explicit request to run/author a workflow, or a command/skill instruction.",
+      "Use workflow only when the user opted into workflow orchestration via `dynamax`, `/workflow:dynamax on`, an explicit request to run/author a workflow, or a command/skill instruction.",
       "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, or perf-review.",
       "Use workflow with `script` for a new one-off inline workflow; the script must start with `export const meta = { ... }` and default-export an async workflow function.",
       "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",

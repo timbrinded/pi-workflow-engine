@@ -19,7 +19,7 @@ A **pi extension** with canonical entrypoint `.pi/extensions/pi-workflow-engine/
 
 `.pi/extensions/pi-workflow-engine/index.ts` registers three surfaces:
 - `/workflow <name> [args]` — slash command to run a saved workflow.
-- `/dynamax on|off|status` plus the literal `dynamax` token — opt-in signals for host-agent workflow orchestration.
+- `/workflow:dynamax on|off|status` plus the literal `dynamax` token — opt-in signals for host-agent workflow orchestration.
 - a `workflow` tool — lets the host agent run a saved workflow by `name` or a one-off inline workflow by `script` mid-conversation.
 
 A **workflow** (`.pi/extensions/pi-workflow-engine/workflows/*.ts`) exports `meta` + a default `async (api) => result`. The injected `api`:

@@ -86,8 +86,8 @@ export function registerDynamax(pi: ExtensionAPI): void {
     return { messages };
   });
 
-  pi.registerCommand("dynamax", {
-    description: "Toggle dynamax workflow orchestration opt-in: /dynamax on|off|status",
+  pi.registerCommand("workflow:dynamax", {
+    description: "Toggle dynamax workflow orchestration opt-in: /workflow:dynamax on|off|status",
     handler: async (args, ctx) => {
       const action = args.trim().toLowerCase();
       if (action === "on") {
@@ -106,7 +106,7 @@ export function registerDynamax(pi: ExtensionAPI): void {
         ctx.ui.notify(`dynamax sticky mode is ${sticky}${oneShot}`, "info");
         return;
       }
-      ctx.ui.notify("Usage: /dynamax on|off|status", "warning");
+      ctx.ui.notify("Usage: /workflow:dynamax on|off|status", "warning");
     },
   });
 }

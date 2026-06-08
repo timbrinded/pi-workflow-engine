@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
+import { getLastWorkflowInspection, sendWorkflowResult } from "../.pi/extensions/pi-workflow-engine";
 import type { PerfSnapshot } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
 import type { WorkflowModule } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
@@ -14,6 +15,18 @@ function fakeContext(signal?: AbortSignal): ExtensionContext {
     modelRegistry: { find: () => undefined },
     signal,
   } as unknown as ExtensionContext;
+}
+
+function fakeCommandContext(signal?: AbortSignal): ExtensionCommandContext {
+  return fakeContext(signal) as unknown as ExtensionCommandContext;
+}
+
+function fakePi(): ExtensionAPI {
+  return {
+    sendMessage() {
+      throw new Error("sendMessage should not be called for failing workflows");
+    },
+  } as unknown as ExtensionAPI;
 }
 
 test("runWorkflow exposes a perf snapshot when perf is enabled", async () => {
@@ -60,6 +73,26 @@ test("runWorkflow exposes a completed progress snapshot", async () => {
   assert.equal(snapshot?.lanes[0]?.[0], "Findings");
   assert.equal(snapshot?.lanes[0]?.[1][0]?.details, "expanded details");
   assert.ok(snapshot?.logs.includes("captured log entry"));
+});
+
+test("sendWorkflowResult retains failed workflow progress snapshots for later inspection", async () => {
+  const mod: WorkflowModule = {
+    meta: { name: "failing-snapshot-test", description: "failed snapshot" },
+    default: async (api) => {
+      api.log("failing workflow log");
+      api.progress({ type: "lane_item", lane: "Failures", title: "Failure finding", status: "error", details: "boom details" });
+      throw new Error("boom");
+    },
+  };
+
+  await assert.rejects(() => sendWorkflowResult(fakePi(), fakeCommandContext(), "failing-snapshot-test", mod, "failed args", {}), /boom/);
+
+  const inspection = getLastWorkflowInspection();
+  assert.equal(inspection?.name, "failing-snapshot-test");
+  assert.equal(inspection?.args, "failed args");
+  assert.equal(typeof inspection?.snapshot.doneAt, "number");
+  assert.ok(inspection?.snapshot.logs.includes("failing workflow log"));
+  assert.equal(inspection?.snapshot.lanes[0]?.[1][0]?.details, "boom details");
 });
 
 test("runWorkflow composes an additional abort signal", async () => {

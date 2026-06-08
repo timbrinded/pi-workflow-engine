@@ -79,6 +79,9 @@ test("pi DefaultResourceLoader loads the package directory as one workflow exten
   assert.ok(extension, "expected one loaded extension");
   assert.ok(extension.path.endsWith(extensionEntry));
   assert.ok(extension.commands.has("workflow"), "extension must register /workflow");
-  assert.ok(extension.commands.has("dynamax"), "extension must register /dynamax");
+  assert.ok(extension.commands.has("workflow:inspector"), "extension must register /workflow:inspector");
+  assert.ok(extension.commands.has("workflow:dynamax"), "extension must register /workflow:dynamax");
+  assert.equal(extension.commands.has("workflow-inspector"), false, "extension must not register ungrouped /workflow-inspector");
+  assert.equal(extension.commands.has("dynamax"), false, "extension must not register ungrouped /dynamax");
   assert.ok(extension.tools.has("workflow"), "extension must register workflow tool");
 });
