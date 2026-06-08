@@ -55,13 +55,10 @@ export function renderIssueDetails(issue: ReviewIssue, theme: Theme): string {
 
 export function renderIssueDetailLines(issue: ReviewIssue, theme: Theme, width: number): string[] {
   const finding = issue.finding;
+  const metadata = `${finding.category} · severity ${finding.severity} · confidence ${finding.confidence}`;
   const lines = [`${theme.fg("accent", issue.id)} ${theme.fg("text", finding.summary)}`];
-  lines.push(...fieldLines("File", issue.file ?? "(none)", width, theme));
-  lines.push(...fieldLines("Line", issue.line != null ? String(issue.line) : "(unknown)", width, theme));
-  lines.push(...fieldLines("Symbol", issue.symbol ?? "(none)", width, theme));
-  lines.push(...fieldLines("Category", finding.category, width, theme));
-  lines.push(...fieldLines("Severity", finding.severity, width, theme, severityColor(finding.severity)));
-  lines.push(...fieldLines("Confidence", finding.confidence, width, theme, confidenceColor(finding.confidence)));
+  lines.push(...fieldLines("Metadata", metadata, width, theme));
+  lines.push(...fieldLines("Location", formatIssueLocation(issue), width, theme, "accent"));
   lines.push(...fieldLines("Impact", finding.impact, width, theme));
   lines.push(...fieldLines("Evidence", finding.evidence.join("; ") || "(none cited)", width, theme));
   lines.push(...fieldLines("Recommendation", finding.recommendation, width, theme));

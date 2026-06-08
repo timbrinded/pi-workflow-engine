@@ -24,6 +24,21 @@ test("viewer toggles selections and returns fix action", () => {
   assert.deepEqual(result, { action: "fix", issueIds: ["R001"] });
 });
 
+test("viewer digit keys jump to findings and show expanded formatted details", () => {
+  const issues = toReviewIssues("code-review", createReviewReportFixture());
+  const viewer = createViewer(issues).viewer;
+
+  viewer.handleInput("2");
+  const rendered = viewer.render(140).join("\n");
+
+  assert.match(rendered, /R002.*The cleanup path duplicates parser setup/);
+  assert.match(rendered, /Metadata:.*cleanup.*severity medium.*confidence medium/);
+  assert.match(rendered, /Location:.*src\/parser\.ts:42/);
+  assert.match(rendered, /Impact:.*Future parser changes/);
+  assert.match(rendered, /1-9 jump/);
+  assert.match(rendered, /enter expand\/collapse/);
+});
+
 test("viewer keyboard paths cover select all close fix and comment outcomes", () => {
   const issues = toReviewIssues("code-review", createReviewReportFixture());
 

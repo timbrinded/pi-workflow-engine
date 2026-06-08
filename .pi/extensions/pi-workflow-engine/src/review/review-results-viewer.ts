@@ -35,6 +35,12 @@ export class ReviewResultsViewer implements Component {
   }
 
   handleInput(data: string): void {
+    const digitJump = digitJumpIndex(data);
+    if (digitJump !== undefined) {
+      this.jumpTo(digitJump);
+      return;
+    }
+
     if (matchesKey(data, "up")) {
       this.moveCursor(-1);
       return;
@@ -137,7 +143,7 @@ export class ReviewResultsViewer implements Component {
   }
 
   private helpLine(width: number): string {
-    return truncateDisplay(this.theme.fg("dim", "↑/↓ move · space tag · a all · enter expand · ←/→ scroll · f fix · c comment · q close"), width);
+    return truncateDisplay(this.theme.fg("dim", "↑/↓ move · 1-9 jump · space tag · a all · enter expand/collapse · ←/→ scroll · f fix · c comment · q close"), width);
   }
 
   private topBorder(innerWidth: number): string {
@@ -151,6 +157,18 @@ export class ReviewResultsViewer implements Component {
   private moveCursor(delta: number): void {
     if (this.issues.length === 0) return;
     this.cursor = Math.min(this.issues.length - 1, Math.max(0, this.cursor + delta));
+    this.detailScroll = 0;
+    this.warning = undefined;
+    this.requestRender();
+  }
+
+  private jumpTo(index: number): void {
+    if (index < 0 || index >= this.issues.length) {
+      this.warning = `No finding ${index + 1}.`;
+      this.requestRender();
+      return;
+    }
+    this.cursor = index;
     this.detailScroll = 0;
     this.warning = undefined;
     this.requestRender();
@@ -204,6 +222,10 @@ function padAnsi(text: string, width: number): string {
   const truncated = truncateDisplay(text, width);
   const padding = Math.max(0, width - visibleWidth(truncated));
   return `${truncated}${" ".repeat(padding)}`;
+}
+
+function digitJumpIndex(data: string): number | undefined {
+  return data.length === 1 && data >= "1" && data <= "9" ? Number(data) - 1 : undefined;
 }
 
 function severityColor(severity: ReviewIssue["finding"]["severity"]): Parameters<Theme["fg"]>[0] {
