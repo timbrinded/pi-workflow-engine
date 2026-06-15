@@ -121,8 +121,22 @@ Core primitives:
 | `pipeline(items, ...stages)` | Runs each item through stages independently. |
 | `phase(title)` / `log(message)` | Updates workflow progress UI. |
 | `progress(event)` | Emits counters, summaries, and lane items. |
+| `workflow(ref, args?)` | Runs another workflow inline as a sub-step and returns its result. |
 
 Set `thinkingLevel` on fan-out agents. Otherwise many subagents can inherit an expensive global reasoning level.
+
+### Compose workflows
+
+`workflow(ref, args?)` runs a registered workflow by name as a sub-step, returning its result. The child shares the parent run's concurrency cap, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
+
+```ts
+export default async function run({ workflow }: WorkflowApi) {
+  const review = await workflow("code-review", "HEAD~3");
+  return { review };
+}
+```
+
+Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name — wrap the call in `try/catch` if a missing sub-workflow should be non-fatal (note `parallel()` rejects the whole batch on the first error, so catch inside each thunk for per-branch resilience).
 
 ### Where workflows live
 

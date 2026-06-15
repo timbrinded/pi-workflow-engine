@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress.ts";
-import type { WorkflowModule, WorkflowRunOptions } from "./src/types.ts";
+import type { WorkflowModule, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
 import { registerDynamax } from "./src/dynamax.ts";
@@ -62,6 +62,20 @@ async function createInvocationPerf(options: WorkflowRunOptions): Promise<PerfSi
   if (!enabled) return undefined;
   const { createPerfRecorder } = await import("./src/perf.ts");
   return createPerfRecorder(true);
+}
+
+/**
+ * Resolve an `api.workflow()` reference to a registered workflow module. Throws on an unknown name.
+ */
+export async function resolveWorkflowRef(ref: WorkflowRef, perf?: PerfSink): Promise<WorkflowModule> {
+  const { discoverWorkflows } = await loadDiscovery();
+  const workflows = await discoverWorkflows(EXTENSION_DIR, { perf });
+  const mod = workflows.get(ref);
+  if (!mod) {
+    const available = [...workflows.keys()].join(", ") || "(none)";
+    throw new Error(`Unknown workflow "${ref}". Available: ${available}`);
+  }
+  return mod;
 }
 
 const AUTHOR_TEMP_WORKFLOW_CHOICE = "✍ Author temporary one-shot workflow…";
@@ -253,6 +267,7 @@ export async function sendWorkflowResult(
     ...options,
     perf: options.perf ?? perfRecorder !== undefined,
     perfRecorder,
+    resolveWorkflow: (ref) => resolveWorkflowRef(ref, perfRecorder),
     onPerfSnapshot(snapshot) {
       perfSnapshot = snapshot;
       options.onPerfSnapshot?.(snapshot);
@@ -354,6 +369,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, or perf-review.",
       "Use workflow with `script` for a new one-off inline workflow; the script must start with `export const meta = { ... }` and default-export an async workflow function.",
       "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
+      "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
       "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
     ],
     parameters: Type.Object({
@@ -425,8 +441,14 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         ...runOptions,
         perf: runOptions.perf ?? perfRecorder !== undefined,
         perfRecorder,
+        resolveWorkflow: (ref) => resolveWorkflowRef(ref, perfRecorder),
         onPerfSnapshot: (snapshot) => {
           perfSnapshot = snapshot;
+        },
+        onProgressSnapshot: (snapshot) => {
+          // Record the run so /workflow:inspector can reopen it — tool-invoked (dynamax) runs were
+          // previously uninspectable, unlike the /workflow command path.
+          lastWorkflowInspection = { name: resultName, args: params.args ?? "", completedAt: snapshot.doneAt ?? Date.now(), snapshot };
         },
       });
       const perf = compactPerfSnapshot(perfSnapshot);
