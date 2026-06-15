@@ -459,6 +459,11 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         onPerfSnapshot: (snapshot) => {
           perfSnapshot = snapshot;
         },
+        onProgressSnapshot: (snapshot) => {
+          // Record the run so /workflow:inspector can reopen it — tool-invoked (dynamax) runs were
+          // previously uninspectable, unlike the /workflow command path.
+          lastWorkflowInspection = { name: resultName, args: params.args ?? "", completedAt: snapshot.doneAt ?? Date.now(), snapshot };
+        },
       });
       const perf = compactPerfSnapshot(perfSnapshot);
       const perfLine = formatPerfLine(perf);
