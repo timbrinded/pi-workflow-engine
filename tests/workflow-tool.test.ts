@@ -9,6 +9,9 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
   const agent = (async (_prompt: string, opts?: AgentOptions) => (opts?.schema ? { ok: true } : "agent text")) as WorkflowApi["agent"];
   return {
     agent,
+    workflow: async () => {
+      throw new Error("sub-workflows are not enabled in this context");
+    },
     parallel: async <T>(thunks: Array<() => Promise<T>>) => await Promise.all(thunks.map((thunk) => thunk())),
     pipeline,
     phase() {},

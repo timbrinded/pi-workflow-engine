@@ -4,6 +4,9 @@ import type { Pipeline } from "./concurrency.ts";
 import type { PerfSink, PerfSnapshot } from "./perf.ts";
 import type { WorkflowProgressSnapshot } from "./progress.ts";
 
+/** A reference to a workflow: a registered name, or an inline-style script file. */
+export type WorkflowRef = string | { scriptPath: string };
+
 /** Metadata every workflow module must export. */
 export interface WorkflowMeta {
   name: string;
@@ -29,6 +32,8 @@ export interface WorkflowRunOptions {
   signal?: AbortSignal;
   /** Internal recorder override for command/tool invocation timing. */
   perfRecorder?: PerfSink;
+  /** Resolve a sub-workflow reference to a module, enabling `api.workflow()`. When omitted, `api.workflow()` throws. */
+  resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>;
   /** Called with the final performance snapshot when perf is enabled. */
   onPerfSnapshot?: (snapshot: PerfSnapshot) => void;
   /** Called with the final completed progress snapshot after live workflow UI teardown. */
@@ -75,6 +80,13 @@ export interface WorkflowApi {
   agent<S extends TSchema>(prompt: string, opts: AgentOptions<S> & { schema: S }): Promise<Static<S> | null>;
   /** Run a subagent and return its final assistant text. */
   agent(prompt: string, opts?: AgentOptions): Promise<string>;
+  /**
+   * Run another workflow inline as a sub-step and return its result. The child shares this
+   * run's concurrency cap, abort signal, and perf sink. Nests one level only: calling
+   * `workflow()` from within a sub-workflow throws. Rejects on unknown name, unreadable
+   * scriptPath, or inline compile error — catch it to handle a missing sub-workflow gracefully.
+   */
+  workflow(ref: WorkflowRef, args?: string): Promise<unknown>;
   /** Run every thunk concurrently and wait for all (a barrier). */
   parallel<T>(thunks: Array<() => Promise<T>>): Promise<T[]>;
   /** Run each item through all stages independently — no barrier between stages. */

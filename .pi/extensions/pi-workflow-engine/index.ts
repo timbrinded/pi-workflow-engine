@@ -1,9 +1,11 @@
+import { readFile } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress.ts";
-import type { WorkflowModule, WorkflowRunOptions } from "./src/types.ts";
+import type { WorkflowModule, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
 import { registerDynamax } from "./src/dynamax.ts";
@@ -62,6 +64,32 @@ async function createInvocationPerf(options: WorkflowRunOptions): Promise<PerfSi
   if (!enabled) return undefined;
   const { createPerfRecorder } = await import("./src/perf.ts");
   return createPerfRecorder(true);
+}
+
+/**
+ * Resolve an `api.workflow()` reference to a module: a registered name via discovery, or an
+ * inline-style script file via `{ scriptPath }` (no imports; uses injected `Type`). Throws on an
+ * unknown name, a scriptPath outside the repo, an unreadable file, or an inline compile error.
+ */
+export async function resolveWorkflowRef(cwd: string, ref: WorkflowRef, perf?: PerfSink): Promise<WorkflowModule> {
+  if (typeof ref !== "string") {
+    const root = resolve(cwd);
+    const abs = resolve(root, ref.scriptPath);
+    if (abs !== root && !abs.startsWith(root + sep)) {
+      throw new Error(`sub-workflow scriptPath escapes the repo: ${ref.scriptPath}`);
+    }
+    const source = await readFile(abs, "utf8");
+    const { compileInlineWorkflow } = await loadInlineWorkflow();
+    return compileInlineWorkflow(source);
+  }
+  const { discoverWorkflows } = await loadDiscovery();
+  const workflows = await discoverWorkflows(EXTENSION_DIR, { perf });
+  const mod = workflows.get(ref);
+  if (!mod) {
+    const available = [...workflows.keys()].join(", ") || "(none)";
+    throw new Error(`Unknown workflow "${ref}". Available: ${available}`);
+  }
+  return mod;
 }
 
 const AUTHOR_TEMP_WORKFLOW_CHOICE = "✍ Author temporary one-shot workflow…";
@@ -253,6 +281,7 @@ export async function sendWorkflowResult(
     ...options,
     perf: options.perf ?? perfRecorder !== undefined,
     perfRecorder,
+    resolveWorkflow: (ref) => resolveWorkflowRef(ctx.cwd, ref, perfRecorder),
     onPerfSnapshot(snapshot) {
       perfSnapshot = snapshot;
       options.onPerfSnapshot?.(snapshot);
@@ -354,6 +383,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, or perf-review.",
       "Use workflow with `script` for a new one-off inline workflow; the script must start with `export const meta = { ... }` and default-export an async workflow function.",
       "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
+      "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
       "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
     ],
     parameters: Type.Object({
@@ -425,6 +455,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         ...runOptions,
         perf: runOptions.perf ?? perfRecorder !== undefined,
         perfRecorder,
+        resolveWorkflow: (ref) => resolveWorkflowRef(ctx.cwd, ref, perfRecorder),
         onPerfSnapshot: (snapshot) => {
           perfSnapshot = snapshot;
         },
