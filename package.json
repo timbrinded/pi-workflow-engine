@@ -23,7 +23,7 @@
   "files": [
     ".pi/extensions/pi-workflow-engine",
     ".pi/settings.json",
-    "assets",
+    "assets/preview.png",
     "skills",
     "README.md",
     "USAGE.md",

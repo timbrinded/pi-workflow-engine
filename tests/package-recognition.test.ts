@@ -49,7 +49,8 @@ test("package metadata exposes extension/gallery resources", async () => {
   assert.ok(keywords.includes("pi-extension"), "keywords must include pi-extension");
   assert.ok(files.includes(".pi/extensions/pi-workflow-engine"), "files must include moved extension tree");
   assert.ok(files.includes(".pi/settings.json"), "files must include project pi settings");
-  assert.ok(files.includes("assets"), "files must include preview assets");
+  assert.ok(files.includes("assets/preview.png"), "files must include the published preview image");
+  assert.ok(!files.includes("assets"), "files must not include unused preview candidate assets");
   assert.ok(files.includes("USAGE.md"), "files must include linked usage guide");
   assert.equal(pi.image, "https://raw.githubusercontent.com/timbrinded/pi-workflow-engine/master/assets/preview.png");
   await access(join(repoDir, "assets", "preview.png"));

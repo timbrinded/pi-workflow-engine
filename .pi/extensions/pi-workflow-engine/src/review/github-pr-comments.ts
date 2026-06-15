@@ -28,7 +28,7 @@ export type InlineCommentStatus =
   | { readonly issueId: string; readonly status: "skipped"; readonly reason: string }
   | { readonly issueId: string; readonly status: "failed"; readonly reason: string };
 
-const PR_VIEW_JSON_FIELDS = "number,headRefOid,url,headRepositoryOwner,headRepository";
+const PR_VIEW_JSON_FIELDS = "number,headRefOid,url";
 
 export async function resolveGitHubPrContext(
   exec: ExecLike,
@@ -47,10 +47,10 @@ export async function resolveGitHubPrContext(
   if (number === undefined) return { ok: false, reason: "No GitHub PR number found." };
   if (!headSha) return { ok: false, reason: "GitHub PR head SHA is missing." };
 
-  const ownerFromPr = nestedStringField(prView.value, "headRepositoryOwner", "login");
-  const repoFromPr = nestedStringField(prView.value, "headRepository", "name");
-  let owner = ownerFromPr;
-  let repo = repoFromPr;
+  const url = stringField(prView.value, "url");
+  const baseFromUrl = parsePullRequestUrl(url);
+  let owner = baseFromUrl?.owner;
+  let repo = baseFromUrl?.repo;
   if (!owner || !repo) {
     const repoView = await runJson(exec, cwd, ["repo", "view", "--json", "nameWithOwner"]);
     if (!repoView.ok) return { ok: false, reason: repoView.reason };
@@ -61,7 +61,6 @@ export async function resolveGitHubPrContext(
   }
   if (!owner || !repo) return { ok: false, reason: "GitHub repository owner/name is missing." };
 
-  const url = stringField(prView.value, "url");
   return { ok: true, context: { owner, repo, number, headSha, url } };
 }
 
@@ -159,17 +158,23 @@ function stringField(value: unknown, key: string): string | undefined {
   return typeof field === "string" && field.trim().length > 0 ? field : undefined;
 }
 
-function nestedStringField(value: unknown, objectKey: string, key: string): string | undefined {
-  if (!isRecord(value)) return undefined;
-  const nested = value[objectKey];
-  return stringField(nested, key);
-}
-
 function parseNameWithOwner(value: string | undefined): { readonly owner: string; readonly repo: string } | undefined {
   if (!value) return undefined;
   const [owner, repo, extra] = value.split("/");
   if (!owner || !repo || extra !== undefined) return undefined;
   return { owner, repo };
+}
+
+function parsePullRequestUrl(value: string | undefined): { readonly owner: string; readonly repo: string } | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = new URL(value);
+    const [owner, repo, type, number, extra] = parsed.pathname.split("/").filter(Boolean);
+    if (!owner || !repo || type !== "pull" || !number || extra !== undefined) return undefined;
+    return { owner, repo };
+  } catch {
+    return undefined;
+  }
 }
 
 function parsePostedCommentUrl(stdout: string): string | undefined {
