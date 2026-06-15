@@ -26,10 +26,12 @@ export interface WorkflowContextOptions {
   submissionLimit: number;
   /** Resolve a sub-workflow reference for `api.workflow()`. Omit to disable composition. */
   resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>;
-  /** Nesting depth. Sub-workflows run at depth >= 1, where `api.workflow()` throws. */
+  /** Nesting depth. Sub-workflows run at depth >= 1, where `api.workflow()` rejects. */
   depth?: number;
   /** Prefix applied to phase titles so sub-workflow phases nest as "<name> ▸ <title>". */
-  phasePrefix?: string;
+  progressPrefix?: string;
+  /** Namespace applied to child structured progress keys/lanes/logs. */
+  progressNamespace?: string;
 }
 
 /**
@@ -75,7 +77,7 @@ export async function runWorkflow(
         submissionLimit: resolvedOptions.parallelSubmissionLimit ?? resolvedOptions.concurrency * 2,
         resolveWorkflow: resolvedOptions.resolveWorkflow,
         depth: 0,
-        phasePrefix: "",
+        progressPrefix: "",
       }),
     );
   } finally {
@@ -107,14 +109,13 @@ export async function runWorkflowWithContext(
   opts: WorkflowContextOptions,
 ): Promise<unknown> {
   const depth = opts.depth ?? 0;
-  const phasePrefix = opts.phasePrefix ?? "";
+  const scope = createWorkflowScope(progress, opts.progressPrefix ?? "", opts.progressNamespace);
 
-  const agent = ((prompt: string, agentOpts?: AgentOptions) =>
-    runAgent(rc, prompt, prefixAgentPhase(agentOpts, phasePrefix))) as WorkflowApi["agent"];
+  const agent = ((prompt: string, agentOpts?: AgentOptions) => runAgent(rc, prompt, scope.agentOptions(agentOpts))) as WorkflowApi["agent"];
 
   const workflow: WorkflowApi["workflow"] =
     depth >= 1
-      ? () => {
+      ? async () => {
           throw new Error("workflow() can only nest one level deep");
         }
       : async (ref, childArgs) => {
@@ -130,10 +131,12 @@ export async function runWorkflowWithContext(
               submissionLimit: opts.submissionLimit,
               resolveWorkflow: opts.resolveWorkflow,
               depth: depth + 1,
-              phasePrefix: `${childMod.meta.name} ▸ `,
+              progressPrefix: `${childMod.meta.name} ▸ `,
+              progressNamespace: childMod.meta.name,
             });
           } finally {
             unlink();
+            scope.restorePhase();
           }
         };
 
@@ -147,9 +150,9 @@ export async function runWorkflowWithContext(
         limit: opts.submissionLimit,
       }),
     pipeline,
-    phase: (title) => progress.phase(phasePrefix + title),
-    log: (message) => progress.log(message),
-    progress: (event) => progress.event(event),
+    phase: scope.phase,
+    log: scope.log,
+    progress: scope.event,
     args,
     cwd: rc.cwd,
     signal: rc.signal,
@@ -158,10 +161,49 @@ export async function runWorkflowWithContext(
   return await mod.default(api);
 }
 
-/** Prefix an agent's explicit phase so sub-workflow agents group under the nested phase title. */
-function prefixAgentPhase(opts: AgentOptions | undefined, phasePrefix: string): AgentOptions | undefined {
-  if (!phasePrefix || !opts?.phase) return opts;
-  return { ...opts, phase: phasePrefix + opts.phase };
+interface WorkflowScope {
+  agentOptions(opts: AgentOptions | undefined): AgentOptions;
+  phase(title: string): void;
+  log(message: string): void;
+  event(event: WorkflowProgressEvent): void;
+  restorePhase(): void;
+}
+
+function createWorkflowScope(progress: WorkflowProgress, prefix: string, namespace: string | undefined): WorkflowScope {
+  let currentPhase = `${prefix}Workflow`;
+  const display = (title: string) => `${prefix}${title}`;
+  return {
+    agentOptions(opts) {
+      const phase = opts?.phase ? display(opts.phase) : currentPhase;
+      return opts ? { ...opts, phase } : { phase };
+    },
+    phase(title) {
+      currentPhase = display(title);
+      progress.phase(currentPhase);
+    },
+    log(message) {
+      progress.log(namespace ? `${namespace}: ${message}` : message);
+    },
+    event(event) {
+      progress.event(namespace ? namespaceProgressEvent(namespace, event) : event);
+    },
+    restorePhase() {
+      progress.phase(currentPhase);
+    },
+  };
+}
+
+function namespaceProgressEvent(namespace: string, event: WorkflowProgressEvent): WorkflowProgressEvent {
+  switch (event.type) {
+    case "counter":
+      return { ...event, key: `${namespace}.${event.key}` };
+    case "counter_delta":
+      return { ...event, key: `${namespace}.${event.key}` };
+    case "lane_item":
+      return { ...event, lane: `${namespace} ▸ ${event.lane}` };
+    case "summary":
+      return { ...event, key: `${namespace}.${event.key}` };
+  }
 }
 
 function formatPerfSummary(snapshot: PerfSnapshot): string {

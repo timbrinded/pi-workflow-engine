@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -67,21 +65,9 @@ async function createInvocationPerf(options: WorkflowRunOptions): Promise<PerfSi
 }
 
 /**
- * Resolve an `api.workflow()` reference to a module: a registered name via discovery, or an
- * inline-style script file via `{ scriptPath }` (no imports; uses injected `Type`). Throws on an
- * unknown name, a scriptPath outside the repo, an unreadable file, or an inline compile error.
+ * Resolve an `api.workflow()` reference to a registered workflow module. Throws on an unknown name.
  */
-export async function resolveWorkflowRef(cwd: string, ref: WorkflowRef, perf?: PerfSink): Promise<WorkflowModule> {
-  if (typeof ref !== "string") {
-    const root = resolve(cwd);
-    const abs = resolve(root, ref.scriptPath);
-    if (abs !== root && !abs.startsWith(root + sep)) {
-      throw new Error(`sub-workflow scriptPath escapes the repo: ${ref.scriptPath}`);
-    }
-    const source = await readFile(abs, "utf8");
-    const { compileInlineWorkflow } = await loadInlineWorkflow();
-    return compileInlineWorkflow(source);
-  }
+export async function resolveWorkflowRef(ref: WorkflowRef, perf?: PerfSink): Promise<WorkflowModule> {
   const { discoverWorkflows } = await loadDiscovery();
   const workflows = await discoverWorkflows(EXTENSION_DIR, { perf });
   const mod = workflows.get(ref);
@@ -281,7 +267,7 @@ export async function sendWorkflowResult(
     ...options,
     perf: options.perf ?? perfRecorder !== undefined,
     perfRecorder,
-    resolveWorkflow: (ref) => resolveWorkflowRef(ctx.cwd, ref, perfRecorder),
+    resolveWorkflow: (ref) => resolveWorkflowRef(ref, perfRecorder),
     onPerfSnapshot(snapshot) {
       perfSnapshot = snapshot;
       options.onPerfSnapshot?.(snapshot);
@@ -455,7 +441,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         ...runOptions,
         perf: runOptions.perf ?? perfRecorder !== undefined,
         perfRecorder,
-        resolveWorkflow: (ref) => resolveWorkflowRef(ctx.cwd, ref, perfRecorder),
+        resolveWorkflow: (ref) => resolveWorkflowRef(ref, perfRecorder),
         onPerfSnapshot: (snapshot) => {
           perfSnapshot = snapshot;
         },

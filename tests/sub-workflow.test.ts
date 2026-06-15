@@ -1,35 +1,41 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "bun:test";
 import { runWorkflowWithContext, type WorkflowContextOptions, type WorkflowProgress } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import type { AgentProgress, CreateAgentSession, RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
-import type { WorkflowModule, WorkflowRef } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import type { WorkflowModule, WorkflowProgressEvent, WorkflowRef } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly phases: string[];
   readonly logs: string[];
+  readonly events: WorkflowProgressEvent[];
+  readonly agents: Array<{ readonly phase: string | undefined; readonly label: string }>;
 }
 
 function createProgress(): CaptureProgress {
   const phases: string[] = [];
   const logs: string[] = [];
+  const events: WorkflowProgressEvent[] = [];
+  const agents: Array<{ readonly phase: string | undefined; readonly label: string }> = [];
   let id = 0;
   return {
     phases,
     logs,
-    agentQueued: () => ++id,
+    events,
+    agents,
+    agentQueued: (phase, label) => {
+      agents.push({ phase, label });
+      return ++id;
+    },
     agentStart: () => {},
     agentTool: () => {},
     agentDone: () => {},
     agentFailed: () => {},
     log: (message) => logs.push(message),
     phase: (title) => phases.push(title),
-    event: () => {},
+    event: (event) => events.push(event),
   };
 }
 
@@ -51,7 +57,25 @@ function workflowModule(name: string, run: WorkflowModule["default"]): WorkflowM
 }
 
 function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>): WorkflowContextOptions {
-  return { abortController: new AbortController(), submissionLimit: 16, resolveWorkflow, depth: 0, phasePrefix: "" };
+  return { abortController: new AbortController(), submissionLimit: 16, resolveWorkflow, depth: 0, progressPrefix: "" };
+}
+
+const NOOP_SESSION: CreateAgentSession = async () => ({
+  session: {
+    state: { messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
+    prompt: async () => {},
+    subscribe: () => () => {},
+    dispose: () => {},
+    abort: async () => {},
+  },
+});
+
+function eventByKey(events: readonly WorkflowProgressEvent[], key: string): WorkflowProgressEvent | undefined {
+  return events.find((event) => "key" in event && event.key === key);
+}
+
+function laneEvent(events: readonly WorkflowProgressEvent[], lane: string): WorkflowProgressEvent | undefined {
+  return events.find((event) => event.type === "lane_item" && event.lane === lane);
 }
 
 test("api.workflow() runs a resolved sub-workflow and returns its result", async () => {
@@ -85,16 +109,28 @@ test("api.workflow() passes args through to the child", async () => {
   assert.equal(result, "got:payload");
 });
 
-test("api.workflow() nests only one level deep", async () => {
+test("api.workflow() nesting rejection is promise-shaped", async () => {
   const progress = createProgress();
   const rc = createRc(progress, new Semaphore(4));
-  const grandchild = workflowModule("grandchild", async (api) => api.workflow("anything"));
-  const parent = workflowModule("parent", async (api) => api.workflow("grandchild"));
-
-  await assert.rejects(
-    () => runWorkflowWithContext(rc, progress, parent, "", contextOpts(async () => grandchild)),
-    /one level deep/,
+  const catchChild = workflowModule("catch-child", async (api) =>
+    api.workflow("anything").catch((error: unknown) => (error instanceof Error ? `caught:${error.message}` : "caught")),
   );
+  const tryChild = workflowModule("try-child", async (api) => {
+    try {
+      await api.workflow("anything");
+    } catch (error) {
+      return error instanceof Error ? `caught:${error.message}` : "caught";
+    }
+    return "not caught";
+  });
+  const catchParent = workflowModule("parent", async (api) => api.workflow("catch-child"));
+  const tryParent = workflowModule("parent", async (api) => api.workflow("try-child"));
+
+  const catchResult = await runWorkflowWithContext(rc, progress, catchParent, "", contextOpts(async () => catchChild));
+  const tryResult = await runWorkflowWithContext(rc, progress, tryParent, "", contextOpts(async () => tryChild));
+
+  assert.equal(catchResult, "caught:workflow() can only nest one level deep");
+  assert.equal(tryResult, "caught:workflow() can only nest one level deep");
 });
 
 test("api.workflow() throws when no resolver is configured", async () => {
@@ -122,6 +158,59 @@ test("sub-workflow phases nest under '<name> ▸ <title>'", async () => {
 
   assert.ok(progress.phases.includes("Top"), `expected parent phase, got ${JSON.stringify(progress.phases)}`);
   assert.ok(progress.phases.includes("reviewer ▸ Scan"), `expected nested phase, got ${JSON.stringify(progress.phases)}`);
+});
+
+test("parent agents after a sub-workflow stay in the parent phase", async () => {
+  const progress = createProgress();
+  const rc = createRc(progress, new Semaphore(4), NOOP_SESSION);
+  const child = workflowModule("reviewer", async (api) => {
+    api.phase("Scan");
+    return "ok";
+  });
+  const parent = workflowModule("parent", async (api) => {
+    api.phase("Top");
+    await api.workflow("reviewer");
+    await api.agent("after child", { label: "after-child", thinkingLevel: "low" });
+    return "done";
+  });
+
+  await runWorkflowWithContext(rc, progress, parent, "", contextOpts(async () => child));
+
+  assert.deepEqual(
+    progress.agents.find((agent) => agent.label === "after-child"),
+    { phase: "Top", label: "after-child" },
+  );
+});
+
+test("child structured progress is namespaced while parent progress is not", async () => {
+  const progress = createProgress();
+  const rc = createRc(progress, new Semaphore(4));
+  const child = workflowModule("reviewer", async (api) => {
+    api.log("child log");
+    api.progress({ type: "counter", key: "kept", label: "kept", value: 1 });
+    api.progress({ type: "summary", key: "target", value: "child" });
+    api.progress({ type: "lane_item", lane: "Findings", title: "Child finding", status: "success" });
+    return "ok";
+  });
+  const parent = workflowModule("parent", async (api) => {
+    api.log("parent log");
+    api.progress({ type: "counter", key: "kept", label: "kept", value: 2 });
+    api.progress({ type: "summary", key: "target", value: "parent" });
+    api.progress({ type: "lane_item", lane: "Findings", title: "Parent finding", status: "pending" });
+    await api.workflow("reviewer");
+    return "done";
+  });
+
+  await runWorkflowWithContext(rc, progress, parent, "", contextOpts(async () => child));
+
+  assert.deepEqual(eventByKey(progress.events, "kept"), { type: "counter", key: "kept", label: "kept", value: 2 });
+  assert.deepEqual(eventByKey(progress.events, "reviewer.kept"), { type: "counter", key: "reviewer.kept", label: "kept", value: 1 });
+  assert.deepEqual(eventByKey(progress.events, "target"), { type: "summary", key: "target", value: "parent" });
+  assert.deepEqual(eventByKey(progress.events, "reviewer.target"), { type: "summary", key: "reviewer.target", value: "child" });
+  assert.equal(laneEvent(progress.events, "Findings")?.type, "lane_item");
+  assert.equal(laneEvent(progress.events, "reviewer ▸ Findings")?.type, "lane_item");
+  assert.ok(progress.logs.includes("parent log"));
+  assert.ok(progress.logs.includes("reviewer: child log"));
 });
 
 test("parent and sub-workflow agents share the run's concurrency cap", async () => {
@@ -160,28 +249,10 @@ test("parent and sub-workflow agents share the run's concurrency cap", async () 
 });
 
 test("resolveWorkflowRef resolves a registered workflow by name", async () => {
-  const mod = await resolveWorkflowRef(process.cwd(), "code-review");
+  const mod = await resolveWorkflowRef("code-review");
   assert.equal(mod.meta.name, "code-review");
 });
 
 test("resolveWorkflowRef rejects an unknown name", async () => {
-  await assert.rejects(() => resolveWorkflowRef(process.cwd(), "does-not-exist"), /Unknown workflow/);
-});
-
-test("resolveWorkflowRef rejects a scriptPath outside the repo", async () => {
-  await assert.rejects(() => resolveWorkflowRef(process.cwd(), { scriptPath: "../../../../etc/passwd" }), /escapes the repo/);
-});
-
-test("resolveWorkflowRef compiles an inline-style script file", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-subwf-"));
-  try {
-    await writeFile(
-      join(dir, "inline.ts"),
-      'export const meta = { name: "from-file", description: "x" };\nexport default async function run({ args }) { return args; }\n',
-    );
-    const mod = await resolveWorkflowRef(dir, { scriptPath: "inline.ts" });
-    assert.equal(mod.meta.name, "from-file");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  await assert.rejects(() => resolveWorkflowRef("does-not-exist"), /Unknown workflow/);
 });

@@ -127,7 +127,7 @@ Set `thinkingLevel` on fan-out agents. Otherwise many subagents can inherit an e
 
 ### Compose workflows
 
-`workflow(ref, args?)` runs a registered workflow by name — or an inline-style script via `{ scriptPath }` — as a sub-step, returning its result. The child shares the parent run's concurrency cap, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
+`workflow(ref, args?)` runs a registered workflow by name as a sub-step, returning its result. The child shares the parent run's concurrency cap, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
 
 ```ts
 export default async function run({ workflow }: WorkflowApi) {
@@ -136,7 +136,7 @@ export default async function run({ workflow }: WorkflowApi) {
 }
 ```
 
-Nesting is one level only: calling `workflow()` from inside a sub-workflow throws. Resolution throws on an unknown name, an unreadable `scriptPath`, or an inline compile error — wrap the call in `try/catch` if a missing sub-workflow should be non-fatal (note `parallel()` rejects the whole batch on the first error, so catch inside each thunk for per-branch resilience).
+Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name — wrap the call in `try/catch` if a missing sub-workflow should be non-fatal (note `parallel()` rejects the whole batch on the first error, so catch inside each thunk for per-branch resilience).
 
 ### Where workflows live
 

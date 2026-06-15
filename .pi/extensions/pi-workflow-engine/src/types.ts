@@ -4,8 +4,8 @@ import type { Pipeline } from "./concurrency.ts";
 import type { PerfSink, PerfSnapshot } from "./perf.ts";
 import type { WorkflowProgressSnapshot } from "./progress.ts";
 
-/** A reference to a workflow: a registered name, or an inline-style script file. */
-export type WorkflowRef = string | { scriptPath: string };
+/** A reference to a registered workflow by name. */
+export type WorkflowRef = string;
 
 /** Metadata every workflow module must export. */
 export interface WorkflowMeta {
@@ -81,10 +81,10 @@ export interface WorkflowApi {
   /** Run a subagent and return its final assistant text. */
   agent(prompt: string, opts?: AgentOptions): Promise<string>;
   /**
-   * Run another workflow inline as a sub-step and return its result. The child shares this
-   * run's concurrency cap, abort signal, and perf sink. Nests one level only: calling
-   * `workflow()` from within a sub-workflow throws. Rejects on unknown name, unreadable
-   * scriptPath, or inline compile error — catch it to handle a missing sub-workflow gracefully.
+   * Run another registered workflow inline as a sub-step and return its result. The child shares
+   * this run's concurrency cap, abort signal, and perf sink. Nests one level only: calling
+   * `workflow()` from within a sub-workflow rejects. Rejects on unknown name — catch it to handle
+   * a missing sub-workflow gracefully.
    */
   workflow(ref: WorkflowRef, args?: string): Promise<unknown>;
   /** Run every thunk concurrently and wait for all (a barrier). */
