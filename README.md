@@ -2,203 +2,159 @@
 
 # pi-workflow-engine
 
-Programmable multi-agent workflows for the [pi](https://pi.dev) coding agent.
+Zero-dependency Dynamax workflows for [pi](https://pi.dev): opt into live, parallel subagents when one coding agent is not enough.
 
-This is not just a way to run a prompt. It is a way to turn an agentic procedure into code: scope the task, fork isolated subagents, fan out across review lenses, validate every handoff with schemas, verify candidate findings, and synthesize one ranked result.
+Use `dynamax` when a task needs several independent passes: review from different angles, compare options, chase a bug through multiple suspects, or stress-test a plan. pi can spin up a temporary workflow, run focused subagents in parallel, show progress in the TUI, and return one synthesized result.
 
-The built-in workflows are advisory: they inspect, fan out, verify, and report. They do not edit files. Start with `/workflow code-review`, or use the focused scouts for refactors, diagnosis, and performance.
+The package ships no bundled runtime dependencies. It uses the pi SDK and pi's bundled core packages, so installing it does not pull in a second agent stack.
 
-## Why workflows matter
-
-The best agentic coding work is rarely a single chat turn. It is a repeatable loop of context gathering, delegated investigation, structured handoffs, verification, and synthesis.
-
-`pi-workflow-engine` brings that shape to pi with static TypeScript workflows:
-
-- **Procedures, not prompts**: write the workflow once, then invoke it with `/workflow` or let the host agent call the `workflow` tool.
-- **Isolated subagents**: each `agent()` runs in its own in-memory pi session, so exploratory work does not pollute the main conversation.
-- **Parallel cognition**: run many focused agents at once, with a shared concurrency cap so large workflows stay bounded.
-- **Typed handoffs**: pass structured data between stages using typebox schemas instead of asking the model to emit parseable prose.
-- **Verifier stages**: make verification part of the control flow, not an optional final instruction.
-- **Live progress**: surface phases, agent status, counters, and lane items in the TUI while the run is still moving.
-
-The result is closer to an executable review playbook than a chatbot shortcut.
+The built-in workflows are advisory. They inspect, verify, and report; they do not edit files.
 
 ## Install
-
-```bash
-pi install git:github.com/timbrinded/pi-workflow-engine
-```
-
-Or from npm:
 
 ```bash
 pi install npm:pi-workflow-engine
 ```
 
-That's all. pi fetches the package and serves its core dependencies from its own bundle, so there is no clone, install, or build step. The package entrypoint is the canonical pi extension module at `.pi/extensions/pi-workflow-engine/index.ts`. Restart pi, or run `/reload` in an open session, then confirm it is registered:
+Or install from GitHub:
+
+```bash
+pi install git:github.com/timbrinded/pi-workflow-engine
+```
+
+Restart pi, or run `/reload` in an open session, then confirm it loaded:
 
 ```bash
 pi list
 ```
 
-Scope it to a single repo instead of globally. This writes to that repo's `.pi/settings.json`:
+For project-local install:
 
 ```bash
-pi install git:github.com/timbrinded/pi-workflow-engine -l
+pi install npm:pi-workflow-engine -l
 ```
 
-Uninstall with:
+## Use Dynamax
 
-```bash
-pi remove git:github.com/timbrinded/pi-workflow-engine
-```
-
-## Usage
-
-For the complete installation, invocation, authoring, tuning, and troubleshooting guide, see [USAGE.md](USAGE.md).
-
-In a pi session, from inside a git repo with changes:
+Put the word `dynamax` in your prompt when you want pi to use a custom multi-agent workflow for the current task.
 
 ```text
-/workflow code-review            # review the current branch or open PR
-/workflow code-review HEAD~3     # review a ref range, target, or focus area
-/workflow refactor-scout src/    # find safe refactor opportunities
-/workflow diagnose "typecheck fails after the schema change"
-/workflow perf-review "workflow startup latency"
-/workflow code-review --inspect  # open the live workflow inspector while the run is active
-/workflow:inspector              # open the current or last workflow inspector
-/workflow code-review --result-viewer     # explicitly open the post-review results viewer
-/workflow code-review --review-viewer     # alias for --result-viewer
-/workflow code-review --no-result-viewer  # explicitly keep the post-review viewer closed
+dynamax investigate why typecheck started failing after this branch
 ```
 
-The host agent can also invoke the `workflow` tool mid-conversation. It accepts either a registered workflow `name` or a one-off inline workflow `script`:
+What to expect:
+
+1. pi decides whether a saved workflow fits or whether to write a one-off workflow.
+2. The workflow runs focused subagents in parallel.
+3. You can watch phases, agents, findings, and logs in the workflow inspector.
+4. You get a summarized result with evidence, risks, and next steps.
+5. You can then ask pi to make changes using that result.
+
+Dynamax is one-shot by default. It applies to the next agent run and then clears. Keep it on for the session with:
 
 ```text
-Run the code-review workflow on this PR and use the result before deciding what to fix.
-```
-
-Opt into dynamic multi-agent orchestration with the literal `dynamax` token, or keep it sticky for the session:
-
-```text
-dynamax inspect this bug with multiple focused agents
 /workflow:dynamax on
 /workflow:dynamax status
 /workflow:dynamax off
 ```
 
-`dynamax` is a one-shot permission signal for the host agent: once opted in, it may run an existing named workflow or author an inline workflow script through the `workflow` tool. Dynamax workflow-tool runs open the live workflow inspector in the TUI while they run. `/workflow:dynamax on|off|status` controls sticky mode, and `/hotkeys` shows the registered inspector shortcut (`ctrl+shift+m` by default). Sticky mode, one-shot pending mode, and active Dynamax workflow runs show compact status with the relevant commands while active and leave no persistent UI when cleared. In interactive mode, `/workflow` with no arguments also offers `✍ Author temporary one-shot workflow…`; choose it, type a brief, and pi will ask the host agent to author/run a temporary inline workflow.
+The workflow inspector is available with:
 
-The advisory workflows inspect and report only; they do not edit files. They return the same shape: summary, ranked findings, evidence, impact, recommendations, and next steps.
-
-The package also ships the `workflow-code-review-actions` skill. When you select review findings in the results viewer, the parent agent can use that skill to either make minimal local fixes or raise GitHub PR inline comments through GitHub MCP/tools or `gh`.
-
-## Built-in workflows
-
-- `code-review`: Reviews the current branch, open PR, ref range, or target. It looks for correctness bugs and cleanup issues, then independently verifies candidates before ranking them.
-- `refactor-scout`: Looks for small, safe refactor opportunities: duplication, complexity, weak types, boundary leaks, dead code, and convention drift.
-- `diagnose`: Investigates a symptom, failing command, or regression. It generates competing root-cause hypotheses, verifies them, and returns the most likely causes with next validation steps.
-- `perf-review`: Reviews a slow path or workload for bottleneck hypotheses, measurement gaps, and safe optimization directions. It avoids claiming certainty when measurement evidence is missing.
-
-## The code-review workflow
-
-The bundled review workflow is deliberately shaped like a serious review process:
-
-1. **Scope**: detect the open PR or branch diff, list changed files, and read relevant project conventions.
-2. **Find**: fan out across focused review lenses such as logic bugs, error paths, edge cases, simplification, and conventions.
-3. **Gate and dedupe**: bound candidates to changed lines and collapse duplicate findings before spending verifier tokens.
-4. **Verify**: send each survivor to an independent verifier that must confirm, mark plausible, or refute with evidence.
-5. **Synthesize**: produce one ranked report with stats, verdicts, and concrete locations.
-
-After a direct TUI `/workflow code-review` run produces findings, pi records a readable table-formatted result message without asking whether to open another surface. Use `--result-viewer`/`--review-viewer` when you want the interactive findings viewer to open immediately, or `--no-result-viewer`/`--no-review-viewer` when a script or alias should explicitly keep it closed. Use `/workflow:inspector` during or after a run to open the workflow inspector.
-
-Viewer controls:
-
-- `↑`/`↓`: move between findings.
-- `1`-`9`: jump directly to a visible finding.
-- `space`: tag/untag the current finding.
-- `a`: tag or untag all visible findings.
-- `enter`: expand/collapse the detail pane.
-- `←`/`→` or `pageup`/`pagedown`: scroll detail text.
-- `f`: hand selected findings to the parent agent for minimal local fixes.
-- `c`: comment on selected findings upstream.
-- `q`/`escape`: close the viewer.
-
-GitHub inline comments require a GitHub PR checkout, an authenticated `gh`, and findings with changed-file line numbers. If direct PR context resolution or posting is unavailable, the viewer queues a parent-agent fallback prompt that can use installed GitHub MCP/tools, project skills, or `gh`. Workflow tool invocations remain non-interactive: they do not prompt or open the viewer, and they return table-formatted results only.
-
-The review lenses live in `.pi/extensions/pi-workflow-engine/workflows/code-review.ts`. That is where your repo's real failure modes belong.
-
-## Authoring workflows
-
-A workflow is a TypeScript module that exports `meta` plus a default `async (api) => result`. The injected `api` gives you the primitives:
-
-| Primitive | Behaviour |
-|-----------|-----------|
-| `agent(prompt, { schema })` | Runs a subagent in an isolated session. With a typebox `schema`, returns validated structured data; otherwise returns final text. |
-| `parallel(thunks)` | Runs every thunk concurrently and waits for all results. |
-| `pipeline(items, ...stages)` | Runs each item through all stages independently, with no barrier between stages. |
-| `phase(title)` / `log(msg)` | Drives the live progress tree shown in the TUI and stderr breadcrumbs when headless. |
-| `progress(event)` | Emits structured progress for richer workflow UI surfaces. |
-
-```ts
-import { Type } from "typebox";
-import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
-
-export const meta: WorkflowMeta = {
-  name: "my-workflow",
-  description: "Find, verify, and summarize something important.",
-};
-
-const FindingSchema = Type.Object({
-  summary: Type.String(),
-  file: Type.String(),
-  line: Type.Optional(Type.Number()),
-});
-
-export default async function run({ agent, parallel, phase }: WorkflowApi) {
-  phase("Find");
-
-  const findings = await parallel([
-    () => agent("Find correctness bugs in the diff.", { schema: FindingSchema, thinkingLevel: "low" }),
-    () => agent("Find error-handling bugs in the diff.", { schema: FindingSchema, thinkingLevel: "low" }),
-  ]);
-
-  phase("Synthesize");
-  return agent(`Summarize these findings: ${JSON.stringify(findings)}`, { thinkingLevel: "medium" });
-}
+```text
+/workflow:inspector
 ```
 
-Inline workflow scripts use the same primitives, but are passed as a string to the `workflow` tool instead of being saved as files. A minimal inline workflow starts with `export const meta` and uses the injected Type object for schemas:
+In interactive mode, `/workflow` with no arguments also offers `Author temporary one-shot workflow...`. Choose it, type a brief, and pi will ask the host agent to write and run a temporary workflow.
 
-```ts
-export const meta = {
-  name: "inline-review",
-  description: "One-off focused review workflow.",
-};
+## Example Dynamax Prompts
 
-export default async function run({ agent, parallel, phase, args }) {
-  phase("Find");
-  const Finding = Type.Object({ summary: Type.String() });
-  const findings = await parallel([
-    () => agent(`Find correctness issues: ${args}`, { schema: Finding, thinkingLevel: "low" }),
-    () => agent(`Find edge cases: ${args}`, { schema: Finding, thinkingLevel: "low" }),
-  ]);
-  return { summary: JSON.stringify(findings) };
-}
+Use Dynamax when you want breadth, independent judgment, or adversarial pressure before editing.
+
+```text
+dynamax do an adversarial review of this branch. I want correctness bugs, hidden coupling, test gaps, and over-engineered parts called out separately.
 ```
 
-Inline v1 rules: no imports, no dynamic `import()`, pure-literal `meta`, schemas must use the injected Type value, and scripts run in-process with the extension's permissions. This v1 path is permissive rather than sandboxed.
+Expected result: several review angles run independently, likely findings are verified, duplicates are merged, and you get a ranked report with concrete evidence before deciding what to fix.
 
-Under the hood:
+```text
+dynamax investigate this flaky test. Split the work between recent diffs, test setup, async timing, and external dependencies.
+```
 
-- **Each `agent()` is an in-process pi `AgentSession`** using `createAgentSession` and `SessionManager.inMemory()`.
-- **Structured output is a terminating tool**. The engine registers one tool whose `parameters` is your schema; pi validates the call and the engine captures the args. There is no JSON scraping.
-- **A single global semaphore caps concurrent agents**, so `parallel` and `pipeline` can nest freely while every `agent()` call still respects the run cap.
-- **Three surfaces are registered**: `/workflow <name> [args]` for direct use, grouped workflow commands such as `/workflow:dynamax [on|off|status]` and `/workflow:inspector`, and a `workflow` tool for host-agent delegation by `name` or inline `script`.
+Expected result: parallel hypotheses, evidence for or against each one, and the most likely root cause with a small validation step.
 
-## Local development
+```text
+dynamax compare these two implementation approaches and argue both sides before recommending one.
+```
 
-Only needed if you want to add workflows, customise workflows, or contribute. Using the bundled workflows requires none of this.
+Expected result: separate agents inspect each approach, another pass looks for failure modes, and the final answer separates tradeoffs from the recommendation.
+
+```text
+dynamax review this migration plan like a hostile reviewer. Focus on rollback, data loss, concurrency, and missing operational steps.
+```
+
+Expected result: an adversarial checklist with concrete risks, what would break, and which items are blockers versus follow-ups.
+
+```text
+dynamax find the simplest safe refactor path for this module. Avoid broad rewrites.
+```
+
+Expected result: small refactor opportunities, why they are safe, and what not to touch.
+
+```text
+dynamax inspect this performance issue. Separate measurement gaps from real bottleneck hypotheses.
+```
+
+Expected result: a performance-focused report that distinguishes known evidence from guesses and suggests the next measurement command.
+
+## Saved Workflows
+
+You can also run saved workflows directly:
+
+```text
+/workflow code-review
+/workflow code-review HEAD~3
+/workflow refactor-scout src/
+/workflow diagnose "typecheck fails after the schema change"
+/workflow perf-review "workflow startup latency"
+```
+
+Built-ins:
+
+- `code-review`: reviews a PR, branch diff, ref range, or target.
+- `refactor-scout`: finds small, safe refactor opportunities.
+- `diagnose`: investigates a bug, failing command, or regression.
+- `perf-review`: reviews a slow path or performance concern.
+
+Useful flags:
+
+```text
+/workflow code-review --inspect
+/workflow code-review --result-viewer
+/workflow code-review --no-result-viewer
+/workflow code-review --concurrency=4
+/workflow code-review --refresh
+```
+
+The code-review workflow can open an interactive findings viewer. Select findings and hand them back to the parent agent for minimal fixes, or ask it to raise GitHub PR comments when `gh` is authenticated and PR context is available.
+
+For the full command guide, see [USAGE.md](USAGE.md).
+
+## What Dynamax Is Good For
+
+Use it for:
+
+- adversarial reviews before you trust a plan or diff;
+- debugging where several causes are plausible;
+- design comparisons where you want both sides argued;
+- refactor scouting where broad rewrites would be risky;
+- performance investigations where measurement gaps matter;
+- documentation reviews where consistency and reader expectations both matter.
+
+Do not use it for every tiny task. A single prompt is still better for simple edits, one-file explanations, and obvious mechanical changes.
+
+## Local Development
+
+Only needed if you want to add workflows, customize workflows, or contribute. Using the package does not require a clone, install, or build step.
 
 ```bash
 git clone https://github.com/timbrinded/pi-workflow-engine
@@ -208,19 +164,53 @@ bun run typecheck
 bun run test
 ```
 
-Typechecking uses TypeScript Native Preview (`tsgo`) through `bun run typecheck`. The test suite is no-LLM and uses Bun's built-in `bun test` runner, not a third-party test framework.
+Load your working copy through the package manifest without installing it:
 
-### Performance controls and benchmarks
+```bash
+pi -e .
+```
 
-The workflow engine is measurement-first: tune only after checking queue wait, local orchestration, discovery, and UI render costs on the machine where you run pi.
+If you also have the global package installed, pi may report duplicate `/workflow` or `workflow` tool diagnostics. Remove one source or load only this working copy:
+
+```bash
+pi -ne -e .
+```
+
+### Add A Workflow
+
+A workflow is a TypeScript module that exports `meta` plus a default async function. The `api` object gives you `agent`, `parallel`, `pipeline`, `workflow`, `phase`, `log`, and `progress`.
+
+Guaranteed built-ins are statically registered:
+
+1. Add `.pi/extensions/pi-workflow-engine/workflows/<name>.ts`.
+2. Import it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`.
+3. Add it to `BUILTIN_WORKFLOWS`.
+
+Drop-in workflows are also discovered best-effort from:
+
+- `.pi/extensions/pi-workflow-engine/workflows/*.ts`
+- `~/.pi/agent/workflows/*.ts`
+
+Use `/workflow <name> --refresh` after adding a drop-in file.
+
+Inline workflows are passed to the `workflow` tool as a script string. They are useful for one-off Dynamax orchestration. Inline v1 rules: no imports, no dynamic `import()`, pure-literal `meta`, schemas must use the injected `Type` value, and scripts run in-process with the extension's permissions.
+
+### Technical Notes
+
+- Each `agent()` runs an in-process pi `AgentSession` with `SessionManager.inMemory()`.
+- Structured output uses a terminating tool whose `parameters` is your schema. pi validates the call; the engine captures the args. There is no JSON scraping.
+- A single run-level semaphore caps concurrent agents, so nested `parallel`, `pipeline`, and `workflow()` calls stay bounded.
+- Built-in workflows stay statically imported so they share pi's bundled `typebox` identity.
+- Set `thinkingLevel` per fan-out agent. Otherwise many subagents can inherit an expensive global reasoning level.
+
+### Performance Controls
 
 Runtime controls:
 
-- `PI_WORKFLOW_PERF=1` enables the internal per-run performance recorder used by the orchestration instrumentation.
-- `PI_WORKFLOW_CONCURRENCY=N` sets the per-run agent semaphore cap. The default remains `min(8, max(2, CPU count))`.
-- `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` limits how many `parallel()` thunks are submitted at once; this is separate from the running-agent semaphore cap.
-- `PI_WORKFLOW_LANE_ITEM_LIMIT=N` caps retained progress lane items per lane; snapshots report how many older items are hidden.
-- Slash commands can override selected controls per run: `/workflow <name> --concurrency=N --parallel-limit=N ...`.
+- `PI_WORKFLOW_PERF=1` enables per-run performance timing.
+- `PI_WORKFLOW_CONCURRENCY=N` sets the per-run agent cap. The default is `min(8, max(2, CPU count))`.
+- `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` limits how many `parallel()` thunks are submitted at once.
+- `PI_WORKFLOW_LANE_ITEM_LIMIT=N` caps retained progress lane items per lane.
 
 No-LLM benchmark scripts:
 
@@ -231,54 +221,24 @@ bun run bench:startup -- --json
 bun run bench:ui -- --agents 1000 --lane-items 1000 --json
 ```
 
-Add `--out` to write machine-local JSON under `.artifacts/benchmarks/`. These timings are advisory, not portable thresholds.
-
-Guardrails:
-
-- Do not pool or reuse subagent sessions until `agent.create_session_ms` is proven material and isolation semantics are reviewed.
-- Do not lazy-load guaranteed built-in workflow modules until pi/jiti bundled `typebox` identity is proven for that path.
-- Do not raise the default concurrency without queue-wait versus run-time evidence.
-
-Load your working copy through the package manifest without installing it. This is ephemeral and exercises the same `.pi/extensions/pi-workflow-engine/index.ts` entrypoint that installed packages use:
-
-```bash
-pi -e .
-```
-
-This repo also includes `.pi/settings.json` for project-local auto-discovery. If you also have the global package installed, pi may report duplicate `/workflow` or `workflow` tool diagnostics; remove one source or force pi to ignore discovered extensions and load this working copy instead:
-
-```bash
-pi -ne -e .
-```
-
-Add a built-in workflow by creating `.pi/extensions/pi-workflow-engine/workflows/<name>.ts`, importing it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`, and adding it to `BUILTIN_WORKFLOWS`. Statically imported workflows share pi's bundled `typebox`, which guarantees schema validation. Files in `.pi/extensions/pi-workflow-engine/workflows/` and `~/.pi/agent/workflows/` are also discovered dynamically at runtime on a best-effort basis.
-
-Keep guaranteed built-ins statically imported. Optimize cold startup at the extension entrypoint or discovery boundary first; do not lazy-load built-in workflow modules unless a test proves pi/jiti preserves the same bundled `typebox` identity for dynamically imported built-ins.
-
-Tune the built-in review workflow by editing the `ANGLES` array in `.pi/extensions/pi-workflow-engine/workflows/code-review.ts`. Tune `model`, `thinkingLevel`, and `tools` per `agent()` call, and use `PI_WORKFLOW_CONCURRENCY` or `/workflow <name> --concurrency=N` for measured per-run concurrency experiments.
-
 ### Layout
 
 ```text
 .pi/
-  settings.json                         project-local pi resource settings
+  settings.json
   extensions/pi-workflow-engine/
-    index.ts                            canonical extension entry; registers the command and tool
+    index.ts
     src/
-      types.ts                          WorkflowApi / WorkflowModule contracts
-      agent-runner.ts                   createAgentSession + terminating-tool schema bridge
-      concurrency.ts                    Semaphore, parallel(), pipeline()
-      engine.ts                         runWorkflow(); binds primitives to one run
-      progress.ts                       live phase/agent tree via ctx.ui.setWidget
-      discovery.ts                      static registry + best-effort drop-in loading
-      workflows.ts                      statically registered built-in workflows
+      types.ts
+      agent-runner.ts
+      concurrency.ts
+      engine.ts
+      progress.ts
+      discovery.ts
+      workflows.ts
     workflows/
-      code-review.ts                    scope -> find -> verify -> synthesize
-      refactor-scout.ts                 advisory refactor opportunities
-      diagnose.ts                       advisory bug diagnosis
-      perf-review.ts                    advisory performance investigation
+      code-review.ts
+      refactor-scout.ts
+      diagnose.ts
+      perf-review.ts
 ```
-
-## License
-
-MIT. See [LICENSE](LICENSE).

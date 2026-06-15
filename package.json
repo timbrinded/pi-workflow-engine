@@ -2,7 +2,7 @@
   "name": "pi-workflow-engine",
   "version": "0.7.0",
   "type": "module",
-  "description": "A customisable multi-agent workflow-orchestration engine for the pi coding agent.",
+  "description": "Zero-dependency Dynamax workflows for pi: live parallel subagents, typed handoffs, synthesized results.",
   "keywords": [
     "pi-package",
     "pi-extension",

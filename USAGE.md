@@ -1,6 +1,6 @@
 # Usage
 
-`pi-workflow-engine` adds multi-agent workflows to pi. Most users only need these surfaces:
+`pi-workflow-engine` adds zero-dependency Dynamax workflows to pi: opt into live, parallel subagents for the tasks that need a custom investigation instead of one long prompt. Most users only need these surfaces:
 
 - `/workflow <name> [args]` to run a saved workflow directly.
 - `/workflow:*` commands for related actions such as inspector reopening and Dynamax control.
@@ -42,9 +42,9 @@ Useful flags:
 
 `code-review` auto-detects a diff when you do not pass args. If there is an open GitHub PR for the current branch, it uses that PR diff; otherwise it falls back to branch-vs-main/master or `HEAD~1`.
 
-## Use `dynamax` for inline workflows
+## Use Dynamax for custom workflows
 
-Use `dynamax` when the built-in workflows are not specific enough and you want the main pi agent to author a temporary workflow for the current question.
+Use `dynamax` when the built-in workflows are not specific enough and you want the main pi agent to author a temporary workflow for the current question. It is the fastest path from "this needs multiple angles" to a live fan-out, verifier pass, and synthesized result.
 
 Interactive shortcut: run `/workflow` with no arguments, choose `✍ Author temporary one-shot workflow…`, and type a brief. pi will send that brief back to the host agent as a `dynamax` request so it can author and run an inline workflow with the `workflow` tool's `script` argument.
 
@@ -84,7 +84,7 @@ Configure the inspector shortcut by creating `~/.pi/agent/extensions/pi-workflow
 
 Set `"inspector": null` to disable the shortcut while keeping `/workflow:dynamax` and `/workflow:inspector` available.
 
-With Dynamax enabled, the host agent usually calls the `workflow` tool with `script`: a one-off inline workflow. It can still call a saved workflow by `name` when one already fits.
+With Dynamax enabled, the host agent usually calls the `workflow` tool with `script`: a one-off inline workflow tailored to your prompt. It can still call a saved workflow by `name` when one already fits.
 
 ## Workflow results
 
