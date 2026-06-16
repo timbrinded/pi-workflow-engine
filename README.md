@@ -47,8 +47,10 @@ What to expect:
 1. pi decides whether a saved workflow fits or whether to write a one-off workflow.
 2. The workflow runs focused subagents in parallel.
 3. You can watch phases, agents, findings, and logs in the workflow inspector.
-4. You get a summarized result with evidence, risks, and next steps.
+4. You get a summarized result with evidence, risks, next steps, and workflow-level token/cost totals gathered from subagent sessions.
 5. You can then ask pi to make changes using that result.
+
+Workflow usage totals are reported on the workflow result itself. pi's built-in footer and `/session` stats may still show host-session usage only unless pi core adds a first-class extension usage API.
 
 Dynamax is one-shot by default. It applies to the next agent run and then clears. Keep it on for the session with:
 
@@ -198,6 +200,7 @@ Inline workflows are passed to the `workflow` tool as a script string. They are 
 ### Technical Notes
 
 - Each `agent()` runs an in-process pi `AgentSession` with `SessionManager.inMemory()`.
+- Workflow results aggregate the finalized assistant usage from those subagent sessions before disposal and show token/cost totals separately from pi's host-session footer accounting.
 - Structured output uses a terminating tool whose `parameters` is your schema. pi validates the call; the engine captures the args. There is no JSON scraping.
 - A single run-level semaphore caps concurrent agents, so nested `parallel`, `pipeline`, and `workflow()` calls stay bounded.
 - Built-in workflows stay statically imported so they share pi's bundled `typebox` identity.
@@ -207,7 +210,7 @@ Inline workflows are passed to the `workflow` tool as a script string. They are 
 
 Runtime controls:
 
-- `PI_WORKFLOW_PERF=1` enables per-run performance timing.
+- `PI_WORKFLOW_PERF=1` enables per-run performance timing. This is timing-only; workflow usage/cost totals are reported separately when subagent usage is available.
 - `PI_WORKFLOW_CONCURRENCY=N` sets the per-run agent cap. The default is `min(8, max(2, CPU count))`.
 - `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` limits how many `parallel()` thunks are submitted at once.
 - `PI_WORKFLOW_LANE_ITEM_LIMIT=N` caps retained progress lane items per lane.

@@ -95,7 +95,10 @@ Workflow results are rendered in pi with:
 - locations and evidence;
 - recommendations;
 - next steps;
-- run stats when available.
+- run stats when available;
+- workflow-level token and cost totals gathered from subagent sessions when provider usage is available.
+
+These workflow usage totals are separate from `--perf`, which is internal timing only. They are also separate from pi's built-in footer and `/session` totals, which may still show host-session usage only unless pi core adds a first-class extension usage API. If a model has no pricing configured, token totals can be non-zero while displayed cost remains `$0.000`.
 
 During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow:inspector` if you want to bring the last completed inspector back up afterward.
 
@@ -210,7 +213,7 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 | --- | --- |
 | `--concurrency=N` / `PI_WORKFLOW_CONCURRENCY=N` | Cap concurrent subagents. Default is `min(8, max(2, CPU count))`. |
 | `--parallel-limit=N` / `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` | Limit eager `parallel()` submission. |
-| `--perf` / `PI_WORKFLOW_PERF=1` | Include internal timing aggregates. |
+| `--perf` / `PI_WORKFLOW_PERF=1` | Include internal timing aggregates. Usage/cost totals are reported separately from perf. |
 | `PI_WORKFLOW_LANE_ITEM_LIMIT=N` | Cap retained progress lane items. |
 
 ## Common fixes
