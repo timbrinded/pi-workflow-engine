@@ -79,6 +79,13 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   thinkingLevel?: ThinkingLevel;
   /** Allowlist of built-in tool names the agent may use (e.g. ["read", "bash"]). */
   tools?: string[];
+  /**
+   * Skill names to expose to this subagent. Subagents receive no skills by default.
+   * When omitted, clear prompt text such as `/skill:name`, `include skill name`, or
+   * `use the name skill` is treated as a natural-language opt-in. Pass [] to suppress
+   * prompt inference for prompts that mention skills only as subject matter.
+   */
+  skills?: readonly string[];
   /** typebox schema. When set, the agent is forced to return matching structured data. */
   schema?: S;
 }

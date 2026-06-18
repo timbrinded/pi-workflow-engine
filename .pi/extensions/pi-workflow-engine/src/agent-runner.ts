@@ -6,6 +6,7 @@ import type { Semaphore } from "./concurrency.ts";
 import type { PerfSink } from "./perf.ts";
 import type { WorkflowUsageSink } from "./usage.ts";
 import { throwIfAborted } from "./cancellation.ts";
+import { appendSkillReminder, createAgentSkillResourceLoader, extractSkillSelectorsFromText } from "./agent-skills.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
@@ -156,6 +157,20 @@ function linkSessionAbort(signal: AbortSignal | undefined, session: AgentRunnerS
   return () => signal.removeEventListener("abort", onAbort);
 }
 
+function buildToolAllowlist(opts: AgentOptions, skillsEnabled: boolean): string[] | undefined {
+  if (!opts.tools) return undefined;
+  const allow = [...opts.tools];
+  if (skillsEnabled && !allow.includes("read")) allow.push("read");
+  if (opts.schema && !allow.includes(FINAL_TOOL)) allow.push(FINAL_TOOL);
+  return allow;
+}
+
+function shouldCreateSkillResourceLoader(rc: RunContext, prompt: string, opts: AgentOptions): boolean {
+  if (!rc.createSession) return true;
+  if (opts.skills !== undefined) return true;
+  return extractSkillSelectorsFromText(prompt).length > 0;
+}
+
 /**
  * Run one subagent to completion in an isolated in-memory session.
  *
@@ -209,14 +224,25 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           : [];
 
         try {
-          // When the workflow restricts built-in tools, keep the terminating tool visible.
-          const allow = opts.tools
-            ? opts.schema
-              ? [...opts.tools, FINAL_TOOL]
-              : opts.tools
-            : undefined;
-
           const { model } = resolveAgentModel(opts.model, rc.modelRegistry, rc.hostModel);
+          const skillSetup = shouldCreateSkillResourceLoader(rc, prompt, opts)
+            ? await rc.perf.time(
+                "agent.skills_ms",
+                () =>
+                  createAgentSkillResourceLoader({
+                    cwd: rc.cwd,
+                    prompt,
+                    skills: opts.skills,
+                    log: (message) => rc.progress.log(`${label}: ${message}`),
+                  }),
+                tags,
+              )
+            : undefined;
+          const selectedSkills = skillSetup?.selectedSkills ?? [];
+          // When the workflow restricts built-in tools, keep the terminating tool visible.
+          // Skill opt-ins also need read so the subagent can load SKILL.md on demand.
+          const allow = buildToolAllowlist(opts, selectedSkills.length > 0);
+
           const createSessionForRun = rc.createSession ?? defaultCreateSession;
 
           throwIfAborted(rc.signal);
@@ -230,6 +256,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
                 thinkingLevel: opts.thinkingLevel,
                 tools: allow,
                 customTools,
+                resourceLoader: skillSetup?.resourceLoader,
                 sessionManager: SessionManager.inMemory(rc.cwd),
               }),
             tags,
@@ -244,9 +271,10 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             }
           });
 
+          const promptedWithSkills = appendSkillReminder(prompt, selectedSkills);
           const finalPrompt = opts.schema
-            ? `${prompt}\n\nWhen finished, return your result by calling the ${FINAL_TOOL} tool.`
-            : prompt;
+            ? `${promptedWithSkills}\n\nWhen finished, return your result by calling the ${FINAL_TOOL} tool.`
+            : promptedWithSkills;
           throwIfAborted(rc.signal);
           const unlinkPromptAbort = linkSessionAbort(rc.signal, activeSession);
           try {

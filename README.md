@@ -205,6 +205,7 @@ Inline workflows are passed to the `workflow` tool as a script string. They are 
 - A single run-level semaphore caps concurrent agents, so nested `parallel`, `pipeline`, and `workflow()` calls stay bounded.
 - Built-in workflows stay statically imported so they share pi's bundled `typebox` identity.
 - Set `thinkingLevel` per fan-out agent. Otherwise many subagents can inherit an expensive global reasoning level.
+- Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; clear prompt text like `include skill name` also works when `skills` is omitted.
 - Set `model` per agent only when needed: bare ids are Anthropic shorthand, and `provider/id` targets other providers.
   Omitted models inherit the host/session default; malformed or unknown explicit refs fail fast.
 

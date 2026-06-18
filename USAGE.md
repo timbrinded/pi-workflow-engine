@@ -146,6 +146,8 @@ Core primitives:
 
 Set `thinkingLevel` on fan-out agents. Otherwise many subagents can inherit an expensive global reasoning level.
 
+Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; if `tools` is also restricted, the engine automatically keeps `read` available so the subagent can load the selected `SKILL.md`. When `skills` is omitted, clear prompt text such as `/skill:name`, `include skill name`, or `use the name skill` is also treated as an opt-in. Pass `skills: []` to suppress that inference.
+
 Set `model` only when a subagent should use a specific model. Bare ids keep the Anthropic shorthand; `provider/id` targets built-in, custom, or local providers. Omitted models inherit the host/session default; malformed or unknown explicit refs fail fast.
 
 ### Compose workflows
@@ -203,6 +205,7 @@ Inline rules:
 - default-export an async workflow function;
 - no imports or dynamic `import()`;
 - use the injected `Type` object for schemas;
+- add `skills: ["skill-name"]` per `agent()` call when a subagent should use a pi skill; no skills are exposed by default;
 - no extra exports or code after the default export.
 
 Inline workflows run in-process with extension permissions, so treat them as trusted task automation.
