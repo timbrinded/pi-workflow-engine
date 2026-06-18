@@ -137,4 +137,5 @@ test("buildTemporaryWorkflowAuthorPrompt asks for an inline one-shot workflow", 
   assert.match(prompt, /workflow tool with a script argument, not a saved workflow name/);
   assert.match(prompt, /Use the injected Type object/);
   assert.match(prompt, /Set thinkingLevel explicitly/);
+  assert.match(prompt, /skills: \["skill-name"\]/);
 });

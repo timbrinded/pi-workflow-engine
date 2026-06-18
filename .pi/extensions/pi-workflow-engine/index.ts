@@ -302,6 +302,7 @@ Use the workflow tool with a script argument, not a saved workflow name.
 The script must start with export const meta = { ... } and default-export an async workflow function.
 Use the injected Type object for schemas. Do not import anything or use dynamic import().
 Set thinkingLevel explicitly on each agent() call.
+Subagents receive no skills by default. When the brief asks for a skill or a stage clearly benefits from one, pass \`skills: ["skill-name"]\` on that agent call only.
 Do not edit files unless the user explicitly requested edits.`;
 }
 
@@ -487,6 +488,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       "Use workflow with `script` for a new one-off inline workflow; the script must start with `export const meta = { ... }` and default-export an async workflow function.",
       "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
       "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
+      "Subagents receive no skills by default. In inline workflows, pass `skills: [\"skill-name\"]` per `agent()` call when the user asks for a skill or a stage should use one; grant only the needed skills.",
       "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
     ],
     parameters: Type.Object({
