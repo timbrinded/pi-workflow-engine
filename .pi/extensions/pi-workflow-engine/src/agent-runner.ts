@@ -6,7 +6,7 @@ import type { Semaphore } from "./concurrency.ts";
 import type { PerfSink } from "./perf.ts";
 import type { WorkflowUsageSink } from "./usage.ts";
 import { throwIfAborted } from "./cancellation.ts";
-import { appendSkillReminder, createAgentSkillResourceLoader } from "./agent-skills.ts";
+import { appendSkillReminder, createAgentSkillResourceLoader, extractSkillSelectorsFromText } from "./agent-skills.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
@@ -165,6 +165,12 @@ function buildToolAllowlist(opts: AgentOptions, skillsEnabled: boolean): string[
   return allow;
 }
 
+function shouldCreateSkillResourceLoader(rc: RunContext, prompt: string, opts: AgentOptions): boolean {
+  if (!rc.createSession) return true;
+  if (opts.skills !== undefined) return true;
+  return extractSkillSelectorsFromText(prompt).length > 0;
+}
+
 /**
  * Run one subagent to completion in an isolated in-memory session.
  *
@@ -218,9 +224,9 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           : [];
 
         try {
-          const skillSetup = rc.createSession
-            ? undefined
-            : await rc.perf.time(
+          const { model } = resolveAgentModel(opts.model, rc.modelRegistry, rc.hostModel);
+          const skillSetup = shouldCreateSkillResourceLoader(rc, prompt, opts)
+            ? await rc.perf.time(
                 "agent.skills_ms",
                 () =>
                   createAgentSkillResourceLoader({
@@ -230,13 +236,13 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
                     log: (message) => rc.progress.log(`${label}: ${message}`),
                   }),
                 tags,
-              );
+              )
+            : undefined;
           const selectedSkills = skillSetup?.selectedSkills ?? [];
           // When the workflow restricts built-in tools, keep the terminating tool visible.
           // Skill opt-ins also need read so the subagent can load SKILL.md on demand.
           const allow = buildToolAllowlist(opts, selectedSkills.length > 0);
 
-          const { model } = resolveAgentModel(opts.model, rc.modelRegistry, rc.hostModel);
           const createSessionForRun = rc.createSession ?? defaultCreateSession;
 
           throwIfAborted(rc.signal);

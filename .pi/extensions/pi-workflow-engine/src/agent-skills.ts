@@ -34,9 +34,9 @@ const PURPOSE_BOUNDARY_PATTERN = /\s+\b(?:for|to|when|while|so|because|in\s+orde
  * when it is omitted we only infer from clear natural-language opt-ins such as `/skill:name`,
  * `include skill diagnose`, `include this Skill diagnose`, or `use the diagnose skill`.
  */
-export function resolveAgentSkillRequest(prompt: string, explicitSkills: AgentSkillOption): AgentSkillRequest {
+export function resolveAgentSkillRequest(prompt: string, explicitSkills: unknown): AgentSkillRequest {
   if (explicitSkills !== undefined) {
-    return { selectors: uniqueSelectors(explicitSkills), source: "explicit", strict: true };
+    return { selectors: normalizeExplicitSkillSelectors(explicitSkills), source: "explicit", strict: true };
   }
   return { selectors: extractSkillSelectorsFromText(prompt), source: "prompt", strict: false };
 }
@@ -86,7 +86,7 @@ export function selectAgentSkills(skills: readonly Skill[], selectors: readonly 
 export async function createAgentSkillResourceLoader(options: {
   readonly cwd: string;
   readonly prompt: string;
-  readonly skills: AgentSkillOption;
+  readonly skills: unknown;
   readonly log?: (message: string) => void;
 }): Promise<AgentSkillResourceSetup> {
   const request = resolveAgentSkillRequest(options.prompt, options.skills);
@@ -107,6 +107,8 @@ export async function createAgentSkillResourceLoader(options: {
           },
   });
   await loader.reload();
+  const { diagnostics } = loader.getSkills();
+  logSkillDiagnostics(options.log, diagnostics, request.selectors.length > 0);
 
   if (request.strict && resolution.unmatched.length > 0) {
     throw new Error(
@@ -120,7 +122,6 @@ export async function createAgentSkillResourceLoader(options: {
     options.log?.(`Ignoring unrecognized subagent skill mention${resolution.unmatched.length === 1 ? "" : "s"}: ${resolution.unmatched.join(", ")}`);
   }
 
-  const { diagnostics } = loader.getSkills();
   return { resourceLoader: loader, selectedSkills: resolution.selected, unmatchedSelectors: resolution.unmatched, diagnostics };
 }
 
@@ -150,9 +151,38 @@ function collectListPatternMatches(text: string, pattern: RegExp, selectors: str
 function parseSkillList(fragment: string): string[] {
   const scoped = fragment.replace(PURPOSE_BOUNDARY_PATTERN, "");
   return scoped
-    .split(/\s*(?:,|\band\b|&|\+)\s*/i)
+    .split(/\s*(?:,|\s+\band\b\s+|&|\+)\s*/i)
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
+}
+
+function normalizeExplicitSkillSelectors(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Invalid subagent skills option: expected an array of skill names.");
+  }
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new Error("Invalid subagent skills option: every skill name must be a string.");
+    }
+    const normalized = normalizeSkillSelector(item);
+    if (!normalized || isGenericSkillWord(normalized)) {
+      throw new Error(`Invalid subagent skills option: \"${item}\" is not a valid skill name.`);
+    }
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function logSkillDiagnostics(log: ((message: string) => void) | undefined, diagnostics: readonly ResourceDiagnostic[], requested: boolean): void {
+  if (!requested || !log) return;
+  for (const diagnostic of diagnostics) {
+    const where = diagnostic.path ? ` (${diagnostic.path})` : "";
+    log(`skill ${diagnostic.type}: ${diagnostic.message}${where}`);
+  }
 }
 
 function uniqueSelectors(values: Iterable<string>): string[] {

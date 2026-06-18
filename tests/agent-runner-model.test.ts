@@ -197,3 +197,52 @@ test("runAgent fails fast on unknown explicit model refs before creating a subag
   assert.equal(createSessionCalls, 0);
   assert.ok(progress.events.some((event) => event.includes('failed:strict:Error: Agent model "openai/missing" not found')));
 });
+
+test("runAgent filters explicitly requested skills and auto-adds read when tools are restricted", async () => {
+  let observedTools: readonly string[] | undefined;
+  let observedSkills: readonly string[] = [];
+  let observedPrompt = "";
+  const createSession: CreateAgentSession = async (options) => {
+    observedTools = options.tools;
+    observedSkills = options.resourceLoader?.getSkills().skills.map((skill) => skill.name) ?? [];
+    return {
+      session: {
+        state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
+        async prompt(text) {
+          observedPrompt = text;
+        },
+        subscribe() {
+          return () => {};
+        },
+        dispose() {},
+        async abort() {},
+      },
+    };
+  };
+
+  const result = await runAgent(createRunContext({ createSession }), "hello", {
+    label: "skilled",
+    tools: [],
+    skills: ["workflow-code-review-actions"],
+  });
+
+  assert.equal(result, "done");
+  assert.deepEqual(observedTools, ["read"]);
+  assert.deepEqual(observedSkills, ["workflow-code-review-actions"]);
+  assert.match(observedPrompt, /Workflow subagent skills enabled: workflow-code-review-actions/);
+});
+
+test("runAgent rejects unknown explicit skills before creating a subagent session", async () => {
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+
+  await assert.rejects(
+    () => runAgent(createRunContext({ createSession }), "hello", { label: "missing-skill", skills: ["missing-skill-for-test"] }),
+    /Unknown subagent skill: missing-skill-for-test/,
+  );
+
+  assert.equal(createSessionCalls, 0);
+});

@@ -43,10 +43,17 @@ test("resolveAgentSkillRequest keeps subagents skillless unless prompt or option
   });
 });
 
+test("resolveAgentSkillRequest validates explicit skill options at runtime", () => {
+  assert.throws(() => resolveAgentSkillRequest("ordinary prompt", "diagnose"), /expected an array/);
+  assert.throws(() => resolveAgentSkillRequest("ordinary prompt", ["diagnose", 42]), /every skill name must be a string/);
+  assert.throws(() => resolveAgentSkillRequest("ordinary prompt", ["   "]), /not a valid skill name/);
+});
+
 test("normalizeSkillSelector canonicalizes natural skill names", () => {
   assert.equal(normalizeSkillSelector("/skill:parallel-web-search"), "parallel-web-search");
   assert.equal(normalizeSkillSelector("the Parallel Web Search skill"), "parallel-web-search");
   assert.equal(normalizeSkillSelector("workflow_code_review_actions"), "workflow-code-review-actions");
+  assert.deepEqual(extractSkillSelectorsFromText("skills: research-and-development"), ["research-and-development"]);
 });
 
 test("selectAgentSkills matches exact and unique fuzzy selectors and enables explicit hidden skills", () => {
