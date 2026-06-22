@@ -14,6 +14,8 @@ import {
   formatLocation,
   primaryLocation,
   recordVerdictProgress,
+  DEFAULT_ADVISORY_TOOL_HINTS,
+  DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
@@ -57,7 +59,8 @@ const HYPOTHESIS_LENSES: HypothesisLens[] = [
   { label: "test-fixture", category: "test-fixture", text: "The failure is caused by test setup, fixtures, mocks, generated files, or stale local state rather than product code." },
 ];
 
-const TOOLS = ["read", "bash"];
+const TOOLS = DEFAULT_ADVISORY_TOOLS;
+const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_LENS = 4;
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
@@ -85,7 +88,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Inspect relevant files, package/test configuration, and safe diagnostic commands. " +
       "Safe commands are read-only commands such as status, grep, listing files, typecheck/test commands, or commands explicitly requested by the user. " +
       "Do not run mutation, install, commit, network, or destructive commands. Return scoped files, observations, and constraints. Structured output only.",
-    { phase: "Scope", label: "scope", tools: TOOLS, thinkingLevel: "medium", schema: ScopeSchema },
+    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, thinkingLevel: "medium", schema: ScopeSchema },
   );
 
   if (!scope) {
@@ -117,7 +120,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
           `Consider ONLY this hypothesis lens:\n${lens.text}\n\n` +
           `Surface up to ${PER_LENS} root-cause hypotheses. Use category exactly "${lens.category}". ` +
           "Each hypothesis must include a one-line summary, locations, impact explaining how it produces the symptom, and an optional recommendation for the next validation step. Structured output only.",
-        { phase: "Hypothesize", label: `hypothesize:${lens.label}`, tools: TOOLS, thinkingLevel: "low", schema: AdvisoryCandidatesSchema },
+        { phase: "Hypothesize", label: `hypothesize:${lens.label}`, tools: TOOLS, toolHints: TOOL_HINTS, thinkingLevel: "low", schema: AdvisoryCandidatesSchema },
       );
       const candidates = (found?.candidates ?? []).slice(0, PER_LENS).map((candidate) => ({ ...candidate, lens }));
       rawCandidateCount += candidates.length;
@@ -157,6 +160,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
             phase: "Verify",
             label: `verify:${location.file.split("/").pop() ?? location.file}`,
             tools: TOOLS,
+            toolHints: TOOL_HINTS,
             thinkingLevel: "low",
             schema: AdvisoryVerdictSchema,
           },

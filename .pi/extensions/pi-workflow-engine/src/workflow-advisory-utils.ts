@@ -20,7 +20,11 @@ export interface LensVerificationPipelineResult<Verified> {
   refuted: number;
 }
 
-const DEFAULT_ADVISORY_TOOLS = ["read", "bash"];
+/** Default concrete read/inspect tools for advisory workflows. */
+export const DEFAULT_ADVISORY_TOOLS: NonNullable<AgentOptions["tools"]> = ["read", "bash", "grep", "find", "ls"];
+
+/** Dynamically include installed grep/find/search-like extension tools. */
+export const DEFAULT_ADVISORY_TOOL_HINTS: NonNullable<AgentOptions["toolHints"]> = ["search"];
 
 export type AdvisorySchedulingMode = "pipeline" | "finder-barrier";
 
@@ -29,6 +33,7 @@ export interface LensVerificationPipelineOptions<Lens extends AdvisoryLens, Veri
   lenses: readonly Lens[];
   perLens: number;
   tools?: AgentOptions["tools"];
+  toolHints?: AgentOptions["toolHints"];
   finderPhase?: string;
   verifierPhase?: string;
   schedulingMode?: AdvisorySchedulingMode;
@@ -60,6 +65,7 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
     lenses,
     perLens,
     tools = DEFAULT_ADVISORY_TOOLS,
+    toolHints = DEFAULT_ADVISORY_TOOL_HINTS,
     finderPhase = "Find",
     verifierPhase = "Verify",
     schedulingMode = "pipeline",
@@ -77,6 +83,7 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
       phase: finderPhase,
       label: `find:${lens.label}`,
       tools,
+      toolHints,
       thinkingLevel: "low",
       schema: AdvisoryCandidatesSchema,
     });
@@ -113,6 +120,7 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
       phase: verifierPhase,
       label: `verify:${location.file.split("/").pop() ?? location.file}`,
       tools,
+      toolHints,
       thinkingLevel: "low",
       schema: AdvisoryVerdictSchema,
     });

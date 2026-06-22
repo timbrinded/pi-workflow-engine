@@ -10,10 +10,17 @@ import { appendSkillReminder, createAgentSkillResourceLoader, extractSkillSelect
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
+const BUILTIN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+const DEFAULT_SEARCH_BASE_TOOLS = ["read", "bash", "grep", "find", "ls"];
 
 export interface AgentRunnerEvent {
   readonly type: string;
   readonly toolName?: string;
+}
+
+export interface AgentRunnerToolInfo {
+  readonly name: string;
+  readonly description?: string;
 }
 
 export interface AgentRunnerSession {
@@ -22,6 +29,8 @@ export interface AgentRunnerSession {
   subscribe(listener: (event: AgentRunnerEvent) => void): () => void;
   dispose(): void;
   abort(): Promise<void>;
+  getAllTools?(): readonly AgentRunnerToolInfo[];
+  setActiveToolsByName?(toolNames: readonly string[]): void;
 }
 
 export type CreateAgentSession = (options: CreateAgentSessionOptions) => Promise<{ session: AgentRunnerSession }>;
@@ -157,12 +166,79 @@ function linkSessionAbort(signal: AbortSignal | undefined, session: AgentRunnerS
   return () => signal.removeEventListener("abort", onAbort);
 }
 
-function buildToolAllowlist(opts: AgentOptions, skillsEnabled: boolean): string[] | undefined {
-  if (!opts.tools) return undefined;
-  const allow = [...opts.tools];
+type ToolSessionOptions = Pick<CreateAgentSessionOptions, "tools" | "excludeTools">;
+
+interface ToolSelection {
+  readonly sessionOptions: ToolSessionOptions;
+  readonly fallbackSessionOptions: ToolSessionOptions;
+  readonly activeTools?: readonly string[];
+  readonly toolHints: NonNullable<AgentOptions["toolHints"]>;
+}
+
+interface DynamicToolSession extends AgentRunnerSession {
+  getAllTools(): readonly AgentRunnerToolInfo[];
+  setActiveToolsByName(toolNames: readonly string[]): void;
+}
+
+function buildToolList(opts: AgentOptions, skillsEnabled: boolean, fallback?: readonly string[]): string[] | undefined {
+  const allow = opts.tools ? [...opts.tools] : fallback ? [...fallback] : undefined;
+  if (!allow) return undefined;
   if (skillsEnabled && !allow.includes("read")) allow.push("read");
   if (opts.schema && !allow.includes(FINAL_TOOL)) allow.push(FINAL_TOOL);
   return allow;
+}
+
+function buildToolSelection(opts: AgentOptions, skillsEnabled: boolean): ToolSelection {
+  const toolHints = opts.toolHints ?? [];
+  const fallback = toolHints.includes("search") ? DEFAULT_SEARCH_BASE_TOOLS : undefined;
+  const activeTools = buildToolList(opts, skillsEnabled, fallback);
+  const strictSessionOptions = { tools: activeTools ? [...activeTools] : undefined };
+
+  if (toolHints.length === 0) {
+    return { sessionOptions: strictSessionOptions, fallbackSessionOptions: strictSessionOptions, activeTools, toolHints };
+  }
+
+  const explicitlyActive = new Set(activeTools ?? []);
+  return {
+    sessionOptions: { excludeTools: BUILTIN_TOOL_NAMES.filter((name) => !explicitlyActive.has(name)) },
+    // If dynamic tool APIs are unavailable, fail closed to the concrete tools we
+    // already know instead of keeping every extension/custom tool active.
+    fallbackSessionOptions: { tools: activeTools ? [...activeTools] : [] },
+    activeTools,
+    toolHints,
+  };
+}
+
+function hasDynamicToolApis(session: AgentRunnerSession): session is DynamicToolSession {
+  return typeof session.getAllTools === "function" && typeof session.setActiveToolsByName === "function";
+}
+
+function applyDynamicToolHints(session: AgentRunnerSession, selection: ToolSelection): boolean {
+  if (selection.toolHints.length === 0) return true;
+  if (!hasDynamicToolApis(session)) return false;
+
+  const active = new Set(selection.activeTools ?? []);
+  for (const tool of session.getAllTools()) {
+    if (matchesToolHints(tool, selection.toolHints)) active.add(tool.name);
+  }
+  session.setActiveToolsByName([...active]);
+  return true;
+}
+
+function matchesToolHints(tool: AgentRunnerToolInfo, toolHints: readonly string[]): boolean {
+  return toolHints.some((hint) => hint === "search" && isSearchLikeTool(tool));
+}
+
+function isSearchLikeTool(tool: AgentRunnerToolInfo): boolean {
+  if (isClearlyMutatingToolName(tool.name)) return false;
+  const name = tool.name.toLowerCase();
+  if (name.includes("grep") || name.includes("find") || name.includes("search") || name === "rg" || name.includes("ripgrep")) return true;
+  const description = tool.description?.toLowerCase() ?? "";
+  return /\b(?:grep|find|search|ripgrep|rg|structural search|code search)\b/.test(description);
+}
+
+function isClearlyMutatingToolName(name: string): boolean {
+  return /(?:^|[-_])(?:edit|write|replace|patch|apply|delete|remove|move|rename|create|commit|push)(?:$|[-_])/.test(name.toLowerCase());
 }
 
 function shouldCreateSkillResourceLoader(rc: RunContext, prompt: string, opts: AgentOptions): boolean {
@@ -239,30 +315,44 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
               )
             : undefined;
           const selectedSkills = skillSetup?.selectedSkills ?? [];
-          // When the workflow restricts built-in tools, keep the terminating tool visible.
+          // When the workflow restricts tools, keep the terminating tool visible.
           // Skill opt-ins also need read so the subagent can load SKILL.md on demand.
-          const allow = buildToolAllowlist(opts, selectedSkills.length > 0);
+          const toolSelection = buildToolSelection(opts, selectedSkills.length > 0);
 
           const createSessionForRun = rc.createSession ?? defaultCreateSession;
+          const createSubagentSession = (sessionOptions: ToolSessionOptions) =>
+            rc.perf.time(
+              "agent.create_session_ms",
+              () =>
+                createSessionForRun({
+                  cwd: rc.cwd,
+                  model,
+                  modelRegistry: rc.modelRegistry as ModelRegistry,
+                  thinkingLevel: opts.thinkingLevel,
+                  tools: sessionOptions.tools,
+                  excludeTools: sessionOptions.excludeTools,
+                  customTools,
+                  resourceLoader: skillSetup?.resourceLoader,
+                  sessionManager: SessionManager.inMemory(rc.cwd),
+                }),
+              tags,
+            );
 
           throwIfAborted(rc.signal);
-          const created = await rc.perf.time(
-            "agent.create_session_ms",
-            () =>
-              createSessionForRun({
-                cwd: rc.cwd,
-                model,
-                modelRegistry: rc.modelRegistry as ModelRegistry,
-                thinkingLevel: opts.thinkingLevel,
-                tools: allow,
-                customTools,
-                resourceLoader: skillSetup?.resourceLoader,
-                sessionManager: SessionManager.inMemory(rc.cwd),
-              }),
-            tags,
-          );
+          let created = await createSubagentSession(toolSelection.sessionOptions);
           session = created.session;
-          const activeSession = session;
+          let activeSession = session;
+          if (!applyDynamicToolHints(activeSession, toolSelection)) {
+            rc.progress.log(`${label}: dynamic tool hints unavailable; falling back to concrete tools only`);
+            rc.perf.counter("agent.tool_hint_fallback", 1, tags);
+            const dynamicSession = activeSession;
+            session = undefined;
+            rc.perf.timeSync("agent.dispose_ms", () => dynamicSession.dispose(), tags);
+            throwIfAborted(rc.signal);
+            created = await createSubagentSession(toolSelection.fallbackSessionOptions);
+            session = created.session;
+            activeSession = session;
+          }
           throwIfAborted(rc.signal);
 
           unsubscribe = activeSession.subscribe((event) => {

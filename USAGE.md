@@ -120,12 +120,14 @@ export const meta: WorkflowMeta = {
 const Finding = Type.Object({
   summary: Type.String(),
 });
+const SEARCH_TOOLS = ["read", "bash", "grep", "find", "ls"];
+const SEARCH_TOOL_HINTS = ["search"] as const;
 
 export default async function run({ agent, parallel, phase, args }: WorkflowApi) {
   phase("Find");
   const findings = await parallel([
-    () => agent(`Find correctness issues: ${args}`, { schema: Finding, tools: ["read", "bash"], thinkingLevel: "low" }),
-    () => agent(`Find edge cases: ${args}`, { schema: Finding, tools: ["read", "bash"], thinkingLevel: "low" }),
+    () => agent(`Find correctness issues: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
+    () => agent(`Find edge cases: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
   ]);
 
   phase("Synthesize");
@@ -145,6 +147,8 @@ Core primitives:
 | `workflow(ref, args?)` | Runs another workflow inline as a sub-step and returns its result. |
 
 Set `thinkingLevel` on fan-out agents. Otherwise many subagents can inherit an expensive global reasoning level.
+
+`tools` is a strict allowlist. If you set `tools: ["read", "bash"]`, extension tools such as `ast-grep`, `mgrep`, `fffind`, or `ffgrep` are hidden from that subagent. Add `toolHints: ["search"]` to dynamically expose installed grep/find/search-like tools while keeping the concrete base allowlist portable. The built-in advisory workflows use `tools: ["read", "bash", "grep", "find", "ls"]` plus `toolHints: ["search"]`.
 
 Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; if `tools` is also restricted, the engine automatically keeps `read` available so the subagent can load the selected `SKILL.md`. When `skills` is omitted, clear prompt text such as `/skill:name`, `include skill name`, or `use the name skill` is also treated as an opt-in. Pass `skills: []` to suppress that inference.
 

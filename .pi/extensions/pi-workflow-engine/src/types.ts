@@ -52,6 +52,8 @@ export interface WorkflowProgressSource {
 /** Options for a single `agent()` call. */
 export type WorkflowLaneItemStatus = "pending" | "running" | "success" | "warning" | "error";
 
+export type AgentToolHint = "search";
+
 export type WorkflowProgressEvent =
   | { type: "counter"; key: string; label: string; value: number }
   | { type: "counter_delta"; key: string; label: string; delta: number }
@@ -77,8 +79,14 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   model?: string;
   /** Reasoning effort for this agent. */
   thinkingLevel?: ThinkingLevel;
-  /** Allowlist of built-in tool names the agent may use (e.g. ["read", "bash"]). */
+  /** Allowlist of concrete tool names the agent may use (e.g. ["read", "bash"]). */
   tools?: string[];
+  /**
+   * Dynamically include installed tools matching semantic categories. Currently
+   * "search" matches grep/find/code-search style tools such as ast-grep,
+   * mgrep, ffgrep, fffind, ripgrep wrappers, and pi's built-in grep/find/ls.
+   */
+  toolHints?: readonly AgentToolHint[];
   /**
    * Skill names to expose to this subagent. Subagents receive no skills by default.
    * When omitted, clear prompt text such as `/skill:name`, `include skill name`, or

@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
+import { Type } from "typebox";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
@@ -210,6 +211,100 @@ test("runAgent fails fast on unknown explicit model refs before creating a subag
 
   assert.equal(createSessionCalls, 0);
   assert.ok(progress.events.some((event) => event.includes('failed:strict:Error: Agent model "openai/missing" not found')));
+});
+
+test("runAgent dynamically enables installed search-like tools", async () => {
+  let observedTools: readonly string[] | undefined;
+  let observedExcludeTools: readonly string[] | undefined;
+  let activatedTools: readonly string[] = [];
+  const createSession: CreateAgentSession = async (options) => {
+    observedTools = options.tools;
+    observedExcludeTools = options.excludeTools;
+    return {
+      session: {
+        state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
+        async prompt() {},
+        subscribe() {
+          return () => {};
+        },
+        dispose() {},
+        async abort() {},
+        getAllTools() {
+          return [
+            { name: "read" },
+            { name: "bash" },
+            { name: "grep" },
+            { name: "find" },
+            { name: "ls" },
+            { name: "ffgrep" },
+            { name: "mgrep" },
+            { name: "ast-grep" },
+            { name: "workflow", description: "Run a workflow" },
+            { name: "search_replace" },
+          ];
+        },
+        setActiveToolsByName(toolNames) {
+          activatedTools = toolNames;
+        },
+      },
+    };
+  };
+
+  const result = await runAgent(createRunContext({ createSession }), "hello", {
+    label: "dynamic-tools",
+    tools: ["read", "bash", "grep", "find", "ls"],
+    toolHints: ["search"],
+    schema: Type.Object({ ok: Type.Boolean() }),
+  });
+
+  assert.equal(result, null);
+  assert.equal(observedTools, undefined);
+  assert.deepEqual(observedExcludeTools, ["edit", "write"]);
+  assert.deepEqual(activatedTools, ["read", "bash", "grep", "find", "ls", "final_answer", "ffgrep", "mgrep", "ast-grep"]);
+});
+
+test("runAgent falls back to concrete tools when dynamic tool APIs are unavailable", async () => {
+  const calls: Array<{ readonly tools?: readonly string[]; readonly excludeTools?: readonly string[] }> = [];
+  let firstPrompted = false;
+  let secondPrompted = false;
+  let firstDisposed = false;
+
+  const createSession: CreateAgentSession = async (options) => {
+    calls.push({ tools: options.tools, excludeTools: options.excludeTools });
+    const isFirstCall = calls.length === 1;
+    return {
+      session: {
+        state: { messages: [{ role: "assistant", content: [{ type: "text", text: isFirstCall ? "wide" : "strict" }] }] },
+        async prompt() {
+          if (isFirstCall) firstPrompted = true;
+          else secondPrompted = true;
+        },
+        subscribe() {
+          return () => {};
+        },
+        dispose() {
+          if (isFirstCall) firstDisposed = true;
+        },
+        async abort() {},
+      },
+    };
+  };
+
+  const result = await runAgent(createRunContext({ createSession }), "hello", {
+    label: "dynamic-tools-fallback",
+    tools: ["read", "bash", "grep", "find", "ls"],
+    toolHints: ["search"],
+    schema: Type.Object({ ok: Type.Boolean() }),
+  });
+
+  assert.equal(result, null);
+  assert.deepEqual(calls, [
+    { tools: undefined, excludeTools: ["edit", "write"] },
+    { tools: ["read", "bash", "grep", "find", "ls", "final_answer"], excludeTools: undefined },
+  ]);
+  assert.equal(firstPrompted, false);
+  assert.equal(secondPrompted, true);
+  assert.equal(firstDisposed, true);
 });
 
 test("runAgent filters explicitly requested skills and auto-adds read when tools are restricted", async () => {

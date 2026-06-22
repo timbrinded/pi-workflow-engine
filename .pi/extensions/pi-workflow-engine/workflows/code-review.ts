@@ -14,6 +14,8 @@ import {
   primaryLocation,
   recordVerdictProgress,
   verdictConfidence,
+  DEFAULT_ADVISORY_TOOL_HINTS,
+  DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
 import { captureDiff } from "../src/diff-capture.ts";
 import type { ReviewContext } from "../src/review/review-issues.ts";
@@ -55,7 +57,8 @@ const ANGLES: Angle[] = [
   { label: "conventions", kind: "cleanup", text: "Violations of the project conventions noted in scope (naming, idioms, banned patterns)." },
 ];
 
-const TOOLS = ["read", "bash"];
+const TOOLS = DEFAULT_ADVISORY_TOOLS;
+const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_ANGLE = 6;
 const DIFF_EMBED_CAP = 60_000;
 
@@ -123,7 +126,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Then: list the changed files, summarize the change in one paragraph (mention the PR if one was found), " +
       "and read any relevant AGENTS.md or project docs noting conventions a reviewer should know.\n" +
       "Return diffCommand exactly as a reviewer should run it. Structured output only.",
-    { phase: "Scope", label: "scope", tools: TOOLS, thinkingLevel: "medium", schema: ScopeSchema },
+    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, thinkingLevel: "medium", schema: ScopeSchema },
   );
 
   if (!scope) {
@@ -195,7 +198,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
           `Surface up to ${PER_ANGLE} candidates. Use category exactly "${angle.kind}". Each candidate must include a one-line summary, ` +
           "locations with the changed file and a line that appears in the diff, and impact describing the concrete failure or maintenance scenario. " +
           "Pass through anything with a nameable impact — a separate verifier judges them next. Structured output only.",
-        { phase: "Find", label: `find:${angle.label}`, tools: TOOLS, thinkingLevel: "low", schema: AdvisoryCandidatesSchema },
+        { phase: "Find", label: `find:${angle.label}`, tools: TOOLS, toolHints: TOOL_HINTS, thinkingLevel: "low", schema: AdvisoryCandidatesSchema },
       );
       const raw = (found?.candidates ?? []).slice(0, PER_ANGLE);
       rawCandidateCount += raw.length;
@@ -249,6 +252,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
           phase: "Verify",
           label: `verify:${location.file.split("/").pop() ?? location.file}`,
           tools: TOOLS,
+          toolHints: TOOL_HINTS,
           thinkingLevel: "low",
           schema: AdvisoryVerdictSchema,
         },

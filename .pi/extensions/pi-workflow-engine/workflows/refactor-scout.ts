@@ -10,6 +10,8 @@ import {
   formatEvidence,
   formatLocation,
   runLensVerificationPipeline,
+  DEFAULT_ADVISORY_TOOL_HINTS,
+  DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
@@ -50,7 +52,8 @@ const REFACTOR_LENSES: RefactorLens[] = [
   { label: "conventions", category: "conventions", text: "Departures from project conventions, naming, dependency rules, or local idioms." },
 ];
 
-const TOOLS = ["read", "bash"];
+const TOOLS = DEFAULT_ADVISORY_TOOLS;
+const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_LENS = 5;
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
@@ -76,7 +79,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Inspect repository structure, the target path or module, and relevant AGENTS.md / project docs conventions. " +
       "Return the concrete files that should be considered, a short summary, and any conventions that affect refactor advice. " +
       `This workflow will fan out across ${REFACTOR_LENSES.length} lenses with up to ${PER_LENS} candidates per lens. Structured output only.`,
-    { phase: "Scope", label: "scope", tools: TOOLS, thinkingLevel: "medium", schema: ScopeSchema },
+    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, thinkingLevel: "medium", schema: ScopeSchema },
   );
 
   if (!scope || scope.files.length === 0) {
@@ -104,6 +107,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     schedulingMode: "finder-barrier",
     perLens: PER_LENS,
     tools: TOOLS,
+    toolHints: TOOL_HINTS,
     finderPrompt: (lens) =>
       `## Refactor-scout finder — ${lens.label}\n\n${scopeBlock}\n` +
       "This workflow is advisory-only: do not edit files and do not propose broad rewrites.\n" +
