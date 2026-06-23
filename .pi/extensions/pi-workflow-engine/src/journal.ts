@@ -42,6 +42,7 @@ export function hashAgentCall(prompt: string, opts: AgentOptions = {}): string {
       toolHints: sortedArray(opts.toolHints),
       skills: sortedArray(opts.skills),
       schema: opts.schema,
+      isolation: opts.isolation,
     },
   };
   return createHash("sha256").update(stableStringify(behavior)).digest("hex");

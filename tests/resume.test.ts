@@ -17,6 +17,7 @@ import {
 import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import type { WorkflowModule, WorkflowProgressEvent, WorkflowRef, WorkflowRunMetadata } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly logs: string[];
@@ -97,6 +98,7 @@ async function runWithJournal(input: {
     budget: createBudget(null, usage),
     journal,
     nextAgentIndex: createAgentIndexCounter(),
+    worktrees: new WorktreeRegistry(input.cwd),
     createSession: input.createSession,
   };
 

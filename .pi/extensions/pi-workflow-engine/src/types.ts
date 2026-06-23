@@ -69,6 +69,12 @@ export type WorkflowLaneItemStatus = "pending" | "running" | "success" | "warnin
 
 export type AgentToolHint = "search";
 
+export interface IsolatedAgentResult<T> {
+  readonly result: T;
+  readonly patch: string;
+  readonly changed: boolean;
+}
+
 export type WorkflowProgressEvent =
   | { type: "counter"; key: string; label: string; value: number }
   | { type: "counter_delta"; key: string; label: string; delta: number }
@@ -94,6 +100,8 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   model?: string;
   /** Reasoning effort for this agent. */
   thinkingLevel?: ThinkingLevel;
+  /** Run this agent in a disposable git worktree and return its patch with the result. */
+  isolation?: "worktree";
   /** Allowlist of concrete tool names the agent may use (e.g. ["read", "bash"]). */
   tools?: string[];
   /**
@@ -118,6 +126,13 @@ export interface AgentOptions<S extends TSchema = TSchema> {
  * exports `meta` plus a default `async (api: WorkflowApi) => result`.
  */
 export interface WorkflowApi {
+  /** Run a schema subagent in a disposable worktree and return its structured result plus patch. */
+  agent<S extends TSchema>(
+    prompt: string,
+    opts: AgentOptions<S> & { schema: S; isolation: "worktree" },
+  ): Promise<IsolatedAgentResult<Static<S> | null>>;
+  /** Run a text subagent in a disposable worktree and return its final text plus patch. */
+  agent(prompt: string, opts: AgentOptions & { isolation: "worktree" }): Promise<IsolatedAgentResult<string>>;
   /** Run a subagent and return its validated structured output (null if it never produced one). */
   agent<S extends TSchema>(prompt: string, opts: AgentOptions<S> & { schema: S }): Promise<Static<S> | null>;
   /** Run a subagent and return its final assistant text. */

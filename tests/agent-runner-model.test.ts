@@ -24,6 +24,11 @@ import {
   type WorkflowJournal,
   type JournalLookup,
 } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
+import {
+  WorktreeRegistry,
+  type WorktreeGitCommandOptions,
+  type WorktreeGitRunner,
+} from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 
 type FindCall = { readonly provider: string; readonly modelId: string };
 
@@ -87,10 +92,12 @@ function createRunContext(input: {
   readonly usage?: ReturnType<typeof createWorkflowUsageRecorder>;
   readonly journal?: WorkflowJournal;
   readonly nextAgentIndex?: () => number;
+  readonly worktrees?: WorktreeRegistry;
 }): RunContext {
   const usage = input.usage ?? createWorkflowUsageRecorder();
+  const cwd = input.cwd ?? process.cwd();
   return {
-    cwd: input.cwd ?? process.cwd(),
+    cwd,
     hostModel: input.hostModel,
     modelRegistry: input.modelRegistry ?? createRegistry([]),
     semaphore: new Semaphore(1),
@@ -101,6 +108,7 @@ function createRunContext(input: {
     budget: input.budget ?? createBudget(null, usage),
     journal: input.journal ?? createMemoryBackedJournal(),
     nextAgentIndex: input.nextAgentIndex ?? createAgentIndexCounter(),
+    worktrees: input.worktrees ?? new WorktreeRegistry(cwd),
     createSession: input.createSession,
   };
 }
@@ -117,6 +125,38 @@ function createTextSession(): Awaited<ReturnType<CreateAgentSession>> {
       async abort() {},
     },
   };
+}
+
+function createFakeWorktreeRegistry(input: {
+  readonly repoCwd: string;
+  readonly insideGit?: boolean;
+  readonly patch?: string;
+  readonly changed?: boolean;
+}): { readonly registry: WorktreeRegistry; readonly calls: WorktreeGitCommandOptions[] } {
+  const calls: WorktreeGitCommandOptions[] = [];
+  const runner: WorktreeGitRunner = {
+    async runGit(options) {
+      calls.push(options);
+      const command = options.args.join(" ");
+      if (command === "rev-parse --is-inside-work-tree") {
+        return { ok: input.insideGit ?? true, stdout: input.insideGit === false ? "false\n" : "true\n", stderr: "" };
+      }
+      if (options.args[0] === "worktree" && options.args[1] === "add") return { ok: true, stdout: "", stderr: "" };
+      if (options.args[0] === "worktree" && options.args[1] === "remove") return { ok: true, stdout: "", stderr: "" };
+      return { ok: true, stdout: "", stderr: "" };
+    },
+  };
+  return {
+    calls,
+    registry: new WorktreeRegistry(input.repoCwd, {
+      runner,
+      patchCapture: async () => ({ patch: input.patch ?? "", changed: input.changed ?? false }),
+    }),
+  };
+}
+
+function commandNames(calls: readonly WorktreeGitCommandOptions[]): string[] {
+  return calls.map((call) => call.args.slice(0, 2).join(" "));
 }
 
 async function writeProjectSkill(cwd: string, name: string): Promise<void> {
@@ -278,6 +318,106 @@ test("runAgent records successful live results into the journal", async () => {
 
   assert.equal(result, "done");
   assert.deepEqual(recorded, [{ index: 1, hash: hashAgentCall("hello", { label: "live" }), value: "done" }]);
+});
+
+test("runAgent with worktree isolation creates an isolated cwd and returns a patch wrapper", async () => {
+  const repoCwd = "/repo";
+  const { registry, calls } = createFakeWorktreeRegistry({ repoCwd, patch: "diff --git a/file b/file\n", changed: true });
+  let observedCwd = "";
+  const createSession: CreateAgentSession = async (options) => {
+    observedCwd = options.cwd ?? "";
+    return createTextSession();
+  };
+
+  const result = await runAgent(createRunContext({ createSession, cwd: repoCwd, worktrees: registry }), "hello", {
+    label: "isolated",
+    isolation: "worktree",
+  });
+
+  assert.deepEqual(result, { result: "done", patch: "diff --git a/file b/file\n", changed: true });
+  assert.notEqual(observedCwd, repoCwd);
+  assert.ok(observedCwd.startsWith("/tmp/pi-workflow-"));
+  assert.deepEqual(commandNames(calls), ["rev-parse --is-inside-work-tree", "worktree add", "worktree remove"]);
+  assert.equal(registry.size, 0);
+});
+
+test("runAgent removes an isolated worktree when the agent fails", async () => {
+  const repoCwd = "/repo";
+  const { registry, calls } = createFakeWorktreeRegistry({ repoCwd });
+  const createSession: CreateAgentSession = async () => ({
+    session: {
+      state: { messages: [] },
+      async prompt() {
+        throw new Error("agent failed");
+      },
+      subscribe() {
+        return () => {};
+      },
+      dispose() {},
+      async abort() {},
+    },
+  });
+
+  await assert.rejects(
+    () => runAgent(createRunContext({ createSession, cwd: repoCwd, worktrees: registry }), "hello", { label: "isolated", isolation: "worktree" }),
+    /agent failed/,
+  );
+
+  assert.deepEqual(commandNames(calls), ["rev-parse --is-inside-work-tree", "worktree add", "worktree remove"]);
+  assert.equal(registry.size, 0);
+});
+
+test("runAgent rejects worktree isolation outside a git work tree", async () => {
+  const repoCwd = "/repo";
+  const { registry, calls } = createFakeWorktreeRegistry({ repoCwd, insideGit: false });
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+
+  await assert.rejects(
+    () => runAgent(createRunContext({ createSession, cwd: repoCwd, worktrees: registry }), "hello", { label: "isolated", isolation: "worktree" }),
+    /not inside a git work tree/,
+  );
+
+  assert.equal(createSessionCalls, 0);
+  assert.deepEqual(commandNames(calls), ["rev-parse --is-inside-work-tree"]);
+});
+
+test("runAgent leaves the non-isolated cwd unchanged and does not touch worktrees", async () => {
+  const repoCwd = "/repo";
+  const { registry, calls } = createFakeWorktreeRegistry({ repoCwd });
+  let observedCwd = "";
+  const createSession: CreateAgentSession = async (options) => {
+    observedCwd = options.cwd ?? "";
+    return createTextSession();
+  };
+
+  const result = await runAgent(createRunContext({ createSession, cwd: repoCwd, worktrees: registry }), "hello", { label: "plain" });
+
+  assert.equal(result, "done");
+  assert.equal(observedCwd, repoCwd);
+  assert.deepEqual(calls, []);
+});
+
+test("runAgent cached isolated hits skip worktree creation", async () => {
+  const repoCwd = "/repo";
+  const { registry, calls } = createFakeWorktreeRegistry({ repoCwd });
+  const opts = { label: "cached-isolated", isolation: "worktree" as const };
+  const cached = { result: "cached", patch: "diff", changed: true };
+  const journal = createMemoryBackedJournal([{ index: 1, hash: hashAgentCall("hello", opts), value: cached }]);
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+
+  const result = await runAgent(createRunContext({ createSession, cwd: repoCwd, worktrees: registry, journal }), "hello", opts);
+
+  assert.deepEqual(result, cached);
+  assert.equal(createSessionCalls, 0);
+  assert.deepEqual(calls, []);
 });
 
 test("runAgent re-checks budget after waiting for a concurrency slot", async () => {

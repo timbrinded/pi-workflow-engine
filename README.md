@@ -8,7 +8,7 @@ Use `dynamax` when a task needs several independent passes: review from differen
 
 The package ships no bundled runtime dependencies. It uses the pi SDK and pi's bundled core packages, so installing it does not pull in a second agent stack.
 
-The built-in workflows are advisory. They inspect, verify, and report; they do not edit files.
+The built-in workflows are advisory by default. They inspect, verify, and report; they do not edit files. Workflow authors can opt individual subagents into disposable git worktrees when they want reviewable patches instead of direct edits.
 
 ## Install
 
@@ -208,6 +208,7 @@ Inline workflows are passed to the `workflow` tool as a script string. They are 
 - Structured output uses a terminating tool whose `parameters` is your schema. pi validates the call; the engine captures the args. There is no JSON scraping.
 - A schema agent that finishes without calling `final_answer` is re-prompted once before returning `null`.
 - Runs write completed `agent()` results to `.pi/.workflow-runs/<run-id>.jsonl`; `--resume <run-id>` replays the longest unchanged prefix and writes a fresh journal for the resumed run.
+- `agent(..., { isolation: "worktree" })` runs in a disposable git worktree and returns `{ result, patch, changed }`; the user working tree is not mutated.
 - A single run-level semaphore caps concurrent agents, so nested `parallel`, `pipeline`, and `workflow()` calls stay bounded.
 - `parallel()` and `pipeline()` are fail-soft: recoverable branch failures, including budget backstops, become `null` slots while survivors continue. A genuine run abort still rejects.
 - Built-in workflows stay statically imported so they share pi's bundled `typebox` identity.

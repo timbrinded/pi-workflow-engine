@@ -16,6 +16,7 @@ import {
   pruneWorkflowJournals,
   workflowJournalPath,
 } from "./journal.ts";
+import { WorktreeRegistry } from "./worktree.ts";
 
 /** Default global cap on concurrent agents per run. */
 const DEFAULT_CONCURRENCY = defaultConcurrency();
@@ -73,6 +74,7 @@ export async function runWorkflow(
   const journalPath = workflowJournalPath(ctx.cwd, runId);
   const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
   const journal = await createWorkflowJournal({ resumePath, writePath: journalPath });
+  const worktrees = new WorktreeRegistry(ctx.cwd);
   resolvedOptions.onRunMetadata?.({ runId, resumedFromRunId: resolvedOptions.resumeFromRunId, journalPath });
   progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
   const runAbortController = new AbortController();
@@ -90,6 +92,7 @@ export async function runWorkflow(
     budget,
     journal,
     nextAgentIndex: createAgentIndexCounter(),
+    worktrees,
   };
 
   try {
@@ -117,6 +120,7 @@ export async function runWorkflow(
       resolvedOptions.onProgressSource?.(undefined);
       unlinkContextAbortSignal();
       unlinkOptionAbortSignal();
+      await worktrees.removeAll();
       await pruneWorkflowJournals(ctx.cwd);
     }
   }

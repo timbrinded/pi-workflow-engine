@@ -18,7 +18,7 @@ From inside a repo:
 /workflow perf-review "workflow startup latency"
 ```
 
-The built-in workflows are advisory. They inspect, verify, and report; they do **not** edit files.
+The built-in workflows are advisory by default. They inspect, verify, and report; they do **not** edit files. Saved or inline workflows can opt individual agents into disposable git worktrees when they need reviewable patches.
 
 Useful flags:
 
@@ -170,6 +170,25 @@ Set `thinkingLevel` on fan-out agents. Otherwise many subagents can inherit an e
 Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; if `tools` is also restricted, the engine automatically keeps `read` available so the subagent can load the selected `SKILL.md`. When `skills` is omitted, clear prompt text such as `/skill:name`, `include skill name`, or `use the name skill` is also treated as an opt-in. Pass `skills: []` to suppress that inference.
 
 Set `model` only when a subagent should use a specific model. Bare ids keep the Anthropic shorthand; `provider/id` targets built-in, custom, or local providers. Omitted models inherit the host/session default; malformed or unknown explicit refs fail fast.
+
+### Mutating agents in worktrees
+
+Use `isolation: "worktree"` only for agents that should edit files. The agent runs in a detached git worktree, the engine captures its net patch, then the worktree is removed. The user's working tree is not changed.
+
+```ts
+const edit = await agent("Rename this helper and update its call sites.", {
+  tools: ["read", "bash", "edit", "grep", "find", "ls"],
+  isolation: "worktree",
+  thinkingLevel: "medium",
+});
+
+if (edit.changed) {
+  return { summary: "Patch ready for review.", patch: edit.patch };
+}
+return { summary: edit.result };
+```
+
+Isolated agents require the workflow `cwd` to be inside a git work tree. Outside git, the agent fails fast rather than silently mutating the shared directory. The return value is `{ result, patch, changed }`, where `result` is the normal text or structured `agent()` result and `patch` is a `git diff HEAD` patch. Worktree setup costs disk and git process time, so keep it opt-in for mutating/parallel-edit stages.
 
 ### Compose workflows
 

@@ -7,6 +7,7 @@ import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createAgentIndexCounter, createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
+import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 
 function createProgress(): AgentProgress & { readonly events: string[] } {
   const events: string[] = [];
@@ -68,6 +69,7 @@ function createRunContext(
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
     journal: createMemoryBackedJournal(),
     nextAgentIndex: createAgentIndexCounter(),
+    worktrees: new WorktreeRegistry(process.cwd()),
     createSession,
   };
 }

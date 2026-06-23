@@ -9,6 +9,7 @@ import { WorkflowBudgetExceededError, type WorkflowBudget } from "./budget.ts";
 import { throwIfAborted } from "./cancellation.ts";
 import { appendSkillReminder, createAgentSkillResourceLoader, extractSkillSelectorsFromText } from "./agent-skills.ts";
 import { hashAgentCall, type WorkflowJournal } from "./journal.ts";
+import type { WorktreeRegistry } from "./worktree.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
@@ -63,6 +64,7 @@ export interface RunContext {
   budget: WorkflowBudget;
   journal: WorkflowJournal;
   nextAgentIndex(): number;
+  worktrees: WorktreeRegistry;
   createSession?: CreateAgentSession;
 }
 
@@ -322,6 +324,8 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
         let session: AgentRunnerSession | undefined;
         let usageRecorded = false;
         let unsubscribe: (() => void) | undefined;
+        let worktreePath: string | undefined;
+        let agentCwd = rc.cwd;
         const recordUsage = (activeSession: AgentRunnerSession): void => {
           if (usageRecorded) return;
           usageRecorded = true;
@@ -344,13 +348,24 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           : [];
 
         try {
+          if (opts.isolation === "worktree") {
+            if (!(await rc.worktrees.isGitWorktree(rc.signal))) {
+              throw new Error("Agent requested worktree isolation, but the workflow cwd is not inside a git work tree.");
+            }
+            const added = await rc.worktrees.add(rc.signal);
+            if ("error" in added) throw new Error(`Failed to create isolated worktree: ${added.error}`);
+            worktreePath = added.path;
+            agentCwd = worktreePath;
+            rc.progress.log(`${label}: using isolated worktree ${worktreePath}`);
+          }
+
           const { model } = resolveAgentModel(opts.model, rc.modelRegistry, rc.hostModel);
           const skillSetup = shouldCreateSkillResourceLoader(rc, prompt, opts)
             ? await rc.perf.time(
                 "agent.skills_ms",
                 () =>
                   createAgentSkillResourceLoader({
-                    cwd: rc.cwd,
+                    cwd: agentCwd,
                     prompt,
                     skills: opts.skills,
                     log: (message) => rc.progress.log(`${label}: ${message}`),
@@ -369,7 +384,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
               "agent.create_session_ms",
               () =>
                 createSessionForRun({
-                  cwd: rc.cwd,
+                  cwd: agentCwd,
                   model,
                   modelRegistry: rc.modelRegistry as ModelRegistry,
                   thinkingLevel: opts.thinkingLevel,
@@ -377,7 +392,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
                   excludeTools: sessionOptions.excludeTools,
                   customTools,
                   resourceLoader: skillSetup?.resourceLoader,
-                  sessionManager: SessionManager.inMemory(rc.cwd),
+                  sessionManager: SessionManager.inMemory(agentCwd),
                 }),
               tags,
             );
@@ -427,7 +442,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           recordUsage(activeSession);
           throwIfAborted(rc.signal);
 
-          const result = rc.perf.timeSync(
+          const rawResult = rc.perf.timeSync(
             "agent.extract_result_ms",
             () => {
               if (opts.schema) {
@@ -441,6 +456,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             },
             tags,
           );
+          const result = worktreePath ? await isolatedResult(rc, worktreePath, rawResult) : rawResult;
           await rc.journal.record(agentIndex, agentHash, result);
           return result;
         } catch (error) {
@@ -462,6 +478,10 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
               tags,
             );
           }
+          if (worktreePath) {
+            const removed = await rc.worktrees.remove(worktreePath);
+            if (!removed.ok) rc.progress.log(`${label}: failed to remove isolated worktree (${removed.error ?? (removed.stderr.trim() || "unknown error")})`);
+          }
           if (!failed) rc.progress.agentDone(label, rowId);
         }
         },
@@ -475,4 +495,10 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
       throw error;
     }
   }, tags);
+}
+
+async function isolatedResult(rc: RunContext, worktreePath: string, result: unknown): Promise<{ readonly result: unknown; readonly patch: string; readonly changed: boolean }> {
+  const patch = await rc.worktrees.capturePatch(worktreePath, rc.signal);
+  if ("error" in patch) throw new Error(`Failed to capture isolated worktree patch: ${patch.error}`);
+  return { result, patch: patch.patch, changed: patch.changed };
 }
