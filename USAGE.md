@@ -222,6 +222,7 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 | --- | --- |
 | `--concurrency=N` / `PI_WORKFLOW_CONCURRENCY=N` | Cap concurrent subagents. Default is `min(8, max(2, CPU count))`. |
 | `--parallel-limit=N` / `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` | Limit eager `parallel()` submission. |
+| `--budget=N` / `PI_WORKFLOW_BUDGET=N` | Set an output-token ceiling for completed subagents. `agent()` throws `WorkflowBudgetExceededError` before starting another agent once the ceiling is reached; agents already running may overshoot because the engine does not reserve per-agent estimates. |
 | `--perf` / `PI_WORKFLOW_PERF=1` | Include internal timing aggregates. Usage/cost totals are reported separately from perf. |
 | `PI_WORKFLOW_LANE_ITEM_LIMIT=N` | Cap retained progress lane items. |
 
@@ -230,4 +231,5 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 - **Unknown workflow**: confirm the extension is loaded with `pi list`; use `--refresh` for new drop-ins.
 - **Inline compile error**: check the inline rules above.
 - **Slow run**: lower fan-out, set `thinkingLevel`, or reduce `--concurrency`.
+- **Budget exhausted**: narrow the target, raise `--budget`, reduce fan-out/concurrency, or guard custom loops with `api.budget.remaining()`.
 - **Duplicate command/tool warnings while developing**: avoid loading both the global package and the working copy.

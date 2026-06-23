@@ -134,6 +134,7 @@ Useful flags:
 /workflow code-review --result-viewer
 /workflow code-review --no-result-viewer
 /workflow code-review --concurrency=4
+/workflow code-review --budget=50000
 /workflow code-review --refresh
 ```
 

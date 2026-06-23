@@ -1,4 +1,4 @@
-# Plan 002: Token/cost budget for workflow runs
+# Plan 002: Output-token budget for workflow runs
 
 > **Executor instructions**: Follow this plan step by step. Run the verification commands and confirm the expected result before moving on. When done, update the status row for this plan in `plans/README.md`.
 
@@ -14,7 +14,7 @@
 ## Why this matters
 
 The built-in dynamic-Workflow tool injects a `budget` object — `{ total, spent(), remaining() }` —
-so workflow authors can scale fleets from a token target and run loop-until-budget patterns,
+so workflow authors can scale fleets from an output-token target and run loop-until-budget patterns,
 with `agent()` throwing once the ceiling is hit. `pi-workflow-engine` had no budget; only the
 wall-clock `PerfSink`. This is the #1 feature-parity gap.
 
@@ -33,8 +33,8 @@ this matches the built-in's reactive accounting.
   `createBudget(total, usage)`: a live closure where `remaining()` is `Infinity` when
   `total === null`, else `Math.max(0, total - spent())`.
 - `src/types.ts` — `budget: WorkflowBudget` on `WorkflowApi`; `budget?: number` on `WorkflowRunOptions`.
-- `src/options.ts` — resolve `budget` from `input.budget ?? PI_WORKFLOW_BUDGET`, clamped (reuses
-  `optionalClampedInteger`). Always present on the resolved options (like `parallelSubmissionLimit`).
+- `src/options.ts` — resolve `budget` from `input.budget ?? PI_WORKFLOW_BUDGET`, validated as a
+  bounded positive integer. Always present on the resolved options (like `parallelSubmissionLimit`).
 - `src/engine.ts` — `createBudget(resolvedOptions.budget ?? null, usage)` onto `rc`; exposed as
   `api.budget`. Sub-workflows inherit it via the existing `{ ...rc, signal }` spread.
 - `src/agent-runner.ts` — `budget` on `RunContext`; `ensureWithinBudget(rc.budget)` called at the
@@ -45,16 +45,14 @@ this matches the built-in's reactive accounting.
 
 ## STOP conditions
 
-- `ensureWithinBudget` is intentionally a **no-op stub** pending the over-budget policy decision
-  (accept-overshoot vs reserve-per-agent-estimate). The test
-  `runAgent refuses to start once the run is over budget` (`tests/agent-runner-model.test.ts`) is
-  **red until that guard is implemented**. Do not mark this plan DONE while it is red.
+- None remaining for the completed plan. Follow-up hardening for parser edge cases and queued-agent
+  budget re-checks is tracked in `plans/003-harden-budget-review-followups.md`.
 
 ## Verification
 
 - `bun run typecheck` — clean.
-- `bun test` — all green **except** the one over-budget guard test noted above (turns green once
-  `ensureWithinBudget` throws `WorkflowBudgetExceededError` when `total !== null && remaining() <= 0`).
+- `bun test` — all green, including `runAgent refuses to start once the run is over budget`
+  (`tests/agent-runner-model.test.ts`).
 - Manual: `/workflow code-review --budget 5000 --perf` on a small diff aborts agents once output
   tokens cross 5000; an inline `dynamax` script using
   `while (api.budget.total && api.budget.remaining() > 1000) { ... }` confirms `api.budget` is
