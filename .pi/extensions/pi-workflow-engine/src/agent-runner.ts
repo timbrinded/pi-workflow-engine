@@ -11,6 +11,10 @@ import { appendSkillReminder, createAgentSkillResourceLoader, extractSkillSelect
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
+const SCHEMA_REPROMPT_ATTEMPTS = 1;
+const SCHEMA_REPROMPT =
+  `You ended your turn without calling the ${FINAL_TOOL} tool, so no result was recorded. ` +
+  `Call ${FINAL_TOOL} now with your final answer as its arguments. Do not reply with plain text.`;
 const BUILTIN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 const DEFAULT_SEARCH_BASE_TOOLS = ["read", "bash", "grep", "find", "ls"];
 
@@ -397,6 +401,14 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           const unlinkPromptAbort = linkSessionAbort(rc.signal, activeSession);
           try {
             await rc.perf.time("agent.prompt_ms", () => activeSession.prompt(finalPrompt), tags);
+            if (opts.schema) {
+              for (let attempt = 0; captured === null && attempt < SCHEMA_REPROMPT_ATTEMPTS; attempt++) {
+                throwIfAborted(rc.signal);
+                rc.progress.log(`${label}: no final answer; re-prompting (${attempt + 1}/${SCHEMA_REPROMPT_ATTEMPTS})`);
+                rc.perf.counter("agent.structured_reprompt", 1, tags);
+                await rc.perf.time("agent.prompt_ms", () => activeSession.prompt(SCHEMA_REPROMPT), tags);
+              }
+            }
           } finally {
             unlinkPromptAbort();
           }
