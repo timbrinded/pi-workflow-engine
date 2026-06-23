@@ -250,9 +250,9 @@ function shouldCreateSkillResourceLoader(rc: RunContext, prompt: string, opts: A
 }
 
 /**
- * Refuse to start a new subagent once the run is over budget. Called at the very top of
- * `runAgent`, before a concurrency slot is taken, so an exhausted run stops spending
- * immediately rather than queueing more work.
+ * Refuse to start a new subagent once the run is over budget. Called before queueing and
+ * again after a queued agent acquires a concurrency slot, so an exhausted run stops spending
+ * immediately rather than starting stale queued work.
  *
  * Policy: accept overshoot (matches the built-in Workflow tool). `budget.spent()` counts
  * only COMPLETED agents (usage is recorded on session dispose), so agents admitted together
@@ -288,7 +288,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
 
   return await rc.perf.time("agent.total_ms", async () => {
     throwIfAborted(rc.signal);
-    // Stop spending the moment the run is over budget — before queueing or taking a slot.
+    // Stop spending the moment the run is over budget — before queueing.
     ensureWithinBudget(rc.budget);
     // Track queued agents before acquiring a global concurrency slot.
     const rowId = rc.progress.agentQueued(opts.phase, label);
@@ -297,6 +297,8 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
       return await rc.semaphore.run(
         async () => {
         throwIfAborted(rc.signal);
+        // Re-check after waiting for a slot; earlier agents may have exhausted the budget.
+        ensureWithinBudget(rc.budget);
         rc.progress.agentStart(opts.phase, label, rowId);
 
         let captured: unknown = null;
