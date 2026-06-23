@@ -100,6 +100,11 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   model?: string;
   /** Reasoning effort for this agent. */
   thinkingLevel?: ThinkingLevel;
+  /**
+   * Stable identity hint for resume replay. Use this for repeated logical calls
+   * with identical prompts/options, e.g. `${stage}:${item.id}`.
+   */
+  cacheKey?: string;
   /** Run this agent in a disposable git worktree and return its patch with the result. */
   isolation?: "worktree";
   /** Allowlist of concrete tool names the agent may use (e.g. ["read", "bash"]). */

@@ -9,13 +9,7 @@ import { createWorkflowUsageRecorder } from "./usage.ts";
 import { defaultConcurrency, resolveWorkflowRunOptions } from "./options.ts";
 import type { AgentOptions, WorkflowApi, WorkflowModule, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
-import {
-  createAgentIndexCounter,
-  createWorkflowJournal,
-  createWorkflowRunId,
-  pruneWorkflowJournals,
-  workflowJournalPath,
-} from "./journal.ts";
+import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
 import { WorktreeRegistry } from "./worktree.ts";
 
 /** Default global cap on concurrent agents per run. */
@@ -91,7 +85,6 @@ export async function runWorkflow(
     usage,
     budget,
     journal,
-    nextAgentIndex: createAgentIndexCounter(),
     worktrees,
   };
 
@@ -120,7 +113,12 @@ export async function runWorkflow(
       resolvedOptions.onProgressSource?.(undefined);
       unlinkContextAbortSignal();
       unlinkOptionAbortSignal();
-      await worktrees.removeAll();
+      const cleanupResults = await worktrees.removeAll();
+      for (const result of cleanupResults) {
+        if (!result.ok) {
+          progress.log(`failed to remove isolated worktree ${result.path} (${result.error ?? (result.stderr.trim() || "unknown error")})`);
+        }
+      }
       await pruneWorkflowJournals(ctx.cwd);
     }
   }

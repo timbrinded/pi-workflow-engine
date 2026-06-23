@@ -7,29 +7,36 @@ export const WORKFLOW_RUNS_DIR = join(".pi", ".workflow-runs");
 export const WORKFLOW_JOURNAL_KEEP = 50;
 
 export interface JournalEntry {
-  readonly index: number;
-  readonly hash: string;
+  readonly key: string;
   readonly value: unknown;
 }
 
 export type JournalLookup = { readonly hit: true; readonly value: unknown } | { readonly hit: false };
+export type JournalRecordResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
 
 export interface WorkflowJournal {
-  lookup(index: number, hash: string): JournalLookup;
-  record(index: number, hash: string, value: unknown): Promise<void>;
+  lookup(key: string): JournalLookup;
+  record(key: string, value: unknown): Promise<JournalRecordResult>;
+}
+
+export class WorkflowJournalLoadError extends Error {
+  override readonly name = "WorkflowJournalLoadError";
 }
 
 export function createWorkflowRunId(): string {
   return randomUUID();
 }
 
-export function createAgentIndexCounter(): () => number {
-  let next = 1;
-  return () => next++;
-}
-
 export function workflowJournalPath(cwd: string, runId: string): string {
   return join(cwd, WORKFLOW_RUNS_DIR, `${validateRunId(runId)}.jsonl`);
+}
+
+export function agentJournalKey(prompt: string, opts: AgentOptions = {}): string {
+  const behaviorHash = hashAgentCall(prompt, opts);
+  const cacheKey = opts.cacheKey?.trim();
+  if (!cacheKey) return `agent:${behaviorHash}`;
+  const cacheKeyHash = createHash("sha256").update(cacheKey).digest("hex");
+  return `agent:${cacheKeyHash}:${behaviorHash}`;
 }
 
 export function hashAgentCall(prompt: string, opts: AgentOptions = {}): string {
@@ -48,23 +55,36 @@ export function hashAgentCall(prompt: string, opts: AgentOptions = {}): string {
   return createHash("sha256").update(stableStringify(behavior)).digest("hex");
 }
 
-export async function loadJournalEntries(path: string): Promise<JournalEntry[]> {
+export async function loadJournalEntries(path: string, options: { readonly required?: boolean } = {}): Promise<JournalEntry[]> {
   let content: string;
   try {
     content = await readFile(path, "utf8");
-  } catch {
+  } catch (error) {
+    if (options.required) {
+      throw new WorkflowJournalLoadError(`Could not load workflow resume journal at ${path}: ${formatError(error)}`);
+    }
     return [];
   }
 
   const entries: JournalEntry[] = [];
+  let lineNumber = 0;
   for (const line of content.split(/\r?\n/)) {
+    lineNumber += 1;
     if (line.trim() === "") continue;
     try {
       const parsed = JSON.parse(line) as unknown;
-      if (isJournalEntry(parsed)) entries.push(parsed);
-    } catch {
-      // Ignore corrupt lines. Resume is an optimization; corrupt cache data must
-      // never make a workflow fail.
+      if (isJournalEntry(parsed)) {
+        entries.push(parsed);
+        continue;
+      }
+      if (options.required) {
+        throw new WorkflowJournalLoadError(`Workflow resume journal at ${path}:${lineNumber} has an incompatible entry format.`);
+      }
+    } catch (error) {
+      if (options.required) {
+        if (error instanceof WorkflowJournalLoadError) throw error;
+        throw new WorkflowJournalLoadError(`Workflow resume journal at ${path}:${lineNumber} is not valid JSON.`);
+      }
     }
   }
   return entries;
@@ -74,33 +94,33 @@ export async function createWorkflowJournal(options: {
   readonly resumePath?: string;
   readonly writePath: string;
 }): Promise<WorkflowJournal> {
-  const priorEntries = options.resumePath ? await loadJournalEntries(options.resumePath) : [];
+  const priorEntries = options.resumePath ? await loadJournalEntries(options.resumePath, { required: true }) : [];
   return createMemoryBackedJournal(priorEntries, options.writePath);
 }
 
 export function createMemoryBackedJournal(priorEntries: readonly JournalEntry[] = [], writePath?: string): WorkflowJournal {
-  const priorByIndex = new Map<number, JournalEntry>();
+  const priorByKey = new Map<string, JournalEntry | "ambiguous">();
   for (const entry of priorEntries) {
-    priorByIndex.set(entry.index, entry);
+    priorByKey.set(entry.key, priorByKey.has(entry.key) ? "ambiguous" : entry);
   }
-  let invalidated = priorEntries.length === 0;
 
   return {
-    lookup(index, hash) {
-      if (invalidated) return { hit: false };
-      const entry = priorByIndex.get(index);
-      if (!entry || entry.hash !== hash) {
-        invalidated = true;
-        return { hit: false };
-      }
+    lookup(key) {
+      const entry = priorByKey.get(key);
+      if (!entry || entry === "ambiguous") return { hit: false };
       return { hit: true, value: entry.value };
     },
-    async record(index, hash, value) {
-      const entry = { index, hash, value };
+    async record(key, value) {
+      const entry = { key, value };
       if (writePath) {
-        await mkdir(dirname(writePath), { recursive: true });
-        await appendFile(writePath, `${JSON.stringify(entry)}\n`, "utf8");
+        try {
+          await mkdir(dirname(writePath), { recursive: true });
+          await appendFile(writePath, `${JSON.stringify(entry)}\n`, "utf8");
+        } catch (error) {
+          return { ok: false, error: formatError(error) };
+        }
       }
+      return { ok: true };
     },
   };
 }
@@ -171,6 +191,10 @@ function normalizeStable(value: unknown): unknown {
 
 function isJournalEntry(value: unknown): value is JournalEntry {
   if (typeof value !== "object" || value === null) return false;
-  const entry = value as { readonly index?: unknown; readonly hash?: unknown; readonly value?: unknown };
-  return Number.isSafeInteger(entry.index) && typeof entry.hash === "string" && "value" in entry;
+  const entry = value as { readonly key?: unknown; readonly value?: unknown };
+  return typeof entry.key === "string" && "value" in entry;
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

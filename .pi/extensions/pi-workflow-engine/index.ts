@@ -6,11 +6,17 @@ import type { WorkflowProgressSnapshot } from "./src/progress.ts";
 import type { WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
-import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./src/usage.ts";
+import type { WorkflowUsageSnapshot } from "./src/usage.ts";
 import { registerDynamax } from "./src/dynamax.ts";
 import { handleReviewViewerAction } from "./src/review/review-actions.ts";
 import { decideReviewResultsPresentation, extensionContextMode, maybeShowReviewResultsViewer } from "./src/review/review-results-flow.ts";
-import { isWorkflowResult, renderWorkflowResult, type WorkflowPerfDetails, type WorkflowResultEnvelope } from "./src/ui/workflow-result-renderer.ts";
+import {
+  formatWorkflowDetailLines,
+  isWorkflowResult,
+  renderWorkflowResult,
+  type WorkflowPerfDetails,
+  type WorkflowResultEnvelope,
+} from "./src/ui/workflow-result-renderer.ts";
 import { parseWorkflowBudgetString, WORKFLOW_BUDGET_MAX, WORKFLOW_BUDGET_MIN } from "./src/options.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
@@ -30,9 +36,7 @@ function formatMessageContent(
   perf?: WorkflowPerfDetails,
   metadata?: WorkflowRunMetadata,
 ): string {
-  const usageLine = formatWorkflowUsageLine(usage);
-  const perfLine = formatPerfLine(perf);
-  const details = [formatRunLine(metadata), usageLine, perfLine].filter((line): line is string => line !== undefined);
+  const details = formatWorkflowDetailLines({ usage, perf, metadata });
   return `## Workflow: ${name}\n\n${summarize(result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
 }
 
@@ -49,17 +53,6 @@ function workflowEnvelope(
 function compactPerfSnapshot(snapshot: PerfSnapshot | undefined): WorkflowPerfDetails | undefined {
   if (!snapshot?.enabled) return undefined;
   return { enabled: true, startedAt: snapshot.startedAt, aggregates: snapshot.aggregates };
-}
-
-function formatPerfLine(perf: WorkflowPerfDetails | undefined): string | undefined {
-  if (!perf) return undefined;
-  const parts = perf.aggregates.slice(0, 4).map((aggregate) => `${aggregate.name} ${Math.round(aggregate.total)}ms`);
-  return parts.length > 0 ? `Perf: ${parts.join(" · ")}` : "Perf: no samples";
-}
-
-function formatRunLine(metadata: WorkflowRunMetadata | undefined): string | undefined {
-  if (!metadata) return undefined;
-  return metadata.resumedFromRunId ? `Run: ${metadata.runId} (resumed from ${metadata.resumedFromRunId})` : `Run: ${metadata.runId}`;
 }
 
 type DiscoveryModule = typeof import("./src/discovery.ts");
@@ -507,7 +500,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage, {
         runId: details.runId,
         resumedFromRunId: details.resumedFromRunId,
-      });
+      }, details.perf);
     }
     return renderWorkflowResult("workflow", details ?? message.content, expanded, theme);
   });
@@ -591,7 +584,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         }),
       ),
       perf: Type.Optional(Type.Boolean({ description: "Include workflow performance timing aggregates in the result details" })),
-      resumeFromRunId: Type.Optional(Type.String({ description: "Workflow run id to resume from by replaying matching completed agent results" })),
+      resumeFromRunId: Type.Optional(Type.String({ minLength: 1, description: "Workflow run id to resume from by replaying matching completed agent results" })),
     }),
     renderCall(args, theme) {
       const suffix = args.args ? ` ${theme.fg("dim", args.args)}` : "";
@@ -609,7 +602,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage, {
           runId: details.runId,
           resumedFromRunId: details.resumedFromRunId,
-        });
+        }, details.perf);
       }
       const first = result.content[0];
       const text = first?.type === "text" ? first.text : "Workflow finished.";
@@ -618,6 +611,13 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const request = normalizeWorkflowToolRequest(params);
       if (request.kind === "error") return invalidWorkflowInvocationResult();
+      const resumeFromRunId = params.resumeFromRunId?.trim();
+      if (params.resumeFromRunId !== undefined && resumeFromRunId === "") {
+        return {
+          content: [{ type: "text", text: "resumeFromRunId must be non-empty." }],
+          details: { error: "invalid_resume_from_run_id" },
+        };
+      }
 
       const runOptions: WorkflowRunOptions = {
         inspect: ctx.hasUI,
@@ -625,7 +625,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         parallelSubmissionLimit: params.parallelSubmissionLimit,
         budget: params.budget,
         perf: params.perf,
-        resumeFromRunId: params.resumeFromRunId,
+        resumeFromRunId,
         signal,
       };
       const perfRecorder = await createInvocationPerf(runOptions);
@@ -692,9 +692,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         },
       });
       const perf = compactPerfSnapshot(perfSnapshot);
-      const usageLine = formatWorkflowUsageLine(usageSnapshot);
-      const perfLine = formatPerfLine(perf);
-      const detailLines = [formatRunLine(runMetadata), usageLine, perfLine].filter((line): line is string => line !== undefined);
+      const detailLines = formatWorkflowDetailLines({ usage: usageSnapshot, perf, metadata: runMetadata });
       return {
         content: [{ type: "text", text: `${summarize(result)}${detailLines.length > 0 ? `\n\n${detailLines.join("\n")}` : ""}` }],
         details: workflowEnvelope(resultName, result, usageSnapshot, perf, runMetadata),

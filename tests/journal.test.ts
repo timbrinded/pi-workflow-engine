@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { Type } from "typebox";
 import {
+  agentJournalKey,
   createMemoryBackedJournal,
   createWorkflowJournal,
   hashAgentCall,
   loadJournalEntries,
   pruneWorkflowJournals,
+  WorkflowJournalLoadError,
   WORKFLOW_RUNS_DIR,
   workflowJournalPath,
 } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
@@ -49,38 +51,56 @@ test("hashAgentCall changes when behavioral inputs change", () => {
   assert.notEqual(hashAgentCall("inspect", { thinkingLevel: "low", tools: ["read"], schema: Type.Object({ ok: Type.Boolean() }) }), base);
 });
 
-test("journal lookup requires both index and hash and invalidates the suffix after first miss", async () => {
-  const journal = createMemoryBackedJournal([
-    { index: 1, hash: "a", value: "one" },
-    { index: 2, hash: "b", value: "two" },
-    { index: 3, hash: "c", value: "three" },
-  ]);
-
-  assert.deepEqual(journal.lookup(1, "a"), { hit: true, value: "one" });
-  assert.deepEqual(journal.lookup(2, "changed"), { hit: false });
-  assert.deepEqual(journal.lookup(3, "c"), { hit: false });
+test("agentJournalKey uses optional cache keys without hiding behavior changes", () => {
+  const base = agentJournalKey("inspect", { cacheKey: "stage:item-1", thinkingLevel: "low" });
+  assert.equal(agentJournalKey("inspect", { cacheKey: "stage:item-1", thinkingLevel: "low" }), base);
+  assert.notEqual(agentJournalKey("inspect", { cacheKey: "stage:item-2", thinkingLevel: "low" }), base);
+  assert.notEqual(agentJournalKey("inspect", { cacheKey: "stage:item-1", thinkingLevel: "medium" }), base);
 });
 
-test("journal records append JSONL and load ignores missing or corrupt data", async () => {
+test("journal lookup matches exact stable keys without suffix invalidation", async () => {
+  const journal = createMemoryBackedJournal([
+    { key: "a", value: "one" },
+    { key: "b", value: "two" },
+    { key: "c", value: "three" },
+  ]);
+
+  assert.deepEqual(journal.lookup("a"), { hit: true, value: "one" });
+  assert.deepEqual(journal.lookup("changed"), { hit: false });
+  assert.deepEqual(journal.lookup("c"), { hit: true, value: "three" });
+});
+
+test("journal lookup treats duplicate keys as ambiguous misses", async () => {
+  const journal = createMemoryBackedJournal([
+    { key: "same", value: "one" },
+    { key: "same", value: "two" },
+  ]);
+
+  assert.deepEqual(journal.lookup("same"), { hit: false });
+});
+
+test("journal records append JSONL and explicit resume load failures are visible", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-workflow-journal-"));
   const path = join(dir, "run.jsonl");
   const journal = await createWorkflowJournal({ writePath: path });
 
-  await journal.record(1, "hash", { ok: true });
-  await journal.record(2, "hash-2", null);
+  assert.deepEqual(await journal.record("key-1", { ok: true }), { ok: true });
+  assert.deepEqual(await journal.record("key-2", null), { ok: true });
 
   assert.deepEqual(await loadJournalEntries(path), [
-    { index: 1, hash: "hash", value: { ok: true } },
-    { index: 2, hash: "hash-2", value: null },
+    { key: "key-1", value: { ok: true } },
+    { key: "key-2", value: null },
   ]);
   assert.deepEqual(await loadJournalEntries(join(dir, "missing.jsonl")), []);
+  await assert.rejects(() => createWorkflowJournal({ resumePath: join(dir, "missing.jsonl"), writePath: join(dir, "next.jsonl") }), WorkflowJournalLoadError);
 
   await writeFile(join(dir, "corrupt.jsonl"), "{nope\n", "utf8");
   assert.deepEqual(await loadJournalEntries(join(dir, "corrupt.jsonl")), []);
+  await assert.rejects(() => loadJournalEntries(join(dir, "corrupt.jsonl"), { required: true }), WorkflowJournalLoadError);
 
   const content = await readFile(path, "utf8");
-  assert.match(content, /"index":1/);
-  assert.match(content, /"index":2/);
+  assert.match(content, /"key":"key-1"/);
+  assert.match(content, /"key":"key-2"/);
 });
 
 test("workflowJournalPath validates run ids and pruneWorkflowJournals keeps newest files", async () => {

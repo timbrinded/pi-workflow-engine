@@ -217,6 +217,19 @@ test("workflow result text renders usage summaries", () => {
   assert.match(advisory, /Usage: ↑12k · ↓1.8k · R40k · W5.0k · cost \$0.123 · agents 1/);
 });
 
+test("workflow result text renders perf detail lines", () => {
+  const theme = createTestTheme();
+  const rendered = renderWorkflowResultText("generic", { summary: "Done" }, false, theme, undefined, undefined, {
+    enabled: true,
+    startedAt: 1,
+    aggregates: [
+      { name: "workflow.total_ms", count: 1, total: 123.4, min: 123.4, max: 123.4, mean: 123.4, p50: 123.4, p95: 123.4 },
+    ],
+  });
+
+  assert.match(rendered, /Perf: workflow\.total_ms 123ms/);
+});
+
 test("workflow result text ignores malformed usage details", () => {
   const theme = createTestTheme();
 

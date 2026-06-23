@@ -18,9 +18,8 @@ import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createBudget, WorkflowBudgetExceededError, type WorkflowBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import {
-  createAgentIndexCounter,
+  agentJournalKey,
   createMemoryBackedJournal,
-  hashAgentCall,
   type WorkflowJournal,
   type JournalLookup,
 } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
@@ -91,7 +90,6 @@ function createRunContext(input: {
   readonly budget?: WorkflowBudget;
   readonly usage?: ReturnType<typeof createWorkflowUsageRecorder>;
   readonly journal?: WorkflowJournal;
-  readonly nextAgentIndex?: () => number;
   readonly worktrees?: WorktreeRegistry;
 }): RunContext {
   const usage = input.usage ?? createWorkflowUsageRecorder();
@@ -107,7 +105,6 @@ function createRunContext(input: {
     usage,
     budget: input.budget ?? createBudget(null, usage),
     journal: input.journal ?? createMemoryBackedJournal(),
-    nextAgentIndex: input.nextAgentIndex ?? createAgentIndexCounter(),
     worktrees: input.worktrees ?? new WorktreeRegistry(cwd),
     createSession: input.createSession,
   };
@@ -132,6 +129,7 @@ function createFakeWorktreeRegistry(input: {
   readonly insideGit?: boolean;
   readonly patch?: string;
   readonly changed?: boolean;
+  readonly removeResult?: { readonly ok: boolean; readonly stdout: string; readonly stderr: string; readonly error?: string };
 }): { readonly registry: WorktreeRegistry; readonly calls: WorktreeGitCommandOptions[] } {
   const calls: WorktreeGitCommandOptions[] = [];
   const runner: WorktreeGitRunner = {
@@ -139,10 +137,10 @@ function createFakeWorktreeRegistry(input: {
       calls.push(options);
       const command = options.args.join(" ");
       if (command === "rev-parse --is-inside-work-tree") {
-        return { ok: input.insideGit ?? true, stdout: input.insideGit === false ? "false\n" : "true\n", stderr: "" };
+        return { ok: true, stdout: input.insideGit === false ? "false\n" : "true\n", stderr: "" };
       }
       if (options.args[0] === "worktree" && options.args[1] === "add") return { ok: true, stdout: "", stderr: "" };
-      if (options.args[0] === "worktree" && options.args[1] === "remove") return { ok: true, stdout: "", stderr: "" };
+      if (options.args[0] === "worktree" && options.args[1] === "remove") return input.removeResult ?? { ok: true, stdout: "", stderr: "" };
       return { ok: true, stdout: "", stderr: "" };
     },
   };
@@ -292,7 +290,7 @@ test("runAgent returns cached journal results before queueing, budget checks, or
   };
   const progress = createProgress();
   const usage = createWorkflowUsageRecorder();
-  const journal = createMemoryBackedJournal([{ index: 1, hash: hashAgentCall("hello", { label: "cached" }), value: "cached-value" }]);
+  const journal = createMemoryBackedJournal([{ key: agentJournalKey("hello", { label: "cached" }), value: "cached-value" }]);
   const exhausted: WorkflowBudget = { total: 100, spent: () => 250, remaining: () => 0 };
 
   const result = await runAgent(createRunContext({ createSession, progress, usage, journal, budget: exhausted }), "hello", { label: "cached" });
@@ -304,20 +302,61 @@ test("runAgent returns cached journal results before queueing, budget checks, or
 });
 
 test("runAgent records successful live results into the journal", async () => {
-  const recorded: Array<{ readonly index: number; readonly hash: string; readonly value: unknown }> = [];
+  const recorded: Array<{ readonly key: string; readonly value: unknown }> = [];
   const journal: WorkflowJournal = {
     lookup(): JournalLookup {
       return { hit: false };
     },
-    async record(index, hash, value) {
-      recorded.push({ index, hash, value });
+    async record(key, value) {
+      recorded.push({ key, value });
+      return { ok: true };
     },
   };
 
   const result = await runAgent(createRunContext({ createSession: async () => createTextSession(), journal }), "hello", { label: "live" });
 
   assert.equal(result, "done");
-  assert.deepEqual(recorded, [{ index: 1, hash: hashAgentCall("hello", { label: "live" }), value: "done" }]);
+  assert.deepEqual(recorded, [{ key: agentJournalKey("hello", { label: "live" }), value: "done" }]);
+});
+
+test("runAgent returns cached results when journal write-through fails", async () => {
+  const progress = createProgress();
+  const journal: WorkflowJournal = {
+    lookup(): JournalLookup {
+      return { hit: true, value: "cached-value" };
+    },
+    async record() {
+      return { ok: false, error: "disk full" };
+    },
+  };
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+
+  const result = await runAgent(createRunContext({ createSession, progress, journal }), "hello", { label: "cached" });
+
+  assert.equal(result, "cached-value");
+  assert.equal(createSessionCalls, 0);
+  assert.ok(progress.events.includes("log:cached: workflow journal write failed (disk full); future resume may be incomplete"));
+});
+
+test("runAgent returns live results when journal append fails", async () => {
+  const progress = createProgress();
+  const journal: WorkflowJournal = {
+    lookup(): JournalLookup {
+      return { hit: false };
+    },
+    async record() {
+      return { ok: false, error: "read-only filesystem" };
+    },
+  };
+
+  const result = await runAgent(createRunContext({ createSession: async () => createTextSession(), progress, journal }), "hello", { label: "live" });
+
+  assert.equal(result, "done");
+  assert.ok(progress.events.includes("log:live: workflow journal write failed (read-only filesystem); future resume may be incomplete"));
 });
 
 test("runAgent with worktree isolation creates an isolated cwd and returns a patch wrapper", async () => {
@@ -367,6 +406,26 @@ test("runAgent removes an isolated worktree when the agent fails", async () => {
   assert.equal(registry.size, 0);
 });
 
+test("runAgent reports isolated worktree cleanup failures without masking success", async () => {
+  const repoCwd = "/repo";
+  const progress = createProgress();
+  const { registry } = createFakeWorktreeRegistry({
+    repoCwd,
+    patch: "diff --git a/file b/file\n",
+    changed: true,
+    removeResult: { ok: false, stdout: "", stderr: "", error: "busy" },
+  });
+
+  const result = await runAgent(createRunContext({ createSession: async () => createTextSession(), cwd: repoCwd, worktrees: registry, progress }), "hello", {
+    label: "isolated",
+    isolation: "worktree",
+  });
+
+  assert.deepEqual(result, { result: "done", patch: "diff --git a/file b/file\n", changed: true });
+  assert.ok(progress.events.includes("log:isolated: failed to remove isolated worktree (busy)"));
+  assert.equal(registry.size, 1);
+});
+
 test("runAgent rejects worktree isolation outside a git work tree", async () => {
   const repoCwd = "/repo";
   const { registry, calls } = createFakeWorktreeRegistry({ repoCwd, insideGit: false });
@@ -406,7 +465,7 @@ test("runAgent cached isolated hits skip worktree creation", async () => {
   const { registry, calls } = createFakeWorktreeRegistry({ repoCwd });
   const opts = { label: "cached-isolated", isolation: "worktree" as const };
   const cached = { result: "cached", patch: "diff", changed: true };
-  const journal = createMemoryBackedJournal([{ index: 1, hash: hashAgentCall("hello", opts), value: cached }]);
+  const journal = createMemoryBackedJournal([{ key: agentJournalKey("hello", opts), value: cached }]);
   let createSessionCalls = 0;
   const createSession: CreateAgentSession = async () => {
     createSessionCalls += 1;
