@@ -354,6 +354,10 @@ async function recordJournalResult(rc: RunContext, label: string, key: string, v
  * no event-stream parsing is needed.
  */
 export async function runAgent(rc: RunContext, prompt: string, opts: AgentOptions = {}): Promise<unknown> {
+  if (typeof prompt !== "string") {
+    throw new Error(`agent() prompt must be a string; received ${describeAgentPrompt(prompt)}`);
+  }
+
   const label = opts.label ?? "agent";
   const phase = opts.phase ?? "Workflow";
   const tags = { label, phase };
@@ -551,6 +555,12 @@ async function isolatedResult(rc: RunContext, worktreePath: string, result: unkn
   const patch = await rc.worktrees.capturePatch(worktreePath, rc.signal);
   if ("error" in patch) throw new Error(`Failed to capture isolated worktree patch: ${patch.error}`);
   return { result, patch: patch.patch, changed: patch.changed };
+}
+
+function describeAgentPrompt(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
 }
 
 function errorMessage(error: unknown): string {
