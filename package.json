@@ -1,6 +1,6 @@
 {
   "name": "pi-workflow-engine",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "type": "module",
   "description": "Zero-dependency Dynamax workflows for pi: live parallel subagents, typed handoffs, synthesized results.",
   "keywords": [
