@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   addWorktree,
   captureWorktreePatch,
   createWorktreePath,
   isGitWorktree,
+  removeWorktree,
   WorktreeRegistry,
   type WorktreeGitCommandOptions,
   type WorktreeGitCommandResult,
@@ -160,4 +165,57 @@ test("captureWorktreePatch captures diff through the injected git runner", async
     ["diff", "--no-color", "HEAD"],
   ]);
   assert.equal(runner.calls[1]?.maxBufferBytes, 16 << 20);
+});
+
+async function makeTempGitRepo(prefix: string): Promise<string> {
+  const repo = await mkdtemp(join(tmpdir(), prefix));
+  const init = spawnSync("git", ["init"], { cwd: repo, encoding: "utf8" });
+  assert.equal(init.status, 0, init.stderr);
+  return repo;
+}
+
+test("addWorktree falls back to a committed snapshot for unborn repositories", async () => {
+  const repo = await makeTempGitRepo("pi-workflow-unborn-");
+  await writeFile(join(repo, "README.md"), "hello\n");
+  let added: Awaited<ReturnType<typeof addWorktree>> | undefined;
+  try {
+    added = await addWorktree({ repoCwd: repo });
+    assert.ok(!("error" in added), "addWorktree should succeed via snapshot fallback");
+    assert.equal(added.snapshot, true);
+
+    await writeFile(join(added.path, "route.txt"), "generated\n");
+    const patch = await captureWorktreePatch({ worktreePath: added.path });
+    assert.ok(!("error" in patch), "patch capture should work in fallback snapshot");
+    assert.equal(patch.changed, true);
+    assert.match(patch.patch, /diff --git a\/route\.txt b\/route\.txt/);
+    assert.match(patch.patch, /\+generated/);
+  } finally {
+    if (added && !("error" in added)) await removeWorktree({ repoCwd: repo, path: added.path, snapshot: added.snapshot });
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("addWorktree uses real git worktrees for repositories with commits", async () => {
+  const repo = await makeTempGitRepo("pi-workflow-committed-");
+  let added: Awaited<ReturnType<typeof addWorktree>> | undefined;
+  try {
+    await writeFile(join(repo, "README.md"), "hello\n");
+    assert.equal(spawnSync("git", ["add", "README.md"], { cwd: repo }).status, 0);
+    const commit = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], {
+      cwd: repo,
+      encoding: "utf8",
+    });
+    assert.equal(commit.status, 0, commit.stderr);
+
+    added = await addWorktree({ repoCwd: repo });
+    assert.ok(!("error" in added));
+    assert.notEqual(added.snapshot, true);
+    await writeFile(join(added.path, "committed.txt"), "changed\n");
+    const patch = await captureWorktreePatch({ worktreePath: added.path });
+    assert.ok(!("error" in patch));
+    assert.match(patch.patch, /diff --git a\/committed\.txt b\/committed\.txt/);
+  } finally {
+    if (added && !("error" in added)) await removeWorktree({ repoCwd: repo, path: added.path, snapshot: added.snapshot });
+    await rm(repo, { recursive: true, force: true });
+  }
 });

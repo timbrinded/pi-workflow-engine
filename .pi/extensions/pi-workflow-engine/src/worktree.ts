@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { cp, mkdir, rm } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
 import { runBoundedProcess } from "./process-runner.ts";
 
 export interface WorktreeGitCommandOptions {
@@ -24,11 +25,13 @@ export interface WorktreeGitRunner {
 
 export interface WorktreeRef {
   readonly path: string;
+  readonly snapshot?: boolean;
 }
 
 export interface WorktreeAddFailure {
   readonly path: string;
   readonly error: string;
+  readonly snapshot?: boolean;
   readonly cleanup?: WorktreeGitCommandResult;
 }
 
@@ -67,6 +70,7 @@ let pathCounter = 0;
 
 export class WorktreeRegistry {
   private readonly paths = new Set<string>();
+  private readonly snapshots = new Set<string>();
   private readonly runner: WorktreeGitRunner;
   private readonly patchCapture: WorktreePatchCapture;
   private readonly timeoutMs: number;
@@ -92,6 +96,7 @@ export class WorktreeRegistry {
   async add(signal?: AbortSignal): Promise<WorktreeRef | WorktreeAddFailure> {
     const added = await addWorktree({ repoCwd: this.repoCwd, runner: this.runner, signal, timeoutMs: this.timeoutMs });
     this.register(added.path);
+    if (added.snapshot === true) this.snapshots.add(added.path);
     if ("error" in added) {
       const cleanup = await this.remove(added.path);
       return { ...added, cleanup };
@@ -104,13 +109,16 @@ export class WorktreeRegistry {
   }
 
   async remove(path: string): Promise<WorktreeGitCommandResult> {
-    const result = await removeWorktree({ repoCwd: this.repoCwd, path, runner: this.runner, timeoutMs: this.timeoutMs }).catch((error: unknown) => ({
+    const result = await removeWorktree({ repoCwd: this.repoCwd, path, runner: this.runner, timeoutMs: this.timeoutMs, snapshot: this.snapshots.has(path) }).catch((error: unknown) => ({
       ok: false,
       stdout: "",
       stderr: "",
       error: formatError(error),
     }));
-    if (result.ok) this.paths.delete(path);
+    if (result.ok) {
+      this.paths.delete(path);
+      this.snapshots.delete(path);
+    }
     return result;
   }
 
@@ -163,8 +171,16 @@ export async function addWorktree(options: {
       timeoutMs: options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS,
     })
     .catch((error: unknown) => ({ ok: false, stdout: "", stderr: "", error: formatError(error) }));
-  if (!result.ok) return { path, error: result.error ?? (result.stderr.trim() || "git worktree add failed") };
-  return { path };
+  if (result.ok) return { path };
+
+  const message = result.error ?? (result.stderr.trim() || "git worktree add failed");
+  if (!isInvalidHeadError(message)) return { path, error: message };
+
+  const snapshotError = await createUnbornRepoSnapshot({ repoCwd: options.repoCwd, path, timeoutMs: options.timeoutMs, signal: options.signal })
+    .then(() => undefined)
+    .catch((error: unknown) => formatError(error));
+  if (snapshotError !== undefined) return { path, snapshot: true, error: `git worktree add failed (${message}); unborn-repo snapshot fallback failed: ${snapshotError}` };
+  return { path, snapshot: true };
 }
 
 export async function removeWorktree(options: {
@@ -172,7 +188,12 @@ export async function removeWorktree(options: {
   readonly path: string;
   readonly runner?: WorktreeGitRunner;
   readonly timeoutMs?: number;
+  readonly snapshot?: boolean;
 }): Promise<WorktreeGitCommandResult> {
+  if (options.snapshot === true) {
+    await rm(options.path, { recursive: true, force: true });
+    return { ok: true, stdout: "", stderr: "" };
+  }
   return await (options.runner ?? spawnGitRunner).runGit({
     cwd: options.repoCwd,
     args: ["worktree", "remove", "--force", options.path],
@@ -211,6 +232,38 @@ export async function captureWorktreePatch(options: {
   return { patch: diff.stdout, changed: diff.stdout.trim().length > 0 };
 }
 
+async function createUnbornRepoSnapshot(options: {
+  readonly repoCwd: string;
+  readonly path: string;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+}): Promise<void> {
+  const targetRoot = resolve(options.path);
+  await rm(options.path, { recursive: true, force: true });
+  await mkdir(options.path, { recursive: true });
+  await cp(options.repoCwd, options.path, {
+    recursive: true,
+    force: true,
+    filter: (source) => {
+      const resolvedSource = resolve(source);
+      if (resolvedSource === targetRoot || resolvedSource.startsWith(`${targetRoot}${sep}`)) return false;
+      return !resolvedSource.split(/[\\/]/).includes(".git");
+    },
+  });
+  await runGitCommand({ cwd: options.path, args: ["init"], signal: options.signal, timeoutMs: options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS });
+  await runGitCommand({ cwd: options.path, args: ["add", "-A"], signal: options.signal, timeoutMs: options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS });
+  await runGitCommand({
+    cwd: options.path,
+    args: ["-c", "user.name=pi-workflow", "-c", "user.email=pi-workflow@example.invalid", "commit", "--allow-empty", "-m", "pi workflow baseline"],
+    signal: options.signal,
+    timeoutMs: options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS,
+  });
+}
+
+function isInvalidHeadError(message: string): boolean {
+  return /invalid reference:\s*HEAD/i.test(message) || /ambiguous argument ['"]?HEAD/i.test(message) || /unknown revision or path.*HEAD/i.test(message);
+}
+
 export const spawnGitRunner: WorktreeGitRunner = {
   async runGit(options) {
     return await runGitCommand(options);
@@ -218,11 +271,14 @@ export const spawnGitRunner: WorktreeGitRunner = {
 };
 
 async function runGitCommand(options: WorktreeGitCommandOptions): Promise<WorktreeGitCommandResult> {
+  const env = { ...process.env };
+  delete env.GIT_EXTERNAL_DIFF;
+  delete env.GIT_DIFF_OPTS;
   return await runBoundedProcess({
     file: "git",
     args: options.args,
     cwd: options.cwd,
-    env: { ...process.env, GIT_EXTERNAL_DIFF: "", GIT_DIFF_OPTS: "" },
+    env,
     signal: options.signal,
     timeoutMs: options.timeoutMs,
     maxBufferBytes: options.maxBufferBytes,
