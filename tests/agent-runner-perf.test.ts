@@ -6,6 +6,7 @@ import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/can
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import { createAgentIndexCounter, createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 
 function createProgress(): AgentProgress & { readonly events: string[] } {
   const events: string[] = [];
@@ -65,6 +66,8 @@ function createRunContext(
     perf,
     usage,
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
+    journal: createMemoryBackedJournal(),
+    nextAgentIndex: createAgentIndexCounter(),
     createSession,
   };
 }

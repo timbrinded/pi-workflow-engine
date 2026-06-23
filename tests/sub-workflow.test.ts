@@ -7,6 +7,7 @@ import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/exte
 import type { AgentProgress, CreateAgentSession, RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import type { WorkflowModule, WorkflowProgressEvent, WorkflowRef } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
+import { createAgentIndexCounter, createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly phases: string[];
@@ -56,6 +57,8 @@ function createRc(
     perf: new PerfRecorder(),
     usage,
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
+    journal: createMemoryBackedJournal(),
+    nextAgentIndex: createAgentIndexCounter(),
     createSession,
   };
 }

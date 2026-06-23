@@ -24,6 +24,12 @@ export interface WorkflowRunStats {
   [key: string]: string | number;
 }
 
+export interface WorkflowRunMetadata {
+  readonly runId: string;
+  readonly resumedFromRunId?: string;
+  readonly journalPath: string;
+}
+
 export interface WorkflowRunOptions {
   inspect?: boolean;
   perf?: boolean;
@@ -31,6 +37,10 @@ export interface WorkflowRunOptions {
   parallelSubmissionLimit?: number;
   /** Output-token ceiling for the whole run. Omit for no limit (budget.total === null). */
   budget?: number;
+  /** Internal/test override for the generated run id. Omit to generate a new id. */
+  runId?: string;
+  /** Replay completed agent results from this prior run id when prompt/options hashes still match. */
+  resumeFromRunId?: string;
   resultViewer?: "open" | "skip";
   /** Additional abort signal to compose with the host context signal. */
   signal?: AbortSignal;
@@ -42,6 +52,8 @@ export interface WorkflowRunOptions {
   onPerfSnapshot?: (snapshot: PerfSnapshot) => void;
   /** Called with the final workflow subagent usage snapshot. */
   onUsageSnapshot?: (snapshot: WorkflowUsageSnapshot) => void;
+  /** Called once run identity and journal paths are known. */
+  onRunMetadata?: (metadata: WorkflowRunMetadata) => void;
   /** Called with the live progress source while a workflow is running, then undefined when it ends. */
   onProgressSource?: (source: WorkflowProgressSource | undefined) => void;
   /** Called with the final completed progress snapshot after live workflow UI teardown. */

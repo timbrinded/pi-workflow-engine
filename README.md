@@ -135,8 +135,11 @@ Useful flags:
 /workflow code-review --no-result-viewer
 /workflow code-review --concurrency=4
 /workflow code-review --budget=50000
+/workflow code-review --resume <run-id>
 /workflow code-review --refresh
 ```
+
+Every workflow result includes a run id. If a long run is interrupted, rerun the same workflow with `--resume <run-id>` to replay matching completed `agent()` calls from the journal and run only the first changed or missing call onward. Resume is deterministic-prefix based: keep prompts and agent options stable if you want cache hits.
 
 The code-review workflow can open an interactive findings viewer. Select findings and hand them back to the parent agent for minimal fixes, or ask it to raise GitHub PR comments when `gh` is authenticated and PR context is available.
 
@@ -204,6 +207,7 @@ Inline workflows are passed to the `workflow` tool as a script string. They are 
 - Workflow results aggregate the finalized assistant usage from those subagent sessions before disposal and show token/cost totals separately from pi's host-session footer accounting.
 - Structured output uses a terminating tool whose `parameters` is your schema. pi validates the call; the engine captures the args. There is no JSON scraping.
 - A schema agent that finishes without calling `final_answer` is re-prompted once before returning `null`.
+- Runs write completed `agent()` results to `.pi/.workflow-runs/<run-id>.jsonl`; `--resume <run-id>` replays the longest unchanged prefix and writes a fresh journal for the resumed run.
 - A single run-level semaphore caps concurrent agents, so nested `parallel`, `pipeline`, and `workflow()` calls stay bounded.
 - `parallel()` and `pipeline()` are fail-soft: recoverable branch failures, including budget backstops, become `null` slots while survivors continue. A genuine run abort still rejects.
 - Built-in workflows stay statically imported so they share pi's bundled `typebox` identity.

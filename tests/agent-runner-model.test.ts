@@ -17,6 +17,13 @@ import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createBudget, WorkflowBudgetExceededError, type WorkflowBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
+import {
+  createAgentIndexCounter,
+  createMemoryBackedJournal,
+  hashAgentCall,
+  type WorkflowJournal,
+  type JournalLookup,
+} from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 
 type FindCall = { readonly provider: string; readonly modelId: string };
 
@@ -77,8 +84,11 @@ function createRunContext(input: {
   readonly progress?: AgentProgress;
   readonly cwd?: string;
   readonly budget?: WorkflowBudget;
+  readonly usage?: ReturnType<typeof createWorkflowUsageRecorder>;
+  readonly journal?: WorkflowJournal;
+  readonly nextAgentIndex?: () => number;
 }): RunContext {
-  const usage = createWorkflowUsageRecorder();
+  const usage = input.usage ?? createWorkflowUsageRecorder();
   return {
     cwd: input.cwd ?? process.cwd(),
     hostModel: input.hostModel,
@@ -89,6 +99,8 @@ function createRunContext(input: {
     perf: new PerfRecorder(),
     usage,
     budget: input.budget ?? createBudget(null, usage),
+    journal: input.journal ?? createMemoryBackedJournal(),
+    nextAgentIndex: input.nextAgentIndex ?? createAgentIndexCounter(),
     createSession: input.createSession,
   };
 }
@@ -230,6 +242,42 @@ test("runAgent refuses to start once the run is over budget", async () => {
     WorkflowBudgetExceededError,
   );
   assert.equal(createSessionCalls, 0);
+});
+
+test("runAgent returns cached journal results before queueing, budget checks, or session creation", async () => {
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+  const progress = createProgress();
+  const usage = createWorkflowUsageRecorder();
+  const journal = createMemoryBackedJournal([{ index: 1, hash: hashAgentCall("hello", { label: "cached" }), value: "cached-value" }]);
+  const exhausted: WorkflowBudget = { total: 100, spent: () => 250, remaining: () => 0 };
+
+  const result = await runAgent(createRunContext({ createSession, progress, usage, journal, budget: exhausted }), "hello", { label: "cached" });
+
+  assert.equal(result, "cached-value");
+  assert.equal(createSessionCalls, 0);
+  assert.deepEqual(progress.events, ["log:cached: using cached result from workflow journal"]);
+  assert.equal(usage.snapshot().agents.length, 0);
+});
+
+test("runAgent records successful live results into the journal", async () => {
+  const recorded: Array<{ readonly index: number; readonly hash: string; readonly value: unknown }> = [];
+  const journal: WorkflowJournal = {
+    lookup(): JournalLookup {
+      return { hit: false };
+    },
+    async record(index, hash, value) {
+      recorded.push({ index, hash, value });
+    },
+  };
+
+  const result = await runAgent(createRunContext({ createSession: async () => createTextSession(), journal }), "hello", { label: "live" });
+
+  assert.equal(result, "done");
+  assert.deepEqual(recorded, [{ index: 1, hash: hashAgentCall("hello", { label: "live" }), value: "done" }]);
 });
 
 test("runAgent re-checks budget after waiting for a concurrency slot", async () => {

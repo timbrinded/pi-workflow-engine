@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { SelectList, Text, truncateToWidth, type Component, type SelectItem, type SelectListTheme, type TUI } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress.ts";
-import type { WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
+import type { WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
 import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./src/usage.ts";
@@ -23,15 +23,27 @@ function summarize(result: unknown): string {
   return typeof result === "string" ? result : "Workflow finished.";
 }
 
-function formatMessageContent(name: string, result: unknown, usage?: WorkflowUsageSnapshot, perf?: WorkflowPerfDetails): string {
+function formatMessageContent(
+  name: string,
+  result: unknown,
+  usage?: WorkflowUsageSnapshot,
+  perf?: WorkflowPerfDetails,
+  metadata?: WorkflowRunMetadata,
+): string {
   const usageLine = formatWorkflowUsageLine(usage);
   const perfLine = formatPerfLine(perf);
-  const details = [usageLine, perfLine].filter((line): line is string => line !== undefined);
+  const details = [formatRunLine(metadata), usageLine, perfLine].filter((line): line is string => line !== undefined);
   return `## Workflow: ${name}\n\n${summarize(result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
 }
 
-function workflowEnvelope(name: string, result: unknown, usage?: WorkflowUsageSnapshot, perf?: WorkflowPerfDetails): WorkflowResultEnvelope {
-  return { name, result, completedAt: Date.now(), usage, perf };
+function workflowEnvelope(
+  name: string,
+  result: unknown,
+  usage?: WorkflowUsageSnapshot,
+  perf?: WorkflowPerfDetails,
+  metadata?: WorkflowRunMetadata,
+): WorkflowResultEnvelope {
+  return { name, result, completedAt: Date.now(), usage, perf, runId: metadata?.runId, resumedFromRunId: metadata?.resumedFromRunId };
 }
 
 function compactPerfSnapshot(snapshot: PerfSnapshot | undefined): WorkflowPerfDetails | undefined {
@@ -43,6 +55,11 @@ function formatPerfLine(perf: WorkflowPerfDetails | undefined): string | undefin
   if (!perf) return undefined;
   const parts = perf.aggregates.slice(0, 4).map((aggregate) => `${aggregate.name} ${Math.round(aggregate.total)}ms`);
   return parts.length > 0 ? `Perf: ${parts.join(" · ")}` : "Perf: no samples";
+}
+
+function formatRunLine(metadata: WorkflowRunMetadata | undefined): string | undefined {
+  if (!metadata) return undefined;
+  return metadata.resumedFromRunId ? `Run: ${metadata.runId} (resumed from ${metadata.resumedFromRunId})` : `Run: ${metadata.runId}`;
 }
 
 type DiscoveryModule = typeof import("./src/discovery.ts");
@@ -234,6 +251,7 @@ export function parseWorkflowInvocation(input: string): WorkflowInvocation {
 }
 
 const INVALID_BUDGET_OPTION = "--budget requires a positive integer output-token count";
+const INVALID_RESUME_OPTION = "--resume requires a workflow run id";
 
 function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean; optionErrors?: string[] } {
   const tokens = input.split(/\s+/).filter(Boolean);
@@ -300,6 +318,22 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
       }
       continue;
     }
+    if (token.startsWith("--resume=")) {
+      const value = token.slice("--resume=".length).trim();
+      if (value === "") optionErrors.push(INVALID_RESUME_OPTION);
+      else options.resumeFromRunId = value;
+      continue;
+    }
+    if (token === "--resume") {
+      const next = tokens[i + 1];
+      if (next === undefined || next.startsWith("--")) {
+        optionErrors.push(INVALID_RESUME_OPTION);
+      } else {
+        options.resumeFromRunId = next;
+        i++;
+      }
+      continue;
+    }
     kept.push(token);
   }
   return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined, optionErrors: optionErrors.length > 0 ? optionErrors : undefined };
@@ -339,6 +373,7 @@ Do not edit files unless the user explicitly requested edits.`;
 export interface WorkflowToolRequestParams {
   readonly name?: string;
   readonly script?: string;
+  readonly resumeFromRunId?: string;
 }
 
 export type WorkflowToolRequest =
@@ -405,6 +440,7 @@ export async function sendWorkflowResult(
   const { runWorkflow } = await loadEngine();
   let perfSnapshot: PerfSnapshot | undefined;
   let usageSnapshot: WorkflowUsageSnapshot | undefined;
+  let runMetadata: WorkflowRunMetadata | undefined;
   let liveInspection: ActiveWorkflowInspection | undefined;
   const result = await runWorkflow(ctx, mod, args, {
     ...options,
@@ -429,6 +465,10 @@ export async function sendWorkflowResult(
       usageSnapshot = snapshot;
       options.onUsageSnapshot?.(snapshot);
     },
+    onRunMetadata(metadata) {
+      runMetadata = metadata;
+      options.onRunMetadata?.(metadata);
+    },
     onProgressSnapshot(snapshot) {
       lastWorkflowInspection = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
       options.onProgressSnapshot?.(snapshot);
@@ -448,7 +488,12 @@ export async function sendWorkflowResult(
     await handleReviewViewerAction(pi, ctx, reviewAction, reviewDecision.issues, reviewDecision.report.reviewContext);
   }
   pi.sendMessage(
-    { customType: "workflow-result", content: formatMessageContent(name, result, usageSnapshot, perf), display: true, details: workflowEnvelope(name, result, usageSnapshot, perf) },
+    {
+      customType: "workflow-result",
+      content: formatMessageContent(name, result, usageSnapshot, perf, runMetadata),
+      display: true,
+      details: workflowEnvelope(name, result, usageSnapshot, perf, runMetadata),
+    },
     { triggerTurn: false },
   );
 }
@@ -458,7 +503,12 @@ export default function workflowEngine(pi: ExtensionAPI): void {
 
   pi.registerMessageRenderer("workflow-result", (message, { expanded }, theme) => {
     const details = message.details;
-    if (isWorkflowResult(details)) return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage);
+    if (isWorkflowResult(details)) {
+      return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage, {
+        runId: details.runId,
+        resumedFromRunId: details.resumedFromRunId,
+      });
+    }
     return renderWorkflowResult("workflow", details ?? message.content, expanded, theme);
   });
 
@@ -541,6 +591,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         }),
       ),
       perf: Type.Optional(Type.Boolean({ description: "Include workflow performance timing aggregates in the result details" })),
+      resumeFromRunId: Type.Optional(Type.String({ description: "Workflow run id to resume from by replaying matching completed agent results" })),
     }),
     renderCall(args, theme) {
       const suffix = args.args ? ` ${theme.fg("dim", args.args)}` : "";
@@ -554,7 +605,12 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     renderResult(result, { expanded, isPartial }, theme) {
       if (isPartial) return new Text(theme.fg("accent", "Running workflow…"), 0, 0);
       const details = result.details;
-      if (isWorkflowResult(details)) return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage);
+      if (isWorkflowResult(details)) {
+        return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage, {
+          runId: details.runId,
+          resumedFromRunId: details.resumedFromRunId,
+        });
+      }
       const first = result.content[0];
       const text = first?.type === "text" ? first.text : "Workflow finished.";
       return new Text(theme.fg("muted", text), 0, 0);
@@ -569,6 +625,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         parallelSubmissionLimit: params.parallelSubmissionLimit,
         budget: params.budget,
         perf: params.perf,
+        resumeFromRunId: params.resumeFromRunId,
         signal,
       };
       const perfRecorder = await createInvocationPerf(runOptions);
@@ -602,6 +659,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       const { runWorkflow } = await loadEngine();
       let perfSnapshot: PerfSnapshot | undefined;
       let usageSnapshot: WorkflowUsageSnapshot | undefined;
+      let runMetadata: WorkflowRunMetadata | undefined;
       let liveInspection: ActiveWorkflowInspection | undefined;
       const resultArgs = params.args ?? "";
       const result = await runWorkflow(ctx, mod, resultArgs, {
@@ -624,6 +682,9 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         onUsageSnapshot: (snapshot) => {
           usageSnapshot = snapshot;
         },
+        onRunMetadata: (metadata) => {
+          runMetadata = metadata;
+        },
         onProgressSnapshot: (snapshot) => {
           // Record the run so /workflow:inspector can reopen it — tool-invoked (dynamax) runs were
           // previously uninspectable, unlike the /workflow command path.
@@ -633,8 +694,11 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       const perf = compactPerfSnapshot(perfSnapshot);
       const usageLine = formatWorkflowUsageLine(usageSnapshot);
       const perfLine = formatPerfLine(perf);
-      const detailLines = [usageLine, perfLine].filter((line): line is string => line !== undefined);
-      return { content: [{ type: "text", text: `${summarize(result)}${detailLines.length > 0 ? `\n\n${detailLines.join("\n")}` : ""}` }], details: workflowEnvelope(resultName, result, usageSnapshot, perf) };
+      const detailLines = [formatRunLine(runMetadata), usageLine, perfLine].filter((line): line is string => line !== undefined);
+      return {
+        content: [{ type: "text", text: `${summarize(result)}${detailLines.length > 0 ? `\n\n${detailLines.join("\n")}` : ""}` }],
+        details: workflowEnvelope(resultName, result, usageSnapshot, perf, runMetadata),
+      };
     },
   });
 }

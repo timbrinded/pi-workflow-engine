@@ -28,6 +28,8 @@ Useful flags:
 /workflow code-review --result-viewer    # explicitly open the findings viewer
 /workflow code-review --review-viewer    # alias for --result-viewer
 /workflow code-review --concurrency=4    # cap concurrent subagents
+/workflow code-review --budget=50000     # output-token ceiling for subagents
+/workflow code-review --resume <run-id>  # replay matching completed agent calls
 /workflow code-review --refresh          # rediscover newly added workflow files
 ```
 
@@ -103,6 +105,18 @@ These workflow usage totals are separate from `--perf`, which is internal timing
 During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow:inspector` if you want to bring the last completed inspector back up afterward.
 
 Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding.
+
+### Resume a run
+
+Every workflow result includes a run id. Resume with:
+
+```text
+/workflow code-review --resume <run-id> HEAD~3
+```
+
+The `workflow` tool exposes the same feature as `resumeFromRunId`. Resume replays completed `agent()` results from `.pi/.workflow-runs/<run-id>.jsonl` while the agent call index and prompt/options hash still match. After the first missing or changed call, the rest of the run executes live and writes a new journal under the new run id. Cached results do not add usage or budget spend for the resumed run.
+
+Resume only caches completed `agent()` calls. It does not snapshot arbitrary workflow local variables or in-flight tool work. Keep prompts and agent options deterministic across reruns if you want cache hits.
 
 ## Author a saved workflow
 

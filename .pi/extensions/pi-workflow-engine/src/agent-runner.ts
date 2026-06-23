@@ -8,6 +8,7 @@ import type { WorkflowUsageSink } from "./usage.ts";
 import { WorkflowBudgetExceededError, type WorkflowBudget } from "./budget.ts";
 import { throwIfAborted } from "./cancellation.ts";
 import { appendSkillReminder, createAgentSkillResourceLoader, extractSkillSelectorsFromText } from "./agent-skills.ts";
+import { hashAgentCall, type WorkflowJournal } from "./journal.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
@@ -60,6 +61,8 @@ export interface RunContext {
   perf: PerfSink;
   usage: WorkflowUsageSink;
   budget: WorkflowBudget;
+  journal: WorkflowJournal;
+  nextAgentIndex(): number;
   createSession?: CreateAgentSession;
 }
 
@@ -292,6 +295,15 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
 
   return await rc.perf.time("agent.total_ms", async () => {
     throwIfAborted(rc.signal);
+    const agentIndex = rc.nextAgentIndex();
+    const agentHash = hashAgentCall(prompt, opts);
+    const cached = rc.journal.lookup(agentIndex, agentHash);
+    if (cached.hit) {
+      rc.progress.log(`${label}: using cached result from workflow journal`);
+      rc.perf.counter("agent.cache_hit", 1, tags);
+      await rc.journal.record(agentIndex, agentHash, cached.value);
+      return cached.value;
+    }
     // Stop spending the moment the run is over budget — before queueing.
     ensureWithinBudget(rc.budget);
     // Track queued agents before acquiring a global concurrency slot.
@@ -415,7 +427,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           recordUsage(activeSession);
           throwIfAborted(rc.signal);
 
-          return rc.perf.timeSync(
+          const result = rc.perf.timeSync(
             "agent.extract_result_ms",
             () => {
               if (opts.schema) {
@@ -429,6 +441,8 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             },
             tags,
           );
+          await rc.journal.record(agentIndex, agentHash, result);
+          return result;
         } catch (error) {
           failed = true;
           failureHandled = true;

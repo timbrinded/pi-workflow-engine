@@ -9,6 +9,13 @@ import { createWorkflowUsageRecorder } from "./usage.ts";
 import { defaultConcurrency, resolveWorkflowRunOptions } from "./options.ts";
 import type { AgentOptions, WorkflowApi, WorkflowModule, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
+import {
+  createAgentIndexCounter,
+  createWorkflowJournal,
+  createWorkflowRunId,
+  pruneWorkflowJournals,
+  workflowJournalPath,
+} from "./journal.ts";
 
 /** Default global cap on concurrent agents per run. */
 const DEFAULT_CONCURRENCY = defaultConcurrency();
@@ -62,6 +69,12 @@ export async function runWorkflow(
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
   const usage = createWorkflowUsageRecorder();
   const budget = createBudget(resolvedOptions.budget ?? null, usage);
+  const runId = resolvedOptions.runId ?? createWorkflowRunId();
+  const journalPath = workflowJournalPath(ctx.cwd, runId);
+  const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
+  const journal = await createWorkflowJournal({ resumePath, writePath: journalPath });
+  resolvedOptions.onRunMetadata?.({ runId, resumedFromRunId: resolvedOptions.resumeFromRunId, journalPath });
+  progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
   const unlinkOptionAbortSignal = linkAbortSignal(resolvedOptions.signal, runAbortController);
@@ -75,6 +88,8 @@ export async function runWorkflow(
     perf,
     usage,
     budget,
+    journal,
+    nextAgentIndex: createAgentIndexCounter(),
   };
 
   try {
@@ -102,6 +117,7 @@ export async function runWorkflow(
       resolvedOptions.onProgressSource?.(undefined);
       unlinkContextAbortSignal();
       unlinkOptionAbortSignal();
+      await pruneWorkflowJournals(ctx.cwd);
     }
   }
 }

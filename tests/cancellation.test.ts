@@ -6,6 +6,7 @@ import { isFatalWorkflowError, WorkflowAbortError } from "../.pi/extensions/pi-w
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import { createAgentIndexCounter, createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -44,6 +45,8 @@ function createRunContext(createSession: CreateAgentSession, signal: AbortSignal
     perf: new NoopPerfRecorder(),
     usage: createWorkflowUsageRecorder(),
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
+    journal: createMemoryBackedJournal(),
+    nextAgentIndex: createAgentIndexCounter(),
     createSession,
   };
 }
