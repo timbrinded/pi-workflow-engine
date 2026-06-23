@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { WorkflowBudgetExceededError } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
-import { parallel, pipeline, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { parallel, pipeline, pipelineWithOptions, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -182,6 +182,53 @@ test("pipeline drops a failing item to null and skips its remaining stages", asy
 
   assert.deepEqual(results, [30, null, 70]);
   assert.deepEqual(stage3Items, [1, 3]);
+});
+
+test("pipeline rejects a plain error observed after run abort", async () => {
+  const controller = new AbortController();
+
+  await assert.rejects(
+    pipelineWithOptions(
+      [1],
+      [
+        async () => {
+          controller.abort(new WorkflowAbortError("stop"));
+          throw new Error("plain after abort");
+        },
+      ],
+      { signal: controller.signal, abortController: controller },
+    ),
+    /plain after abort/,
+  );
+});
+
+test("pipeline aborts sibling item chains after a fatal failure", async () => {
+  const controller = new AbortController();
+  let siblingStage2Ran = false;
+
+  const running = pipelineWithOptions(
+    [1, 2],
+    [
+      async (_prev, item) => {
+        if (item === 1) {
+          await delay(1);
+          throw new WorkflowAbortError("fatal");
+        }
+        await delay(10);
+        return item;
+      },
+      async (prev) => {
+        siblingStage2Ran = true;
+        return prev;
+      },
+    ],
+    { signal: controller.signal, abortController: controller },
+  );
+
+  await assert.rejects(running, /fatal/);
+  await delay(20);
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(siblingStage2Ran, false);
 });
 
 test("pipeline propagates a fatal abort", async () => {

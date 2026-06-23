@@ -68,6 +68,11 @@ export interface ParallelOptions {
   readonly limit?: number;
 }
 
+export interface PipelineOptions {
+  readonly signal?: AbortSignal;
+  readonly abortController?: AbortController;
+}
+
 export function compactResults<T>(values: ReadonlyArray<T | null | undefined>): T[] {
   return values.filter((value): value is T => value != null);
 }
@@ -115,9 +120,7 @@ export async function parallel<T>(thunks: Array<() => Promise<T>>, options: Para
             return thunks[index]();
           })
           .then(
-            (value) => {
-              settleSlot(index, value);
-            },
+            (value) => settleSlot(index, value),
             (error: unknown) => {
               if (isFatalWorkflowError(error, options.signal)) {
                 rejectOnce(error);
@@ -170,16 +173,55 @@ export async function pipeline(
   items: readonly unknown[],
   ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
 ): Promise<Array<unknown | null>> {
+  return pipelineWithOptions(items, stages);
+}
+
+export function bindPipeline(options: PipelineOptions): Pipeline {
+  async function boundPipeline<Item, A>(
+    items: readonly Item[],
+    stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+  ): Promise<Array<A | null>>;
+  async function boundPipeline<Item, A, B>(
+    items: readonly Item[],
+    stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+    stage2: (prev: A, item: Item, index: number) => Promise<B>,
+  ): Promise<Array<B | null>>;
+  async function boundPipeline<Item, A, B, C>(
+    items: readonly Item[],
+    stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+    stage2: (prev: A, item: Item, index: number) => Promise<B>,
+    stage3: (prev: B, item: Item, index: number) => Promise<C>,
+  ): Promise<Array<C | null>>;
+  async function boundPipeline(
+    items: readonly unknown[],
+    ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
+  ): Promise<Array<unknown | null>> {
+    return pipelineWithOptions(items, stages, options);
+  }
+  return boundPipeline;
+}
+
+export async function pipelineWithOptions(
+  items: readonly unknown[],
+  stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>,
+  options: PipelineOptions = {},
+): Promise<Array<unknown | null>> {
+  throwIfAborted(options.signal);
   return Promise.all(
     items.map(async (item, index) => {
+      throwIfAborted(options.signal);
       let acc: unknown = item;
       try {
         for (const stage of stages) {
+          throwIfAborted(options.signal);
           acc = await stage(acc, item, index);
         }
         return acc;
       } catch (error) {
-        if (isFatalWorkflowError(error, undefined)) throw error;
+        if (isFatalWorkflowError(error, options.signal)) {
+          options.abortController?.abort(error);
+          throw error;
+        }
         return null;
       }
     }),

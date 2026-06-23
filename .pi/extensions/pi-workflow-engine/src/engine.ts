@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { parallel, pipeline, Semaphore } from "./concurrency.ts";
+import { bindPipeline, parallel, Semaphore } from "./concurrency.ts";
 import { linkAbortSignal } from "./cancellation.ts";
 import { createBudget } from "./budget.ts";
 import { runAgent, type RunContext } from "./agent-runner.ts";
@@ -159,7 +159,7 @@ export async function runWorkflowWithContext(
         abortController: opts.abortController,
         limit: opts.submissionLimit,
       }),
-    pipeline,
+    pipeline: bindPipeline({ signal: rc.signal, abortController: opts.abortController }),
     phase: scope.phase,
     log: scope.log,
     progress: scope.event,

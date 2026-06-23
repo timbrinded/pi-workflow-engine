@@ -110,6 +110,7 @@ Saved workflows are TypeScript modules with `meta` plus a default async function
 
 ```ts
 import { Type } from "typebox";
+import { compactResults } from "../src/concurrency.ts";
 import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -125,12 +126,12 @@ const SEARCH_TOOL_HINTS = ["search"] as const;
 
 export default async function run({ agent, parallel, phase, args }: WorkflowApi) {
   phase("Find");
-  const findings = (
+  const findings = compactResults(
     await parallel([
       () => agent(`Find correctness issues: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
       () => agent(`Find edge cases: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
-    ])
-  ).filter((value) => value !== null);
+    ]),
+  );
 
   phase("Synthesize");
   return agent(`Summarize: ${JSON.stringify(findings)}`, { thinkingLevel: "medium" });
