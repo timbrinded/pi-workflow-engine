@@ -11,6 +11,7 @@ import { registerDynamax } from "./src/dynamax.ts";
 import { handleReviewViewerAction } from "./src/review/review-actions.ts";
 import { decideReviewResultsPresentation, extensionContextMode, maybeShowReviewResultsViewer } from "./src/review/review-results-flow.ts";
 import { isWorkflowResult, renderWorkflowResult, type WorkflowPerfDetails, type WorkflowResultEnvelope } from "./src/ui/workflow-result-renderer.ts";
+import { parseWorkflowBudgetString, WORKFLOW_BUDGET_MAX, WORKFLOW_BUDGET_MIN } from "./src/options.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -216,6 +217,7 @@ export interface WorkflowInvocation {
   args: string;
   options: WorkflowRunOptions;
   refreshDiscovery?: boolean;
+  optionErrors?: string[];
   authorBrief?: string;
 }
 
@@ -224,14 +226,20 @@ export function parseWorkflowInvocation(input: string): WorkflowInvocation {
   const space = trimmed.indexOf(" ");
   const name = space === -1 ? trimmed : trimmed.slice(0, space);
   const rest = space === -1 ? "" : trimmed.slice(space + 1).trim();
-  const { args, options, refreshDiscovery } = parseWorkflowOptions(rest);
-  return { name, args, options, refreshDiscovery };
+  const { args, options, refreshDiscovery, optionErrors } = parseWorkflowOptions(rest);
+  const invocation: WorkflowInvocation = { name, args, options };
+  if (refreshDiscovery) invocation.refreshDiscovery = refreshDiscovery;
+  if (optionErrors) invocation.optionErrors = optionErrors;
+  return invocation;
 }
 
-function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean } {
+const INVALID_BUDGET_OPTION = "--budget requires a positive integer output-token count";
+
+function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean; optionErrors?: string[] } {
   const tokens = input.split(/\s+/).filter(Boolean);
   const kept: string[] = [];
   const options: WorkflowRunOptions = {};
+  const optionErrors: string[] = [];
   let refreshDiscovery = false;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -276,18 +284,29 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
       continue;
     }
     if (token.startsWith("--budget=")) {
-      options.budget = parseNumericOption(token.slice("--budget=".length));
+      const parsed = parseBudgetOption(token.slice("--budget=".length));
+      if (parsed === undefined) optionErrors.push(INVALID_BUDGET_OPTION);
+      else options.budget = parsed;
       continue;
     }
     if (token === "--budget") {
       const next = tokens[i + 1];
-      options.budget = parseNumericOption(next);
-      if (next !== undefined) i++;
+      const parsed = next === undefined ? undefined : parseBudgetOption(next);
+      if (parsed === undefined) {
+        optionErrors.push(INVALID_BUDGET_OPTION);
+      } else {
+        options.budget = parsed;
+        i++;
+      }
       continue;
     }
     kept.push(token);
   }
-  return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined };
+  return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined, optionErrors: optionErrors.length > 0 ? optionErrors : undefined };
+}
+
+function parseBudgetOption(value: string): number | undefined {
+  return parseWorkflowBudgetString(value);
 }
 
 function parseNumericOption(value: string | undefined): number | undefined {
@@ -460,6 +479,10 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     description: "Run a multi-agent workflow: /workflow <name> [args]",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const direct = parseWorkflowInvocation(args);
+      if (direct.optionErrors?.length) {
+        ctx.ui.notify(`Invalid workflow option: ${direct.optionErrors.join("; ")}`, "warning");
+        return;
+      }
       const perfRecorder = await createInvocationPerf(direct.options);
       const { discoverWorkflows } = await loadDiscovery();
       const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: direct.refreshDiscovery, perf: perfRecorder });
@@ -510,7 +533,13 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       args: Type.Optional(Type.String({ description: "Arguments for the workflow (e.g. target or focus)" })),
       concurrency: Type.Optional(Type.Number({ description: "Optional per-run agent concurrency cap" })),
       parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
-      budget: Type.Optional(Type.Number({ description: "Optional output-token ceiling for the run; agent() throws once it is exceeded" })),
+      budget: Type.Optional(
+        Type.Integer({
+          minimum: WORKFLOW_BUDGET_MIN,
+          maximum: WORKFLOW_BUDGET_MAX,
+          description: "Optional output-token ceiling for the run; agent() throws once it is exceeded",
+        }),
+      ),
       perf: Type.Optional(Type.Boolean({ description: "Include workflow performance timing aggregates in the result details" })),
     }),
     renderCall(args, theme) {
