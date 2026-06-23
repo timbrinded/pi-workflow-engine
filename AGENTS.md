@@ -24,8 +24,8 @@ A **pi extension** with canonical entrypoint `.pi/extensions/pi-workflow-engine/
 
 A **workflow** (`.pi/extensions/pi-workflow-engine/workflows/*.ts`) exports `meta` + a default `async (api) => result`. The injected `api`:
 - `agent(prompt, { schema?, model?, thinkingLevel?, tools?, label?, phase? })` — runs one subagent; with a typebox `schema` it returns validated structured data, else final text.
-- `parallel(thunks)` — concurrent; barrier (waits for all).
-- `pipeline(items, ...stages)` — each item through all stages independently; no barrier between stages.
+- `parallel(thunks)` — concurrent barrier; recoverable failures become `null` slots and survivors continue.
+- `pipeline(items, ...stages)` — each item through all stages independently; recoverable item failures become `null`, with no barrier between stages.
 - `phase(title)` / `log(msg)` — drive the live progress tree.
 
 Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope → per-angle Find → independent Verify → Synthesize.

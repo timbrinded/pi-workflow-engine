@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { abortReason, throwIfAborted } from "./cancellation.ts";
+import { abortReason, isFatalWorkflowError, throwIfAborted } from "./cancellation.ts";
 
 /**
  * A counting semaphore: bounds how many async tasks run at once.
@@ -68,15 +68,19 @@ export interface ParallelOptions {
   readonly limit?: number;
 }
 
-/** Run every thunk concurrently and wait for all results (a barrier). */
-export async function parallel<T>(thunks: Array<() => Promise<T>>, options: ParallelOptions = {}): Promise<T[]> {
+export function compactResults<T>(values: ReadonlyArray<T | null | undefined>): T[] {
+  return values.filter((value): value is T => value != null);
+}
+
+/** Run every thunk concurrently and wait for all results; recoverable failures become null slots. */
+export async function parallel<T>(thunks: Array<() => Promise<T>>, options: ParallelOptions = {}): Promise<Array<T | null>> {
   throwIfAborted(options.signal);
-  const results = new Array<T>(thunks.length);
+  const results = new Array<T | null>(thunks.length);
   let remaining = thunks.length;
   if (remaining === 0) return results;
 
   const limit = normalizeLimit(options.limit, thunks.length);
-  return await new Promise<T[]>((resolve, reject) => {
+  return await new Promise<Array<T | null>>((resolve, reject) => {
     let rejected = false;
     let active = 0;
     let next = 0;
@@ -87,6 +91,18 @@ export async function parallel<T>(thunks: Array<() => Promise<T>>, options: Para
       options.abortController?.abort(error);
       cleanup();
       reject(error);
+    };
+    const settleSlot = (index: number, value: T | null) => {
+      if (rejected) return;
+      active--;
+      results[index] = value;
+      remaining--;
+      if (remaining === 0) {
+        cleanup();
+        resolve(results);
+        return;
+      }
+      launchMore();
     };
     const onAbort = () => rejectOnce(abortReason(options.signal));
     const launchMore = () => {
@@ -100,18 +116,15 @@ export async function parallel<T>(thunks: Array<() => Promise<T>>, options: Para
           })
           .then(
             (value) => {
-              if (rejected) return;
-              active--;
-              results[index] = value;
-              remaining--;
-              if (remaining === 0) {
-                cleanup();
-                resolve(results);
+              settleSlot(index, value);
+            },
+            (error: unknown) => {
+              if (isFatalWorkflowError(error, options.signal)) {
+                rejectOnce(error);
                 return;
               }
-              launchMore();
+              settleSlot(index, null);
             },
-            (error: unknown) => rejectOnce(error),
           );
       }
     };
@@ -137,33 +150,38 @@ function normalizeLimit(limit: number | undefined, itemCount: number): number {
 export async function pipeline<Item, A>(
   items: readonly Item[],
   stage1: (prev: Item, item: Item, index: number) => Promise<A>,
-): Promise<A[]>;
+): Promise<Array<A | null>>;
 export async function pipeline<Item, A, B>(
   items: readonly Item[],
   stage1: (prev: Item, item: Item, index: number) => Promise<A>,
   stage2: (prev: A, item: Item, index: number) => Promise<B>,
-): Promise<B[]>;
+): Promise<Array<B | null>>;
 export async function pipeline<Item, A, B, C>(
   items: readonly Item[],
   stage1: (prev: Item, item: Item, index: number) => Promise<A>,
   stage2: (prev: A, item: Item, index: number) => Promise<B>,
   stage3: (prev: B, item: Item, index: number) => Promise<C>,
-): Promise<C[]>;
+): Promise<Array<C | null>>;
 export async function pipeline(
   items: readonly unknown[],
   ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
-): Promise<unknown[]>;
+): Promise<Array<unknown | null>>;
 export async function pipeline(
   items: readonly unknown[],
   ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
-): Promise<unknown[]> {
+): Promise<Array<unknown | null>> {
   return Promise.all(
     items.map(async (item, index) => {
       let acc: unknown = item;
-      for (const stage of stages) {
-        acc = await stage(acc, item, index);
+      try {
+        for (const stage of stages) {
+          acc = await stage(acc, item, index);
+        }
+        return acc;
+      } catch (error) {
+        if (isFatalWorkflowError(error, undefined)) throw error;
+        return null;
       }
-      return acc;
     }),
   );
 }

@@ -125,10 +125,12 @@ const SEARCH_TOOL_HINTS = ["search"] as const;
 
 export default async function run({ agent, parallel, phase, args }: WorkflowApi) {
   phase("Find");
-  const findings = await parallel([
-    () => agent(`Find correctness issues: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
-    () => agent(`Find edge cases: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
-  ]);
+  const findings = (
+    await parallel([
+      () => agent(`Find correctness issues: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
+      () => agent(`Find edge cases: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
+    ])
+  ).filter((value) => value !== null);
 
   phase("Synthesize");
   return agent(`Summarize: ${JSON.stringify(findings)}`, { thinkingLevel: "medium" });
@@ -140,8 +142,8 @@ Core primitives:
 | Primitive | What it does |
 | --- | --- |
 | `agent(prompt, opts)` | Runs one isolated subagent. With `schema`, returns validated structured data. |
-| `parallel(thunks)` | Runs thunks concurrently and waits for all. |
-| `pipeline(items, ...stages)` | Runs each item through stages independently. |
+| `parallel(thunks)` | Runs thunks concurrently and waits for all; recoverable failures become `null` slots. |
+| `pipeline(items, ...stages)` | Runs each item through stages independently; a failed item becomes `null`. |
 | `phase(title)` / `log(message)` | Updates workflow progress UI. |
 | `progress(event)` | Emits counters, summaries, and lane items. |
 | `workflow(ref, args?)` | Runs another workflow inline as a sub-step and returns its result. |
@@ -165,7 +167,7 @@ export default async function run({ workflow }: WorkflowApi) {
 }
 ```
 
-Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name — wrap the call in `try/catch` if a missing sub-workflow should be non-fatal (note `parallel()` rejects the whole batch on the first error, so catch inside each thunk for per-branch resilience).
+Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name. Inside `parallel()` or `pipeline()`, recoverable branch errors become `null` results, so filter nulls before synthesis; a genuine run abort still rejects.
 
 ### Where workflows live
 

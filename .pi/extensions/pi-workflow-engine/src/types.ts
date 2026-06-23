@@ -117,9 +117,15 @@ export interface WorkflowApi {
    * a missing sub-workflow gracefully.
    */
   workflow(ref: WorkflowRef, args?: string): Promise<unknown>;
-  /** Run every thunk concurrently and wait for all (a barrier). */
-  parallel<T>(thunks: Array<() => Promise<T>>): Promise<T[]>;
-  /** Run each item through all stages independently — no barrier between stages. */
+  /**
+   * Run every thunk concurrently and wait for all (a barrier). Recoverable thunk
+   * failures become null slots; filter nulls before consuming survivors.
+   */
+  parallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>;
+  /**
+   * Run each item through all stages independently — no barrier between stages.
+   * A recoverable stage failure drops that item to null and skips its later stages.
+   */
   pipeline: Pipeline;
   /** Start a new phase; subsequent agents group under it in the progress tree. */
   phase(title: string): void;

@@ -204,6 +204,7 @@ Inline workflows are passed to the `workflow` tool as a script string. They are 
 - Workflow results aggregate the finalized assistant usage from those subagent sessions before disposal and show token/cost totals separately from pi's host-session footer accounting.
 - Structured output uses a terminating tool whose `parameters` is your schema. pi validates the call; the engine captures the args. There is no JSON scraping.
 - A single run-level semaphore caps concurrent agents, so nested `parallel`, `pipeline`, and `workflow()` calls stay bounded.
+- `parallel()` and `pipeline()` are fail-soft: recoverable branch failures, including budget backstops, become `null` slots while survivors continue. A genuine run abort still rejects.
 - Built-in workflows stay statically imported so they share pi's bundled `typebox` identity.
 - Set `thinkingLevel` per fan-out agent. Otherwise many subagents can inherit an expensive global reasoning level.
 - Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; clear prompt text like `include skill name` also works when `skills` is omitted.

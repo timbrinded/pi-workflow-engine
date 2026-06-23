@@ -1,4 +1,5 @@
 import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type AdvisoryFinding, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
+import { compactResults } from "./concurrency.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent } from "./types.ts";
 
 export interface AdvisoryLens {
@@ -133,9 +134,9 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
 
   if (schedulingMode === "finder-barrier") {
     const found = await api.parallel(lenses.map((lens) => async () => findForLens(lens)));
-    const novel = found.flatMap(dedupeFound);
+    const novel = compactResults(found).flatMap(dedupeFound);
     const verdicts = await api.parallel(novel.map((entry) => async () => verifyCandidate(entry)));
-    return { verified: verdicts.filter((value): value is Verified => value !== null), rawCandidates, dropped, refuted };
+    return { verified: compactResults(verdicts), rawCandidates, dropped, refuted };
   }
 
   const perLensVerified = await api.pipeline(
@@ -144,11 +145,11 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
     async (found) => {
       const novel = dedupeFound(found);
       const verdicts = await api.parallel(novel.map((entry) => async () => verifyCandidate(entry)));
-      return verdicts.filter((value): value is Verified => value !== null);
+      return compactResults(verdicts);
     },
   );
 
-  return { verified: perLensVerified.flat(), rawCandidates, dropped, refuted };
+  return { verified: compactResults(perLensVerified).flat(), rawCandidates, dropped, refuted };
 }
 
 function candidatesNovelToRun(candidates: readonly AdvisoryCandidate[], seen: Set<string>): AdvisoryCandidate[] {

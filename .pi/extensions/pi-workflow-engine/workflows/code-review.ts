@@ -17,6 +17,7 @@ import {
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
+import { compactResults } from "../src/concurrency.ts";
 import { captureDiff } from "../src/diff-capture.ts";
 import type { ReviewContext } from "../src/review/review-issues.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
@@ -227,7 +228,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     }),
   );
 
-  const novel = perAngle.flatMap(({ angle, candidates }) =>
+  const novel = compactResults(perAngle).flatMap(({ angle, candidates }) =>
     candidates
       .filter((candidate) => {
         const key = dedupKey(candidate);
@@ -263,7 +264,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     }),
   );
 
-  const verified = verdicts.filter((value): value is Verified => value !== null);
+  const verified = compactResults(verdicts);
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
   progress({ type: "counter", key: "verified", label: "verified", value: verified.length });

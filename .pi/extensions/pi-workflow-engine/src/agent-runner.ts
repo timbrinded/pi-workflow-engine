@@ -260,10 +260,10 @@ function shouldCreateSkillResourceLoader(rc: RunContext, prompt: string, opts: A
  * rather than reserving per-agent estimates. An uncapped run (`budget.total === null`,
  * `remaining()` is Infinity) never throws.
  *
- * Heads-up: a throw here propagates through `parallel`/`pipeline`, which are fail-fast today,
- * so one over-budget throw aborts the whole in-flight batch. The intended primary usage is the
- * loop guard `while (budget.total && budget.remaining() > N) { await agent(...) }`, where this
- * throw is only a backstop.
+ * Heads-up: a throw here is a recoverable branch failure inside `parallel`/`pipeline`, so the
+ * over-budget slot becomes null while already-started siblings can finish. The intended primary
+ * usage is the loop guard `while (budget.total && budget.remaining() > N) { await agent(...) }`,
+ * where this throw is only a backstop.
  */
 function ensureWithinBudget(budget: WorkflowBudget): void {
   if (budget.total !== null && budget.remaining() <= 0) {

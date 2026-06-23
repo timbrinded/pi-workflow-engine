@@ -17,6 +17,7 @@ import {
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
+import { compactResults } from "../src/concurrency.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -139,13 +140,13 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     }),
   );
 
-  const hypotheses = dedupe(perLens.flat(), (dropped) => {
+  const hypotheses = dedupe(compactResults(perLens).flat(), (dropped) => {
     droppedCandidateCount += dropped;
     progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: dropped });
   });
 
   phase("Verify");
-  const verified = (
+  const verified = compactResults(
     await parallel(
       hypotheses.map((hypothesis) => async (): Promise<Verified | null> => {
         const location = primaryLocation(hypothesis);
@@ -171,8 +172,8 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
         });
         return { ...hypothesis, verdict: judged.verdict, evidence: judged.evidence, confidence: judged.confidence };
       }),
-    )
-  ).filter((value): value is Verified => value !== null);
+    ),
+  );
 
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const refuted = verified.filter((finding) => finding.verdict === "REFUTED");
@@ -245,4 +246,3 @@ function rank(finding: Verified): number {
   if (finding.verdict === "CONFIRMED") return 0;
   return 1;
 }
-
