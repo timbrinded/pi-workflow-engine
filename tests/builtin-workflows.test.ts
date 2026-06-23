@@ -12,6 +12,8 @@ interface AgentCall {
   prompt: string;
   label: string | undefined;
   phase: string | undefined;
+  tools: string[] | undefined;
+  toolHints: readonly string[] | undefined;
 }
 
 interface ScriptedApi extends WorkflowApi {
@@ -32,7 +34,7 @@ function createScriptedApi(responses: unknown[], args = ""): ScriptedApi {
   const logs: string[] = [];
   const events: WorkflowProgressEvent[] = [];
   const agent = (async (prompt: string, opts?: AgentOptions) => {
-    calls.push({ prompt, label: opts?.label, phase: opts?.phase });
+    calls.push({ prompt, label: opts?.label, phase: opts?.phase, tools: opts?.tools, toolHints: opts?.toolHints });
     if (queue.length === 0) throw new Error(`No scripted response for agent ${opts?.label ?? "(unlabelled)"}`);
     return queue.shift();
   }) as WorkflowApi["agent"];
@@ -53,6 +55,7 @@ function createScriptedApi(responses: unknown[], args = ""): ScriptedApi {
     progress: (event) => events.push(event),
     args,
     cwd: process.cwd(),
+    budget: { total: null, spent: () => 0, remaining: () => Infinity },
     signal: undefined,
   };
 }
@@ -96,6 +99,31 @@ function asReportResult(value: unknown): ReportResult {
 function emptyCandidates(): { candidates: AdvisoryCandidate[] } {
   return { candidates: [] };
 }
+
+const EXPECTED_ADVISORY_TOOLS = ["read", "bash", "grep", "find", "ls"];
+const EXPECTED_ADVISORY_TOOL_HINTS = ["search"];
+
+test("built-in advisory workflows request dynamic search-like tools", async () => {
+  const codeReviewApi = createScriptedApi([null]);
+  await codeReview(codeReviewApi);
+  assert.deepEqual(codeReviewApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
+  assert.deepEqual(codeReviewApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
+
+  const diagnoseApi = createScriptedApi([null], "failing command");
+  await diagnose(diagnoseApi);
+  assert.deepEqual(diagnoseApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
+  assert.deepEqual(diagnoseApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
+
+  const refactorApi = createScriptedApi([{ target: ".", files: [], summary: "Nothing to scout." }]);
+  await refactorScout(refactorApi);
+  assert.deepEqual(refactorApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
+  assert.deepEqual(refactorApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
+
+  const perfApi = createScriptedApi([{ target: "startup", files: [], commands: [], summary: "No path identified." }]);
+  await perfReview(perfApi);
+  assert.deepEqual(perfApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
+  assert.deepEqual(perfApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
+});
 
 test("code-review returns the empty report when scope is unavailable", async () => {
   const api = createScriptedApi([null]);

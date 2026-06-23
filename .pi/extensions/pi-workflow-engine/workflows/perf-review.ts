@@ -10,6 +10,8 @@ import {
   formatEvidence,
   formatLocation,
   runLensVerificationPipeline,
+  DEFAULT_ADVISORY_TOOL_HINTS,
+  DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
@@ -51,7 +53,8 @@ const PERF_LENSES: PerfLens[] = [
   { label: "measurement", category: "measurement", text: "Missing, misleading, noisy, or insufficient benchmark/measurement design." },
 ];
 
-const TOOLS = ["read", "bash"];
+const TOOLS = DEFAULT_ADVISORY_TOOLS;
+const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_LENS = 4;
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
@@ -77,7 +80,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Inspect repository structure, scripts, likely hot-path files, and any existing benchmark or measurement commands. " +
       "Prefer identifying what to measure before claiming bottlenecks. Return files, commands, summary, and known measurements or the lack of them. " +
       `This workflow will fan out across ${PERF_LENSES.length} lenses with up to ${PER_LENS} candidates per lens. Structured output only.`,
-    { phase: "Scope", label: "scope", tools: TOOLS, thinkingLevel: "medium", schema: ScopeSchema },
+    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, thinkingLevel: "medium", schema: ScopeSchema },
   );
 
   if (!scope || scope.files.length === 0) {
@@ -107,6 +110,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     schedulingMode: "finder-barrier",
     perLens: PER_LENS,
     tools: TOOLS,
+    toolHints: TOOL_HINTS,
     finderPrompt: (lens) =>
       `## Perf-review finder — ${lens.label}\n\n${scopeBlock}\n` +
       "This workflow is advisory-only: identify bottleneck hypotheses, measurement gaps, and safe optimization directions, but do not edit files.\n" +

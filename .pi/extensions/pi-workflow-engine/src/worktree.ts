@@ -1,0 +1,238 @@
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runBoundedProcess } from "./process-runner.ts";
+
+export interface WorktreeGitCommandOptions {
+  readonly cwd: string;
+  readonly args: readonly string[];
+  readonly signal?: AbortSignal;
+  readonly timeoutMs: number;
+  readonly maxBufferBytes?: number;
+}
+
+export interface WorktreeGitCommandResult {
+  readonly ok: boolean;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly error?: string;
+}
+
+export interface WorktreeGitRunner {
+  runGit(options: WorktreeGitCommandOptions): Promise<WorktreeGitCommandResult>;
+}
+
+export interface WorktreeRef {
+  readonly path: string;
+}
+
+export interface WorktreeAddFailure {
+  readonly path: string;
+  readonly error: string;
+  readonly cleanup?: WorktreeGitCommandResult;
+}
+
+export interface GitWorktreeProbe {
+  readonly ok: boolean;
+  readonly inside: boolean;
+  readonly error?: string;
+}
+
+export interface WorktreeRemovalOutcome extends WorktreeGitCommandResult {
+  readonly path: string;
+}
+
+export interface WorktreePatch {
+  readonly patch: string;
+  readonly changed: boolean;
+}
+
+export interface WorktreeRegistryOptions {
+  readonly repoCwd: string;
+  readonly runner?: WorktreeGitRunner;
+  readonly patchCapture?: WorktreePatchCapture;
+  readonly timeoutMs?: number;
+}
+
+export type WorktreePatchCapture = (options: {
+  readonly worktreePath: string;
+  readonly runner?: WorktreeGitRunner;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+}) => Promise<WorktreePatch | { readonly error: string }>;
+
+const DEFAULT_WORKTREE_TIMEOUT_MS = 30_000;
+const WORKTREE_DIFF_MAX_BYTES = 16 << 20;
+let pathCounter = 0;
+
+export class WorktreeRegistry {
+  private readonly paths = new Set<string>();
+  private readonly runner: WorktreeGitRunner;
+  private readonly patchCapture: WorktreePatchCapture;
+  private readonly timeoutMs: number;
+
+  constructor(private readonly repoCwd: string, options: Omit<WorktreeRegistryOptions, "repoCwd"> = {}) {
+    this.runner = options.runner ?? spawnGitRunner;
+    this.patchCapture = options.patchCapture ?? captureWorktreePatch;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS;
+  }
+
+  get size(): number {
+    return this.paths.size;
+  }
+
+  register(path: string): void {
+    this.paths.add(path);
+  }
+
+  async probe(signal?: AbortSignal): Promise<GitWorktreeProbe> {
+    return await isGitWorktree({ repoCwd: this.repoCwd, runner: this.runner, signal, timeoutMs: this.timeoutMs });
+  }
+
+  async add(signal?: AbortSignal): Promise<WorktreeRef | WorktreeAddFailure> {
+    const added = await addWorktree({ repoCwd: this.repoCwd, runner: this.runner, signal, timeoutMs: this.timeoutMs });
+    this.register(added.path);
+    if ("error" in added) {
+      const cleanup = await this.remove(added.path);
+      return { ...added, cleanup };
+    }
+    return added;
+  }
+
+  async capturePatch(path: string, signal?: AbortSignal): Promise<WorktreePatch | { readonly error: string }> {
+    return await this.patchCapture({ worktreePath: path, runner: this.runner, signal, timeoutMs: this.timeoutMs });
+  }
+
+  async remove(path: string): Promise<WorktreeGitCommandResult> {
+    const result = await removeWorktree({ repoCwd: this.repoCwd, path, runner: this.runner, timeoutMs: this.timeoutMs }).catch((error: unknown) => ({
+      ok: false,
+      stdout: "",
+      stderr: "",
+      error: formatError(error),
+    }));
+    if (result.ok) this.paths.delete(path);
+    return result;
+  }
+
+  async removeAll(): Promise<readonly WorktreeRemovalOutcome[]> {
+    return await Promise.all(
+      [...this.paths].map(async (path) => ({
+        path,
+        ...(await this.remove(path)),
+      })),
+    );
+  }
+}
+
+export function createWorktreePath(baseDir = tmpdir()): string {
+  pathCounter += 1;
+  return join(baseDir, `pi-workflow-${process.pid}-${pathCounter}-${randomUUID()}`);
+}
+
+export async function isGitWorktree(options: {
+  readonly repoCwd: string;
+  readonly runner?: WorktreeGitRunner;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+}): Promise<GitWorktreeProbe> {
+  const result = await (options.runner ?? spawnGitRunner)
+    .runGit({
+      cwd: options.repoCwd,
+      args: ["rev-parse", "--is-inside-work-tree"],
+      signal: options.signal,
+      timeoutMs: options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS,
+    })
+    .catch((error: unknown) => ({ ok: false, stdout: "", stderr: "", error: formatError(error) }));
+  if (!result.ok) return { ok: false, inside: false, error: result.error ?? (result.stderr.trim() || "git worktree probe failed") };
+  return { ok: true, inside: result.stdout.trim() === "true" };
+}
+
+export async function addWorktree(options: {
+  readonly repoCwd: string;
+  readonly runner?: WorktreeGitRunner;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+  readonly baseDir?: string;
+}): Promise<WorktreeRef | WorktreeAddFailure> {
+  const path = createWorktreePath(options.baseDir);
+  const result = await (options.runner ?? spawnGitRunner)
+    .runGit({
+      cwd: options.repoCwd,
+      args: ["worktree", "add", "--detach", path, "HEAD"],
+      signal: options.signal,
+      timeoutMs: options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS,
+    })
+    .catch((error: unknown) => ({ ok: false, stdout: "", stderr: "", error: formatError(error) }));
+  if (!result.ok) return { path, error: result.error ?? (result.stderr.trim() || "git worktree add failed") };
+  return { path };
+}
+
+export async function removeWorktree(options: {
+  readonly repoCwd: string;
+  readonly path: string;
+  readonly runner?: WorktreeGitRunner;
+  readonly timeoutMs?: number;
+}): Promise<WorktreeGitCommandResult> {
+  return await (options.runner ?? spawnGitRunner).runGit({
+    cwd: options.repoCwd,
+    args: ["worktree", "remove", "--force", options.path],
+    timeoutMs: options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS,
+  });
+}
+
+export async function captureWorktreePatch(options: {
+  readonly worktreePath: string;
+  readonly runner?: WorktreeGitRunner;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+}): Promise<WorktreePatch | { readonly error: string }> {
+  const runner = options.runner ?? spawnGitRunner;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS;
+  const intentToAdd = await runner
+    .runGit({
+      cwd: options.worktreePath,
+      args: ["add", "-N", "."],
+      signal: options.signal,
+      timeoutMs,
+    })
+    .catch((error: unknown) => ({ ok: false, stdout: "", stderr: "", error: formatError(error) }));
+  if (!intentToAdd.ok) return { error: intentToAdd.error ?? (intentToAdd.stderr.trim() || "git add -N failed before patch capture") };
+
+  const diff = await runner
+    .runGit({
+      cwd: options.worktreePath,
+      args: ["diff", "--no-color", "HEAD"],
+      signal: options.signal,
+      timeoutMs,
+      maxBufferBytes: WORKTREE_DIFF_MAX_BYTES,
+    })
+    .catch((error: unknown) => ({ ok: false, stdout: "", stderr: "", error: formatError(error) }));
+  if (!diff.ok) return { error: diff.error ?? (diff.stderr.trim() || "worktree diff capture failed") };
+  return { patch: diff.stdout, changed: diff.stdout.trim().length > 0 };
+}
+
+export const spawnGitRunner: WorktreeGitRunner = {
+  async runGit(options) {
+    return await runGitCommand(options);
+  },
+};
+
+async function runGitCommand(options: WorktreeGitCommandOptions): Promise<WorktreeGitCommandResult> {
+  return await runBoundedProcess({
+    file: "git",
+    args: options.args,
+    cwd: options.cwd,
+    env: { ...process.env, GIT_EXTERNAL_DIFF: "", GIT_DIFF_OPTS: "" },
+    signal: options.signal,
+    timeoutMs: options.timeoutMs,
+    maxBufferBytes: options.maxBufferBytes,
+    abortError: "git worktree command aborted",
+    timeoutError: `git worktree command timed out after ${options.timeoutMs}ms`,
+    maxBufferError: options.maxBufferBytes === undefined ? undefined : `git worktree command exceeded ${options.maxBufferBytes} bytes`,
+    exitError: (stderr, code, signal) => stderr.trim() || `git exited with code ${code ?? `signal ${signal ?? "unknown"}`}`,
+  });
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

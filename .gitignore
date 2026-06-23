@@ -2,6 +2,8 @@ node_modules/
 *.log
 .DS_Store
 .artifacts/
+.pi/.workflow-runs/
 memory-bank/
 .idea/
 TODO.md
+plans/

@@ -18,7 +18,7 @@ From inside a repo:
 /workflow perf-review "workflow startup latency"
 ```
 
-The built-in workflows are advisory. They inspect, verify, and report; they do **not** edit files.
+The built-in workflows are advisory by default. They inspect, verify, and report; they do **not** edit files. Saved or inline workflows can opt individual agents into disposable git worktrees when they need reviewable patches.
 
 Useful flags:
 
@@ -28,6 +28,8 @@ Useful flags:
 /workflow code-review --result-viewer    # explicitly open the findings viewer
 /workflow code-review --review-viewer    # alias for --result-viewer
 /workflow code-review --concurrency=4    # cap concurrent subagents
+/workflow code-review --budget=50000     # output-token ceiling for subagents
+/workflow code-review --resume <run-id>  # replay matching completed agent calls
 /workflow code-review --refresh          # rediscover newly added workflow files
 ```
 
@@ -104,12 +106,25 @@ During a run, pi shows live phases and subagent status. Use `--inspect` if you w
 
 Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding.
 
+### Resume a run
+
+Every workflow result includes a run id. Resume with:
+
+```text
+/workflow code-review --resume <run-id> HEAD~3
+```
+
+The `workflow` tool exposes the same feature as `resumeFromRunId`. Resume replays completed `agent()` results from `.pi/.workflow-runs/<run-id>.jsonl` while the agent call index and prompt/options hash still match. After the first missing or changed call, the rest of the run executes live and writes a new journal under the new run id. Cached results do not add usage or budget spend for the resumed run.
+
+Resume only caches completed `agent()` calls. It does not snapshot arbitrary workflow local variables or in-flight tool work. Keep prompts and agent options deterministic across reruns if you want cache hits.
+
 ## Author a saved workflow
 
 Saved workflows are TypeScript modules with `meta` plus a default async function:
 
 ```ts
 import { Type } from "typebox";
+import { compactResults } from "../src/concurrency.ts";
 import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -120,13 +135,17 @@ export const meta: WorkflowMeta = {
 const Finding = Type.Object({
   summary: Type.String(),
 });
+const SEARCH_TOOLS = ["read", "bash", "grep", "find", "ls"];
+const SEARCH_TOOL_HINTS = ["search"] as const;
 
 export default async function run({ agent, parallel, phase, args }: WorkflowApi) {
   phase("Find");
-  const findings = await parallel([
-    () => agent(`Find correctness issues: ${args}`, { schema: Finding, tools: ["read", "bash"], thinkingLevel: "low" }),
-    () => agent(`Find edge cases: ${args}`, { schema: Finding, tools: ["read", "bash"], thinkingLevel: "low" }),
-  ]);
+  const findings = compactResults(
+    await parallel([
+      () => agent(`Find correctness issues: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
+      () => agent(`Find edge cases: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
+    ]),
+  );
 
   phase("Synthesize");
   return agent(`Summarize: ${JSON.stringify(findings)}`, { thinkingLevel: "medium" });
@@ -138,17 +157,38 @@ Core primitives:
 | Primitive | What it does |
 | --- | --- |
 | `agent(prompt, opts)` | Runs one isolated subagent. With `schema`, returns validated structured data. |
-| `parallel(thunks)` | Runs thunks concurrently and waits for all. |
-| `pipeline(items, ...stages)` | Runs each item through stages independently. |
+| `parallel(thunks)` | Runs thunks concurrently and waits for all; recoverable failures become `null` slots. |
+| `pipeline(items, ...stages)` | Runs each item through stages independently; a failed item becomes `null`. |
 | `phase(title)` / `log(message)` | Updates workflow progress UI. |
 | `progress(event)` | Emits counters, summaries, and lane items. |
 | `workflow(ref, args?)` | Runs another workflow inline as a sub-step and returns its result. |
 
 Set `thinkingLevel` on fan-out agents. Otherwise many subagents can inherit an expensive global reasoning level.
 
+`tools` is a strict allowlist. If you set `tools: ["read", "bash"]`, extension tools such as `ast-grep`, `mgrep`, `fffind`, or `ffgrep` are hidden from that subagent. Add `toolHints: ["search"]` to dynamically expose installed grep/find/search-like tools while keeping the concrete base allowlist portable. The built-in advisory workflows use `tools: ["read", "bash", "grep", "find", "ls"]` plus `toolHints: ["search"]`.
+
 Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; if `tools` is also restricted, the engine automatically keeps `read` available so the subagent can load the selected `SKILL.md`. When `skills` is omitted, clear prompt text such as `/skill:name`, `include skill name`, or `use the name skill` is also treated as an opt-in. Pass `skills: []` to suppress that inference.
 
 Set `model` only when a subagent should use a specific model. Bare ids keep the Anthropic shorthand; `provider/id` targets built-in, custom, or local providers. Omitted models inherit the host/session default; malformed or unknown explicit refs fail fast.
+
+### Mutating agents in worktrees
+
+Use `isolation: "worktree"` only for agents that should edit files. The agent runs in a detached git worktree, the engine captures its net patch, then the worktree is removed. The user's working tree is not changed.
+
+```ts
+const edit = await agent("Rename this helper and update its call sites.", {
+  tools: ["read", "bash", "edit", "grep", "find", "ls"],
+  isolation: "worktree",
+  thinkingLevel: "medium",
+});
+
+if (edit.changed) {
+  return { summary: "Patch ready for review.", patch: edit.patch };
+}
+return { summary: edit.result };
+```
+
+Isolated agents require the workflow `cwd` to be inside a git work tree. Outside git, the agent fails fast rather than silently mutating the shared directory. The return value is `{ result, patch, changed }`, where `result` is the normal text or structured `agent()` result and `patch` is a `git diff HEAD` patch. Worktree setup costs disk and git process time, so keep it opt-in for mutating/parallel-edit stages.
 
 ### Compose workflows
 
@@ -161,7 +201,7 @@ export default async function run({ workflow }: WorkflowApi) {
 }
 ```
 
-Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name — wrap the call in `try/catch` if a missing sub-workflow should be non-fatal (note `parallel()` rejects the whole batch on the first error, so catch inside each thunk for per-branch resilience).
+Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name. Inside `parallel()` or `pipeline()`, recoverable branch errors become `null` results, so filter nulls before synthesis; a genuine run abort still rejects.
 
 ### Where workflows live
 
@@ -218,6 +258,7 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 | --- | --- |
 | `--concurrency=N` / `PI_WORKFLOW_CONCURRENCY=N` | Cap concurrent subagents. Default is `min(8, max(2, CPU count))`. |
 | `--parallel-limit=N` / `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` | Limit eager `parallel()` submission. |
+| `--budget=N` / `PI_WORKFLOW_BUDGET=N` | Set an output-token ceiling for completed subagents. `agent()` throws `WorkflowBudgetExceededError` before starting another agent once the ceiling is reached; agents already running may overshoot because the engine does not reserve per-agent estimates. |
 | `--perf` / `PI_WORKFLOW_PERF=1` | Include internal timing aggregates. Usage/cost totals are reported separately from perf. |
 | `PI_WORKFLOW_LANE_ITEM_LIMIT=N` | Cap retained progress lane items. |
 
@@ -226,4 +267,5 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 - **Unknown workflow**: confirm the extension is loaded with `pi list`; use `--refresh` for new drop-ins.
 - **Inline compile error**: check the inline rules above.
 - **Slow run**: lower fan-out, set `thinkingLevel`, or reduce `--concurrency`.
+- **Budget exhausted**: narrow the target, raise `--budget`, reduce fan-out/concurrency, or guard custom loops with `api.budget.remaining()`.
 - **Duplicate command/tool warnings while developing**: avoid loading both the global package and the working copy.

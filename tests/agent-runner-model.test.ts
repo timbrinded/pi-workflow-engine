@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
+import { Type } from "typebox";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
@@ -15,6 +16,18 @@ import {
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import { createBudget, WorkflowBudgetExceededError, type WorkflowBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
+import {
+  agentJournalKey,
+  createMemoryBackedJournal,
+  type WorkflowJournal,
+  type JournalLookup,
+} from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
+import {
+  WorktreeRegistry,
+  type WorktreeGitCommandOptions,
+  type WorktreeGitRunner,
+} from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 
 type FindCall = { readonly provider: string; readonly modelId: string };
 
@@ -74,16 +87,25 @@ function createRunContext(input: {
   readonly modelRegistry?: Pick<ModelRegistry, "find">;
   readonly progress?: AgentProgress;
   readonly cwd?: string;
+  readonly budget?: WorkflowBudget;
+  readonly usage?: ReturnType<typeof createWorkflowUsageRecorder>;
+  readonly journal?: WorkflowJournal;
+  readonly worktrees?: WorktreeRegistry;
 }): RunContext {
+  const usage = input.usage ?? createWorkflowUsageRecorder();
+  const cwd = input.cwd ?? process.cwd();
   return {
-    cwd: input.cwd ?? process.cwd(),
+    cwd,
     hostModel: input.hostModel,
     modelRegistry: input.modelRegistry ?? createRegistry([]),
     semaphore: new Semaphore(1),
     progress: input.progress ?? createProgress(),
     signal: undefined,
     perf: new PerfRecorder(),
-    usage: createWorkflowUsageRecorder(),
+    usage,
+    budget: input.budget ?? createBudget(null, usage),
+    journal: input.journal ?? createMemoryBackedJournal(),
+    worktrees: input.worktrees ?? new WorktreeRegistry(cwd),
     createSession: input.createSession,
   };
 }
@@ -100,6 +122,39 @@ function createTextSession(): Awaited<ReturnType<CreateAgentSession>> {
       async abort() {},
     },
   };
+}
+
+function createFakeWorktreeRegistry(input: {
+  readonly repoCwd: string;
+  readonly insideGit?: boolean;
+  readonly patch?: string;
+  readonly changed?: boolean;
+  readonly removeResult?: { readonly ok: boolean; readonly stdout: string; readonly stderr: string; readonly error?: string };
+}): { readonly registry: WorktreeRegistry; readonly calls: WorktreeGitCommandOptions[] } {
+  const calls: WorktreeGitCommandOptions[] = [];
+  const runner: WorktreeGitRunner = {
+    async runGit(options) {
+      calls.push(options);
+      const command = options.args.join(" ");
+      if (command === "rev-parse --is-inside-work-tree") {
+        return { ok: true, stdout: input.insideGit === false ? "false\n" : "true\n", stderr: "" };
+      }
+      if (options.args[0] === "worktree" && options.args[1] === "add") return { ok: true, stdout: "", stderr: "" };
+      if (options.args[0] === "worktree" && options.args[1] === "remove") return input.removeResult ?? { ok: true, stdout: "", stderr: "" };
+      return { ok: true, stdout: "", stderr: "" };
+    },
+  };
+  return {
+    calls,
+    registry: new WorktreeRegistry(input.repoCwd, {
+      runner,
+      patchCapture: async () => ({ patch: input.patch ?? "", changed: input.changed ?? false }),
+    }),
+  };
+}
+
+function commandNames(calls: readonly WorktreeGitCommandOptions[]): string[] {
+  return calls.map((call) => call.args.slice(0, 2).join(" "));
 }
 
 async function writeProjectSkill(cwd: string, name: string): Promise<void> {
@@ -210,6 +265,366 @@ test("runAgent fails fast on unknown explicit model refs before creating a subag
 
   assert.equal(createSessionCalls, 0);
   assert.ok(progress.events.some((event) => event.includes('failed:strict:Error: Agent model "openai/missing" not found')));
+});
+
+test("runAgent refuses to start once the run is over budget", async () => {
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+  const exhausted: WorkflowBudget = { total: 100, spent: () => 250, remaining: () => 0 };
+
+  await assert.rejects(
+    () => runAgent(createRunContext({ createSession, budget: exhausted }), "hello", { label: "broke" }),
+    WorkflowBudgetExceededError,
+  );
+  assert.equal(createSessionCalls, 0);
+});
+
+test("runAgent returns cached journal results before queueing, budget checks, or session creation", async () => {
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+  const progress = createProgress();
+  const usage = createWorkflowUsageRecorder();
+  const journal = createMemoryBackedJournal([{ key: agentJournalKey("hello", { label: "cached" }), value: "cached-value" }]);
+  const exhausted: WorkflowBudget = { total: 100, spent: () => 250, remaining: () => 0 };
+
+  const result = await runAgent(createRunContext({ createSession, progress, usage, journal, budget: exhausted }), "hello", { label: "cached" });
+
+  assert.equal(result, "cached-value");
+  assert.equal(createSessionCalls, 0);
+  assert.deepEqual(progress.events, ["log:cached: using cached result from workflow journal"]);
+  assert.equal(usage.snapshot().agents.length, 0);
+});
+
+test("runAgent records successful live results into the journal", async () => {
+  const recorded: Array<{ readonly key: string; readonly value: unknown }> = [];
+  const journal: WorkflowJournal = {
+    lookup(): JournalLookup {
+      return { hit: false };
+    },
+    async record(key, value) {
+      recorded.push({ key, value });
+      return { ok: true };
+    },
+  };
+
+  const result = await runAgent(createRunContext({ createSession: async () => createTextSession(), journal }), "hello", { label: "live" });
+
+  assert.equal(result, "done");
+  assert.deepEqual(recorded, [{ key: agentJournalKey("hello", { label: "live" }), value: "done" }]);
+});
+
+test("runAgent returns cached results when journal write-through fails", async () => {
+  const progress = createProgress();
+  const journal: WorkflowJournal = {
+    lookup(): JournalLookup {
+      return { hit: true, value: "cached-value" };
+    },
+    async record() {
+      return { ok: false, error: "disk full" };
+    },
+  };
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+
+  const result = await runAgent(createRunContext({ createSession, progress, journal }), "hello", { label: "cached" });
+
+  assert.equal(result, "cached-value");
+  assert.equal(createSessionCalls, 0);
+  assert.ok(progress.events.includes("log:cached: workflow journal write failed (disk full); future resume may be incomplete"));
+});
+
+test("runAgent returns live results when journal append fails", async () => {
+  const progress = createProgress();
+  const journal: WorkflowJournal = {
+    lookup(): JournalLookup {
+      return { hit: false };
+    },
+    async record() {
+      return { ok: false, error: "read-only filesystem" };
+    },
+  };
+
+  const result = await runAgent(createRunContext({ createSession: async () => createTextSession(), progress, journal }), "hello", { label: "live" });
+
+  assert.equal(result, "done");
+  assert.ok(progress.events.includes("log:live: workflow journal write failed (read-only filesystem); future resume may be incomplete"));
+});
+
+test("runAgent with worktree isolation creates an isolated cwd and returns a patch wrapper", async () => {
+  const repoCwd = "/repo";
+  const { registry, calls } = createFakeWorktreeRegistry({ repoCwd, patch: "diff --git a/file b/file\n", changed: true });
+  let observedCwd = "";
+  const createSession: CreateAgentSession = async (options) => {
+    observedCwd = options.cwd ?? "";
+    return createTextSession();
+  };
+
+  const result = await runAgent(createRunContext({ createSession, cwd: repoCwd, worktrees: registry }), "hello", {
+    label: "isolated",
+    isolation: "worktree",
+  });
+
+  assert.deepEqual(result, { result: "done", patch: "diff --git a/file b/file\n", changed: true });
+  assert.notEqual(observedCwd, repoCwd);
+  assert.ok(observedCwd.startsWith("/tmp/pi-workflow-"));
+  assert.deepEqual(commandNames(calls), ["rev-parse --is-inside-work-tree", "worktree add", "worktree remove"]);
+  assert.equal(registry.size, 0);
+});
+
+test("runAgent removes an isolated worktree when the agent fails", async () => {
+  const repoCwd = "/repo";
+  const { registry, calls } = createFakeWorktreeRegistry({ repoCwd });
+  const createSession: CreateAgentSession = async () => ({
+    session: {
+      state: { messages: [] },
+      async prompt() {
+        throw new Error("agent failed");
+      },
+      subscribe() {
+        return () => {};
+      },
+      dispose() {},
+      async abort() {},
+    },
+  });
+
+  await assert.rejects(
+    () => runAgent(createRunContext({ createSession, cwd: repoCwd, worktrees: registry }), "hello", { label: "isolated", isolation: "worktree" }),
+    /agent failed/,
+  );
+
+  assert.deepEqual(commandNames(calls), ["rev-parse --is-inside-work-tree", "worktree add", "worktree remove"]);
+  assert.equal(registry.size, 0);
+});
+
+test("runAgent reports isolated worktree cleanup failures without masking success", async () => {
+  const repoCwd = "/repo";
+  const progress = createProgress();
+  const { registry } = createFakeWorktreeRegistry({
+    repoCwd,
+    patch: "diff --git a/file b/file\n",
+    changed: true,
+    removeResult: { ok: false, stdout: "", stderr: "", error: "busy" },
+  });
+
+  const result = await runAgent(createRunContext({ createSession: async () => createTextSession(), cwd: repoCwd, worktrees: registry, progress }), "hello", {
+    label: "isolated",
+    isolation: "worktree",
+  });
+
+  assert.deepEqual(result, { result: "done", patch: "diff --git a/file b/file\n", changed: true });
+  assert.ok(progress.events.includes("log:isolated: failed to remove isolated worktree (busy)"));
+  assert.equal(registry.size, 1);
+});
+
+test("runAgent rejects worktree isolation outside a git work tree", async () => {
+  const repoCwd = "/repo";
+  const { registry, calls } = createFakeWorktreeRegistry({ repoCwd, insideGit: false });
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+
+  await assert.rejects(
+    () => runAgent(createRunContext({ createSession, cwd: repoCwd, worktrees: registry }), "hello", { label: "isolated", isolation: "worktree" }),
+    /not inside a git work tree/,
+  );
+
+  assert.equal(createSessionCalls, 0);
+  assert.deepEqual(commandNames(calls), ["rev-parse --is-inside-work-tree"]);
+});
+
+test("runAgent leaves the non-isolated cwd unchanged and does not touch worktrees", async () => {
+  const repoCwd = "/repo";
+  const { registry, calls } = createFakeWorktreeRegistry({ repoCwd });
+  let observedCwd = "";
+  const createSession: CreateAgentSession = async (options) => {
+    observedCwd = options.cwd ?? "";
+    return createTextSession();
+  };
+
+  const result = await runAgent(createRunContext({ createSession, cwd: repoCwd, worktrees: registry }), "hello", { label: "plain" });
+
+  assert.equal(result, "done");
+  assert.equal(observedCwd, repoCwd);
+  assert.deepEqual(calls, []);
+});
+
+test("runAgent cached isolated hits skip worktree creation", async () => {
+  const repoCwd = "/repo";
+  const { registry, calls } = createFakeWorktreeRegistry({ repoCwd });
+  const opts = { label: "cached-isolated", isolation: "worktree" as const };
+  const cached = { result: "cached", patch: "diff", changed: true };
+  const journal = createMemoryBackedJournal([{ key: agentJournalKey("hello", opts), value: cached }]);
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+
+  const result = await runAgent(createRunContext({ createSession, cwd: repoCwd, worktrees: registry, journal }), "hello", opts);
+
+  assert.deepEqual(result, cached);
+  assert.equal(createSessionCalls, 0);
+  assert.deepEqual(calls, []);
+});
+
+test("runAgent re-checks budget after waiting for a concurrency slot", async () => {
+  let spent = 0;
+  const budget: WorkflowBudget = {
+    total: 100,
+    spent: () => spent,
+    remaining: () => Math.max(0, 100 - spent),
+  };
+  const progress = createProgress();
+  let createSessionCalls = 0;
+  let releaseFirstPrompt!: () => void;
+  const firstPromptCanFinish = new Promise<void>((resolve) => {
+    releaseFirstPrompt = resolve;
+  });
+  let markFirstPromptEntered!: () => void;
+  const firstPromptEntered = new Promise<void>((resolve) => {
+    markFirstPromptEntered = resolve;
+  });
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return {
+      session: {
+        state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
+        async prompt() {
+          markFirstPromptEntered();
+          await firstPromptCanFinish;
+        },
+        subscribe() {
+          return () => {};
+        },
+        dispose() {},
+        async abort() {},
+      },
+    };
+  };
+  const rc = createRunContext({ createSession, budget, progress });
+
+  const first = runAgent(rc, "first", { label: "first" });
+  await firstPromptEntered;
+  const second = runAgent(rc, "second", { label: "second" });
+  const secondRejected = assert.rejects(second, WorkflowBudgetExceededError);
+  await Promise.resolve();
+  assert.ok(progress.events.includes("queued:second"));
+
+  spent = 100;
+  releaseFirstPrompt();
+
+  assert.equal(await first, "done");
+  await secondRejected;
+  assert.equal(createSessionCalls, 1);
+  assert.ok(progress.events.some((event) => event.includes("failed:second:WorkflowBudgetExceededError")));
+  assert.ok(!progress.events.includes("start:second"));
+  assert.ok(!progress.events.includes("done:second"));
+});
+
+test("runAgent dynamically enables installed search-like tools", async () => {
+  let observedTools: readonly string[] | undefined;
+  let observedExcludeTools: readonly string[] | undefined;
+  let activatedTools: readonly string[] = [];
+  const createSession: CreateAgentSession = async (options) => {
+    observedTools = options.tools;
+    observedExcludeTools = options.excludeTools;
+    return {
+      session: {
+        state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
+        async prompt() {},
+        subscribe() {
+          return () => {};
+        },
+        dispose() {},
+        async abort() {},
+        getAllTools() {
+          return [
+            { name: "read" },
+            { name: "bash" },
+            { name: "grep" },
+            { name: "find" },
+            { name: "ls" },
+            { name: "ffgrep" },
+            { name: "mgrep" },
+            { name: "ast-grep" },
+            { name: "workflow", description: "Run a workflow" },
+            { name: "search_replace" },
+          ];
+        },
+        setActiveToolsByName(toolNames) {
+          activatedTools = toolNames;
+        },
+      },
+    };
+  };
+
+  const result = await runAgent(createRunContext({ createSession }), "hello", {
+    label: "dynamic-tools",
+    tools: ["read", "bash", "grep", "find", "ls"],
+    toolHints: ["search"],
+    schema: Type.Object({ ok: Type.Boolean() }),
+  });
+
+  assert.equal(result, null);
+  assert.equal(observedTools, undefined);
+  assert.deepEqual(observedExcludeTools, ["edit", "write"]);
+  assert.deepEqual(activatedTools, ["read", "bash", "grep", "find", "ls", "final_answer", "ffgrep", "mgrep", "ast-grep"]);
+});
+
+test("runAgent falls back to concrete tools when dynamic tool APIs are unavailable", async () => {
+  const calls: Array<{ readonly tools?: readonly string[]; readonly excludeTools?: readonly string[] }> = [];
+  let firstPrompted = false;
+  let secondPrompted = false;
+  let firstDisposed = false;
+
+  const createSession: CreateAgentSession = async (options) => {
+    calls.push({ tools: options.tools, excludeTools: options.excludeTools });
+    const isFirstCall = calls.length === 1;
+    return {
+      session: {
+        state: { messages: [{ role: "assistant", content: [{ type: "text", text: isFirstCall ? "wide" : "strict" }] }] },
+        async prompt() {
+          if (isFirstCall) firstPrompted = true;
+          else secondPrompted = true;
+        },
+        subscribe() {
+          return () => {};
+        },
+        dispose() {
+          if (isFirstCall) firstDisposed = true;
+        },
+        async abort() {},
+      },
+    };
+  };
+
+  const result = await runAgent(createRunContext({ createSession }), "hello", {
+    label: "dynamic-tools-fallback",
+    tools: ["read", "bash", "grep", "find", "ls"],
+    toolHints: ["search"],
+    schema: Type.Object({ ok: Type.Boolean() }),
+  });
+
+  assert.equal(result, null);
+  assert.deepEqual(calls, [
+    { tools: undefined, excludeTools: ["edit", "write"] },
+    { tools: ["read", "bash", "grep", "find", "ls", "final_answer"], excludeTools: undefined },
+  ]);
+  assert.equal(firstPrompted, false);
+  assert.equal(secondPrompted, true);
+  assert.equal(firstDisposed, true);
 });
 
 test("runAgent filters explicitly requested skills and auto-adds read when tools are restricted", async () => {

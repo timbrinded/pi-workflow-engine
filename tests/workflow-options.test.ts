@@ -21,6 +21,7 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
     perf: true,
     concurrency: 64,
     parallelSubmissionLimit: 1,
+    budget: undefined,
   });
 
   assert.equal(resolveWorkflowRunOptions({ concurrency: -5 }, {}).concurrency, 1);
@@ -28,11 +29,67 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
 });
 
 test("parseWorkflowInvocation extracts tuning flags from slash command args", () => {
-  const invocation = parseWorkflowInvocation("code-review --inspect --perf --concurrency=4 --parallel-limit 9 review src only");
+  const invocation = parseWorkflowInvocation("code-review --inspect --perf --concurrency=4 --parallel-limit 9 --budget 50000 --resume old-run review src only");
 
   assert.equal(invocation.name, "code-review");
   assert.equal(invocation.args, "review src only");
-  assert.deepEqual(invocation.options, { inspect: true, perf: true, concurrency: 4, parallelSubmissionLimit: 9 });
+  assert.deepEqual(invocation.options, {
+    inspect: true,
+    perf: true,
+    concurrency: 4,
+    parallelSubmissionLimit: 9,
+    budget: 50000,
+    resumeFromRunId: "old-run",
+  });
+
+  const equalsForm = parseWorkflowInvocation("code-review --budget=50000 --resume=old-run review src only");
+  assert.equal(equalsForm.args, "review src only");
+  assert.deepEqual(equalsForm.options, { budget: 50000, resumeFromRunId: "old-run" });
+});
+
+test("parseWorkflowInvocation rejects invalid budget flags without consuming positional args", () => {
+  const cases = [
+    { input: "code-review --budget", args: "" },
+    { input: "code-review --budget=", args: "" },
+    { input: "code-review --budget=abc review src", args: "review src" },
+    { input: "code-review --budget review src", args: "review src" },
+    { input: "code-review --budget=0 review src", args: "review src" },
+    { input: "code-review --budget=-1 review src", args: "review src" },
+    { input: "code-review --budget=1.5 review src", args: "review src" },
+  ];
+
+  for (const item of cases) {
+    const invocation = parseWorkflowInvocation(item.input);
+    assert.equal(invocation.args, item.args, item.input);
+    assert.equal(invocation.options.budget, undefined, item.input);
+    assert.deepEqual(invocation.optionErrors, ["--budget requires a positive integer output-token count"], item.input);
+  }
+});
+
+test("parseWorkflowInvocation rejects invalid resume flags without consuming positional args", () => {
+  const cases = [
+    { input: "code-review --resume", args: "" },
+    { input: "code-review --resume=", args: "" },
+    { input: "code-review --resume --inspect review src", args: "review src" },
+  ];
+
+  for (const item of cases) {
+    const invocation = parseWorkflowInvocation(item.input);
+    assert.equal(invocation.args, item.args, item.input);
+    assert.equal(invocation.options.resumeFromRunId, undefined, item.input);
+    assert.deepEqual(invocation.optionErrors, ["--resume requires a workflow run id"], item.input);
+  }
+});
+
+test("resolveWorkflowRunOptions resolves budget env values strictly and rejects non-finite explicit budgets", () => {
+  assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_BUDGET: "50000" }).budget, 50000);
+
+  for (const value of ["abc", "", "0", "1.5"]) {
+    assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_BUDGET: value }).budget, undefined, value);
+  }
+
+  assert.throws(() => resolveWorkflowRunOptions({ budget: Number.NaN }, {}), RangeError);
+  assert.throws(() => resolveWorkflowRunOptions({ budget: Infinity }, {}), RangeError);
 });
 
 test("parses result viewer workflow options", () => {

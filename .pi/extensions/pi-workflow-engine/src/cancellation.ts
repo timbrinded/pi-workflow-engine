@@ -16,6 +16,13 @@ export function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw abortReason(signal);
 }
 
+export function isFatalWorkflowError(error: unknown, signal: AbortSignal | undefined): boolean {
+  if (signal?.aborted) return true;
+  if (error instanceof WorkflowAbortError) return true;
+  if (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError") return true;
+  return false;
+}
+
 export function linkAbortSignal(parent: AbortSignal | undefined, controller: AbortController): () => void {
   if (!parent) return () => {};
   if (parent.aborted) {

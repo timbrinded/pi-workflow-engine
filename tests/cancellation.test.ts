@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { runAgent, type AgentProgress, type CreateAgentSession, type RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
-import { WorkflowAbortError, throwIfAborted } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
-import { parallel, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { WorkflowBudgetExceededError } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
+import { isFatalWorkflowError, WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
+import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
+import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -42,6 +45,9 @@ function createRunContext(createSession: CreateAgentSession, signal: AbortSignal
     signal,
     perf: new NoopPerfRecorder(),
     usage: createWorkflowUsageRecorder(),
+    budget: { total: null, spent: () => 0, remaining: () => Infinity },
+    journal: createMemoryBackedJournal(),
+    worktrees: new WorktreeRegistry(process.cwd()),
     createSession,
   };
 }
@@ -67,31 +73,23 @@ test("Semaphore rejects an aborted queued waiter without leaking slots", async (
   assert.equal(after, "after");
 });
 
-test("parallel aborts siblings after first failure", async () => {
+test("isFatalWorkflowError classifies run aborts as fatal", () => {
   const controller = new AbortController();
-  let siblingRan = false;
+  controller.abort(new WorkflowAbortError("cancelled"));
 
-  await assert.rejects(
-    parallel(
-      [
-        async () => {
-          throw new Error("boom");
-        },
-        async () => {
-          await delay(5);
-          throwIfAborted(controller.signal);
-          siblingRan = true;
-          return "late";
-        },
-      ],
-      { signal: controller.signal, abortController: controller },
-    ),
-    /boom/,
-  );
+  assert.equal(isFatalWorkflowError(new Error("plain"), controller.signal), true);
+});
 
-  await delay(10);
-  assert.equal(controller.signal.aborted, true);
-  assert.equal(siblingRan, false);
+test("isFatalWorkflowError classifies abort errors as fatal", () => {
+  assert.equal(isFatalWorkflowError(new WorkflowAbortError("cancelled"), undefined), true);
+  assert.equal(isFatalWorkflowError(new DOMException("cancelled", "AbortError"), undefined), true);
+});
+
+test("isFatalWorkflowError treats plain and budget errors as recoverable", () => {
+  const controller = new AbortController();
+
+  assert.equal(isFatalWorkflowError(new Error("boom"), controller.signal), false);
+  assert.equal(isFatalWorkflowError(new WorkflowBudgetExceededError(10, 12), controller.signal), false);
 });
 
 test("runAgent marks queued row failed when semaphore acquisition aborts", async () => {

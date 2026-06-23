@@ -3,14 +3,21 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { SelectList, Text, truncateToWidth, type Component, type SelectItem, type SelectListTheme, type TUI } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress.ts";
-import type { WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
+import type { WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
-import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./src/usage.ts";
+import type { WorkflowUsageSnapshot } from "./src/usage.ts";
 import { registerDynamax } from "./src/dynamax.ts";
 import { handleReviewViewerAction } from "./src/review/review-actions.ts";
 import { decideReviewResultsPresentation, extensionContextMode, maybeShowReviewResultsViewer } from "./src/review/review-results-flow.ts";
-import { isWorkflowResult, renderWorkflowResult, type WorkflowPerfDetails, type WorkflowResultEnvelope } from "./src/ui/workflow-result-renderer.ts";
+import {
+  formatWorkflowDetailLines,
+  isWorkflowResult,
+  renderWorkflowResult,
+  type WorkflowPerfDetails,
+  type WorkflowResultEnvelope,
+} from "./src/ui/workflow-result-renderer.ts";
+import { parseWorkflowBudgetString, WORKFLOW_BUDGET_MAX, WORKFLOW_BUDGET_MIN } from "./src/options.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -22,26 +29,30 @@ function summarize(result: unknown): string {
   return typeof result === "string" ? result : "Workflow finished.";
 }
 
-function formatMessageContent(name: string, result: unknown, usage?: WorkflowUsageSnapshot, perf?: WorkflowPerfDetails): string {
-  const usageLine = formatWorkflowUsageLine(usage);
-  const perfLine = formatPerfLine(perf);
-  const details = [usageLine, perfLine].filter((line): line is string => line !== undefined);
+function formatMessageContent(
+  name: string,
+  result: unknown,
+  usage?: WorkflowUsageSnapshot,
+  perf?: WorkflowPerfDetails,
+  metadata?: WorkflowRunMetadata,
+): string {
+  const details = formatWorkflowDetailLines({ usage, perf, metadata });
   return `## Workflow: ${name}\n\n${summarize(result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
 }
 
-function workflowEnvelope(name: string, result: unknown, usage?: WorkflowUsageSnapshot, perf?: WorkflowPerfDetails): WorkflowResultEnvelope {
-  return { name, result, completedAt: Date.now(), usage, perf };
+function workflowEnvelope(
+  name: string,
+  result: unknown,
+  usage?: WorkflowUsageSnapshot,
+  perf?: WorkflowPerfDetails,
+  metadata?: WorkflowRunMetadata,
+): WorkflowResultEnvelope {
+  return { name, result, completedAt: Date.now(), usage, perf, runId: metadata?.runId, resumedFromRunId: metadata?.resumedFromRunId };
 }
 
 function compactPerfSnapshot(snapshot: PerfSnapshot | undefined): WorkflowPerfDetails | undefined {
   if (!snapshot?.enabled) return undefined;
   return { enabled: true, startedAt: snapshot.startedAt, aggregates: snapshot.aggregates };
-}
-
-function formatPerfLine(perf: WorkflowPerfDetails | undefined): string | undefined {
-  if (!perf) return undefined;
-  const parts = perf.aggregates.slice(0, 4).map((aggregate) => `${aggregate.name} ${Math.round(aggregate.total)}ms`);
-  return parts.length > 0 ? `Perf: ${parts.join(" · ")}` : "Perf: no samples";
 }
 
 type DiscoveryModule = typeof import("./src/discovery.ts");
@@ -216,6 +227,7 @@ export interface WorkflowInvocation {
   args: string;
   options: WorkflowRunOptions;
   refreshDiscovery?: boolean;
+  optionErrors?: string[];
   authorBrief?: string;
 }
 
@@ -224,14 +236,21 @@ export function parseWorkflowInvocation(input: string): WorkflowInvocation {
   const space = trimmed.indexOf(" ");
   const name = space === -1 ? trimmed : trimmed.slice(0, space);
   const rest = space === -1 ? "" : trimmed.slice(space + 1).trim();
-  const { args, options, refreshDiscovery } = parseWorkflowOptions(rest);
-  return { name, args, options, refreshDiscovery };
+  const { args, options, refreshDiscovery, optionErrors } = parseWorkflowOptions(rest);
+  const invocation: WorkflowInvocation = { name, args, options };
+  if (refreshDiscovery) invocation.refreshDiscovery = refreshDiscovery;
+  if (optionErrors) invocation.optionErrors = optionErrors;
+  return invocation;
 }
 
-function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean } {
+const INVALID_BUDGET_OPTION = "--budget requires a positive integer output-token count";
+const INVALID_RESUME_OPTION = "--resume requires a workflow run id";
+
+function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean; optionErrors?: string[] } {
   const tokens = input.split(/\s+/).filter(Boolean);
   const kept: string[] = [];
   const options: WorkflowRunOptions = {};
+  const optionErrors: string[] = [];
   let refreshDiscovery = false;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -275,9 +294,46 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
       if (next !== undefined) i++;
       continue;
     }
+    if (token.startsWith("--budget=")) {
+      const parsed = parseBudgetOption(token.slice("--budget=".length));
+      if (parsed === undefined) optionErrors.push(INVALID_BUDGET_OPTION);
+      else options.budget = parsed;
+      continue;
+    }
+    if (token === "--budget") {
+      const next = tokens[i + 1];
+      const parsed = next === undefined ? undefined : parseBudgetOption(next);
+      if (parsed === undefined) {
+        optionErrors.push(INVALID_BUDGET_OPTION);
+      } else {
+        options.budget = parsed;
+        i++;
+      }
+      continue;
+    }
+    if (token.startsWith("--resume=")) {
+      const value = token.slice("--resume=".length).trim();
+      if (value === "") optionErrors.push(INVALID_RESUME_OPTION);
+      else options.resumeFromRunId = value;
+      continue;
+    }
+    if (token === "--resume") {
+      const next = tokens[i + 1];
+      if (next === undefined || next.startsWith("--")) {
+        optionErrors.push(INVALID_RESUME_OPTION);
+      } else {
+        options.resumeFromRunId = next;
+        i++;
+      }
+      continue;
+    }
     kept.push(token);
   }
-  return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined };
+  return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined, optionErrors: optionErrors.length > 0 ? optionErrors : undefined };
+}
+
+function parseBudgetOption(value: string): number | undefined {
+  return parseWorkflowBudgetString(value);
 }
 
 function parseNumericOption(value: string | undefined): number | undefined {
@@ -302,6 +358,7 @@ Use the workflow tool with a script argument, not a saved workflow name.
 The script must start with export const meta = { ... } and default-export an async workflow function.
 Use the injected Type object for schemas. Do not import anything or use dynamic import().
 Set thinkingLevel explicitly on each agent() call.
+When the run is budgeted, guard expensive loops with \`while (api.budget.total && api.budget.remaining() > N) { ... }\`; api.agent() throws once the budget is spent.
 Subagents receive no skills by default. When the brief asks for a skill or a stage clearly benefits from one, pass \`skills: ["skill-name"]\` on that agent call only.
 Do not edit files unless the user explicitly requested edits.`;
 }
@@ -309,6 +366,7 @@ Do not edit files unless the user explicitly requested edits.`;
 export interface WorkflowToolRequestParams {
   readonly name?: string;
   readonly script?: string;
+  readonly resumeFromRunId?: string;
 }
 
 export type WorkflowToolRequest =
@@ -375,6 +433,7 @@ export async function sendWorkflowResult(
   const { runWorkflow } = await loadEngine();
   let perfSnapshot: PerfSnapshot | undefined;
   let usageSnapshot: WorkflowUsageSnapshot | undefined;
+  let runMetadata: WorkflowRunMetadata | undefined;
   let liveInspection: ActiveWorkflowInspection | undefined;
   const result = await runWorkflow(ctx, mod, args, {
     ...options,
@@ -399,6 +458,10 @@ export async function sendWorkflowResult(
       usageSnapshot = snapshot;
       options.onUsageSnapshot?.(snapshot);
     },
+    onRunMetadata(metadata) {
+      runMetadata = metadata;
+      options.onRunMetadata?.(metadata);
+    },
     onProgressSnapshot(snapshot) {
       lastWorkflowInspection = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
       options.onProgressSnapshot?.(snapshot);
@@ -418,7 +481,12 @@ export async function sendWorkflowResult(
     await handleReviewViewerAction(pi, ctx, reviewAction, reviewDecision.issues, reviewDecision.report.reviewContext);
   }
   pi.sendMessage(
-    { customType: "workflow-result", content: formatMessageContent(name, result, usageSnapshot, perf), display: true, details: workflowEnvelope(name, result, usageSnapshot, perf) },
+    {
+      customType: "workflow-result",
+      content: formatMessageContent(name, result, usageSnapshot, perf, runMetadata),
+      display: true,
+      details: workflowEnvelope(name, result, usageSnapshot, perf, runMetadata),
+    },
     { triggerTurn: false },
   );
 }
@@ -428,7 +496,12 @@ export default function workflowEngine(pi: ExtensionAPI): void {
 
   pi.registerMessageRenderer("workflow-result", (message, { expanded }, theme) => {
     const details = message.details;
-    if (isWorkflowResult(details)) return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage);
+    if (isWorkflowResult(details)) {
+      return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage, {
+        runId: details.runId,
+        resumedFromRunId: details.resumedFromRunId,
+      }, details.perf);
+    }
     return renderWorkflowResult("workflow", details ?? message.content, expanded, theme);
   });
 
@@ -449,6 +522,10 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     description: "Run a multi-agent workflow: /workflow <name> [args]",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const direct = parseWorkflowInvocation(args);
+      if (direct.optionErrors?.length) {
+        ctx.ui.notify(`Invalid workflow option: ${direct.optionErrors.join("; ")}`, "warning");
+        return;
+      }
       const perfRecorder = await createInvocationPerf(direct.options);
       const { discoverWorkflows } = await loadDiscovery();
       const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: direct.refreshDiscovery, perf: perfRecorder });
@@ -489,6 +566,8 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
       "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
       "Subagents receive no skills by default. In inline workflows, pass `skills: [\"skill-name\"]` per `agent()` call when the user asks for a skill or a stage should use one; grant only the needed skills.",
+      "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
+      "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
       "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
     ],
     parameters: Type.Object({
@@ -497,7 +576,15 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       args: Type.Optional(Type.String({ description: "Arguments for the workflow (e.g. target or focus)" })),
       concurrency: Type.Optional(Type.Number({ description: "Optional per-run agent concurrency cap" })),
       parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
+      budget: Type.Optional(
+        Type.Integer({
+          minimum: WORKFLOW_BUDGET_MIN,
+          maximum: WORKFLOW_BUDGET_MAX,
+          description: "Optional output-token ceiling for the run; agent() throws once it is exceeded",
+        }),
+      ),
       perf: Type.Optional(Type.Boolean({ description: "Include workflow performance timing aggregates in the result details" })),
+      resumeFromRunId: Type.Optional(Type.String({ minLength: 1, description: "Workflow run id to resume from by replaying matching completed agent results" })),
     }),
     renderCall(args, theme) {
       const suffix = args.args ? ` ${theme.fg("dim", args.args)}` : "";
@@ -511,7 +598,12 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     renderResult(result, { expanded, isPartial }, theme) {
       if (isPartial) return new Text(theme.fg("accent", "Running workflow…"), 0, 0);
       const details = result.details;
-      if (isWorkflowResult(details)) return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage);
+      if (isWorkflowResult(details)) {
+        return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage, {
+          runId: details.runId,
+          resumedFromRunId: details.resumedFromRunId,
+        }, details.perf);
+      }
       const first = result.content[0];
       const text = first?.type === "text" ? first.text : "Workflow finished.";
       return new Text(theme.fg("muted", text), 0, 0);
@@ -519,12 +611,21 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const request = normalizeWorkflowToolRequest(params);
       if (request.kind === "error") return invalidWorkflowInvocationResult();
+      const resumeFromRunId = params.resumeFromRunId?.trim();
+      if (params.resumeFromRunId !== undefined && resumeFromRunId === "") {
+        return {
+          content: [{ type: "text", text: "resumeFromRunId must be non-empty." }],
+          details: { error: "invalid_resume_from_run_id" },
+        };
+      }
 
       const runOptions: WorkflowRunOptions = {
         inspect: ctx.hasUI,
         concurrency: params.concurrency,
         parallelSubmissionLimit: params.parallelSubmissionLimit,
+        budget: params.budget,
         perf: params.perf,
+        resumeFromRunId,
         signal,
       };
       const perfRecorder = await createInvocationPerf(runOptions);
@@ -558,6 +659,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       const { runWorkflow } = await loadEngine();
       let perfSnapshot: PerfSnapshot | undefined;
       let usageSnapshot: WorkflowUsageSnapshot | undefined;
+      let runMetadata: WorkflowRunMetadata | undefined;
       let liveInspection: ActiveWorkflowInspection | undefined;
       const resultArgs = params.args ?? "";
       const result = await runWorkflow(ctx, mod, resultArgs, {
@@ -580,6 +682,9 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         onUsageSnapshot: (snapshot) => {
           usageSnapshot = snapshot;
         },
+        onRunMetadata: (metadata) => {
+          runMetadata = metadata;
+        },
         onProgressSnapshot: (snapshot) => {
           // Record the run so /workflow:inspector can reopen it — tool-invoked (dynamax) runs were
           // previously uninspectable, unlike the /workflow command path.
@@ -587,10 +692,11 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         },
       });
       const perf = compactPerfSnapshot(perfSnapshot);
-      const usageLine = formatWorkflowUsageLine(usageSnapshot);
-      const perfLine = formatPerfLine(perf);
-      const detailLines = [usageLine, perfLine].filter((line): line is string => line !== undefined);
-      return { content: [{ type: "text", text: `${summarize(result)}${detailLines.length > 0 ? `\n\n${detailLines.join("\n")}` : ""}` }], details: workflowEnvelope(resultName, result, usageSnapshot, perf) };
+      const detailLines = formatWorkflowDetailLines({ usage: usageSnapshot, perf, metadata: runMetadata });
+      return {
+        content: [{ type: "text", text: `${summarize(result)}${detailLines.length > 0 ? `\n\n${detailLines.join("\n")}` : ""}` }],
+        details: workflowEnvelope(resultName, result, usageSnapshot, perf, runMetadata),
+      };
     },
   });
 }

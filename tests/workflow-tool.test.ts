@@ -11,7 +11,7 @@ interface CapturedTool {
   name: string;
   execute(
     toolCallId: string,
-    params: { script?: string; name?: string; args?: string },
+    params: { script?: string; name?: string; args?: string; resumeFromRunId?: string },
     signal: AbortSignal | undefined,
     onUpdate: () => void,
     ctx: ExtensionContext,
@@ -141,6 +141,7 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
     progress() {},
     args: "",
     cwd: process.cwd(),
+    budget: { total: null, spent: () => 0, remaining: () => Infinity },
     signal: undefined,
     ...overrides,
   };
@@ -195,6 +196,24 @@ test("inline compile errors are shaped for workflow tool results", () => {
   if (result.details.error !== "inline_compile_error") throw new Error("expected inline compile details");
   assert.match(result.details.message, /meta/);
   assert.match(result.content[0]?.text ?? "", /Inline workflow did not compile/);
+});
+
+test("workflow tool rejects blank resumeFromRunId", async () => {
+  const tool = captureWorkflowTool();
+  const script = `
+export const meta = { name: "blank-resume", description: "Blank resume probe" };
+export default async function run() {
+  return "should not run";
+}
+`;
+
+  const result = await tool.execute("call-blank-resume", { script, resumeFromRunId: "   " }, undefined, () => {}, HEADLESS_CTX);
+
+  assert.ok(isRecord(result));
+  const content = result.content;
+  assert.ok(Array.isArray(content));
+  assert.equal(content[0]?.text, "resumeFromRunId must be non-empty.");
+  assert.deepEqual(result.details, { error: "invalid_resume_from_run_id" });
 });
 
 test("a tool-invoked workflow records an inspector snapshot", async () => {

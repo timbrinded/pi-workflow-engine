@@ -5,15 +5,29 @@ import type { AgentOptions } from "./types.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { PerfSink } from "./perf.ts";
 import type { WorkflowUsageSink } from "./usage.ts";
+import { WorkflowBudgetExceededError, type WorkflowBudget } from "./budget.ts";
 import { throwIfAborted } from "./cancellation.ts";
 import { appendSkillReminder, createAgentSkillResourceLoader, extractSkillSelectorsFromText } from "./agent-skills.ts";
+import { agentJournalKey, type WorkflowJournal } from "./journal.ts";
+import type { WorktreeRegistry } from "./worktree.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
+const SCHEMA_REPROMPT_ATTEMPTS = 1;
+const SCHEMA_REPROMPT =
+  `You ended your turn without calling the ${FINAL_TOOL} tool, so no result was recorded. ` +
+  `Call ${FINAL_TOOL} now with your final answer as its arguments. Do not reply with plain text.`;
+const BUILTIN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+const DEFAULT_SEARCH_BASE_TOOLS = ["read", "bash", "grep", "find", "ls"];
 
 export interface AgentRunnerEvent {
   readonly type: string;
   readonly toolName?: string;
+}
+
+export interface AgentRunnerToolInfo {
+  readonly name: string;
+  readonly description?: string;
 }
 
 export interface AgentRunnerSession {
@@ -22,6 +36,8 @@ export interface AgentRunnerSession {
   subscribe(listener: (event: AgentRunnerEvent) => void): () => void;
   dispose(): void;
   abort(): Promise<void>;
+  getAllTools?(): readonly AgentRunnerToolInfo[];
+  setActiveToolsByName?(toolNames: readonly string[]): void;
 }
 
 export type CreateAgentSession = (options: CreateAgentSessionOptions) => Promise<{ session: AgentRunnerSession }>;
@@ -45,6 +61,9 @@ export interface RunContext {
   signal: AbortSignal | undefined;
   perf: PerfSink;
   usage: WorkflowUsageSink;
+  budget: WorkflowBudget;
+  journal: WorkflowJournal;
+  worktrees: WorktreeRegistry;
   createSession?: CreateAgentSession;
 }
 
@@ -157,18 +176,171 @@ function linkSessionAbort(signal: AbortSignal | undefined, session: AgentRunnerS
   return () => signal.removeEventListener("abort", onAbort);
 }
 
-function buildToolAllowlist(opts: AgentOptions, skillsEnabled: boolean): string[] | undefined {
-  if (!opts.tools) return undefined;
-  const allow = [...opts.tools];
+type ToolSessionOptions = Pick<CreateAgentSessionOptions, "tools" | "excludeTools">;
+
+interface ToolSelection {
+  readonly sessionOptions: ToolSessionOptions;
+  readonly fallbackSessionOptions: ToolSessionOptions;
+  readonly activeTools?: readonly string[];
+  readonly toolHints: NonNullable<AgentOptions["toolHints"]>;
+}
+
+interface DynamicToolSession extends AgentRunnerSession {
+  getAllTools(): readonly AgentRunnerToolInfo[];
+  setActiveToolsByName(toolNames: readonly string[]): void;
+}
+
+function buildToolList(opts: AgentOptions, skillsEnabled: boolean, fallback?: readonly string[]): string[] | undefined {
+  const allow = opts.tools ? [...opts.tools] : fallback ? [...fallback] : undefined;
+  if (!allow) return undefined;
   if (skillsEnabled && !allow.includes("read")) allow.push("read");
   if (opts.schema && !allow.includes(FINAL_TOOL)) allow.push(FINAL_TOOL);
   return allow;
+}
+
+function buildToolSelection(opts: AgentOptions, skillsEnabled: boolean): ToolSelection {
+  const toolHints = opts.toolHints ?? [];
+  const fallback = toolHints.includes("search") ? DEFAULT_SEARCH_BASE_TOOLS : undefined;
+  const activeTools = buildToolList(opts, skillsEnabled, fallback);
+  const strictSessionOptions = { tools: activeTools ? [...activeTools] : undefined };
+
+  if (toolHints.length === 0) {
+    return { sessionOptions: strictSessionOptions, fallbackSessionOptions: strictSessionOptions, activeTools, toolHints };
+  }
+
+  const explicitlyActive = new Set(activeTools ?? []);
+  return {
+    sessionOptions: { excludeTools: BUILTIN_TOOL_NAMES.filter((name) => !explicitlyActive.has(name)) },
+    // If dynamic tool APIs are unavailable, fail closed to the concrete tools we
+    // already know instead of keeping every extension/custom tool active.
+    fallbackSessionOptions: { tools: activeTools ? [...activeTools] : [] },
+    activeTools,
+    toolHints,
+  };
+}
+
+function hasDynamicToolApis(session: AgentRunnerSession): session is DynamicToolSession {
+  return typeof session.getAllTools === "function" && typeof session.setActiveToolsByName === "function";
+}
+
+function applyDynamicToolHints(session: AgentRunnerSession, selection: ToolSelection): boolean {
+  if (selection.toolHints.length === 0) return true;
+  if (!hasDynamicToolApis(session)) return false;
+
+  const active = new Set(selection.activeTools ?? []);
+  for (const tool of session.getAllTools()) {
+    if (matchesToolHints(tool, selection.toolHints)) active.add(tool.name);
+  }
+  session.setActiveToolsByName([...active]);
+  return true;
+}
+
+function matchesToolHints(tool: AgentRunnerToolInfo, toolHints: readonly string[]): boolean {
+  return toolHints.some((hint) => hint === "search" && isSearchLikeTool(tool));
+}
+
+function isSearchLikeTool(tool: AgentRunnerToolInfo): boolean {
+  if (isClearlyMutatingToolName(tool.name)) return false;
+  const name = tool.name.toLowerCase();
+  if (name.includes("grep") || name.includes("find") || name.includes("search") || name === "rg" || name.includes("ripgrep")) return true;
+  const description = tool.description?.toLowerCase() ?? "";
+  return /\b(?:grep|find|search|ripgrep|rg|structural search|code search)\b/.test(description);
+}
+
+function isClearlyMutatingToolName(name: string): boolean {
+  return /(?:^|[-_])(?:edit|write|replace|patch|apply|delete|remove|move|rename|create|commit|push)(?:$|[-_])/.test(name.toLowerCase());
 }
 
 function shouldCreateSkillResourceLoader(rc: RunContext, prompt: string, opts: AgentOptions): boolean {
   if (!rc.createSession) return true;
   if (opts.skills !== undefined) return true;
   return extractSkillSelectorsFromText(prompt).length > 0;
+}
+
+/**
+ * Refuse to start a new subagent once the run is over budget. Called before queueing and
+ * again after a queued agent acquires a concurrency slot, so an exhausted run stops spending
+ * immediately rather than starting stale queued work.
+ *
+ * Policy: accept overshoot (matches the built-in Workflow tool). `budget.spent()` counts
+ * only COMPLETED agents (usage is recorded on session dispose), so agents admitted together
+ * can each pass this check and then collectively overshoot `budget.total` — we tolerate that
+ * rather than reserving per-agent estimates. An uncapped run (`budget.total === null`,
+ * `remaining()` is Infinity) never throws.
+ *
+ * Heads-up: a throw here is a recoverable branch failure inside `parallel`/`pipeline`, so the
+ * over-budget slot becomes null while already-started siblings can finish. The intended primary
+ * usage is the loop guard `while (budget.total && budget.remaining() > N) { await agent(...) }`,
+ * where this throw is only a backstop.
+ */
+function ensureWithinBudget(budget: WorkflowBudget): void {
+  if (budget.total !== null && budget.remaining() <= 0) {
+    throw new WorkflowBudgetExceededError(budget.total, budget.spent());
+  }
+}
+
+interface AgentWorkspace {
+  readonly cwd: string;
+  wrapResult(result: unknown): Promise<unknown>;
+  dispose(): Promise<void>;
+}
+
+async function createAgentWorkspace(rc: RunContext, opts: AgentOptions, label: string): Promise<AgentWorkspace> {
+  if (opts.isolation !== "worktree") {
+    return {
+      cwd: rc.cwd,
+      async wrapResult(result) {
+        return result;
+      },
+      async dispose() {},
+    };
+  }
+
+  const probe = await rc.worktrees.probe(rc.signal);
+  if (!probe.ok) {
+    throw new Error(`Failed to check git worktree availability for isolated agent: ${probe.error ?? "unknown git error"}`);
+  }
+  if (!probe.inside) {
+    throw new Error("Agent requested worktree isolation, but the workflow cwd is not inside a git work tree.");
+  }
+
+  const added = await rc.worktrees.add(rc.signal);
+  if ("error" in added) throw new Error(`Failed to create isolated worktree: ${added.error}`);
+  const worktreePath = added.path;
+  rc.progress.log(`${label}: using isolated worktree ${worktreePath}`);
+
+  return {
+    cwd: worktreePath,
+    async wrapResult(result) {
+      return await isolatedResult(rc, worktreePath, result);
+    },
+    async dispose() {
+      const removed = await rc.worktrees.remove(worktreePath);
+      if (!removed.ok) {
+        rc.progress.log(`${label}: failed to remove isolated worktree (${removed.error ?? (removed.stderr.trim() || "unknown error")})`);
+      }
+    },
+  };
+}
+
+async function disposeAgentWorkspace(rc: RunContext, label: string, workspace: AgentWorkspace | undefined): Promise<void> {
+  if (!workspace) return;
+  try {
+    await workspace.dispose();
+  } catch (error) {
+    rc.progress.log(`${label}: failed to dispose isolated workspace (${errorMessage(error)})`);
+  }
+}
+
+async function recordJournalResult(rc: RunContext, label: string, key: string, value: unknown): Promise<void> {
+  try {
+    const recorded = await rc.journal.record(key, value);
+    if (!recorded.ok) {
+      rc.progress.log(`${label}: workflow journal write failed (${recorded.error}); future resume may be incomplete`);
+    }
+  } catch (error) {
+    rc.progress.log(`${label}: workflow journal write failed (${errorMessage(error)}); future resume may be incomplete`);
+  }
 }
 
 /**
@@ -188,6 +360,16 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
 
   return await rc.perf.time("agent.total_ms", async () => {
     throwIfAborted(rc.signal);
+    const journalKey = agentJournalKey(prompt, opts);
+    const cached = rc.journal.lookup(journalKey);
+    if (cached.hit) {
+      rc.progress.log(`${label}: using cached result from workflow journal`);
+      rc.perf.counter("agent.cache_hit", 1, tags);
+      await recordJournalResult(rc, label, journalKey, cached.value);
+      return cached.value;
+    }
+    // Stop spending the moment the run is over budget — before queueing.
+    ensureWithinBudget(rc.budget);
     // Track queued agents before acquiring a global concurrency slot.
     const rowId = rc.progress.agentQueued(opts.phase, label);
     let failureHandled = false;
@@ -195,6 +377,8 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
       return await rc.semaphore.run(
         async () => {
         throwIfAborted(rc.signal);
+        // Re-check after waiting for a slot; earlier agents may have exhausted the budget.
+        ensureWithinBudget(rc.budget);
         rc.progress.agentStart(opts.phase, label, rowId);
 
         let captured: unknown = null;
@@ -202,6 +386,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
         let session: AgentRunnerSession | undefined;
         let usageRecorded = false;
         let unsubscribe: (() => void) | undefined;
+        let workspace: AgentWorkspace | undefined;
         const recordUsage = (activeSession: AgentRunnerSession): void => {
           if (usageRecorded) return;
           usageRecorded = true;
@@ -224,13 +409,16 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           : [];
 
         try {
+          workspace = await createAgentWorkspace(rc, opts, label);
+          const agentCwd = workspace.cwd;
+
           const { model } = resolveAgentModel(opts.model, rc.modelRegistry, rc.hostModel);
           const skillSetup = shouldCreateSkillResourceLoader(rc, prompt, opts)
             ? await rc.perf.time(
                 "agent.skills_ms",
                 () =>
                   createAgentSkillResourceLoader({
-                    cwd: rc.cwd,
+                    cwd: agentCwd,
                     prompt,
                     skills: opts.skills,
                     log: (message) => rc.progress.log(`${label}: ${message}`),
@@ -239,30 +427,44 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
               )
             : undefined;
           const selectedSkills = skillSetup?.selectedSkills ?? [];
-          // When the workflow restricts built-in tools, keep the terminating tool visible.
+          // When the workflow restricts tools, keep the terminating tool visible.
           // Skill opt-ins also need read so the subagent can load SKILL.md on demand.
-          const allow = buildToolAllowlist(opts, selectedSkills.length > 0);
+          const toolSelection = buildToolSelection(opts, selectedSkills.length > 0);
 
           const createSessionForRun = rc.createSession ?? defaultCreateSession;
+          const createSubagentSession = (sessionOptions: ToolSessionOptions) =>
+            rc.perf.time(
+              "agent.create_session_ms",
+              () =>
+                createSessionForRun({
+                  cwd: agentCwd,
+                  model,
+                  modelRegistry: rc.modelRegistry as ModelRegistry,
+                  thinkingLevel: opts.thinkingLevel,
+                  tools: sessionOptions.tools,
+                  excludeTools: sessionOptions.excludeTools,
+                  customTools,
+                  resourceLoader: skillSetup?.resourceLoader,
+                  sessionManager: SessionManager.inMemory(agentCwd),
+                }),
+              tags,
+            );
 
           throwIfAborted(rc.signal);
-          const created = await rc.perf.time(
-            "agent.create_session_ms",
-            () =>
-              createSessionForRun({
-                cwd: rc.cwd,
-                model,
-                modelRegistry: rc.modelRegistry as ModelRegistry,
-                thinkingLevel: opts.thinkingLevel,
-                tools: allow,
-                customTools,
-                resourceLoader: skillSetup?.resourceLoader,
-                sessionManager: SessionManager.inMemory(rc.cwd),
-              }),
-            tags,
-          );
+          let created = await createSubagentSession(toolSelection.sessionOptions);
           session = created.session;
-          const activeSession = session;
+          let activeSession = session;
+          if (!applyDynamicToolHints(activeSession, toolSelection)) {
+            rc.progress.log(`${label}: dynamic tool hints unavailable; falling back to concrete tools only`);
+            rc.perf.counter("agent.tool_hint_fallback", 1, tags);
+            const dynamicSession = activeSession;
+            session = undefined;
+            rc.perf.timeSync("agent.dispose_ms", () => dynamicSession.dispose(), tags);
+            throwIfAborted(rc.signal);
+            created = await createSubagentSession(toolSelection.fallbackSessionOptions);
+            session = created.session;
+            activeSession = session;
+          }
           throwIfAborted(rc.signal);
 
           unsubscribe = activeSession.subscribe((event) => {
@@ -279,13 +481,21 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           const unlinkPromptAbort = linkSessionAbort(rc.signal, activeSession);
           try {
             await rc.perf.time("agent.prompt_ms", () => activeSession.prompt(finalPrompt), tags);
+            if (opts.schema) {
+              for (let attempt = 0; captured === null && attempt < SCHEMA_REPROMPT_ATTEMPTS; attempt++) {
+                throwIfAborted(rc.signal);
+                rc.progress.log(`${label}: no final answer; re-prompting (${attempt + 1}/${SCHEMA_REPROMPT_ATTEMPTS})`);
+                rc.perf.counter("agent.structured_reprompt", 1, tags);
+                await rc.perf.time("agent.prompt_ms", () => activeSession.prompt(SCHEMA_REPROMPT), tags);
+              }
+            }
           } finally {
             unlinkPromptAbort();
           }
           recordUsage(activeSession);
           throwIfAborted(rc.signal);
 
-          return rc.perf.timeSync(
+          const rawResult = rc.perf.timeSync(
             "agent.extract_result_ms",
             () => {
               if (opts.schema) {
@@ -299,6 +509,9 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             },
             tags,
           );
+          const result = await workspace.wrapResult(rawResult);
+          await recordJournalResult(rc, label, journalKey, result);
+          return result;
         } catch (error) {
           failed = true;
           failureHandled = true;
@@ -318,6 +531,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
               tags,
             );
           }
+          await disposeAgentWorkspace(rc, label, workspace);
           if (!failed) rc.progress.agentDone(label, rowId);
         }
         },
@@ -331,4 +545,14 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
       throw error;
     }
   }, tags);
+}
+
+async function isolatedResult(rc: RunContext, worktreePath: string, result: unknown): Promise<{ readonly result: unknown; readonly patch: string; readonly changed: boolean }> {
+  const patch = await rc.worktrees.capturePatch(worktreePath, rc.signal);
+  if ("error" in patch) throw new Error(`Failed to capture isolated worktree patch: ${patch.error}`);
+  return { result, patch: patch.patch, changed: patch.changed };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { parallel, pipeline, Semaphore } from "./concurrency.ts";
+import { bindPipeline, parallel, Semaphore } from "./concurrency.ts";
 import { linkAbortSignal } from "./cancellation.ts";
+import { createBudget } from "./budget.ts";
 import { runAgent, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
 import { createPerfRecorder, type PerfSnapshot } from "./perf.ts";
@@ -8,6 +9,8 @@ import { createWorkflowUsageRecorder } from "./usage.ts";
 import { defaultConcurrency, resolveWorkflowRunOptions } from "./options.ts";
 import type { AgentOptions, WorkflowApi, WorkflowModule, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
+import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
+import { WorktreeRegistry } from "./worktree.ts";
 
 /** Default global cap on concurrent agents per run. */
 const DEFAULT_CONCURRENCY = defaultConcurrency();
@@ -60,6 +63,14 @@ export async function runWorkflow(
 
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
   const usage = createWorkflowUsageRecorder();
+  const budget = createBudget(resolvedOptions.budget ?? null, usage);
+  const runId = resolvedOptions.runId ?? createWorkflowRunId();
+  const journalPath = workflowJournalPath(ctx.cwd, runId);
+  const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
+  const journal = await createWorkflowJournal({ resumePath, writePath: journalPath });
+  const worktrees = new WorktreeRegistry(ctx.cwd);
+  resolvedOptions.onRunMetadata?.({ runId, resumedFromRunId: resolvedOptions.resumeFromRunId, journalPath });
+  progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
   const unlinkOptionAbortSignal = linkAbortSignal(resolvedOptions.signal, runAbortController);
@@ -72,6 +83,9 @@ export async function runWorkflow(
     signal: runAbortController.signal,
     perf,
     usage,
+    budget,
+    journal,
+    worktrees,
   };
 
   try {
@@ -99,6 +113,13 @@ export async function runWorkflow(
       resolvedOptions.onProgressSource?.(undefined);
       unlinkContextAbortSignal();
       unlinkOptionAbortSignal();
+      const cleanupResults = await worktrees.removeAll();
+      for (const result of cleanupResults) {
+        if (!result.ok) {
+          progress.log(`failed to remove isolated worktree ${result.path} (${result.error ?? (result.stderr.trim() || "unknown error")})`);
+        }
+      }
+      await pruneWorkflowJournals(ctx.cwd);
     }
   }
 }
@@ -156,12 +177,13 @@ export async function runWorkflowWithContext(
         abortController: opts.abortController,
         limit: opts.submissionLimit,
       }),
-    pipeline,
+    pipeline: bindPipeline({ signal: rc.signal, abortController: opts.abortController }),
     phase: scope.phase,
     log: scope.log,
     progress: scope.event,
     args,
     cwd: rc.cwd,
+    budget: rc.budget,
     signal: rc.signal,
   };
 

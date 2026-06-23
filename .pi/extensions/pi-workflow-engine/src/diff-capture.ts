@@ -1,6 +1,5 @@
-import { spawn } from "node:child_process";
-import { performance } from "node:perf_hooks";
 import type { PerfSink } from "./perf.ts";
+import { runBoundedProcess } from "./process-runner.ts";
 
 export interface AllowedDiffCommand {
   readonly file: "git" | "gh";
@@ -75,76 +74,23 @@ export async function captureDiff(command: string, options: DiffCaptureOptions):
     return { ok: false, stdout: "", durationMs: 0, bytes: 0, error: parsed.error };
   }
 
-  const start = performance.now();
-  let stdout = "";
-  let stderr = "";
-  let bytes = 0;
-  let error: string | undefined;
-  const child = spawn(parsed.file, [...parsed.args], {
+  const result = await runBoundedProcess({
+    file: parsed.file,
+    args: parsed.args,
     cwd: options.cwd,
     env: diffCaptureEnv(options.env),
-    stdio: ["ignore", "pipe", "pipe"],
+    signal: options.signal,
+    timeoutMs: options.timeoutMs,
+    maxBufferBytes: options.maxBufferBytes,
+    killGraceMs: options.killGraceMs,
+    abortError: "diff capture aborted",
+    timeoutError: `diff capture timed out after ${options.timeoutMs}ms`,
+    maxBufferError: `diff capture exceeded ${options.maxBufferBytes} bytes`,
+    exitError: (stderr, code, signal) => stderr.trim() || `diff command exited with code ${code ?? `signal ${signal ?? "unknown"}`}`,
   });
-
-  return await new Promise<DiffCaptureResult>((resolve) => {
-    let settled = false;
-    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-    const killGraceMs = Math.max(1, options.killGraceMs ?? 100);
-    const finish = (ok: boolean, finishError?: string) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      const durationMs = performance.now() - start;
-      options.perf?.observe("diff.capture_ms", durationMs);
-      options.perf?.observe("diff.bytes", bytes);
-      resolve({ ok, stdout, durationMs, bytes, error: finishError });
-    };
-    const kill = (message: string) => {
-      error = error ?? message;
-      child.kill("SIGTERM");
-      forceKillTimer ??= setTimeout(() => {
-        child.kill("SIGKILL");
-        finish(false, error);
-      }, killGraceMs);
-    };
-    const onAbort = () => kill("diff capture aborted");
-    const timeout = setTimeout(() => kill(`diff capture timed out after ${options.timeoutMs}ms`), options.timeoutMs);
-    const cleanup = () => {
-      clearTimeout(timeout);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
-      options.signal?.removeEventListener("abort", onAbort);
-    };
-
-    if (options.signal?.aborted) {
-      kill("diff capture aborted");
-    } else {
-      options.signal?.addEventListener("abort", onAbort, { once: true });
-    }
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      bytes += chunk.length;
-      if (bytes > options.maxBufferBytes) {
-        kill(`diff capture exceeded ${options.maxBufferBytes} bytes`);
-        return;
-      }
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", (spawnError) => finish(false, spawnError.message));
-    child.on("close", (code, signal) => {
-      if (error) {
-        finish(false, error);
-        return;
-      }
-      if (code === 0) {
-        finish(true);
-        return;
-      }
-      finish(false, stderr.trim() || `diff command exited with code ${code ?? `signal ${signal ?? "unknown"}`}`);
-    });
-  });
+  options.perf?.observe("diff.capture_ms", result.durationMs);
+  options.perf?.observe("diff.bytes", result.bytes);
+  return result;
 }
 
 function diffCaptureEnv(env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {

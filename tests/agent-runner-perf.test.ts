@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { Type } from "typebox";
 import { runAgent, type AgentProgress, type CreateAgentSession, type RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
+import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 
 function createProgress(): AgentProgress & { readonly events: string[] } {
   const events: string[] = [];
@@ -36,18 +39,43 @@ function aggregateNames(recorder: PerfRecorder): string[] {
   return recorder.snapshot().aggregates.map((aggregate) => aggregate.name).sort();
 }
 
-function createRunContext(createSession: CreateAgentSession, perf: PerfRecorder, usage: WorkflowUsageSink = createWorkflowUsageRecorder()): RunContext {
+type FinalTool = NonNullable<Parameters<CreateAgentSession>[0]["customTools"]>[number];
+type ToolExecuteContext = Parameters<FinalTool["execute"]>[4];
+
+const unusedToolContext = new Proxy(
+  {},
+  {
+    get(_target, property) {
+      throw new Error(`unused tool context accessed: ${String(property)}`);
+    },
+  },
+) as ToolExecuteContext;
+
+function createRunContext(
+  createSession: CreateAgentSession,
+  perf: PerfRecorder,
+  usage: WorkflowUsageSink = createWorkflowUsageRecorder(),
+  signal?: AbortSignal,
+): RunContext {
   return {
     cwd: process.cwd(),
     hostModel: undefined,
     modelRegistry: { find: () => undefined },
     semaphore: new Semaphore(1),
     progress: createProgress(),
-    signal: undefined,
+    signal,
     perf,
     usage,
+    budget: { total: null, spent: () => 0, remaining: () => Infinity },
+    journal: createMemoryBackedJournal(),
+    worktrees: new WorktreeRegistry(process.cwd()),
     createSession,
   };
+}
+
+async function executeFinalAnswer(tool: FinalTool | undefined, params: { readonly ok: boolean }): Promise<void> {
+  assert.ok(tool);
+  await tool.execute("final-answer", params, undefined, undefined, unusedToolContext);
 }
 
 function usageAssistant(input: number, output: number, costTotal: number): unknown {
@@ -186,4 +214,136 @@ test("runAgent records missing structured output", async () => {
 
   assert.equal(result, null);
   assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_missing")?.total, 1);
+  assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_reprompt")?.total, 1);
+});
+
+test("runAgent re-prompts a schema agent that skips final_answer once", async () => {
+  const perf = new PerfRecorder();
+  const usage = createWorkflowUsageRecorder();
+  let promptCalls = 0;
+  let finalAnswerTool: FinalTool | undefined;
+  const messages: unknown[] = [];
+  const createSession: CreateAgentSession = async (options) => {
+    finalAnswerTool = options.customTools?.find((tool) => tool.name === "final_answer");
+    return {
+      session: {
+        state: { messages },
+        async prompt() {
+          promptCalls += 1;
+          messages.push(usageAssistant(promptCalls * 10, promptCalls * 2, promptCalls / 100));
+          if (promptCalls === 2) await executeFinalAnswer(finalAnswerTool, { ok: true });
+        },
+        subscribe() {
+          return () => {};
+        },
+        dispose() {},
+        async abort() {},
+      },
+    };
+  };
+
+  const result = await runAgent(createRunContext(createSession, perf, usage), "hello", {
+    label: "structured",
+    schema: Type.Object({ ok: Type.Boolean() }),
+  });
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(promptCalls, 2);
+  assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_reprompt")?.total, 1);
+  assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_missing"), undefined);
+  const snapshot = usage.snapshot();
+  assert.equal(snapshot.agents.length, 1);
+  assert.equal(snapshot.totals.input, 30);
+  assert.equal(snapshot.totals.output, 6);
+});
+
+test("runAgent records usage after schema re-prompt exhaustion", async () => {
+  const perf = new PerfRecorder();
+  const usage = createWorkflowUsageRecorder();
+  let promptCalls = 0;
+  const messages: unknown[] = [];
+  const createSession: CreateAgentSession = async () => ({
+    session: {
+      state: { messages },
+      async prompt() {
+        promptCalls += 1;
+        messages.push(usageAssistant(promptCalls * 5, promptCalls, promptCalls / 100));
+      },
+      subscribe() {
+        return () => {};
+      },
+      dispose() {},
+      async abort() {},
+    },
+  });
+
+  const result = await runAgent(createRunContext(createSession, perf, usage), "hello", {
+    label: "structured",
+    schema: Type.Object({ ok: Type.Boolean() }),
+  });
+
+  assert.equal(result, null);
+  assert.equal(promptCalls, 2);
+  assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_reprompt")?.total, 1);
+  assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_missing")?.total, 1);
+  const snapshot = usage.snapshot();
+  assert.equal(snapshot.agents.length, 1);
+  assert.equal(snapshot.totals.input, 15);
+  assert.equal(snapshot.totals.output, 3);
+});
+
+test("runAgent does not re-prompt non-schema agents", async () => {
+  const perf = new PerfRecorder();
+  let promptCalls = 0;
+  const createSession: CreateAgentSession = async () => ({
+    session: {
+      state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
+      async prompt() {
+        promptCalls += 1;
+      },
+      subscribe() {
+        return () => {};
+      },
+      dispose() {},
+      async abort() {},
+    },
+  });
+
+  const result = await runAgent(createRunContext(createSession, perf), "hello");
+
+  assert.equal(result, "done");
+  assert.equal(promptCalls, 1);
+  assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_reprompt"), undefined);
+});
+
+test("runAgent stops before schema re-prompt when aborted between attempts", async () => {
+  const perf = new PerfRecorder();
+  const controller = new AbortController();
+  let promptCalls = 0;
+  const createSession: CreateAgentSession = async () => ({
+    session: {
+      state: { messages: [usageAssistant(10, 2, 0.01)] },
+      async prompt() {
+        promptCalls += 1;
+        controller.abort(new WorkflowAbortError("stop"));
+      },
+      subscribe() {
+        return () => {};
+      },
+      dispose() {},
+      async abort() {},
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      runAgent(createRunContext(createSession, perf, createWorkflowUsageRecorder(), controller.signal), "hello", {
+        label: "structured",
+        schema: Type.Object({ ok: Type.Boolean() }),
+      }),
+    /stop/,
+  );
+
+  assert.equal(promptCalls, 1);
+  assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_reprompt"), undefined);
 });

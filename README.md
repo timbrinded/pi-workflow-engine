@@ -8,7 +8,7 @@ Use `dynamax` when a task needs several independent passes: review from differen
 
 The package ships no bundled runtime dependencies. It uses the pi SDK and pi's bundled core packages, so installing it does not pull in a second agent stack.
 
-The built-in workflows are advisory. They inspect, verify, and report; they do not edit files.
+The built-in workflows are advisory by default. They inspect, verify, and report; they do not edit files. Workflow authors can opt individual subagents into disposable git worktrees when they want reviewable patches instead of direct edits.
 
 ## Install
 
@@ -134,8 +134,12 @@ Useful flags:
 /workflow code-review --result-viewer
 /workflow code-review --no-result-viewer
 /workflow code-review --concurrency=4
+/workflow code-review --budget=50000
+/workflow code-review --resume <run-id>
 /workflow code-review --refresh
 ```
+
+Every workflow result includes a run id. If a long run is interrupted, rerun the same workflow with `--resume <run-id>` to replay matching completed `agent()` calls from the journal and run only the first changed or missing call onward. Resume is deterministic-prefix based: keep prompts and agent options stable if you want cache hits.
 
 The code-review workflow can open an interactive findings viewer. Select findings and hand them back to the parent agent for minimal fixes, or ask it to raise GitHub PR comments when `gh` is authenticated and PR context is available.
 
@@ -202,10 +206,15 @@ Inline workflows are passed to the `workflow` tool as a script string. They are 
 - Each `agent()` runs an in-process pi `AgentSession` with `SessionManager.inMemory()`.
 - Workflow results aggregate the finalized assistant usage from those subagent sessions before disposal and show token/cost totals separately from pi's host-session footer accounting.
 - Structured output uses a terminating tool whose `parameters` is your schema. pi validates the call; the engine captures the args. There is no JSON scraping.
+- A schema agent that finishes without calling `final_answer` is re-prompted once before returning `null`.
+- Runs write completed `agent()` results to `.pi/.workflow-runs/<run-id>.jsonl`; `--resume <run-id>` replays the longest unchanged prefix and writes a fresh journal for the resumed run.
+- `agent(..., { isolation: "worktree" })` runs in a disposable git worktree and returns `{ result, patch, changed }`; the user working tree is not mutated.
 - A single run-level semaphore caps concurrent agents, so nested `parallel`, `pipeline`, and `workflow()` calls stay bounded.
+- `parallel()` and `pipeline()` are fail-soft: recoverable branch failures, including budget backstops, become `null` slots while survivors continue. A genuine run abort still rejects.
 - Built-in workflows stay statically imported so they share pi's bundled `typebox` identity.
 - Set `thinkingLevel` per fan-out agent. Otherwise many subagents can inherit an expensive global reasoning level.
 - Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; clear prompt text like `include skill name` also works when `skills` is omitted.
+- `tools` is a strict allowlist for subagents. Use `toolHints: ["search"]` to dynamically expose installed grep/find/search-like tools such as `ast-grep`, `mgrep`, `ffgrep`, or `fffind` without hard-coding a specific extension.
 - Set `model` per agent only when needed: bare ids are Anthropic shorthand, and `provider/id` targets other providers.
   Omitted models inherit the host/session default; malformed or unknown explicit refs fail fast.
 
