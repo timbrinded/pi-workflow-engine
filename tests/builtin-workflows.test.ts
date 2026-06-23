@@ -55,6 +55,7 @@ function createScriptedApi(responses: unknown[], args = ""): ScriptedApi {
     progress: (event) => events.push(event),
     args,
     cwd: process.cwd(),
+    budget: { total: null, spent: () => 0, remaining: () => Infinity },
     signal: undefined,
   };
 }

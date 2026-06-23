@@ -1,5 +1,6 @@
 import type { Static, TSchema } from "typebox";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { WorkflowBudget } from "./budget.ts";
 import type { Pipeline } from "./concurrency.ts";
 import type { PerfSink, PerfSnapshot } from "./perf.ts";
 import type { WorkflowProgressSnapshot } from "./progress.ts";
@@ -28,6 +29,8 @@ export interface WorkflowRunOptions {
   perf?: boolean;
   concurrency?: number;
   parallelSubmissionLimit?: number;
+  /** Output-token ceiling for the whole run. Omit for no limit (budget.total === null). */
+  budget?: number;
   resultViewer?: "open" | "skip";
   /** Additional abort signal to compose with the host context signal. */
   signal?: AbortSignal;
@@ -128,6 +131,12 @@ export interface WorkflowApi {
   args: string;
   /** Working directory of the host session (typically the repo root). */
   cwd: string;
+  /**
+   * Token budget for the run. `budget.total` is the output-token ceiling (null when unset),
+   * `spent()`/`remaining()` are live. Guard loops with `while (budget.total && budget.remaining() > N)`;
+   * `agent()` throws `WorkflowBudgetExceededError` once the ceiling is reached.
+   */
+  budget: WorkflowBudget;
   /** Abort signal for the run, propagated from the host. */
   signal: AbortSignal | undefined;
 }

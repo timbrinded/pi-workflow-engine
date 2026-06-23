@@ -5,6 +5,7 @@ import type { AgentOptions } from "./types.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { PerfSink } from "./perf.ts";
 import type { WorkflowUsageSink } from "./usage.ts";
+import { WorkflowBudgetExceededError, type WorkflowBudget } from "./budget.ts";
 import { throwIfAborted } from "./cancellation.ts";
 import { appendSkillReminder, createAgentSkillResourceLoader, extractSkillSelectorsFromText } from "./agent-skills.ts";
 
@@ -54,6 +55,7 @@ export interface RunContext {
   signal: AbortSignal | undefined;
   perf: PerfSink;
   usage: WorkflowUsageSink;
+  budget: WorkflowBudget;
   createSession?: CreateAgentSession;
 }
 
@@ -248,6 +250,28 @@ function shouldCreateSkillResourceLoader(rc: RunContext, prompt: string, opts: A
 }
 
 /**
+ * Refuse to start a new subagent once the run is over budget. Called at the very top of
+ * `runAgent`, before a concurrency slot is taken, so an exhausted run stops spending
+ * immediately rather than queueing more work.
+ *
+ * Policy: accept overshoot (matches the built-in Workflow tool). `budget.spent()` counts
+ * only COMPLETED agents (usage is recorded on session dispose), so agents admitted together
+ * can each pass this check and then collectively overshoot `budget.total` — we tolerate that
+ * rather than reserving per-agent estimates. An uncapped run (`budget.total === null`,
+ * `remaining()` is Infinity) never throws.
+ *
+ * Heads-up: a throw here propagates through `parallel`/`pipeline`, which are fail-fast today,
+ * so one over-budget throw aborts the whole in-flight batch. The intended primary usage is the
+ * loop guard `while (budget.total && budget.remaining() > N) { await agent(...) }`, where this
+ * throw is only a backstop.
+ */
+function ensureWithinBudget(budget: WorkflowBudget): void {
+  if (budget.total !== null && budget.remaining() <= 0) {
+    throw new WorkflowBudgetExceededError(budget.total, budget.spent());
+  }
+}
+
+/**
  * Run one subagent to completion in an isolated in-memory session.
  *
  * Structured output trick: when `opts.schema` is set we register a single
@@ -264,6 +288,8 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
 
   return await rc.perf.time("agent.total_ms", async () => {
     throwIfAborted(rc.signal);
+    // Stop spending the moment the run is over budget — before queueing or taking a slot.
+    ensureWithinBudget(rc.budget);
     // Track queued agents before acquiring a global concurrency slot.
     const rowId = rc.progress.agentQueued(opts.phase, label);
     let failureHandled = false;

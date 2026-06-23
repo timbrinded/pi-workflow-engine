@@ -141,6 +141,7 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
     progress() {},
     args: "",
     cwd: process.cwd(),
+    budget: { total: null, spent: () => 0, remaining: () => Infinity },
     signal: undefined,
     ...overrides,
   };

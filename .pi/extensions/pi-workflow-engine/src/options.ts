@@ -5,6 +5,7 @@ export interface ResolvedWorkflowRunOptions extends WorkflowRunOptions {
   readonly perf: boolean;
   readonly concurrency: number;
   readonly parallelSubmissionLimit?: number;
+  readonly budget?: number;
 }
 
 export function defaultConcurrency(cpuCount = cpus().length): number {
@@ -21,11 +22,13 @@ export function resolveWorkflowRunOptions(
     1,
     10_000,
   );
+  const budget = optionalClampedInteger(input.budget ?? parseInteger(env.PI_WORKFLOW_BUDGET), 1, 1_000_000_000);
   return {
     ...input,
     perf: input.perf ?? env.PI_WORKFLOW_PERF === "1",
     concurrency,
     parallelSubmissionLimit,
+    budget,
   };
 }
 

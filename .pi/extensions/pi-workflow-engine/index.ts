@@ -275,6 +275,16 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
       if (next !== undefined) i++;
       continue;
     }
+    if (token.startsWith("--budget=")) {
+      options.budget = parseNumericOption(token.slice("--budget=".length));
+      continue;
+    }
+    if (token === "--budget") {
+      const next = tokens[i + 1];
+      options.budget = parseNumericOption(next);
+      if (next !== undefined) i++;
+      continue;
+    }
     kept.push(token);
   }
   return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined };
@@ -302,6 +312,7 @@ Use the workflow tool with a script argument, not a saved workflow name.
 The script must start with export const meta = { ... } and default-export an async workflow function.
 Use the injected Type object for schemas. Do not import anything or use dynamic import().
 Set thinkingLevel explicitly on each agent() call.
+When the run is budgeted, guard expensive loops with \`while (api.budget.total && api.budget.remaining() > N) { ... }\`; api.agent() throws once the budget is spent.
 Subagents receive no skills by default. When the brief asks for a skill or a stage clearly benefits from one, pass \`skills: ["skill-name"]\` on that agent call only.
 Do not edit files unless the user explicitly requested edits.`;
 }
@@ -490,6 +501,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
       "Subagents receive no skills by default. In inline workflows, pass `skills: [\"skill-name\"]` per `agent()` call when the user asks for a skill or a stage should use one; grant only the needed skills.",
       "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
+      "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
       "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
     ],
     parameters: Type.Object({
@@ -498,6 +510,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
       args: Type.Optional(Type.String({ description: "Arguments for the workflow (e.g. target or focus)" })),
       concurrency: Type.Optional(Type.Number({ description: "Optional per-run agent concurrency cap" })),
       parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
+      budget: Type.Optional(Type.Number({ description: "Optional output-token ceiling for the run; agent() throws once it is exceeded" })),
       perf: Type.Optional(Type.Boolean({ description: "Include workflow performance timing aggregates in the result details" })),
     }),
     renderCall(args, theme) {
@@ -525,6 +538,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         inspect: ctx.hasUI,
         concurrency: params.concurrency,
         parallelSubmissionLimit: params.parallelSubmissionLimit,
+        budget: params.budget,
         perf: params.perf,
         signal,
       };

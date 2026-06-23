@@ -16,6 +16,7 @@ import {
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import { createBudget, WorkflowBudgetExceededError, type WorkflowBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 
 type FindCall = { readonly provider: string; readonly modelId: string };
 
@@ -75,7 +76,9 @@ function createRunContext(input: {
   readonly modelRegistry?: Pick<ModelRegistry, "find">;
   readonly progress?: AgentProgress;
   readonly cwd?: string;
+  readonly budget?: WorkflowBudget;
 }): RunContext {
+  const usage = createWorkflowUsageRecorder();
   return {
     cwd: input.cwd ?? process.cwd(),
     hostModel: input.hostModel,
@@ -84,7 +87,8 @@ function createRunContext(input: {
     progress: input.progress ?? createProgress(),
     signal: undefined,
     perf: new PerfRecorder(),
-    usage: createWorkflowUsageRecorder(),
+    usage,
+    budget: input.budget ?? createBudget(null, usage),
     createSession: input.createSession,
   };
 }
@@ -211,6 +215,22 @@ test("runAgent fails fast on unknown explicit model refs before creating a subag
 
   assert.equal(createSessionCalls, 0);
   assert.ok(progress.events.some((event) => event.includes('failed:strict:Error: Agent model "openai/missing" not found')));
+});
+
+// Target for the `ensureWithinBudget` contribution: red until the guard is implemented.
+test("runAgent refuses to start once the run is over budget", async () => {
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+  const exhausted: WorkflowBudget = { total: 100, spent: () => 250, remaining: () => 0 };
+
+  await assert.rejects(
+    () => runAgent(createRunContext({ createSession, budget: exhausted }), "hello", { label: "broke" }),
+    WorkflowBudgetExceededError,
+  );
+  assert.equal(createSessionCalls, 0);
 });
 
 test("runAgent dynamically enables installed search-like tools", async () => {

@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parallel, pipeline, Semaphore } from "./concurrency.ts";
 import { linkAbortSignal } from "./cancellation.ts";
+import { createBudget } from "./budget.ts";
 import { runAgent, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
 import { createPerfRecorder, type PerfSnapshot } from "./perf.ts";
@@ -60,6 +61,7 @@ export async function runWorkflow(
 
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
   const usage = createWorkflowUsageRecorder();
+  const budget = createBudget(resolvedOptions.budget ?? null, usage);
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
   const unlinkOptionAbortSignal = linkAbortSignal(resolvedOptions.signal, runAbortController);
@@ -72,6 +74,7 @@ export async function runWorkflow(
     signal: runAbortController.signal,
     perf,
     usage,
+    budget,
   };
 
   try {
@@ -162,6 +165,7 @@ export async function runWorkflowWithContext(
     progress: scope.event,
     args,
     cwd: rc.cwd,
+    budget: rc.budget,
     signal: rc.signal,
   };
 

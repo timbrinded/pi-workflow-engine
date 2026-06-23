@@ -21,6 +21,7 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
     perf: true,
     concurrency: 64,
     parallelSubmissionLimit: 1,
+    budget: undefined,
   });
 
   assert.equal(resolveWorkflowRunOptions({ concurrency: -5 }, {}).concurrency, 1);
@@ -28,11 +29,11 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
 });
 
 test("parseWorkflowInvocation extracts tuning flags from slash command args", () => {
-  const invocation = parseWorkflowInvocation("code-review --inspect --perf --concurrency=4 --parallel-limit 9 review src only");
+  const invocation = parseWorkflowInvocation("code-review --inspect --perf --concurrency=4 --parallel-limit 9 --budget 50000 review src only");
 
   assert.equal(invocation.name, "code-review");
   assert.equal(invocation.args, "review src only");
-  assert.deepEqual(invocation.options, { inspect: true, perf: true, concurrency: 4, parallelSubmissionLimit: 9 });
+  assert.deepEqual(invocation.options, { inspect: true, perf: true, concurrency: 4, parallelSubmissionLimit: 9, budget: 50000 });
 });
 
 test("parses result viewer workflow options", () => {

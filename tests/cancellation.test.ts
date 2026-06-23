@@ -42,6 +42,7 @@ function createRunContext(createSession: CreateAgentSession, signal: AbortSignal
     signal,
     perf: new NoopPerfRecorder(),
     usage: createWorkflowUsageRecorder(),
+    budget: { total: null, spent: () => 0, remaining: () => Infinity },
     createSession,
   };
 }

@@ -46,6 +46,7 @@ function createRunContext(createSession: CreateAgentSession, perf: PerfRecorder,
     signal: undefined,
     perf,
     usage,
+    budget: { total: null, spent: () => 0, remaining: () => Infinity },
     createSession,
   };
 }

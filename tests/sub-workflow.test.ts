@@ -55,6 +55,7 @@ function createRc(
     signal: undefined,
     perf: new PerfRecorder(),
     usage,
+    budget: { total: null, spent: () => 0, remaining: () => Infinity },
     createSession,
   };
 }
