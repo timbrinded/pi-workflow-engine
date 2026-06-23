@@ -217,7 +217,6 @@ test("runAgent fails fast on unknown explicit model refs before creating a subag
   assert.ok(progress.events.some((event) => event.includes('failed:strict:Error: Agent model "openai/missing" not found')));
 });
 
-// Target for the `ensureWithinBudget` contribution: red until the guard is implemented.
 test("runAgent refuses to start once the run is over budget", async () => {
   let createSessionCalls = 0;
   const createSession: CreateAgentSession = async () => {
@@ -231,6 +230,60 @@ test("runAgent refuses to start once the run is over budget", async () => {
     WorkflowBudgetExceededError,
   );
   assert.equal(createSessionCalls, 0);
+});
+
+test("runAgent re-checks budget after waiting for a concurrency slot", async () => {
+  let spent = 0;
+  const budget: WorkflowBudget = {
+    total: 100,
+    spent: () => spent,
+    remaining: () => Math.max(0, 100 - spent),
+  };
+  const progress = createProgress();
+  let createSessionCalls = 0;
+  let releaseFirstPrompt!: () => void;
+  const firstPromptCanFinish = new Promise<void>((resolve) => {
+    releaseFirstPrompt = resolve;
+  });
+  let markFirstPromptEntered!: () => void;
+  const firstPromptEntered = new Promise<void>((resolve) => {
+    markFirstPromptEntered = resolve;
+  });
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return {
+      session: {
+        state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
+        async prompt() {
+          markFirstPromptEntered();
+          await firstPromptCanFinish;
+        },
+        subscribe() {
+          return () => {};
+        },
+        dispose() {},
+        async abort() {},
+      },
+    };
+  };
+  const rc = createRunContext({ createSession, budget, progress });
+
+  const first = runAgent(rc, "first", { label: "first" });
+  await firstPromptEntered;
+  const second = runAgent(rc, "second", { label: "second" });
+  const secondRejected = assert.rejects(second, WorkflowBudgetExceededError);
+  await Promise.resolve();
+  assert.ok(progress.events.includes("queued:second"));
+
+  spent = 100;
+  releaseFirstPrompt();
+
+  assert.equal(await first, "done");
+  await secondRejected;
+  assert.equal(createSessionCalls, 1);
+  assert.ok(progress.events.some((event) => event.includes("failed:second:WorkflowBudgetExceededError")));
+  assert.ok(!progress.events.includes("start:second"));
+  assert.ok(!progress.events.includes("done:second"));
 });
 
 test("runAgent dynamically enables installed search-like tools", async () => {
