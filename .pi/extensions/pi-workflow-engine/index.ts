@@ -12,6 +12,7 @@ import { handleReviewViewerAction } from "./src/review/review-actions.ts";
 import { decideReviewResultsPresentation, extensionContextMode, maybeShowReviewResultsViewer } from "./src/review/review-results-flow.ts";
 import {
   formatWorkflowDetailLines,
+  isAdvisoryReport,
   isWorkflowResult,
   renderWorkflowResult,
   type WorkflowPerfDetails,
@@ -37,7 +38,39 @@ function formatMessageContent(
   metadata?: WorkflowRunMetadata,
 ): string {
   const details = formatWorkflowDetailLines({ usage, perf, metadata });
-  return `## Workflow: ${name}\n\n${summarize(result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
+  return `## Workflow: ${name}\n\n${formatResultForContext(result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
+}
+
+function formatResultForContext(result: unknown): string {
+  if (!isAdvisoryReport(result)) return summarize(result);
+
+  const lines = [result.summary];
+  if (result.findings.length > 0) {
+    lines.push("", "Findings:");
+    result.findings.forEach((finding, index) => {
+      const id = `R${String(index + 1).padStart(3, "0")}`;
+      lines.push(
+        `\n### ${id}: ${finding.summary}`,
+        `- Severity: ${finding.severity}`,
+        `- Confidence: ${finding.confidence}`,
+        `- Category: ${finding.category}`,
+        `- Location: ${finding.locations.map(formatFindingLocation).join(", ")}`,
+        `- Impact: ${finding.impact}`,
+        `- Evidence: ${finding.evidence.length > 0 ? finding.evidence.join("; ") : "(none cited)"}`,
+        `- Recommendation: ${finding.recommendation}`,
+      );
+    });
+  }
+  if (result.nextSteps.length > 0) {
+    lines.push("", "Next steps:", ...result.nextSteps.map((step) => `- ${step}`));
+  }
+  return lines.join("\n");
+}
+
+function formatFindingLocation(location: { readonly file: string; readonly line?: number; readonly symbol?: string }): string {
+  const line = location.line === undefined ? "" : `:${location.line}`;
+  const symbol = location.symbol === undefined ? "" : ` (${location.symbol})`;
+  return `${location.file}${line}${symbol}`;
 }
 
 function workflowEnvelope(
@@ -696,9 +729,8 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         },
       });
       const perf = compactPerfSnapshot(perfSnapshot);
-      const detailLines = formatWorkflowDetailLines({ usage: usageSnapshot, perf, metadata: runMetadata });
       return {
-        content: [{ type: "text", text: `${summarize(result)}${detailLines.length > 0 ? `\n\n${detailLines.join("\n")}` : ""}` }],
+        content: [{ type: "text", text: formatMessageContent(resultName, result, usageSnapshot, perf, runMetadata) }],
         details: workflowEnvelope(resultName, result, usageSnapshot, perf, runMetadata),
       };
     },
