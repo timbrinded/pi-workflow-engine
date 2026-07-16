@@ -42,9 +42,10 @@ export function loadWorkflow(
   source: WorkflowSourceIdentity,
   isolatedWorktreeBaseline?: WorktreeBaseline,
 ): LoadedWorkflow {
+  const loaded = { meta: module.meta, default: module.default, source };
   return isolatedWorktreeBaseline === undefined
-    ? { ...module, source }
-    : { ...module, source, isolatedWorktreeBaseline };
+    ? loaded
+    : { ...loaded, isolatedWorktreeBaseline };
 }
 
 function parseWorkflowMetaObject(meta: WorkflowMetaCandidate): { meta: WorkflowMeta } | { reason: string } {

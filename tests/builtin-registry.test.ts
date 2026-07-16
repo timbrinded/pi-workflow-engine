@@ -14,6 +14,7 @@ test("built-in registry names and files stay explicit and duplicate-free", () =>
   assert.equal(new Set(BUILTIN_WORKFLOW_NAMES).size, BUILTIN_WORKFLOW_NAMES.length);
   assert.equal(BUILTIN_WORKFLOW_FILES.size, expectedFiles.length);
   for (const mod of BUILTIN_WORKFLOWS) {
+    assert.deepEqual(Object.keys(mod).sort(), ["default", "meta", "source"]);
     assert.equal(mod.source.kind, "file");
     assert.equal(mod.source.kind === "file" ? mod.source.root : undefined, extensionRoot);
   }

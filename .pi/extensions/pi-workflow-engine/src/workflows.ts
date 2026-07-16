@@ -1,9 +1,10 @@
-import type { LoadedWorkflow, WorkflowModule } from "./types.ts";
 import { fileURLToPath } from "node:url";
 import * as codeReview from "../workflows/code-review.ts";
 import * as refactorScout from "../workflows/refactor-scout.ts";
 import * as diagnose from "../workflows/diagnose.ts";
 import * as perfReview from "../workflows/perf-review.ts";
+import type { WorkflowModule } from "./types.ts";
+import { loadWorkflow } from "./workflow-module.ts";
 
 /**
  * Workflows statically imported by the extension. These are loaded through pi's own
@@ -21,22 +22,19 @@ import * as perfReview from "../workflows/perf-review.ts";
  */
 const BUILTIN_SOURCE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
-function withSourceFile(mod: WorkflowModule, filename: string): LoadedWorkflow {
-  return {
-    ...mod,
-    source: {
-      kind: "file",
-      path: fileURLToPath(new URL(`../workflows/${filename}`, import.meta.url)),
-      root: BUILTIN_SOURCE_ROOT,
-    },
-  };
-}
+const BUILTIN_WORKFLOW_DEFINITIONS = [
+  { module: codeReview, filename: "code-review.ts" },
+  { module: refactorScout, filename: "refactor-scout.ts" },
+  { module: diagnose, filename: "diagnose.ts" },
+  { module: perfReview, filename: "perf-review.ts" },
+] satisfies ReadonlyArray<{ readonly module: WorkflowModule; readonly filename: string }>;
 
-export const BUILTIN_WORKFLOWS: LoadedWorkflow[] = [
-  withSourceFile(codeReview, "code-review.ts"),
-  withSourceFile(refactorScout, "refactor-scout.ts"),
-  withSourceFile(diagnose, "diagnose.ts"),
-  withSourceFile(perfReview, "perf-review.ts"),
-];
-export const BUILTIN_WORKFLOW_FILES = new Set(["code-review.ts", "refactor-scout.ts", "diagnose.ts", "perf-review.ts"]);
+export const BUILTIN_WORKFLOWS = BUILTIN_WORKFLOW_DEFINITIONS.map(({ module, filename }) =>
+  loadWorkflow(module, {
+    kind: "file",
+    path: fileURLToPath(new URL(`../workflows/${filename}`, import.meta.url)),
+    root: BUILTIN_SOURCE_ROOT,
+  }),
+);
+export const BUILTIN_WORKFLOW_FILES = new Set(BUILTIN_WORKFLOW_DEFINITIONS.map(({ filename }) => filename));
 export const BUILTIN_WORKFLOW_NAMES = BUILTIN_WORKFLOWS.map((mod) => mod.meta.name);

@@ -1,16 +1,4 @@
-import {
-  serializeReviewIssue,
-  type ReviewContext,
-  type ReviewIssue,
-  type SerializedReviewIssue,
-} from "./review-issues.ts";
-
-export interface ReviewHandoffPayload {
-  readonly context: ReviewContext | undefined;
-  readonly issues: readonly ReviewHandoffIssue[];
-}
-
-export type ReviewHandoffIssue = SerializedReviewIssue;
+import { serializeReviewIssue, type ReviewContext, type ReviewIssue } from "./review-issues.ts";
 
 export function buildCommentHandoffPrompt(issues: readonly ReviewIssue[], context: ReviewContext | undefined, reason: string): string {
   return `Use the workflow-code-review-actions skill if available.
@@ -34,7 +22,7 @@ Instructions:
 - Summarize posted, skipped, and failed comments when done.`;
 }
 
-function toHandoffPayload(issues: readonly ReviewIssue[], context: ReviewContext | undefined): ReviewHandoffPayload {
+function toHandoffPayload(issues: readonly ReviewIssue[], context: ReviewContext | undefined) {
   return {
     context,
     issues: issues.map(serializeReviewIssue),
