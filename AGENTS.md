@@ -44,7 +44,7 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 
 ## Critical non-obvious facts (read before editing)
 
-- **Core deps belong in `peerDependencies: "*"`, not `dependencies`/`devDependencies`.** pi bundles `@earendil-works/{pi-ai,pi-agent-core,pi-coding-agent,pi-tui}` and `typebox`. Local `node_modules` copies exist only so TypeScript Native Preview (`tsgo`) has types.
+- **Core deps belong in `peerDependencies: "*"`, not `dependencies`/`devDependencies`.** pi bundles `@earendil-works/{pi-ai,pi-agent-core,pi-coding-agent,pi-tui}` and `typebox`. Local `node_modules` copies exist only so TypeScript 7 (`tsc`) has types.
 - **At runtime, pi resolves those bare imports to its bundled copies via jiti `virtualModules`** (bun-binary mode: `virtualModules` + `tryNative:false`), intercepting before `node_modules` — so there is no dual-package hazard regardless of what's installed locally.
 - **`jiti` is NOT a virtual module.** A dynamically `import()`-ed drop-in workflow may resolve a *different* `typebox` than pi's bundled one, breaking schema validation. **Therefore guaranteed workflows must be statically imported and registered in `.pi/extensions/pi-workflow-engine/src/workflows.ts`** (they ride pi's jiti and share its typebox). Dynamic discovery is best-effort only.
 - **Inline workflow scripts must never use `import`/dynamic `import()`.** They compile in-process via `AsyncFunction` and receive the extension's injected Type value so `agent({ schema })` preserves pi's bundled TypeBox identity. The `export const meta` block must stay a pure literal so metadata can be validated before untrusted code runs.
@@ -56,8 +56,8 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 ## Local development
 
 ```bash
-bun install            # installs peers + devDeps (tsgo, @types/node) for typecheck
-bun run typecheck      # tsgo --noEmit — must be clean before commit
+bun install            # installs peers + devDeps (TypeScript 7, @types/node) for typecheck
+bun run typecheck      # tsc --noEmit — must be clean before commit
 bun run test           # no-LLM test suite via Bun's built-in test runner
 bun run test:smoke     # optional focused discovery smoke
 pi -e .                                      # load this package manifest/entrypoint ephemerally
