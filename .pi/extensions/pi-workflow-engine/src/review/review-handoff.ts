@@ -1,26 +1,16 @@
-import { formatIssueLocation, type ReviewContext, type ReviewIssue } from "./review-issues.ts";
+import {
+  serializeReviewIssue,
+  type ReviewContext,
+  type ReviewIssue,
+  type SerializedReviewIssue,
+} from "./review-issues.ts";
 
 export interface ReviewHandoffPayload {
   readonly context: ReviewContext | undefined;
   readonly issues: readonly ReviewHandoffIssue[];
 }
 
-export interface ReviewHandoffIssue {
-  readonly id: string;
-  readonly summary: string;
-  readonly category: string;
-  readonly severity: string;
-  readonly confidence: string;
-  readonly location: {
-    readonly file?: string;
-    readonly line?: number;
-    readonly symbol?: string;
-    readonly display: string;
-  };
-  readonly impact: string;
-  readonly evidence: readonly string[];
-  readonly recommendation: string;
-}
+export type ReviewHandoffIssue = SerializedReviewIssue;
 
 export function buildCommentHandoffPrompt(issues: readonly ReviewIssue[], context: ReviewContext | undefined, reason: string): string {
   return `Use the workflow-code-review-actions skill if available.
@@ -47,25 +37,6 @@ Instructions:
 function toHandoffPayload(issues: readonly ReviewIssue[], context: ReviewContext | undefined): ReviewHandoffPayload {
   return {
     context,
-    issues: issues.map(toHandoffIssue),
-  };
-}
-
-function toHandoffIssue(issue: ReviewIssue): ReviewHandoffIssue {
-  return {
-    id: issue.id,
-    summary: issue.finding.summary,
-    category: issue.finding.category,
-    severity: issue.finding.severity,
-    confidence: issue.finding.confidence,
-    location: {
-      file: issue.file,
-      line: issue.line,
-      symbol: issue.symbol,
-      display: formatIssueLocation(issue),
-    },
-    impact: issue.finding.impact,
-    evidence: issue.finding.evidence,
-    recommendation: issue.finding.recommendation,
+    issues: issues.map(serializeReviewIssue),
   };
 }

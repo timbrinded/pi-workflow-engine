@@ -8,7 +8,6 @@ import workflowEngine, {
   getLastWorkflowInspection,
   inlineCompileErrorResult,
   normalizeWorkflowToolRequest,
-  WORKFLOW_TOOL_PROMPT_GUIDELINES,
 } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
@@ -17,6 +16,7 @@ import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-en
 
 interface CapturedTool {
   name: string;
+  readonly promptGuidelines?: readonly string[];
   execute(
     toolCallId: string,
     params: { script?: string; name?: string; args?: string; resumeFromRunId?: string },
@@ -161,7 +161,8 @@ test("normalizeWorkflowToolRequest accepts named workflow requests", () => {
 
 test("temporary authoring, tool, and documentation guidance teach adaptive follow-up", () => {
   const temporaryPrompt = buildTemporaryWorkflowAuthorPrompt("investigate the parser");
-  const toolGuidance = WORKFLOW_TOOL_PROMPT_GUIDELINES.join("\n");
+  const toolGuidance = captureWorkflowTool().promptGuidelines?.join("\n");
+  assert.ok(toolGuidance, "expected the registered workflow tool to provide prompt guidelines");
   const usage = readFileSync(new URL("../USAGE.md", import.meta.url), "utf8");
 
   assert.ok(temporaryPrompt.includes(ADAPTIVE_WORKFLOW_GUIDANCE));

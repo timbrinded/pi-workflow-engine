@@ -1,10 +1,10 @@
 import type {
   LoadedWorkflow,
-  LoadedWorkflowExecution,
   WorkflowMeta,
   WorkflowModule,
   WorkflowSourceIdentity,
 } from "./types.ts";
+import type { WorktreeBaseline } from "./worktree.ts";
 
 type WorkflowMetaCandidate = {
   readonly name?: unknown;
@@ -40,9 +40,11 @@ export function parseWorkflowModule(value: unknown): { module: WorkflowModule } 
 export function loadWorkflow(
   module: WorkflowModule,
   source: WorkflowSourceIdentity,
-  execution?: LoadedWorkflowExecution,
+  isolatedWorktreeBaseline?: WorktreeBaseline,
 ): LoadedWorkflow {
-  return execution === undefined ? { ...module, source } : { ...module, source, execution };
+  return isolatedWorktreeBaseline === undefined
+    ? { ...module, source }
+    : { ...module, source, isolatedWorktreeBaseline };
 }
 
 function parseWorkflowMetaObject(meta: WorkflowMetaCandidate): { meta: WorkflowMeta } | { reason: string } {

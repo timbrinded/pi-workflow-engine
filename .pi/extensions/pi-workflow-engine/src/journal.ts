@@ -126,7 +126,7 @@ export function createMemoryBackedJournal(priorEntries: readonly JournalEntry[] 
 
       const contextual = entries.filter((entry): entry is JournalEntry & { readonly context: AgentResumeContext } => entry.context !== undefined);
       if (contextual.length === 0) return { hit: false, reason: "legacy journal entry has no execution context" };
-      const matches = contextual.filter((entry) => resumeContextsEqual(entry.context, context));
+      const matches = contextual.filter((entry) => resumeContextMismatchReason(entry.context, context) === undefined);
       if (matches.length === 1) return { hit: true, value: matches[0]!.value };
       if (matches.length > 1) return { hit: false, reason: "multiple cached entries match this agent call" };
       return { hit: false, reason: resumeContextMismatchReason(contextual[0]!.context, context) };
@@ -214,10 +214,6 @@ function isJournalEntry(value: unknown): value is JournalEntry {
   if (typeof value !== "object" || value === null) return false;
   const entry = value as { readonly key?: unknown; readonly value?: unknown; readonly context?: unknown };
   return typeof entry.key === "string" && "value" in entry && (entry.context === undefined || isAgentResumeContext(entry.context));
-}
-
-function resumeContextsEqual(left: AgentResumeContext, right: AgentResumeContext): boolean {
-  return resumeContextMismatchReason(left, right) === undefined;
 }
 
 function formatError(error: unknown): string {

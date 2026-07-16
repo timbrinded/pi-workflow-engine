@@ -45,6 +45,12 @@ export interface AgentResumeContext extends AgentResumeBaseContext {
 
 export type WorkflowSourceFingerprintCache = Map<string, Promise<FingerprintCapture>>;
 
+type RepositoryRevision =
+  | { readonly state: "git"; readonly head: string }
+  | { readonly state: "unborn" };
+
+type BoundedProcessFailureResult = Extract<BoundedProcessResult, { readonly ok: false }>;
+
 const GIT_CONTEXT_TIMEOUT_MS = 15_000;
 const GIT_CONTEXT_MAX_BYTES = 32 << 20;
 const CONTENT_FINGERPRINT_MAX_BYTES = 32 << 20;
@@ -87,11 +93,16 @@ export async function captureRepositoryResumeContext(cwd: string, signal?: Abort
 
   const headResult = await runGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], signal);
   throwIfAborted(signal);
-  const state = headResult.ok ? "git" : headResult.failure.kind === "exit" && headResult.failure.code === 1 ? "unborn" : undefined;
-  if (!state) return unverifiableRepositoryResumeContext(processFailureReason("git HEAD probe", headResult));
-
-  const head = headResult.ok ? headResult.stdout.trim() : undefined;
-  if (state === "git" && !head) return unverifiableRepositoryResumeContext("git HEAD probe returned an empty revision");
+  let revision: RepositoryRevision;
+  if (headResult.ok) {
+    const head = headResult.stdout.trim();
+    if (!head) return unverifiableRepositoryResumeContext("git HEAD probe returned an empty revision");
+    revision = { state: "git", head };
+  } else if (headResult.failure.kind === "exit" && headResult.failure.code === 1) {
+    revision = { state: "unborn" };
+  } else {
+    return unverifiableRepositoryResumeContext(processFailureReason("git HEAD probe", headResult));
+  }
 
   const prefixResult = await runGit(cwd, ["rev-parse", "--show-prefix"], signal);
   throwIfAborted(signal);
@@ -99,9 +110,7 @@ export async function captureRepositoryResumeContext(cwd: string, signal?: Abort
 
   const dirty = await captureDirtyFingerprint(cwd, prefixResult.stdout.replace(/\r?\n$/, ""), signal);
   if (dirty.kind === "unverifiable") return unverifiableRepositoryResumeContext(dirty.reason);
-  return state === "git"
-    ? { kind: "verified", state, head: head!, workingTreeFingerprint: dirty.fingerprint }
-    : { kind: "verified", state, workingTreeFingerprint: dirty.fingerprint };
+  return { kind: "verified", ...revision, workingTreeFingerprint: dirty.fingerprint };
 }
 
 async function captureNonGitRepositoryContext(cwd: string, signal: AbortSignal | undefined): Promise<RepositoryResumeContext> {
@@ -289,8 +298,7 @@ async function findGitControlPath(cwd: string, signal: AbortSignal | undefined):
   }
 }
 
-function processFailureReason(operation: string, result: BoundedProcessResult): string {
-  if (result.ok) return `${operation} unexpectedly succeeded`;
+function processFailureReason(operation: string, result: BoundedProcessFailureResult): string {
   if (result.failure.kind === "exit") {
     const termination = result.failure.code === null ? `signal ${result.failure.signal ?? "unknown"}` : `exit ${result.failure.code}`;
     const message = sanitizeProcessMessage(result.failure.message);

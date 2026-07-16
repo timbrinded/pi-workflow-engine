@@ -368,7 +368,7 @@ async function recordJournalResult(
 export async function runAgent(
   rc: RunContext,
   prompt: string,
-  opts: AgentExecutionOptions = {},
+  opts: AgentExecutionOptions,
   resumeBaseContext: AgentResumeBaseContext,
 ): Promise<unknown> {
   if (typeof prompt !== "string") {

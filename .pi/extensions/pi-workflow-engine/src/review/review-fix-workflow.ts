@@ -1,9 +1,9 @@
 import { fileURLToPath } from "node:url";
-import type { ParallelSettledError, WorkflowParallel } from "../concurrency.ts";
-import type { AgentOptions, IsolatedAgentResult, LoadedWorkflow, WorkflowModule } from "../types.ts";
+import type { ParallelSettledError } from "../concurrency.ts";
+import type { LoadedWorkflow, WorkflowApi, WorkflowModule } from "../types.ts";
 import type { WorktreeBaseline } from "../worktree.ts";
 import { loadWorkflow } from "../workflow-module.ts";
-import { formatIssueLocation, type ReviewContext, type ReviewIssue } from "./review-issues.ts";
+import { serializeReviewIssue, type ReviewContext, type ReviewIssue } from "./review-issues.ts";
 
 const REVIEW_FIX_PHASE = "Generate patch previews";
 const REVIEW_FIX_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
@@ -29,13 +29,7 @@ export interface ReviewFixWorkflowResult {
   readonly fixes: readonly ReviewFixOutcome[];
 }
 
-type ReviewFixAgentOptions = AgentOptions & { readonly isolation: "worktree" };
-
-export interface ReviewFixWorkflowApi {
-  readonly agent: (prompt: string, options: ReviewFixAgentOptions) => Promise<IsolatedAgentResult<string>>;
-  readonly parallel: WorkflowParallel;
-  readonly phase: (title: string) => void;
-}
+export type ReviewFixWorkflowApi = Pick<WorkflowApi, "agent" | "parallel" | "phase">;
 
 /** Build an ephemeral workflow that generates one isolated patch preview per finding. */
 export function createReviewFixWorkflow(
@@ -49,21 +43,12 @@ export function createReviewFixWorkflow(
       description: "Generate isolated patch previews for selected code-review findings.",
       phases: [{ title: REVIEW_FIX_PHASE }],
     },
-    default: async (api) =>
-      await runReviewFixWorkflow(
-        {
-          agent: async (prompt, options) => await api.agent(prompt, options),
-          parallel: api.parallel,
-          phase: api.phase,
-        },
-        issues,
-        context,
-      ),
+    default: (api) => runReviewFixWorkflow(api, issues, context),
   };
   return loadWorkflow(
     module,
     { kind: "file", path: REVIEW_FIX_SOURCE_PATH, root: REVIEW_FIX_SOURCE_ROOT },
-    { isolatedWorktreeBaseline: baseline },
+    baseline,
   );
 }
 
@@ -72,7 +57,7 @@ export function buildFixAgentPrompt(issue: ReviewIssue, context: ReviewContext |
 
 Selected finding JSON:
 \`\`\`json
-${JSON.stringify({ context, issue: toFixPromptIssue(issue) })}
+${JSON.stringify({ context, issue: serializeReviewIssue(issue) })}
 \`\`\`
 
 Instructions:
@@ -127,23 +112,4 @@ export async function runReviewFixWorkflow(
 
 function isReviewFixPreview(outcome: ReviewFixOutcome): outcome is ReviewFixPreview {
   return "patch" in outcome;
-}
-
-function toFixPromptIssue(issue: ReviewIssue): object {
-  return {
-    id: issue.id,
-    summary: issue.finding.summary,
-    category: issue.finding.category,
-    severity: issue.finding.severity,
-    confidence: issue.finding.confidence,
-    location: {
-      file: issue.file,
-      line: issue.line,
-      symbol: issue.symbol,
-      display: formatIssueLocation(issue),
-    },
-    impact: issue.finding.impact,
-    evidence: issue.finding.evidence,
-    recommendation: issue.finding.recommendation,
-  };
 }

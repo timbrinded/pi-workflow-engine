@@ -399,21 +399,6 @@ ${ADAPTIVE_WORKFLOW_GUIDANCE}
 Do not edit files unless the user explicitly requested edits.`;
 }
 
-export const WORKFLOW_TOOL_PROMPT_GUIDELINES = [
-  "Use workflow only when the user opted into workflow orchestration via `dynamax`, `/workflow:dynamax on`, an explicit request to run/author a workflow, or a command/skill instruction.",
-  "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, or perf-review.",
-  "Use workflow with `script` for a new one-off inline workflow; the script must start with `export const meta = { ... }` and default-export an async workflow function.",
-  "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
-  "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
-  "Subagents receive no skills by default. In inline workflows, pass `skills: [\"skill-name\"]` per `agent()` call when the user asks for a skill or a stage should use one; grant only the needed skills.",
-  "Always pass a plain string as the first `api.agent()` argument; build prompts with template strings before calling agent().",
-  "When using `isolation: \"worktree\"`, `api.agent()` returns `{ result, patch, changed }`; use `.result` for the answer and `.patch` for the isolated diff.",
-  "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
-  "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
-  ADAPTIVE_WORKFLOW_GUIDANCE,
-  "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
-] as const;
-
 export interface WorkflowToolRequestParams {
   readonly name?: string;
   readonly script?: string;
@@ -648,7 +633,20 @@ export default function workflowEngine(pi: ExtensionAPI): void {
     description:
       "ONLY call workflow when the user opted into multi-agent orchestration via the literal token `dynamax`, sticky `/workflow:dynamax on`, an explicit request to run or author a workflow, or a command/skill instruction. Runs either a registered named workflow or an inline one-off workflow script (fan-out → verify → synthesize) and returns its structured result.",
     promptSnippet: "Run an existing named workflow or an inline one-off workflow script",
-    promptGuidelines: [...WORKFLOW_TOOL_PROMPT_GUIDELINES],
+    promptGuidelines: [
+      "Use workflow only when the user opted into workflow orchestration via `dynamax`, `/workflow:dynamax on`, an explicit request to run/author a workflow, or a command/skill instruction.",
+      "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, or perf-review.",
+      "Use workflow with `script` for a new one-off inline workflow; the script must start with `export const meta = { ... }` and default-export an async workflow function.",
+      "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
+      "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
+      "Subagents receive no skills by default. In inline workflows, pass `skills: [\"skill-name\"]` per `agent()` call when the user asks for a skill or a stage should use one; grant only the needed skills.",
+      "Always pass a plain string as the first `api.agent()` argument; build prompts with template strings before calling agent().",
+      "When using `isolation: \"worktree\"`, `api.agent()` returns `{ result, patch, changed }`; use `.result` for the answer and `.patch` for the isolated diff.",
+      "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
+      "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
+      ADAPTIVE_WORKFLOW_GUIDANCE,
+      "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
+    ],
     parameters: Type.Object({
       name: Type.Optional(Type.String({ description: "Workflow name, e.g. code-review. Provide exactly one of name or script." })),
       script: Type.Optional(Type.String({ description: "Inline workflow script. Provide exactly one of script or name." })),

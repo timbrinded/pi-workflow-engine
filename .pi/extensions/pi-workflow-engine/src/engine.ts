@@ -52,6 +52,10 @@ export interface WorkflowContextOptions {
   progressNamespace?: string;
 }
 
+type Outcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: unknown };
+
 /**
  * Run a workflow module: build the per-run primitives (binding agent/parallel/pipeline
  * to a shared semaphore + progress tracker), invoke the workflow, return its result.
@@ -75,11 +79,7 @@ export async function runWorkflow(
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
   const unlinkOptionAbortSignal = linkAbortSignal(resolvedOptions.signal, runAbortController);
-  let workflowResult: unknown;
-  let workflowError: unknown;
-  let workflowFailed = false;
-
-  try {
+  const workflowOutcome = await captureOutcome(async () => {
     resolvedOptions.onProgressSource?.(progressSource);
     if (resolvedOptions.inspect && ctx.hasUI) {
       void ctx.ui
@@ -111,7 +111,7 @@ export async function runWorkflow(
     };
 
     // perf.total_ms wraps the whole tree: sub-workflows run inside this span via api.workflow().
-    workflowResult = await perf.time("workflow.total_ms", () =>
+    return perf.time("workflow.total_ms", () =>
       runWorkflowWithContext(rc, progress, mod, args, {
         abortController: runAbortController,
         submissionLimit: resolvedOptions.parallelSubmissionLimit ?? resolvedOptions.concurrency * 2,
@@ -120,15 +120,10 @@ export async function runWorkflow(
         progressPrefix: "",
       }),
     );
-  } catch (error) {
-    workflowFailed = true;
-    workflowError = error;
-  }
+  });
 
-  let finalizationError: unknown;
-  let finalizationFailed = false;
-  try {
-    await finalizeWorkflowRun({
+  const finalizationOutcome = await captureOutcome(() =>
+    finalizeWorkflowRun({
       cwd: ctx.cwd,
       options: resolvedOptions,
       perf,
@@ -136,18 +131,23 @@ export async function runWorkflow(
       progress,
       worktrees,
       unlinkSignals: [unlinkContextAbortSignal, unlinkOptionAbortSignal],
-    });
-  } catch (error) {
-    finalizationFailed = true;
-    finalizationError = error;
-  }
+    }),
+  );
 
-  if (workflowFailed) {
-    if (finalizationFailed) throw combinedWorkflowError(workflowError, finalizationError);
-    throw workflowError;
+  if (workflowOutcome.ok) {
+    if (finalizationOutcome.ok) return workflowOutcome.value;
+    throw finalizationOutcome.error;
   }
-  if (finalizationFailed) throw finalizationError;
-  return workflowResult;
+  if (finalizationOutcome.ok) throw workflowOutcome.error;
+  throw combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error);
+}
+
+async function captureOutcome<T>(operation: () => Promise<T>): Promise<Outcome<T>> {
+  try {
+    return { ok: true, value: await operation() };
+  } catch (error) {
+    return { ok: false, error };
+  }
 }
 
 interface WorkflowFinalizationInput {
@@ -242,8 +242,8 @@ export async function runWorkflowWithContext(
   const agent = ((prompt: string, agentOpts?: AgentOptions) => {
     const scopedOptions = scope.agentOptions(agentOpts);
     const executionOptions: AgentExecutionOptions =
-      scopedOptions.isolation === "worktree" && mod.execution?.isolatedWorktreeBaseline !== undefined
-        ? { ...scopedOptions, worktreeBaseline: mod.execution.isolatedWorktreeBaseline }
+      scopedOptions.isolation === "worktree" && mod.isolatedWorktreeBaseline !== undefined
+        ? { ...scopedOptions, worktreeBaseline: mod.isolatedWorktreeBaseline }
         : scopedOptions;
     return runAgent(rc, prompt, executionOptions, resumeContext);
   }) as WorkflowApi["agent"];

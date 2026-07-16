@@ -4,6 +4,7 @@ import { test } from "bun:test";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { bindParallel } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import type { AgentOptions } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { handleReviewViewerAction, type ReviewActionContext, type ReviewActionPi } from "../.pi/extensions/pi-workflow-engine/src/review/review-actions.ts";
 import {
   buildFixAgentPrompt,
@@ -74,7 +75,7 @@ test("fix action returns a programmatic workflow instead of a parent follow-up",
     path: fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/src/review/review-fix-workflow.ts", import.meta.url)),
     root: fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/", import.meta.url)),
   });
-  assert.deepEqual(request?.execution, { isolatedWorktreeBaseline: baseline });
+  assert.deepEqual(request?.isolatedWorktreeBaseline, baseline);
   assert.deepEqual(notifications, [
     "Verifying the reviewed snapshot before generating patch previews",
     "Generating isolated patch previews for 1 selected finding(s)",
@@ -125,10 +126,20 @@ test("fix action propagates cancellation raised during snapshot resolution", asy
 test("fix workflow keeps finding ids, isolated patches, and per-finding failures", async () => {
   const issues = toReviewIssues("code-review", createReport());
   const context: ReviewContext = { workflowName: "code-review", target: "review src", diffCommand: "gh pr diff 123", files: ["src/app.ts", "src/lock.ts"] };
-  const calls: Array<{ prompt: string; options: Parameters<ReviewFixWorkflowApi["agent"]>[1] }> = [];
+  type ReviewFixAgentOptions = AgentOptions & { readonly isolation: "worktree" };
+  const calls: Array<{ prompt: string; options: ReviewFixAgentOptions }> = [];
   const phases: string[] = [];
   const parallel = bindParallel({});
   let parallelRead = false;
+  const agent = async (prompt: string, options: ReviewFixAgentOptions) => {
+    calls.push({ prompt, options });
+    if (options.label === "fix:R002") throw new Error("validation environment unavailable");
+    return {
+      result: "Updated src/app.ts and ran bun test tests/retry.test.ts (passed).",
+      patch: "diff --git a/src/app.ts b/src/app.ts\n+fixed\n",
+      changed: true,
+    };
+  };
   const api: ReviewFixWorkflowApi = {
     get parallel() {
       parallelRead = true;
@@ -137,15 +148,7 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
     phase(title) {
       phases.push(title);
     },
-    async agent(prompt, options) {
-      calls.push({ prompt, options });
-      if (options.label === "fix:R002") throw new Error("validation environment unavailable");
-      return {
-        result: "Updated src/app.ts and ran bun test tests/retry.test.ts (passed).",
-        patch: "diff --git a/src/app.ts b/src/app.ts\n+fixed\n",
-        changed: true,
-      };
-    },
+    agent: agent as ReviewFixWorkflowApi["agent"],
   };
 
   const result = await runReviewFixWorkflow(api, issues, context);

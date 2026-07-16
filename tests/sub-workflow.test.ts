@@ -213,7 +213,7 @@ test("engine execution metadata injects the reviewed baseline into isolated work
   };
   const mod: LoadedWorkflow = {
     ...workflowModule("baseline-injection", async (api) => await api.agent("fix", { isolation: "worktree" })),
-    execution: { isolatedWorktreeBaseline: baseline },
+    isolatedWorktreeBaseline: baseline,
   };
   const rc: WorkflowRunContext = {
     ...createRc(progress, new Semaphore(1), createSession),

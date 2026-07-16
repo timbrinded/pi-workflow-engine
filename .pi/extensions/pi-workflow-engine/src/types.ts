@@ -193,13 +193,8 @@ export interface WorkflowModule {
   default: WorkflowRun;
 }
 
-/** Engine-owned execution metadata that authored workflows cannot provide. */
-export interface LoadedWorkflowExecution {
-  readonly isolatedWorktreeBaseline?: WorktreeBaseline;
-}
-
 /** A validated workflow plus engine-owned provenance used for safe resume replay. */
 export interface LoadedWorkflow extends WorkflowModule {
   readonly source: WorkflowSourceIdentity;
-  readonly execution?: LoadedWorkflowExecution;
+  readonly isolatedWorktreeBaseline?: WorktreeBaseline;
 }

@@ -33,6 +33,24 @@ export interface ReviewIssue {
   readonly finding: AdvisoryFinding;
 }
 
+/** Stable prompt-facing representation shared by review follow-up actions. */
+export interface SerializedReviewIssue {
+  readonly id: string;
+  readonly summary: string;
+  readonly category: string;
+  readonly severity: string;
+  readonly confidence: string;
+  readonly location: {
+    readonly file?: string;
+    readonly line?: number;
+    readonly symbol?: string;
+    readonly display: string;
+  };
+  readonly impact: string;
+  readonly evidence: readonly string[];
+  readonly recommendation: string;
+}
+
 export interface ReviewReportWithContext extends AdvisoryReport {
   readonly stats?: Record<string, string | number>;
   readonly reviewContext?: ReviewContext;
@@ -58,6 +76,25 @@ export function formatIssueLocation(issue: ReviewIssue): string {
   const line = issue.line != null ? `:${issue.line}` : "";
   const symbol = issue.symbol ? ` (${issue.symbol})` : "";
   return `${issue.file}${line}${symbol}`;
+}
+
+export function serializeReviewIssue(issue: ReviewIssue): SerializedReviewIssue {
+  return {
+    id: issue.id,
+    summary: issue.finding.summary,
+    category: issue.finding.category,
+    severity: issue.finding.severity,
+    confidence: issue.finding.confidence,
+    location: {
+      file: issue.file,
+      line: issue.line,
+      symbol: issue.symbol,
+      display: formatIssueLocation(issue),
+    },
+    impact: issue.finding.impact,
+    evidence: issue.finding.evidence,
+    recommendation: issue.finding.recommendation,
+  };
 }
 
 export function isCommentableIssue(issue: ReviewIssue): boolean {
