@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import workflowEngine, { getLastWorkflowInspection, inlineCompileErrorResult, normalizeWorkflowToolRequest } from "../.pi/extensions/pi-workflow-engine/index.ts";
+import workflowEngine, {
+  buildTemporaryWorkflowAuthorPrompt,
+  getLastWorkflowInspection,
+  inlineCompileErrorResult,
+  normalizeWorkflowToolRequest,
+  WORKFLOW_TOOL_PROMPT_GUIDELINES,
+} from "../.pi/extensions/pi-workflow-engine/index.ts";
+import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
-import { pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 
 interface CapturedTool {
@@ -134,7 +142,7 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
     workflow: async () => {
       throw new Error("sub-workflows are not enabled in this context");
     },
-    parallel: async <T>(thunks: Array<() => Promise<T>>) => await Promise.all(thunks.map((thunk) => thunk())),
+    parallel,
     pipeline,
     phase() {},
     log() {},
@@ -149,6 +157,22 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
 
 test("normalizeWorkflowToolRequest accepts named workflow requests", () => {
   assert.deepEqual(normalizeWorkflowToolRequest({ name: " code-review " }), { kind: "named", name: "code-review" });
+});
+
+test("temporary authoring, tool, and documentation guidance teach adaptive follow-up", () => {
+  const temporaryPrompt = buildTemporaryWorkflowAuthorPrompt("investigate the parser");
+  const toolGuidance = WORKFLOW_TOOL_PROMPT_GUIDELINES.join("\n");
+  const usage = readFileSync(new URL("../USAGE.md", import.meta.url), "utf8");
+
+  assert.ok(temporaryPrompt.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
+  assert.ok(toolGuidance.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
+  for (const text of [temporaryPrompt, toolGuidance, usage]) {
+    assert.match(text, /first.pass/i);
+    assert.match(text, /structured gap.analysis/i);
+    assert.match(text, /follow.up/i);
+    assert.match(text, /TypeScript/);
+    assert.match(text, /sufficient/);
+  }
 });
 
 test("normalizeWorkflowToolRequest accepts inline workflow requests", () => {

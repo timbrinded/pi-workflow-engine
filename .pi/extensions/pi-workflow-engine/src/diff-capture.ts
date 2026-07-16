@@ -26,7 +26,7 @@ export interface DiffCaptureOptions {
 
 const SAFE_REF_OR_PATH = /^[A-Za-z0-9_./:@~+=,\-]+$/;
 const SAFE_GH_FLAG = /^--[A-Za-z0-9-]+(=[A-Za-z0-9_./:@~+=,\-]+)?$/;
-const SAFE_GIT_DIFF_FLAGS = new Set(["--cached", "--staged", "--no-color", "--color=never", "--no-ext-diff"]);
+const SAFE_GIT_DIFF_FLAGS = new Set(["--binary", "--cached", "--staged", "--no-color", "--color=never", "--no-ext-diff"]);
 
 export function parseAllowedDiffCommand(command: string): AllowedDiffCommand | { error: string } {
   const tokens = command.trim().split(/\s+/).filter(Boolean);

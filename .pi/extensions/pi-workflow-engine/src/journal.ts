@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rm, stat, appendFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AgentOptions } from "./types.ts";
+import type { AgentResumeContext } from "./resume-context.ts";
 
 export const WORKFLOW_RUNS_DIR = join(".pi", ".workflow-runs");
 export const WORKFLOW_JOURNAL_KEEP = 50;
@@ -9,14 +10,16 @@ export const WORKFLOW_JOURNAL_KEEP = 50;
 export interface JournalEntry {
   readonly key: string;
   readonly value: unknown;
+  /** Missing only on journals written before execution-context validation existed. */
+  readonly context?: AgentResumeContext;
 }
 
-export type JournalLookup = { readonly hit: true; readonly value: unknown } | { readonly hit: false };
+export type JournalLookup = { readonly hit: true; readonly value: unknown } | { readonly hit: false; readonly reason?: string };
 export type JournalRecordResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
 
 export interface WorkflowJournal {
-  lookup(key: string): JournalLookup;
-  record(key: string, value: unknown): Promise<JournalRecordResult>;
+  lookup(key: string, context?: AgentResumeContext): JournalLookup;
+  record(key: string, value: unknown, context?: AgentResumeContext): Promise<JournalRecordResult>;
 }
 
 export class WorkflowJournalLoadError extends Error {
@@ -43,13 +46,18 @@ export function hashAgentCall(prompt: string, opts: AgentOptions = {}): string {
   const behavior = {
     prompt,
     opts: {
-      model: opts.model,
       thinkingLevel: opts.thinkingLevel,
       tools: sortedArray(opts.tools),
       toolHints: sortedArray(opts.toolHints),
       skills: sortedArray(opts.skills),
       schema: opts.schema,
       isolation: opts.isolation,
+      worktreeBaseline: opts.worktreeBaseline
+        ? {
+            ref: opts.worktreeBaseline.ref,
+            patchFingerprint: createHash("sha256").update(opts.worktreeBaseline.patch ?? "").digest("hex"),
+          }
+        : undefined,
     },
   };
   return createHash("sha256").update(stableStringify(behavior)).digest("hex");
@@ -99,19 +107,30 @@ export async function createWorkflowJournal(options: {
 }
 
 export function createMemoryBackedJournal(priorEntries: readonly JournalEntry[] = [], writePath?: string): WorkflowJournal {
-  const priorByKey = new Map<string, JournalEntry | "ambiguous">();
+  const priorByKey = new Map<string, JournalEntry[]>();
   for (const entry of priorEntries) {
-    priorByKey.set(entry.key, priorByKey.has(entry.key) ? "ambiguous" : entry);
+    const entries = priorByKey.get(entry.key) ?? [];
+    entries.push(entry);
+    priorByKey.set(entry.key, entries);
   }
 
   return {
-    lookup(key) {
-      const entry = priorByKey.get(key);
-      if (!entry || entry === "ambiguous") return { hit: false };
-      return { hit: true, value: entry.value };
+    lookup(key, context) {
+      const entries = priorByKey.get(key);
+      if (!entries || entries.length === 0) return { hit: false };
+      if (!context) {
+        return entries.length === 1 ? { hit: true, value: entries[0]!.value } : { hit: false };
+      }
+
+      const contextual = entries.filter((entry): entry is JournalEntry & { readonly context: AgentResumeContext } => entry.context !== undefined);
+      if (contextual.length === 0) return { hit: false, reason: "legacy journal entry has no execution context" };
+      const matches = contextual.filter((entry) => resumeContextsEqual(entry.context, context));
+      if (matches.length === 1) return { hit: true, value: matches[0]!.value };
+      if (matches.length > 1) return { hit: false, reason: "multiple cached entries match this agent call" };
+      return { hit: false, reason: resumeContextMismatchReason(contextual[0]!.context, context) };
     },
-    async record(key, value) {
-      const entry = { key, value };
+    async record(key, value, context) {
+      const entry: JournalEntry = context ? { key, value, context } : { key, value };
       if (writePath) {
         try {
           await mkdir(dirname(writePath), { recursive: true });
@@ -191,8 +210,47 @@ function normalizeStable(value: unknown): unknown {
 
 function isJournalEntry(value: unknown): value is JournalEntry {
   if (typeof value !== "object" || value === null) return false;
-  const entry = value as { readonly key?: unknown; readonly value?: unknown };
-  return typeof entry.key === "string" && "value" in entry;
+  const entry = value as { readonly key?: unknown; readonly value?: unknown; readonly context?: unknown };
+  return typeof entry.key === "string" && "value" in entry && (entry.context === undefined || isAgentResumeContext(entry.context));
+}
+
+function resumeContextsEqual(left: AgentResumeContext, right: AgentResumeContext): boolean {
+  return resumeContextMismatchReason(left, right) === undefined;
+}
+
+function resumeContextMismatchReason(stored: AgentResumeContext, current: AgentResumeContext): string | undefined {
+  if (!stored.repository.verifiable || !current.repository.verifiable) return "repository context could not be verified";
+  if (stored.repository.state !== current.repository.state) return "repository state changed";
+  if (stored.repository.head !== current.repository.head) return "repository HEAD changed";
+  if (stored.repository.dirtyFingerprint !== current.repository.dirtyFingerprint) return "working tree contents changed";
+  if (!stored.workflow.verifiable || !current.workflow.verifiable) return "workflow source could not be verified";
+  if (stored.workflow.name !== current.workflow.name) return "workflow name changed";
+  if (stored.workflow.sourceFingerprint !== current.workflow.sourceFingerprint) return "workflow source changed";
+  if (stored.model?.provider !== current.model?.provider || stored.model?.id !== current.model?.id) return "effective model changed";
+  return undefined;
+}
+
+function isAgentResumeContext(value: unknown): value is AgentResumeContext {
+  if (!isRecord(value)) return false;
+  const repository = value.repository;
+  const workflow = value.workflow;
+  const model = value.model;
+  return (
+    isRecord(repository) &&
+    (repository.state === "git" || repository.state === "unborn" || repository.state === "non-git") &&
+    typeof repository.head === "string" &&
+    typeof repository.dirtyFingerprint === "string" &&
+    typeof repository.verifiable === "boolean" &&
+    isRecord(workflow) &&
+    typeof workflow.name === "string" &&
+    typeof workflow.sourceFingerprint === "string" &&
+    typeof workflow.verifiable === "boolean" &&
+    (model === null || (isRecord(model) && typeof model.provider === "string" && typeof model.id === "string"))
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function formatError(error: unknown): string {

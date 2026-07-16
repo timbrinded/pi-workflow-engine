@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { cp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { runBoundedProcess } from "./process-runner.ts";
 
 export interface WorktreeGitCommandOptions {
   readonly cwd: string;
   readonly args: readonly string[];
+  readonly stdin?: string;
   readonly signal?: AbortSignal;
   readonly timeoutMs: number;
   readonly maxBufferBytes?: number;
@@ -26,6 +27,12 @@ export interface WorktreeGitRunner {
 export interface WorktreeRef {
   readonly path: string;
   readonly snapshot?: boolean;
+}
+
+/** Immutable commit plus an optional patch used to reconstruct a reviewed snapshot. */
+export interface WorktreeBaseline {
+  readonly ref?: string;
+  readonly patch?: string;
 }
 
 export interface WorktreeAddFailure {
@@ -93,8 +100,8 @@ export class WorktreeRegistry {
     return await isGitWorktree({ repoCwd: this.repoCwd, runner: this.runner, signal, timeoutMs: this.timeoutMs });
   }
 
-  async add(signal?: AbortSignal): Promise<WorktreeRef | WorktreeAddFailure> {
-    const added = await addWorktree({ repoCwd: this.repoCwd, runner: this.runner, signal, timeoutMs: this.timeoutMs });
+  async add(signal?: AbortSignal, baseline?: WorktreeBaseline): Promise<WorktreeRef | WorktreeAddFailure> {
+    const added = await addWorktree({ repoCwd: this.repoCwd, runner: this.runner, signal, timeoutMs: this.timeoutMs, baseline });
     this.register(added.path);
     if (added.snapshot === true) this.snapshots.add(added.path);
     if ("error" in added) {
@@ -161,17 +168,32 @@ export async function addWorktree(options: {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly baseDir?: string;
+  readonly baseline?: WorktreeBaseline;
 }): Promise<WorktreeRef | WorktreeAddFailure> {
   const path = createWorktreePath(options.baseDir);
+  const ref = options.baseline?.ref ?? "HEAD";
   const result = await (options.runner ?? spawnGitRunner)
     .runGit({
       cwd: options.repoCwd,
-      args: ["worktree", "add", "--detach", path, "HEAD"],
+      args: ["worktree", "add", "--detach", path, ref],
       signal: options.signal,
       timeoutMs: options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS,
     })
     .catch((error: unknown) => ({ ok: false, stdout: "", stderr: "", error: formatError(error) }));
-  if (result.ok) return { path };
+  if (result.ok) {
+    const patch = options.baseline?.patch;
+    if (patch !== undefined && patch.trim().length > 0) {
+      const prepared = await prepareWorktreeBaseline({
+        path,
+        patch,
+        runner: options.runner ?? spawnGitRunner,
+        signal: options.signal,
+        timeoutMs: options.timeoutMs ?? DEFAULT_WORKTREE_TIMEOUT_MS,
+      }).catch((error: unknown) => ({ ok: false, stdout: "", stderr: "", error: formatError(error) }));
+      if (!prepared.ok) return { path, error: prepared.error ?? (prepared.stderr.trim() || "failed to prepare worktree baseline") };
+    }
+    return { path };
+  }
 
   const message = result.error ?? (result.stderr.trim() || "git worktree add failed");
   if (!isInvalidHeadError(message)) return { path, error: message };
@@ -181,6 +203,49 @@ export async function addWorktree(options: {
     .catch((error: unknown) => formatError(error));
   if (snapshotError !== undefined) return { path, snapshot: true, error: `git worktree add failed (${message}); unborn-repo snapshot fallback failed: ${snapshotError}` };
   return { path, snapshot: true };
+}
+
+async function prepareWorktreeBaseline(options: {
+  readonly path: string;
+  readonly patch: string;
+  readonly runner: WorktreeGitRunner;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs: number;
+}): Promise<WorktreeGitCommandResult> {
+  const applied = await options.runner.runGit({
+    cwd: options.path,
+    args: ["apply", "--index", "--binary", "--whitespace=nowarn", "-"],
+    stdin: options.patch,
+    signal: options.signal,
+    timeoutMs: options.timeoutMs,
+  });
+  if (!applied.ok) return applied;
+  const hooksPath = await mkdtemp(join(tmpdir(), "pi-workflow-empty-hooks-"));
+  try {
+    return await options.runner.runGit({
+      cwd: options.path,
+      args: [
+        "-c",
+        "user.name=pi-workflow",
+        "-c",
+        "user.email=pi-workflow@example.invalid",
+        "-c",
+        `core.hooksPath=${hooksPath}`,
+        "-c",
+        "commit.gpgSign=false",
+        "commit",
+        "--allow-empty",
+        "--no-verify",
+        "--no-gpg-sign",
+        "-m",
+        "pi workflow reviewed snapshot",
+      ],
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    });
+  } finally {
+    await rm(hooksPath, { recursive: true, force: true });
+  }
 }
 
 export async function removeWorktree(options: {
@@ -279,6 +344,7 @@ async function runGitCommand(options: WorktreeGitCommandOptions): Promise<Worktr
     args: options.args,
     cwd: options.cwd,
     env,
+    stdin: options.stdin,
     signal: options.signal,
     timeoutMs: options.timeoutMs,
     maxBufferBytes: options.maxBufferBytes,

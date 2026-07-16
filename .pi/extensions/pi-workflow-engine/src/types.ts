@@ -1,10 +1,11 @@
 import type { Static, TSchema } from "typebox";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { WorkflowBudget } from "./budget.ts";
-import type { Pipeline } from "./concurrency.ts";
+import type { Pipeline, WorkflowParallel } from "./concurrency.ts";
 import type { PerfSink, PerfSnapshot } from "./perf.ts";
 import type { WorkflowProgressSnapshot } from "./progress.ts";
 import type { WorkflowUsageSnapshot } from "./usage.ts";
+import type { WorktreeBaseline } from "./worktree.ts";
 
 /** A reference to a registered workflow by name. */
 export type WorkflowRef = string;
@@ -39,7 +40,7 @@ export interface WorkflowRunOptions {
   budget?: number;
   /** Internal/test override for the generated run id. Omit to generate a new id. */
   runId?: string;
-  /** Replay completed agent results from this prior run id when prompt/options hashes still match. */
+  /** Replay completed agent results from this prior run id when call and execution context still match. */
   resumeFromRunId?: string;
   resultViewer?: "open" | "skip";
   /** Additional abort signal to compose with the host context signal. */
@@ -107,6 +108,8 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   cacheKey?: string;
   /** Run this agent in a disposable git worktree and return its patch with the result. */
   isolation?: "worktree";
+  /** Internal reviewed-snapshot baseline for an isolated worktree. */
+  worktreeBaseline?: WorktreeBaseline;
   /** Allowlist of concrete tool names the agent may use (e.g. ["read", "bash"]). */
   tools?: string[];
   /**
@@ -151,9 +154,9 @@ export interface WorkflowApi {
   workflow(ref: WorkflowRef, args?: string): Promise<unknown>;
   /**
    * Run every thunk concurrently and wait for all (a barrier). Recoverable thunk
-   * failures become null slots; filter nulls before consuming survivors.
+   * failures become null slots by default; settled mode retains serialisable errors.
    */
-  parallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>;
+  parallel: WorkflowParallel;
   /**
    * Run each item through all stages independently — no barrier between stages.
    * A recoverable stage failure drops that item to null and skips its later stages.
@@ -181,7 +184,13 @@ export interface WorkflowApi {
 
 export type WorkflowRun = (api: WorkflowApi) => Promise<unknown>;
 
+export type WorkflowSourceIdentity =
+  | { readonly kind: "file"; readonly path: string }
+  | { readonly kind: "fingerprint"; readonly fingerprint: string };
+
 export interface WorkflowModule {
   meta: WorkflowMeta;
   default: WorkflowRun;
+  /** Source provenance used to invalidate resume entries when workflow code changes. */
+  source?: WorkflowSourceIdentity;
 }

@@ -28,8 +28,22 @@ import {
   type WorktreeGitCommandOptions,
   type WorktreeGitRunner,
 } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import {
+  createAgentResumeContext,
+  type AgentResumeBaseContext,
+} from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 
 type FindCall = { readonly provider: string; readonly modelId: string };
+
+const RESUME_BASE_CONTEXT: AgentResumeBaseContext = {
+  repository: {
+    state: "non-git",
+    head: "non-git",
+    dirtyFingerprint: "model-resume-fixture",
+    verifiable: true,
+  },
+  workflow: { name: "model-resume-test", sourceFingerprint: "source-a", verifiable: true },
+};
 
 function testModel(provider: string, id: string): Model<Api> {
   return {
@@ -242,6 +256,68 @@ test("runAgent passes provider-qualified models into subagent sessions", async (
   assert.equal(result, "done");
   assert.equal(observedModel, target);
   assert.deepEqual(calls, [{ provider: "openai", modelId: "gpt-test" }]);
+});
+
+test("runAgent resume cache uses effective model identity rather than model ref syntax", async () => {
+  const target = testModel("anthropic", "claude-cache");
+  const prompt = "hello";
+  const bareOptions = { label: "model-cache", model: "claude-cache" };
+  const qualifiedOptions = { label: "model-cache", model: "anthropic/claude-cache" };
+  assert.equal(agentJournalKey(prompt, bareOptions), agentJournalKey(prompt, qualifiedOptions));
+
+  const journal = createMemoryBackedJournal([
+    {
+      key: agentJournalKey(prompt, bareOptions),
+      value: "cached-value",
+      context: createAgentResumeContext(RESUME_BASE_CONTEXT, target),
+    },
+  ]);
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+
+  const result = await runAgent(
+    createRunContext({ createSession, modelRegistry: createRegistry([target]), journal }),
+    prompt,
+    qualifiedOptions,
+    RESUME_BASE_CONTEXT,
+  );
+
+  assert.equal(result, "cached-value");
+  assert.equal(createSessionCalls, 0);
+});
+
+test("runAgent invalidates resume cache when the inherited host model changes", async () => {
+  const hostA = testModel("anthropic", "claude-host-a");
+  const hostB = testModel("anthropic", "claude-host-b");
+  const prompt = "hello";
+  const opts = { label: "inherited-model-cache" };
+  const journal = createMemoryBackedJournal([
+    {
+      key: agentJournalKey(prompt, opts),
+      value: "cached-value",
+      context: createAgentResumeContext(RESUME_BASE_CONTEXT, hostA),
+    },
+  ]);
+  const progress = createProgress();
+  let createSessionCalls = 0;
+  const createSession: CreateAgentSession = async () => {
+    createSessionCalls += 1;
+    return createTextSession();
+  };
+
+  const result = await runAgent(
+    createRunContext({ createSession, hostModel: hostB, progress, journal }),
+    prompt,
+    opts,
+    RESUME_BASE_CONTEXT,
+  );
+
+  assert.equal(result, "done");
+  assert.equal(createSessionCalls, 1);
+  assert.ok(progress.events.includes("log:inherited-model-cache: cached result invalidated (effective model changed)"));
 });
 
 test("runAgent fails fast on unknown explicit model refs before creating a subagent session", async () => {

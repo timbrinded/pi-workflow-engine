@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { AdvisoryCandidate, AdvisoryVerdict } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
-import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { bindParallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { runLensVerificationPipeline, type AdvisoryLens } from "../.pi/extensions/pi-workflow-engine/src/workflow-advisory-utils.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 
@@ -31,7 +31,7 @@ test("finder-barrier scheduling starts all finders before verifiers", async () =
   const result = await runLensVerificationPipeline<AdvisoryLens, Verified>({
     api: {
       agent,
-      parallel: (thunks) => parallel(thunks, { limit: 10 }),
+      parallel: bindParallel({ limit: 10 }),
       pipeline,
       progress() {},
       log() {},

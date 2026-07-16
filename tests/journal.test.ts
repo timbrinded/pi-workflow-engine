@@ -15,6 +15,13 @@ import {
   WORKFLOW_RUNS_DIR,
   workflowJournalPath,
 } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
+import type { AgentResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
+
+const RESUME_CONTEXT: AgentResumeContext = {
+  repository: { state: "git", head: "head-a", dirtyFingerprint: "clean", verifiable: true },
+  workflow: { name: "review", sourceFingerprint: "source-a", verifiable: true },
+  model: { provider: "anthropic", id: "claude-a" },
+};
 
 test("hashAgentCall is stable for equivalent behavioral options", () => {
   const schemaA = Type.Object({ ok: Type.Boolean(), value: Type.String() });
@@ -58,6 +65,27 @@ test("agentJournalKey uses optional cache keys without hiding behavior changes",
   assert.notEqual(agentJournalKey("inspect", { cacheKey: "stage:item-1", thinkingLevel: "medium" }), base);
 });
 
+test("agentJournalKey includes the isolated worktree baseline identity", () => {
+  const first = agentJournalKey("fix", {
+    isolation: "worktree",
+    worktreeBaseline: { ref: "a".repeat(40), patch: "first patch" },
+  });
+  assert.notEqual(
+    agentJournalKey("fix", {
+      isolation: "worktree",
+      worktreeBaseline: { ref: "b".repeat(40), patch: "first patch" },
+    }),
+    first,
+  );
+  assert.notEqual(
+    agentJournalKey("fix", {
+      isolation: "worktree",
+      worktreeBaseline: { ref: "a".repeat(40), patch: "second patch" },
+    }),
+    first,
+  );
+});
+
 test("journal lookup matches exact stable keys without suffix invalidation", async () => {
   const journal = createMemoryBackedJournal([
     { key: "a", value: "one" },
@@ -77,6 +105,56 @@ test("journal lookup treats duplicate keys as ambiguous misses", async () => {
   ]);
 
   assert.deepEqual(journal.lookup("same"), { hit: false });
+});
+
+test("journal validates execution context and explains cache invalidation", () => {
+  const journal = createMemoryBackedJournal([{ key: "same", value: "cached", context: RESUME_CONTEXT }]);
+
+  assert.deepEqual(journal.lookup("same", RESUME_CONTEXT), { hit: true, value: "cached" });
+  assert.deepEqual(
+    journal.lookup("same", {
+      ...RESUME_CONTEXT,
+      repository: { ...RESUME_CONTEXT.repository, head: "head-b" },
+    }),
+    { hit: false, reason: "repository HEAD changed" },
+  );
+  assert.deepEqual(
+    journal.lookup("same", {
+      ...RESUME_CONTEXT,
+      repository: { ...RESUME_CONTEXT.repository, dirtyFingerprint: "dirty-b" },
+    }),
+    { hit: false, reason: "working tree contents changed" },
+  );
+  assert.deepEqual(
+    journal.lookup("same", {
+      ...RESUME_CONTEXT,
+      workflow: { ...RESUME_CONTEXT.workflow, sourceFingerprint: "source-b" },
+    }),
+    { hit: false, reason: "workflow source changed" },
+  );
+  assert.deepEqual(
+    journal.lookup("same", {
+      ...RESUME_CONTEXT,
+      workflow: { ...RESUME_CONTEXT.workflow, verifiable: false },
+    }),
+    { hit: false, reason: "workflow source could not be verified" },
+  );
+  assert.deepEqual(
+    journal.lookup("same", {
+      ...RESUME_CONTEXT,
+      model: { provider: "openai", id: "gpt-a" },
+    }),
+    { hit: false, reason: "effective model changed" },
+  );
+});
+
+test("context-aware lookup never replays legacy journal entries", () => {
+  const journal = createMemoryBackedJournal([{ key: "legacy", value: "stale" }]);
+
+  assert.deepEqual(journal.lookup("legacy", RESUME_CONTEXT), {
+    hit: false,
+    reason: "legacy journal entry has no execution context",
+  });
 });
 
 test("journal records append JSONL and explicit resume load failures are visible", async () => {

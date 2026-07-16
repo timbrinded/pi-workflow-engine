@@ -13,6 +13,10 @@ export interface ReviewContext {
   readonly diffCommand: string;
   readonly files: readonly string[];
   readonly summary?: string;
+  /** SHA-256 of the captured review diff, used to reject stale patch previews. */
+  readonly diffFingerprint?: string;
+  /** SHA-256 of the exact reviewed commit plus reconstructed binary patch. */
+  readonly baselineFingerprint?: string;
 }
 
 export interface ReviewIssue {

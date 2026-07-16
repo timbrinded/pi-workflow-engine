@@ -10,6 +10,7 @@ import { throwIfAborted } from "./cancellation.ts";
 import { appendSkillReminder, createAgentSkillResourceLoader, extractSkillSelectorsFromText } from "./agent-skills.ts";
 import { agentJournalKey, type WorkflowJournal } from "./journal.ts";
 import type { WorktreeRegistry } from "./worktree.ts";
+import { createAgentResumeContext, type AgentResumeBaseContext, type RepositoryResumeContext } from "./resume-context.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
@@ -64,6 +65,8 @@ export interface RunContext {
   budget: WorkflowBudget;
   journal: WorkflowJournal;
   worktrees: WorktreeRegistry;
+  /** Repository state captured once at workflow start. Direct runner tests may omit it. */
+  repositoryResumeContext?: RepositoryResumeContext;
   createSession?: CreateAgentSession;
 }
 
@@ -304,7 +307,7 @@ async function createAgentWorkspace(rc: RunContext, opts: AgentOptions, label: s
     throw new Error("Agent requested worktree isolation, but the workflow cwd is not inside a git work tree.");
   }
 
-  const added = await rc.worktrees.add(rc.signal);
+  const added = await rc.worktrees.add(rc.signal, opts.worktreeBaseline);
   if ("error" in added) throw new Error(`Failed to create isolated worktree: ${added.error}`);
   const worktreePath = added.path;
   rc.progress.log(`${label}: using isolated worktree ${worktreePath}`);
@@ -332,9 +335,15 @@ async function disposeAgentWorkspace(rc: RunContext, label: string, workspace: A
   }
 }
 
-async function recordJournalResult(rc: RunContext, label: string, key: string, value: unknown): Promise<void> {
+async function recordJournalResult(
+  rc: RunContext,
+  label: string,
+  key: string,
+  value: unknown,
+  context: ReturnType<typeof createAgentResumeContext> | undefined,
+): Promise<void> {
   try {
-    const recorded = await rc.journal.record(key, value);
+    const recorded = await rc.journal.record(key, value, context);
     if (!recorded.ok) {
       rc.progress.log(`${label}: workflow journal write failed (${recorded.error}); future resume may be incomplete`);
     }
@@ -353,7 +362,12 @@ async function recordJournalResult(rc: RunContext, label: string, key: string, v
  * validated args in a closure — that captured object is the structured result, so
  * no event-stream parsing is needed.
  */
-export async function runAgent(rc: RunContext, prompt: string, opts: AgentOptions = {}): Promise<unknown> {
+export async function runAgent(
+  rc: RunContext,
+  prompt: string,
+  opts: AgentOptions = {},
+  resumeBaseContext?: AgentResumeBaseContext,
+): Promise<unknown> {
   if (typeof prompt !== "string") {
     throw new Error(`agent() prompt must be a string; received ${describeAgentPrompt(prompt)}`);
   }
@@ -364,13 +378,24 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
 
   return await rc.perf.time("agent.total_ms", async () => {
     throwIfAborted(rc.signal);
+    let model: Model<Api> | undefined;
+    try {
+      ({ model } = resolveAgentModel(opts.model, rc.modelRegistry, rc.hostModel));
+    } catch (error) {
+      rc.progress.agentFailed(label, error);
+      throw error;
+    }
+    const resumeContext = resumeBaseContext ? createAgentResumeContext(resumeBaseContext, model) : undefined;
     const journalKey = agentJournalKey(prompt, opts);
-    const cached = rc.journal.lookup(journalKey);
+    const cached = rc.journal.lookup(journalKey, resumeContext);
     if (cached.hit) {
       rc.progress.log(`${label}: using cached result from workflow journal`);
       rc.perf.counter("agent.cache_hit", 1, tags);
-      await recordJournalResult(rc, label, journalKey, cached.value);
+      await recordJournalResult(rc, label, journalKey, cached.value, resumeContext);
       return cached.value;
+    }
+    if (cached.reason) {
+      rc.progress.log(`${label}: cached result invalidated (${cached.reason})`);
     }
     // Stop spending the moment the run is over budget — before queueing.
     ensureWithinBudget(rc.budget);
@@ -416,7 +441,6 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
           workspace = await createAgentWorkspace(rc, opts, label);
           const agentCwd = workspace.cwd;
 
-          const { model } = resolveAgentModel(opts.model, rc.modelRegistry, rc.hostModel);
           const skillSetup = shouldCreateSkillResourceLoader(rc, prompt, opts)
             ? await rc.perf.time(
                 "agent.skills_ms",
@@ -514,7 +538,7 @@ export async function runAgent(rc: RunContext, prompt: string, opts: AgentOption
             tags,
           );
           const result = await workspace.wrapResult(rawResult);
-          await recordJournalResult(rc, label, journalKey, result);
+          await recordJournalResult(rc, label, journalKey, result, resumeContext);
           return result;
         } catch (error) {
           failed = true;

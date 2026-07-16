@@ -27,6 +27,10 @@ test("parseAllowedDiffCommand accepts safe git and gh diff commands", () => {
     file: "gh",
     args: ["pr", "diff", "123", "--patch"],
   });
+  assert.deepEqual(parseAllowedDiffCommand("git diff --binary HEAD"), {
+    file: "git",
+    args: ["diff", "--no-ext-diff", "--binary", "HEAD"],
+  });
   assert.ok("error" in parseAllowedDiffCommand("git status"));
   assert.ok("error" in parseAllowedDiffCommand("git diff main; rm -rf /"));
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -64,6 +64,29 @@ test("addWorktree builds a detached HEAD worktree command", async () => {
   assert.deepEqual(runner.calls[0]?.cwd, "/repo");
   assert.deepEqual(runner.calls[0]?.args.slice(0, 4), ["worktree", "add", "--detach", result.path]);
   assert.equal(runner.calls[0]?.args[4], "HEAD");
+});
+
+test("addWorktree prepares and commits a supplied reviewed-snapshot patch", async () => {
+  const runner = fakeRunner(() => OK);
+  const patch = "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-before\n+reviewed\n";
+  const result = await addWorktree({
+    repoCwd: "/repo",
+    runner,
+    baseDir: "/tmp/pi-test",
+    baseline: { ref: "review-head", patch },
+  });
+
+  assert.ok(!("error" in result));
+  assert.equal(runner.calls[0]?.args[4], "review-head");
+  assert.deepEqual(runner.calls[1]?.args, ["apply", "--index", "--binary", "--whitespace=nowarn", "-"]);
+  assert.equal(runner.calls[1]?.stdin, patch);
+  assert.ok(runner.calls[2]?.args.includes("commit"));
+  assert.ok(runner.calls[2]?.args.includes("commit.gpgSign=false"));
+  const hooksPath = runner.calls[2]?.args.find((arg) => arg.startsWith("core.hooksPath="));
+  assert.ok(hooksPath);
+  assert.equal(hooksPath.includes(result.path), false);
+  assert.ok(runner.calls[2]?.args.includes("--no-verify"));
+  assert.ok(runner.calls[2]?.args.includes("--no-gpg-sign"));
 });
 
 test("WorktreeRegistry registers created worktrees and removes them", async () => {
@@ -214,6 +237,70 @@ test("addWorktree uses real git worktrees for repositories with commits", async 
     const patch = await captureWorktreePatch({ worktreePath: added.path });
     assert.ok(!("error" in patch));
     assert.match(patch.patch, /diff --git a\/committed\.txt b\/committed\.txt/);
+  } finally {
+    if (added && !("error" in added)) await removeWorktree({ repoCwd: repo, path: added.path, snapshot: added.snapshot });
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("a reviewed-snapshot baseline is excluded from the returned fix patch", async () => {
+  const repo = await makeTempGitRepo("pi-workflow-reviewed-baseline-");
+  let added: Awaited<ReturnType<typeof addWorktree>> | undefined;
+  try {
+    await writeFile(join(repo, "app.ts"), "before\n");
+    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
+    assert.equal(
+      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
+      0,
+    );
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
+    const reviewedPatch = "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-before\n+reviewed\n";
+
+    added = await addWorktree({ repoCwd: repo, baseline: { ref: head, patch: reviewedPatch } });
+    assert.ok(!("error" in added));
+    assert.equal(await readFile(join(added.path, "app.ts"), "utf8"), "reviewed\n");
+
+    await writeFile(join(added.path, "app.ts"), "fixed\n");
+    const captured = await captureWorktreePatch({ worktreePath: added.path });
+    assert.ok(!("error" in captured));
+    assert.match(captured.patch, /-reviewed/);
+    assert.match(captured.patch, /\+fixed/);
+    assert.doesNotMatch(captured.patch, /-before/);
+  } finally {
+    if (added && !("error" in added)) await removeWorktree({ repoCwd: repo, path: added.path, snapshot: added.snapshot });
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("reviewed-snapshot preparation bypasses repository commit hooks and signing", async () => {
+  const repo = await makeTempGitRepo("pi-workflow-reviewed-policy-");
+  let added: Awaited<ReturnType<typeof addWorktree>> | undefined;
+  try {
+    await writeFile(join(repo, "app.ts"), "before\n");
+    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
+    assert.equal(
+      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
+      0,
+    );
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
+    await writeFile(join(repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n");
+    await chmod(join(repo, ".git", "hooks", "pre-commit"), 0o755);
+    assert.equal(spawnSync("git", ["config", "commit.gpgSign", "true"], { cwd: repo }).status, 0);
+
+    added = await addWorktree({
+      repoCwd: repo,
+      baseline: {
+        ref: head,
+        patch:
+          "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-before\n+reviewed\n" +
+          "diff --git a/.pi-workflow-hooks-disabled/prepare-commit-msg b/.pi-workflow-hooks-disabled/prepare-commit-msg\n" +
+          "new file mode 100755\n--- /dev/null\n+++ b/.pi-workflow-hooks-disabled/prepare-commit-msg\n@@ -0,0 +1,2 @@\n+#!/bin/sh\n+exit 1\n",
+      },
+    });
+
+    assert.ok(!("error" in added), "baseline commit should bypass hooks and signing");
+    assert.equal(await readFile(join(added.path, "app.ts"), "utf8"), "reviewed\n");
+    assert.equal(await readFile(join(added.path, ".pi-workflow-hooks-disabled", "prepare-commit-msg"), "utf8"), "#!/bin/sh\nexit 1\n");
   } finally {
     if (added && !("error" in added)) await removeWorktree({ repoCwd: repo, path: added.path, snapshot: added.snapshot });
     await rm(repo, { recursive: true, force: true });

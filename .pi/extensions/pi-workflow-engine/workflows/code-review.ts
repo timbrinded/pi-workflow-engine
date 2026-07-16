@@ -20,6 +20,9 @@ import {
 import { compactResults } from "../src/concurrency.ts";
 import { captureDiff } from "../src/diff-capture.ts";
 import type { ReviewContext } from "../src/review/review-issues.ts";
+import {
+  captureReviewMaterial,
+} from "../src/review/review-fix-workflow.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -143,27 +146,42 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     return { summary: "No changes found to review.", findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) };
   }
 
+  log(`${scope.files.length} changed files`);
+
+  // Capture the diff once, deterministically, so findings can be bounded to changed lines in code.
+  let changed: Map<string, Set<number>> | null = null;
+  let diffText = "";
+  let reviewMaterial: Awaited<ReturnType<typeof captureReviewMaterial>> | undefined;
+  try {
+    reviewMaterial = await captureReviewMaterial(scope.diffCommand, cwd, signal);
+    diffText = reviewMaterial.diff;
+    changed = changedLines(diffText);
+    progress({ type: "summary", key: "diffBytes", value: Buffer.byteLength(diffText) });
+  } catch (error) {
+    log(`review snapshot capture failed (${error instanceof Error ? error.message : String(error)}) — patch previews will be unavailable`);
+    const fallbackDiff = await captureDiff(scope.diffCommand, { cwd, signal, timeoutMs: 30_000, maxBufferBytes: 16 << 20 });
+    if (fallbackDiff.ok) {
+      diffText = fallbackDiff.stdout;
+      changed = changedLines(diffText);
+      progress({ type: "summary", key: "diffBytes", value: fallbackDiff.bytes });
+    } else {
+      log(`diff capture failed (${fallbackDiff.error ?? "unknown error"}) — reviewing without the line gate`);
+    }
+  }
+
   const reviewContext: ReviewContext = {
     workflowName: "code-review",
     target,
     diffCommand: scope.diffCommand,
     files: scope.files,
     summary: scope.summary,
+    ...(reviewMaterial
+      ? {
+          diffFingerprint: reviewMaterial.diffFingerprint,
+          baselineFingerprint: reviewMaterial.baselineFingerprint,
+        }
+      : {}),
   };
-
-  log(`${scope.files.length} changed files`);
-
-  // Capture the diff once, deterministically, so findings can be bounded to changed lines in code.
-  let changed: Map<string, Set<number>> | null = null;
-  let diffText = "";
-  const capturedDiff = await captureDiff(scope.diffCommand, { cwd, signal, timeoutMs: 30_000, maxBufferBytes: 16 << 20 });
-  if (capturedDiff.ok) {
-    diffText = capturedDiff.stdout;
-    changed = changedLines(diffText);
-    progress({ type: "summary", key: "diffBytes", value: capturedDiff.bytes });
-  } else {
-    log(`diff capture failed (${capturedDiff.error ?? "unknown error"}) — reviewing without the line gate`);
-  }
 
   const diffBlock = diffText
     ? `\n## Diff (review is bounded to these changed lines)\n\`\`\`diff\n${

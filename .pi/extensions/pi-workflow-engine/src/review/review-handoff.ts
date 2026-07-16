@@ -22,25 +22,6 @@ export interface ReviewHandoffIssue {
   readonly recommendation: string;
 }
 
-export function buildFixHandoffPrompt(issues: readonly ReviewIssue[], context: ReviewContext | undefined): string {
-  return `Use the workflow-code-review-actions skill if available.
-
-Mode: fix selected code-review findings.
-
-Selected findings JSON:
-\`\`\`json
-${JSON.stringify(toHandoffPayload(issues, context))}
-\`\`\`
-
-Instructions:
-- Inspect the selected issue JSON before editing.
-- Make minimal edits that address only the selected findings.
-- Preserve unrelated user changes and avoid broad refactors.
-- Run focused validation if an appropriate local check is available.
-- Do not post GitHub PR comments or any upstream review comments.
-- Summarize changed files and validation results when done.`;
-}
-
 export function buildCommentHandoffPrompt(issues: readonly ReviewIssue[], context: ReviewContext | undefined, reason: string): string {
   return `Use the workflow-code-review-actions skill if available.
 

@@ -115,18 +115,72 @@ test("sendWorkflowResult retains failed workflow progress snapshots for later in
   assert.equal(inspection?.snapshot.lanes[0]?.[1][0]?.details, "boom details");
 });
 
-test("runWorkflow composes an additional abort signal", async () => {
+test("runWorkflow composes an additional abort signal during repository capture", async () => {
   const controller = new AbortController();
   controller.abort(new Error("tool aborted"));
+  let workflowExecuted = false;
   const mod: WorkflowModule = {
     meta: { name: "signal-test", description: "signal" },
-    default: async (api) => {
-      assert.equal(api.signal?.aborted, true);
-      assert.match(String(api.signal?.reason), /tool aborted/);
-      return "aborted signal visible";
+    default: async () => {
+      workflowExecuted = true;
+      return "unexpected";
     },
   };
 
-  const result = await runWorkflow(fakeContext(), mod, "", { signal: controller.signal });
-  assert.equal(result, "aborted signal visible");
+  await assert.rejects(() => runWorkflow(fakeContext(), mod, "", { signal: controller.signal }), /tool aborted/);
+  assert.equal(workflowExecuted, false);
+});
+
+test("sendWorkflowResult keeps patch previews after the original review message", async () => {
+  const sent: string[] = [];
+  const pi = {
+    sendMessage(message: unknown) {
+      if (typeof message === "object" && message !== null && "details" in message) {
+        const details = message.details;
+        if (typeof details === "object" && details !== null && "name" in details && typeof details.name === "string") sent.push(details.name);
+      }
+    },
+  } as unknown as ExtensionAPI;
+  const ctx = {
+    ...fakeCommandContext(),
+    hasUI: true,
+    mode: "tui",
+    ui: {
+      async custom() {
+        return { action: "fix", issueIds: ["R001"] };
+      },
+      notify() {},
+      setStatus() {},
+      setWidget() {},
+      theme: {
+        fg(_color: string, text: string) {
+          return text;
+        },
+      },
+    },
+  } as unknown as ExtensionCommandContext;
+  const mod: WorkflowModule = {
+    meta: { name: "code-review", description: "review" },
+    default: async () => ({
+      summary: "Review complete.",
+      findings: [
+        {
+          summary: "Off-by-one.",
+          category: "bug",
+          severity: "high",
+          confidence: "high",
+          locations: [{ file: "src/app.ts", line: 10 }],
+          evidence: ["line 10"],
+          impact: "A retry is skipped.",
+          recommendation: "Fix the boundary.",
+        },
+      ],
+      nextSteps: [],
+      reviewContext: { workflowName: "code-review", target: "", diffCommand: "git diff", files: ["src/app.ts"] },
+    }),
+  };
+
+  await sendWorkflowResult(pi, ctx, "code-review", mod, "", { resultViewer: "open" });
+
+  assert.deepEqual(sent, ["code-review", "code-review-fix-previews"]);
 });

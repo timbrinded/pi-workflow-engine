@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { createHash } from "node:crypto";
 import type { WorkflowApi, WorkflowMeta, WorkflowModule } from "./types.ts";
 import { parseWorkflowMeta } from "./workflow-module.ts";
 
@@ -36,7 +37,11 @@ export function compileInlineWorkflow(source: string): WorkflowModule {
 
   const defaultExpression = extractDefaultWorkflowExpression(source, metaLiteral.endOffset);
   const executor = compileExecutor(defaultExpression);
-  return { meta: parsedMeta.meta, default: (api) => executor(api, Type) };
+  return {
+    meta: parsedMeta.meta,
+    default: (api) => executor(api, Type),
+    source: { kind: "fingerprint", fingerprint: createHash("sha256").update(source).digest("hex") },
+  };
 }
 
 export function extractMetaLiteral(source: string): InlineMetaLiteral {

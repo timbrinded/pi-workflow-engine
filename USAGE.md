@@ -88,6 +88,39 @@ Set `"inspector": null` to disable the shortcut while keeping `/workflow:dynamax
 
 With Dynamax enabled, the host agent usually calls the `workflow` tool with `script`: a one-off inline workflow tailored to your prompt. It can still call a saved workflow by `name` when one already fits.
 
+### Adaptive multi-pass authoring
+
+A single fan-out is still the default when it can answer the question. When the first pass may reveal gaps, conflicts, weak claims, or missing evidence, an inline workflow can inspect those intermediate results and commission only the follow-up work the LLM says is needed:
+
+```ts
+const firstPass = (await api.parallel(initialTasks)).filter((result) => result !== null);
+
+const GapAnalysis = Type.Object({
+  items: Type.Array(Type.Object({ question: Type.String(), reason: Type.String() })),
+});
+const gaps = await api.agent(
+  `Identify only material gaps that require another agent:\n${JSON.stringify(firstPass)}`,
+  { schema: GapAnalysis, thinkingLevel: "low" },
+);
+
+const followUps = gaps?.items.length
+  ? (await api.parallel(
+      gaps.items.map((item) => () =>
+        api.agent(`Resolve this gap and cite evidence: ${JSON.stringify(item)}`, {
+          thinkingLevel: "low",
+        }),
+      ),
+    )).filter((result) => result !== null)
+  : [];
+
+return api.agent(
+  `Synthesize the first pass and any follow-ups:\n${JSON.stringify({ firstPass, followUps })}`,
+  { thinkingLevel: "medium" },
+);
+```
+
+The structured gap-analysis result lets ordinary TypeScript decide whether a second pass exists. Prefer conditionals and bounded loops over new iteration, quorum, graph, reduction, or retry primitives, and do not generate follow-up agents when the first pass is already sufficient.
+
 ## Workflow results
 
 Workflow results are rendered in pi with:
@@ -104,7 +137,7 @@ These workflow usage totals are separate from `--perf`, which is internal timing
 
 During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow:inspector` if you want to bring the last completed inspector back up afterward.
 
-Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding.
+Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding. The Fix action revalidates the exact reviewed PR/ref/index/working-tree snapshot, then runs each selected finding through its own worktree-isolated agent and returns the finding ID, validation summary, patch, and changed status. Failed attempts do not discard successful previews, no patch is applied to your active tree automatically, and a moved or unverifiable review target is rejected rather than patched against the wrong code.
 
 ### Resume a run
 
@@ -114,9 +147,13 @@ Every workflow result includes a run id. Resume with:
 /workflow code-review --resume <run-id> HEAD~3
 ```
 
-The `workflow` tool exposes the same feature as `resumeFromRunId`. Resume replays completed `agent()` results from `.pi/.workflow-runs/<run-id>.jsonl` while the agent call index and prompt/options hash still match. After the first missing or changed call, the rest of the run executes live and writes a new journal under the new run id. Cached results do not add usage or budget spend for the resumed run.
+The `workflow` tool exposes the same feature as `resumeFromRunId`. Resume replays a completed `agent()` result from `.pi/.workflow-runs/<run-id>.jsonl` only when both its prompt/options identity and execution context still match. The execution context includes the repository state and HEAD, staged/unstaged/untracked content, workflow name and source, and the effective resolved provider/model. Each missing or invalidated call runs live while other independently matching calls may still replay, and the resumed run writes a fresh journal under its new run id. Cached results do not add usage or budget spend for the resumed run.
 
-Resume only caches completed `agent()` calls. It does not snapshot arbitrary workflow local variables or in-flight tool work. Keep prompts and agent options deterministic across reruns if you want cache hits.
+Invalidations appear in progress output with a concise reason. Legacy journals without execution context are accepted as input but their unverifiable entries run live. Git repositories with no commits and non-Git directories remain supported; the journal directory itself is excluded from the dirty-tree fingerprint.
+
+Saved file-backed workflows fingerprint their bounded package source tree so imported helper changes invalidate replay, while inline workflows use the compiler-provided script fingerprint. Programmatic modules without explicit `source` provenance are intentionally non-replayable because captured closures and external helpers cannot be verified safely.
+
+Resume only caches completed `agent()` calls. It does not snapshot arbitrary workflow local variables, in-flight tool work, or external service state. Keep prompts and agent options deterministic across reruns if you want cache hits.
 
 ## Author a saved workflow
 
@@ -158,10 +195,13 @@ Core primitives:
 | --- | --- |
 | `agent(prompt, opts)` | Runs one isolated subagent. With `schema`, returns validated structured data. |
 | `parallel(thunks)` | Runs thunks concurrently and waits for all; recoverable failures become `null` slots. |
+| `parallel(thunks, { settled: true })` | Retains each success or recoverable failure as a serialisable discriminated result. |
 | `pipeline(items, ...stages)` | Runs each item through stages independently; a failed item becomes `null`. |
 | `phase(title)` / `log(message)` | Updates workflow progress UI. |
 | `progress(event)` | Emits counters, summaries, and lane items. |
 | `workflow(ref, args?)` | Runs another workflow inline as a sub-step and returns its result. |
+
+Use settled mode when the workflow must distinguish a successful `null` from a failed branch. It preserves input order and returns `{ ok: true, value }` or `{ ok: false, error: { name?, message } }` for every thunk. Genuine workflow cancellation still rejects the whole `parallel()` call and cancels siblings.
 
 Set `thinkingLevel` on fan-out agents. Otherwise many subagents can inherit an expensive global reasoning level.
 

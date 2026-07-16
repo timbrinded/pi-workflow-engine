@@ -12,12 +12,14 @@ import type { Component, KeyId, TUI } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
 import { DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT, resolveDynamaxShortcuts } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import {
+  ADAPTIVE_WORKFLOW_GUIDANCE,
   appendDynamaxContextReminder,
   appendDynamaxSystemReminder,
   clearDynamax,
   consumeDynamaxOneShot,
   createDynamaxRuntime,
   createDynamaxState,
+  DYNAMAX_REMINDER,
   DYNAMAX_STATUS_KEY,
   DYNAMAX_WIDGET_KEY,
   type DynamaxRuntimeStore,
@@ -191,6 +193,15 @@ test("dynamax one-shot state is consumed by system reminder", () => {
   assert.match(prompted, /dynamax workflow opt-in/);
   assert.equal(state.oneShotPending, false);
   assert.equal(appendDynamaxSystemReminder("base", state), "base");
+});
+
+test("dynamax reminder teaches optional adaptive multi-pass workflows", () => {
+  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /simple single-pass fan-out/);
+  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /structured gap-analysis agent/);
+  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /ordinary TypeScript conditionals or bounded loops/);
+  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /only when gaps exist/);
+  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /Do not generate a second pass when the first pass is sufficient/);
+  assert.ok(DYNAMAX_REMINDER.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
 });
 
 test("dynamax sticky mode remains active until cleared", () => {

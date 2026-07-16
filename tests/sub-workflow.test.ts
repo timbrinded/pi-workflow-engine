@@ -168,6 +168,32 @@ test("api.workflow() throws when no resolver is configured", async () => {
   await assert.rejects(() => runWorkflowWithContext(rc, progress, parent, "", contextOpts(undefined)), /not enabled/);
 });
 
+test("runWorkflowWithContext does not enter a workflow aborted after source capture starts", async () => {
+  const progress = createProgress();
+  const controller = new AbortController();
+  const rc: RunContext = { ...createRc(progress, new Semaphore(1)), signal: controller.signal };
+  let workflowExecuted = false;
+  const mod: WorkflowModule = {
+    meta: { name: "cancel-before-default", description: "" },
+    source: { kind: "fingerprint", fingerprint: "stable-source" },
+    default: async () => {
+      workflowExecuted = true;
+      return "unexpected";
+    },
+  };
+  queueMicrotask(() => controller.abort(new Error("cancel before workflow default")));
+
+  await assert.rejects(
+    () =>
+      runWorkflowWithContext(rc, progress, mod, "", {
+        abortController: controller,
+        submissionLimit: 1,
+      }),
+    /cancel before workflow default/,
+  );
+  assert.equal(workflowExecuted, false);
+});
+
 test("sub-workflow phases nest under '<name> ▸ <title>'", async () => {
   const progress = createProgress();
   const rc = createRc(progress, new Semaphore(4));

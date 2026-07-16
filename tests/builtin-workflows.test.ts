@@ -4,7 +4,7 @@ import codeReview from "../.pi/extensions/pi-workflow-engine/workflows/code-revi
 import diagnose from "../.pi/extensions/pi-workflow-engine/workflows/diagnose.ts";
 import perfReview from "../.pi/extensions/pi-workflow-engine/workflows/perf-review.ts";
 import refactorScout from "../.pi/extensions/pi-workflow-engine/workflows/refactor-scout.ts";
-import { pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AdvisoryCandidate, AdvisoryFinding, AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 
@@ -48,7 +48,7 @@ function createScriptedApi(responses: unknown[], args = ""): ScriptedApi {
     workflow: async () => {
       throw new Error("sub-workflows are not enabled in these tests");
     },
-    parallel: async <T>(thunks: Array<() => Promise<T>>) => await Promise.all(thunks.map((thunk) => thunk())),
+    parallel,
     pipeline,
     phase: (title) => phases.push(title),
     log: (message) => logs.push(message),

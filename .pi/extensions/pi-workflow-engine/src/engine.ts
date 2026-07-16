@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { bindPipeline, parallel, Semaphore } from "./concurrency.ts";
-import { linkAbortSignal } from "./cancellation.ts";
+import { bindParallel, bindPipeline, Semaphore } from "./concurrency.ts";
+import { linkAbortSignal, throwIfAborted } from "./cancellation.ts";
 import { createBudget } from "./budget.ts";
 import { runAgent, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
@@ -11,6 +11,13 @@ import type { AgentOptions, WorkflowApi, WorkflowModule, WorkflowProgressEvent, 
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
 import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
 import { WorktreeRegistry } from "./worktree.ts";
+import {
+  captureRepositoryResumeContext,
+  captureWorkflowResumeContext,
+  nonGitRepositoryResumeContext,
+  type AgentResumeBaseContext,
+  type RepositoryResumeContext,
+} from "./resume-context.ts";
 
 /** Default global cap on concurrent agents per run. */
 const DEFAULT_CONCURRENCY = defaultConcurrency();
@@ -69,11 +76,19 @@ export async function runWorkflow(
   const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
   const journal = await createWorkflowJournal({ resumePath, writePath: journalPath });
   const worktrees = new WorktreeRegistry(ctx.cwd);
-  resolvedOptions.onRunMetadata?.({ runId, resumedFromRunId: resolvedOptions.resumeFromRunId, journalPath });
-  progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
   const unlinkOptionAbortSignal = linkAbortSignal(resolvedOptions.signal, runAbortController);
+  let repositoryResumeContext: RepositoryResumeContext;
+  try {
+    repositoryResumeContext = await captureRepositoryResumeContext(ctx.cwd, runAbortController.signal);
+  } catch (error) {
+    unlinkContextAbortSignal();
+    unlinkOptionAbortSignal();
+    throw error;
+  }
+  resolvedOptions.onRunMetadata?.({ runId, resumedFromRunId: resolvedOptions.resumeFromRunId, journalPath });
+  progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
   const rc: RunContext = {
     cwd: ctx.cwd,
     hostModel: ctx.model,
@@ -86,6 +101,7 @@ export async function runWorkflow(
     budget,
     journal,
     worktrees,
+    repositoryResumeContext,
   };
 
   try {
@@ -138,8 +154,12 @@ export async function runWorkflowWithContext(
 ): Promise<unknown> {
   const depth = opts.depth ?? 0;
   const scope = createWorkflowScope(progress, opts.progressPrefix ?? "", opts.progressNamespace);
+  const resumeContext: AgentResumeBaseContext = {
+    repository: rc.repositoryResumeContext ?? nonGitRepositoryResumeContext(),
+    workflow: await captureWorkflowResumeContext(mod, rc.signal),
+  };
 
-  const agent = ((prompt: string, agentOpts?: AgentOptions) => runAgent(rc, prompt, scope.agentOptions(agentOpts))) as WorkflowApi["agent"];
+  const agent = ((prompt: string, agentOpts?: AgentOptions) => runAgent(rc, prompt, scope.agentOptions(agentOpts), resumeContext)) as WorkflowApi["agent"];
 
   const workflow: WorkflowApi["workflow"] =
     depth >= 1
@@ -171,12 +191,11 @@ export async function runWorkflowWithContext(
   const api: WorkflowApi = {
     agent,
     workflow,
-    parallel: (thunks) =>
-      parallel(thunks, {
-        signal: rc.signal,
-        abortController: opts.abortController,
-        limit: opts.submissionLimit,
-      }),
+    parallel: bindParallel({
+      signal: rc.signal,
+      abortController: opts.abortController,
+      limit: opts.submissionLimit,
+    }),
     pipeline: bindPipeline({ signal: rc.signal, abortController: opts.abortController }),
     phase: scope.phase,
     log: scope.log,
@@ -187,6 +206,7 @@ export async function runWorkflowWithContext(
     signal: rc.signal,
   };
 
+  throwIfAborted(rc.signal);
   return await mod.default(api);
 }
 

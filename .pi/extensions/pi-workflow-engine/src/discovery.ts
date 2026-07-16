@@ -29,9 +29,10 @@ async function loadDir(dir: string, excludeFiles: ReadonlySet<string> = new Set(
     if (excludeFiles.has(name)) continue;
     if (!name.endsWith(".ts") || name.startsWith("_") || name.startsWith(".")) continue;
     try {
-      const loaded: unknown = await import(pathToFileURL(join(dir, name)).href);
+      const path = join(dir, name);
+      const loaded: unknown = await import(pathToFileURL(path).href);
       const parsed = parseWorkflowModule(loaded);
-      if ("module" in parsed) modules.push(parsed.module);
+      if ("module" in parsed) modules.push({ ...parsed.module, source: { kind: "file", path } });
       else console.error(`[workflow-engine] skipped ${name}: ${parsed.reason}`);
     } catch (error) {
       // Drop-in loading depends on the runtime resolving TS + the bundled typebox.

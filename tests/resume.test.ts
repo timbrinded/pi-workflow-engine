@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -17,6 +18,8 @@ import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.
 import type { WorkflowModule, WorkflowProgressEvent, WorkflowRef, WorkflowRunMetadata } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
+import { captureRepositoryResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly logs: string[];
@@ -42,7 +45,11 @@ function createProgress(): CaptureProgress {
 }
 
 function workflowModule(name: string, run: WorkflowModule["default"]): WorkflowModule {
-  return { meta: { name, description: "" }, default: run };
+  return {
+    meta: { name, description: "" },
+    default: run,
+    source: { kind: "fingerprint", fingerprint: `test:${name}:${run.toString()}` },
+  };
 }
 
 function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>): WorkflowContextOptions {
@@ -149,18 +156,19 @@ async function runWithJournal(input: {
     journal,
     worktrees: new WorktreeRegistry(input.cwd),
     createSession: input.createSession,
+    repositoryResumeContext: await captureRepositoryResumeContext(input.cwd),
   };
 
   return await runWorkflowWithContext(rc, progress, input.mod, "", contextOpts(input.resolveWorkflow));
 }
 
-function fakeContext(cwd: string): ExtensionContext {
+function fakeContext(cwd: string, signal?: AbortSignal): ExtensionContext {
   return {
     hasUI: false,
     cwd,
     model: undefined,
     modelRegistry: { find: () => undefined },
-    signal: undefined,
+    signal,
   } as unknown as ExtensionContext;
 }
 
@@ -197,7 +205,31 @@ test("resume with the same workflow replays all completed agent results from jou
   assert.equal((await loadJournalEntries(workflowJournalPath(cwd, "second-run"))).length, 2);
 });
 
-test("resume misses changed calls without invalidating unrelated later calls", async () => {
+test("programmatic workflows without explicit source provenance never replay cached agents", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-unverifiable-source-"));
+  const mod: WorkflowModule = {
+    meta: { name: "programmatic", description: "" },
+    default: async (api) => api.agent("same prompt"),
+  };
+  try {
+    await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+
+    const livePrompts: string[] = [];
+    await runWithJournal({
+      cwd,
+      mod,
+      resumeFrom: "first-run",
+      writeRunId: "second-run",
+      createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
+    });
+
+    assert.deepEqual(livePrompts, ["same prompt"]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("changing workflow implementation invalidates all calls from the old source", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-suffix-"));
   const original = workflowModule("linear", async (api) => [await api.agent("a"), await api.agent("b"), await api.agent("c")]);
   const changed = workflowModule("linear", async (api) => [await api.agent("a"), await api.agent("changed"), await api.agent("c")]);
@@ -219,8 +251,327 @@ test("resume misses changed calls without invalidating unrelated later calls", a
   });
 
   assert.deepEqual(result, ["live:a", "live:changed", "live:c"]);
-  assert.deepEqual(livePrompts, ["changed"]);
+  assert.deepEqual(livePrompts, ["a", "changed", "c"]);
   assert.equal((await loadJournalEntries(workflowJournalPath(cwd, "second-run"))).length, 3);
+});
+
+function runGit(cwd: string, args: readonly string[]): void {
+  const result = spawnSync("git", [...args], { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
+}
+
+async function createGitRepo(options: { readonly ignoreJournal?: boolean } = {}): Promise<string> {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-context-"));
+  runGit(cwd, ["init"]);
+  await writeFile(join(cwd, "tracked.txt"), "baseline\n", "utf8");
+  if (options.ignoreJournal !== false) {
+    await writeFile(join(cwd, ".gitignore"), ".pi/.workflow-runs/\n", "utf8");
+  }
+  runGit(cwd, ["add", "."]);
+  runGit(cwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "baseline"]);
+  return cwd;
+}
+
+async function assertRepositoryChangeInvalidates(
+  cwd: string,
+  mutate: () => Promise<void>,
+  expectedReason: RegExp,
+): Promise<void> {
+  const mod = workflowModule("repository-context", async (api) => api.agent("same prompt"));
+  await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+  await mutate();
+
+  const progress = createProgress();
+  const livePrompts: string[] = [];
+  const usage = createWorkflowUsageRecorder();
+  const journal = await createWorkflowJournal({
+    resumePath: workflowJournalPath(cwd, "first-run"),
+    writePath: workflowJournalPath(cwd, "second-run"),
+  });
+  const rc: RunContext = {
+    cwd,
+    hostModel: undefined,
+    modelRegistry: { find: () => undefined },
+    semaphore: new Semaphore(4),
+    progress,
+    signal: undefined,
+    perf: new NoopPerfRecorder(),
+    usage,
+    budget: createBudget(null, usage),
+    journal,
+    worktrees: new WorktreeRegistry(cwd),
+    createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
+    repositoryResumeContext: await captureRepositoryResumeContext(cwd),
+  };
+
+  await runWorkflowWithContext(rc, progress, mod, "", contextOpts());
+  assert.deepEqual(livePrompts, ["same prompt"]);
+  assert.ok(progress.logs.some((line) => expectedReason.test(line)), `expected invalidation log ${expectedReason}, got ${progress.logs.join(" | ")}`);
+}
+
+test("resume keeps cache hits for unchanged git repository context", async () => {
+  const cwd = await createGitRepo();
+  try {
+    const mod = workflowModule("unchanged-repository", async (api) => api.agent("same prompt"));
+    await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+    const livePrompts: string[] = [];
+    const result = await runWithJournal({
+      cwd,
+      mod,
+      resumeFrom: "first-run",
+      writeRunId: "second-run",
+      createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
+    });
+
+    assert.equal(result, "live:same prompt");
+    assert.deepEqual(livePrompts, []);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("resume ignores its own journal files when the repository does not", async () => {
+  const cwd = await createGitRepo({ ignoreJournal: false });
+  try {
+    const mod = workflowModule("self-journal", async (api) => api.agent("same prompt"));
+    await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+
+    const livePrompts: string[] = [];
+    const result = await runWithJournal({
+      cwd,
+      mod,
+      resumeFrom: "first-run",
+      writeRunId: "second-run",
+      createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
+    });
+
+    assert.equal(result, "live:same prompt");
+    assert.deepEqual(livePrompts, []);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("resume fingerprints the whole repository when run from a subdirectory", async () => {
+  const root = await createGitRepo({ ignoreJournal: false });
+  const cwd = join(root, "nested");
+  await mkdir(cwd);
+  try {
+    await writeFile(join(root, "outside.txt"), "untracked version one\n", "utf8");
+    await assertRepositoryChangeInvalidates(
+      cwd,
+      async () => {
+        await writeFile(join(root, "outside.txt"), "untracked version two\n", "utf8");
+      },
+      /working tree contents changed/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resume supports an unchanged unborn repository", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-unborn-"));
+  runGit(cwd, ["init"]);
+  try {
+    const mod = workflowModule("unborn-repository", async (api) => api.agent("same prompt"));
+    await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+
+    const livePrompts: string[] = [];
+    const result = await runWithJournal({
+      cwd,
+      mod,
+      resumeFrom: "first-run",
+      writeRunId: "second-run",
+      createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
+    });
+
+    assert.equal(result, "live:same prompt");
+    assert.deepEqual(livePrompts, []);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("resume invalidates cached agents when repository HEAD changes", async () => {
+  const cwd = await createGitRepo();
+  try {
+    await assertRepositoryChangeInvalidates(
+      cwd,
+      async () => {
+        await writeFile(join(cwd, "tracked.txt"), "committed change\n", "utf8");
+        runGit(cwd, ["add", "tracked.txt"]);
+        runGit(cwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "change"]);
+      },
+      /repository HEAD changed/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+for (const state of ["staged", "unstaged", "untracked"] as const) {
+  test(`resume invalidates cached agents when ${state} content changes at the same path`, async () => {
+    const cwd = await createGitRepo();
+    const path = join(cwd, state === "untracked" ? "scratch.txt" : "tracked.txt");
+    try {
+      await writeFile(path, "dirty version one\n", "utf8");
+      if (state === "staged") runGit(cwd, ["add", "tracked.txt"]);
+
+      await assertRepositoryChangeInvalidates(
+        cwd,
+        async () => {
+          await writeFile(path, "dirty version two\n", "utf8");
+          if (state === "staged") runGit(cwd, ["add", "tracked.txt"]);
+        },
+        /working tree contents changed/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+}
+
+test("resume invalidates cached agents when saved workflow source changes", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-saved-source-"));
+  const sourcePath = join(cwd, "saved-workflow.ts");
+  const run = async (api: Parameters<WorkflowModule["default"]>[0]) => api.agent("same prompt");
+  const mod: WorkflowModule = {
+    meta: { name: "saved-source", description: "" },
+    default: run,
+    source: { kind: "file", path: sourcePath },
+  };
+  try {
+    await writeFile(join(cwd, "package.json"), '{"name":"saved-source-fixture"}\n', "utf8");
+    await writeFile(sourcePath, "// source version one\n", "utf8");
+    await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+    await writeFile(sourcePath, "// source version two\n", "utf8");
+
+    const livePrompts: string[] = [];
+    await runWithJournal({
+      cwd,
+      mod,
+      resumeFrom: "first-run",
+      writeRunId: "second-run",
+      createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
+    });
+    assert.deepEqual(livePrompts, ["same prompt"]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("resume invalidates file-backed workflows when a runtime helper changes", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-helper-source-"));
+  const workflowDir = join(cwd, "workflows");
+  const sourceDir = join(cwd, "src");
+  const sourcePath = join(workflowDir, "saved-workflow.ts");
+  const helperPath = join(sourceDir, "helper.ts");
+  const mod: WorkflowModule = {
+    meta: { name: "helper-source", description: "" },
+    default: async (api) => api.agent("same prompt"),
+    source: { kind: "file", path: sourcePath },
+  };
+  try {
+    await mkdir(workflowDir);
+    await mkdir(sourceDir);
+    await writeFile(join(cwd, "package.json"), '{"name":"resume-helper-fixture"}\n', "utf8");
+    await writeFile(sourcePath, 'import "../src/helper.ts";\nexport default async () => "ok";\n', "utf8");
+    await writeFile(helperPath, "export const helper = 'one';\n", "utf8");
+    await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+    await writeFile(helperPath, "export const helper = 'two';\n", "utf8");
+
+    const livePrompts: string[] = [];
+    await runWithJournal({
+      cwd,
+      mod,
+      resumeFrom: "first-run",
+      writeRunId: "second-run",
+      createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
+    });
+    assert.deepEqual(livePrompts, ["same prompt"]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("repository capture is stable for genuine non-git directories but not failed probes", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-non-git-context-"));
+  const missing = join(cwd, "missing");
+  try {
+    await writeFile(join(cwd, "input.txt"), "first\n", "utf8");
+    const first = await captureRepositoryResumeContext(cwd);
+    const second = await captureRepositoryResumeContext(cwd);
+    assert.equal(first.verifiable, true);
+    assert.deepEqual(second, first);
+
+    await writeFile(join(cwd, "input.txt"), "second\n", "utf8");
+    const changed = await captureRepositoryResumeContext(cwd);
+    assert.equal(changed.verifiable, true);
+    assert.notEqual(changed.dirtyFingerprint, first.dirtyFingerprint);
+
+    const failed = await captureRepositoryResumeContext(missing);
+    assert.equal(failed.verifiable, false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("repository capture bounds untracked file content", async () => {
+  const cwd = await createGitRepo();
+  const path = join(cwd, "oversized-untracked.bin");
+  try {
+    await writeFile(path, "", "utf8");
+    await truncate(path, (32 << 20) + 1);
+    const context = await captureRepositoryResumeContext(cwd);
+    assert.equal(context.verifiable, false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("repository capture and normal workflow startup honor an already-aborted host signal", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-abort-"));
+  const controller = new AbortController();
+  controller.abort(new Error("stop repository capture"));
+  let workflowExecuted = false;
+  const mod = workflowModule("aborted-capture", async () => {
+    workflowExecuted = true;
+    return "unexpected";
+  });
+  try {
+    await assert.rejects(() => captureRepositoryResumeContext(cwd, controller.signal), /stop repository capture/);
+    await assert.rejects(() => runWorkflow(fakeContext(cwd, controller.signal), mod, ""), /stop repository capture/);
+    assert.equal(workflowExecuted, false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("resume invalidates cached agents when inline workflow source changes", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-inline-source-"));
+  const source = (version: string) => `
+export const meta = { name: "inline-source", description: "" };
+export default async function run(api) {
+  // ${version}
+  return api.agent("same prompt");
+}
+`;
+  try {
+    const first = compileInlineWorkflow(source("version one"));
+    await runWithJournal({ cwd, mod: first, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+    const livePrompts: string[] = [];
+    await runWithJournal({
+      cwd,
+      mod: compileInlineWorkflow(source("version two")),
+      resumeFrom: "first-run",
+      writeRunId: "second-run",
+      createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
+    });
+    assert.deepEqual(livePrompts, ["same prompt"]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test("parallel resume replays stable keys despite completion-order journal writes", async () => {

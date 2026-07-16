@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { WorkflowBudgetExceededError } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
-import { parallel, pipeline, pipelineWithOptions, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { bindParallel, parallel, pipeline, pipelineWithOptions, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -98,6 +98,36 @@ test("parallel resolves a throwing thunk to null and keeps survivors", async () 
   assert.deepEqual(results, ["first", null, "third"]);
 });
 
+test("parallel settled mode preserves order and distinguishes null values from failures", async () => {
+  const results = await parallel(
+    [
+      async () => {
+        await delay(8);
+        return "first";
+      },
+      async () => null,
+      async () => {
+        await delay(1);
+        const error = new Error("boom");
+        error.name = "ExpectedError";
+        throw error;
+      },
+      async () => {
+        throw "plain failure";
+      },
+    ],
+    { settled: true },
+  );
+
+  assert.deepEqual(results, [
+    { ok: true, value: "first" },
+    { ok: true, value: null },
+    { ok: false, error: { name: "ExpectedError", message: "boom" } },
+    { ok: false, error: { message: "plain failure" } },
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(results)), results);
+});
+
 test("parallel still rejects on run abort", async () => {
   const controller = new AbortController();
   const running = parallel(
@@ -119,6 +149,55 @@ test("parallel still rejects on run abort", async () => {
   await assert.rejects(running, /stop/);
 });
 
+test("parallel settled mode still rejects on run abort", async () => {
+  const controller = new AbortController();
+  const running = parallel(
+    [
+      async () => {
+        await delay(20);
+        return "late";
+      },
+      async () => {
+        await delay(20);
+        return "also late";
+      },
+    ],
+    { signal: controller.signal, settled: true },
+  );
+
+  controller.abort(new WorkflowAbortError("stop settled"));
+
+  await assert.rejects(running, /stop settled/);
+});
+
+test("parallel settled mode aborts siblings when a thunk fails fatally", async () => {
+  const controller = new AbortController();
+  let siblingAborted = false;
+  const running = parallel(
+    [
+      async () => {
+        await delay(2);
+        throw new WorkflowAbortError("fatal settled thunk");
+      },
+      async () =>
+        await new Promise<string>((_resolve, reject) => {
+          controller.signal.addEventListener(
+            "abort",
+            () => {
+              siblingAborted = true;
+              reject(controller.signal.reason);
+            },
+            { once: true },
+          );
+        }),
+    ],
+    { signal: controller.signal, abortController: controller, settled: true },
+  );
+
+  await assert.rejects(running, /fatal settled thunk/);
+  assert.equal(siblingAborted, true);
+});
+
 test("parallel treats budget exhaustion as a null slot", async () => {
   const results = await parallel([
     async () => 1,
@@ -129,6 +208,86 @@ test("parallel treats budget exhaustion as a null slot", async () => {
   ]);
 
   assert.deepEqual(results, [1, null, 3]);
+});
+
+test("parallel settled mode retains budget exhaustion details", async () => {
+  const results = await parallel(
+    [
+      async () => 1,
+      async () => {
+        throw new WorkflowBudgetExceededError(10, 12);
+      },
+    ],
+    { settled: true },
+  );
+
+  assert.deepEqual(results, [
+    { ok: true, value: 1 },
+    {
+      ok: false,
+      error: {
+        name: "WorkflowBudgetExceededError",
+        message: "Workflow token budget exhausted: spent 12 output tokens of 10.",
+      },
+    },
+  ]);
+});
+
+test("bound parallel keeps the engine submission limit when workflow options contain extra keys", async () => {
+  const internalController = new AbortController();
+  const workflowController = new AbortController();
+  const bound = bindParallel({
+    signal: internalController.signal,
+    abortController: internalController,
+    limit: 1,
+  });
+  const workflowOptions = {
+    settled: true as const,
+    signal: workflowController.signal,
+    abortController: workflowController,
+    limit: 10,
+  };
+  let active = 0;
+  let maxActive = 0;
+
+  const results = await bound(
+    [0, 1, 2].map((value) => async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await delay(2);
+      active--;
+      return value;
+    }),
+    workflowOptions,
+  );
+
+  assert.equal(maxActive, 1);
+  assert.deepEqual(results, [
+    { ok: true, value: 0 },
+    { ok: true, value: 1 },
+    { ok: true, value: 2 },
+  ]);
+  assert.equal(workflowController.signal.aborted, false);
+});
+
+test("bound parallel keeps the engine abort signal when workflow options contain extra keys", async () => {
+  const internalController = new AbortController();
+  const workflowController = new AbortController();
+  const bound = bindParallel({
+    signal: internalController.signal,
+    abortController: internalController,
+    limit: 1,
+  });
+  const workflowOptions = {
+    settled: true as const,
+    signal: workflowController.signal,
+    abortController: workflowController,
+    limit: 10,
+  };
+  internalController.abort(new WorkflowAbortError("internal stop"));
+
+  await assert.rejects(bound([async () => "unreachable"], workflowOptions), /internal stop/);
+  assert.equal(workflowController.signal.aborted, false);
 });
 
 test("pipeline passes previous result, original item, and index through stages", async () => {

@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { WorkflowModule } from "../types.ts";
 import { postInlineComments, resolveGitHubPrContext, type ExecLike, type InlineCommentStatus } from "./github-pr-comments.ts";
-import { buildCommentHandoffPrompt, buildFixHandoffPrompt } from "./review-handoff.ts";
+import { createReviewFixWorkflow } from "./review-fix-workflow.ts";
+import { buildCommentHandoffPrompt } from "./review-handoff.ts";
 import { isCommentableIssue, type ReviewContext, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
 
 export type ReviewActionPi = Pick<ExtensionAPI, "sendUserMessage" | "exec">;
@@ -12,29 +14,38 @@ export interface ReviewActionContext {
   };
 }
 
+export interface ReviewFixWorkflowRequest {
+  readonly kind: "run-workflow";
+  readonly module: WorkflowModule;
+  readonly args: string;
+}
+
 export async function handleReviewViewerAction(
   pi: ReviewActionPi,
   ctx: ReviewActionContext,
   action: ReviewIssueSelection | undefined,
   issues: readonly ReviewIssue[],
   context: ReviewContext | undefined,
-): Promise<void> {
+): Promise<ReviewFixWorkflowRequest | undefined> {
   if (!action || action.action === "close") return;
   const selected = selectedIssues(issues, action.issueIds);
   if (action.action === "fix") {
-    handleFixAction(pi, ctx, selected, context);
-    return;
+    return handleFixAction(ctx, selected, context);
   }
   await handleCommentAction(pi, ctx, selected, context);
 }
 
-function handleFixAction(pi: ReviewActionPi, ctx: ReviewActionContext, selected: readonly ReviewIssue[], context: ReviewContext | undefined): void {
+function handleFixAction(
+  ctx: ReviewActionContext,
+  selected: readonly ReviewIssue[],
+  context: ReviewContext | undefined,
+): ReviewFixWorkflowRequest | undefined {
   if (selected.length === 0) {
     ctx.ui.notify("No selected findings to fix", "warning");
     return;
   }
-  pi.sendUserMessage(buildFixHandoffPrompt(selected, context), { deliverAs: "followUp" });
-  ctx.ui.notify(`Queued fix request for ${selected.length} selected finding(s)`, "info");
+  ctx.ui.notify(`Generating isolated patch previews for ${selected.length} selected finding(s)`, "info");
+  return { kind: "run-workflow", module: createReviewFixWorkflow(selected, context), args: "" };
 }
 
 async function handleCommentAction(

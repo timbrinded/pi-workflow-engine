@@ -6,6 +6,7 @@ export interface BoundedProcessOptions {
   readonly args: readonly string[];
   readonly cwd: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly stdin?: string | Uint8Array;
   readonly signal?: AbortSignal;
   readonly timeoutMs: number;
   readonly maxBufferBytes?: number;
@@ -34,7 +35,7 @@ export async function runBoundedProcess(options: BoundedProcessOptions): Promise
   const child = spawn(options.file, [...options.args], {
     cwd: options.cwd,
     env: options.env ?? process.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
   });
 
   return await new Promise<BoundedProcessResult>((resolve) => {
@@ -92,5 +93,11 @@ export async function runBoundedProcess(options: BoundedProcessOptions): Promise
       }
       finish(false, options.exitError(stderr, code, signal));
     });
+    if (options.stdin !== undefined) {
+      // The child may reject input and exit before consuming it. Its process exit
+      // remains the authoritative result; avoid surfacing a secondary EPIPE.
+      child.stdin?.on("error", () => undefined);
+      child.stdin?.end(options.stdin);
+    }
   });
 }

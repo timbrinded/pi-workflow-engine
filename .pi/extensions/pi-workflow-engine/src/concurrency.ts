@@ -68,6 +68,24 @@ export interface ParallelOptions {
   readonly limit?: number;
 }
 
+export interface ParallelSettledOptions {
+  readonly settled: true;
+}
+
+export interface ParallelSettledError {
+  readonly name?: string;
+  readonly message: string;
+}
+
+export type ParallelSettledResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: ParallelSettledError };
+
+export interface WorkflowParallel {
+  <T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>;
+  <T>(thunks: Array<() => Promise<T>>, options: ParallelSettledOptions): Promise<Array<ParallelSettledResult<T>>>;
+}
+
 export interface PipelineOptions {
   readonly signal?: AbortSignal;
   readonly abortController?: AbortController;
@@ -77,15 +95,71 @@ export function compactResults<T>(values: ReadonlyArray<T | null | undefined>): 
   return values.filter((value): value is T => value != null);
 }
 
-/** Run every thunk concurrently and wait for all results; recoverable failures become null slots. */
-export async function parallel<T>(thunks: Array<() => Promise<T>>, options: ParallelOptions = {}): Promise<Array<T | null>> {
+/** Run every thunk concurrently and wait for all results; recoverable failures become null slots by default. */
+export function parallel<T>(
+  thunks: Array<() => Promise<T>>,
+  options: ParallelOptions & ParallelSettledOptions,
+): Promise<Array<ParallelSettledResult<T>>>;
+export function parallel<T>(thunks: Array<() => Promise<T>>, options?: ParallelOptions): Promise<Array<T | null>>;
+export async function parallel<T>(
+  thunks: Array<() => Promise<T>>,
+  options: ParallelOptions & Partial<ParallelSettledOptions> = {},
+): Promise<Array<T | null> | Array<ParallelSettledResult<T>>> {
+  if (options.settled) {
+    return await runParallel(
+      thunks,
+      options,
+      (value): ParallelSettledResult<T> => ({ ok: true, value }),
+      (error): ParallelSettledResult<T> => ({ ok: false, error: serializeParallelError(error) }),
+    );
+  }
+
+  return await runParallel(
+    thunks,
+    options,
+    (value): T | null => value,
+    (): T | null => null,
+  );
+}
+
+export function bindParallel(options: ParallelOptions): WorkflowParallel {
+  const executionOptions: ParallelOptions = {
+    signal: options.signal,
+    abortController: options.abortController,
+    limit: options.limit,
+  };
+
+  function boundParallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>;
+  function boundParallel<T>(
+    thunks: Array<() => Promise<T>>,
+    workflowOptions: ParallelSettledOptions,
+  ): Promise<Array<ParallelSettledResult<T>>>;
+  async function boundParallel<T>(
+    thunks: Array<() => Promise<T>>,
+    workflowOptions?: ParallelSettledOptions,
+  ): Promise<Array<T | null> | Array<ParallelSettledResult<T>>> {
+    if (workflowOptions?.settled) {
+      return await parallel(thunks, { ...executionOptions, settled: true });
+    }
+    return await parallel(thunks, executionOptions);
+  }
+
+  return boundParallel;
+}
+
+async function runParallel<T, Result>(
+  thunks: Array<() => Promise<T>>,
+  options: ParallelOptions,
+  onSuccess: (value: T) => Result,
+  onFailure: (error: unknown) => Result,
+): Promise<Result[]> {
   throwIfAborted(options.signal);
-  const results = new Array<T | null>(thunks.length);
+  const results = new Array<Result>(thunks.length);
   let remaining = thunks.length;
   if (remaining === 0) return results;
 
   const limit = normalizeLimit(options.limit, thunks.length);
-  return await new Promise<Array<T | null>>((resolve, reject) => {
+  return await new Promise<Result[]>((resolve, reject) => {
     let rejected = false;
     let active = 0;
     let next = 0;
@@ -97,7 +171,7 @@ export async function parallel<T>(thunks: Array<() => Promise<T>>, options: Para
       cleanup();
       reject(error);
     };
-    const settleSlot = (index: number, value: T | null) => {
+    const settleSlot = (index: number, value: Result) => {
       if (rejected) return;
       active--;
       results[index] = value;
@@ -120,13 +194,13 @@ export async function parallel<T>(thunks: Array<() => Promise<T>>, options: Para
             return thunks[index]();
           })
           .then(
-            (value) => settleSlot(index, value),
+            (value) => settleSlot(index, onSuccess(value)),
             (error: unknown) => {
               if (isFatalWorkflowError(error, options.signal)) {
                 rejectOnce(error);
                 return;
               }
-              settleSlot(index, null);
+              settleSlot(index, onFailure(error));
             },
           );
       }
@@ -135,6 +209,17 @@ export async function parallel<T>(thunks: Array<() => Promise<T>>, options: Para
     options.signal?.addEventListener("abort", onAbort, { once: true });
     launchMore();
   });
+}
+
+function serializeParallelError(error: unknown): ParallelSettledError {
+  if (error instanceof Error) {
+    return error.name.length > 0 ? { name: error.name, message: error.message } : { message: error.message };
+  }
+  if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
+    const name = "name" in error && typeof error.name === "string" && error.name.length > 0 ? error.name : undefined;
+    return name ? { name, message: error.message } : { message: error.message };
+  }
+  return { message: String(error) };
 }
 
 function normalizeLimit(limit: number | undefined, itemCount: number): number {
