@@ -1,24 +1,28 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { WorkflowModule } from "../types.ts";
+import { throwIfAborted } from "../cancellation.ts";
+import type { LoadedWorkflow } from "../types.ts";
+import type { WorktreeBaseline } from "../worktree.ts";
 import { postInlineComments, resolveGitHubPrContext, type ExecLike, type InlineCommentStatus } from "./github-pr-comments.ts";
 import { createReviewFixWorkflow } from "./review-fix-workflow.ts";
 import { buildCommentHandoffPrompt } from "./review-handoff.ts";
 import { isCommentableIssue, type ReviewContext, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
+import { resolveReviewWorktreeBaseline } from "./review-snapshot.ts";
 
 export type ReviewActionPi = Pick<ExtensionAPI, "sendUserMessage" | "exec">;
 export interface ReviewActionContext {
   readonly cwd: string;
+  readonly signal?: AbortSignal;
   readonly ui: {
     confirm(title: string, message: string): Promise<boolean>;
     notify(message: string, type?: "info" | "warning" | "error"): void;
   };
 }
 
-export interface ReviewFixWorkflowRequest {
-  readonly kind: "run-workflow";
-  readonly module: WorkflowModule;
-  readonly args: string;
-}
+export type ReviewBaselineResolver = (
+  context: ReviewContext | undefined,
+  cwd: string,
+  signal?: AbortSignal,
+) => Promise<WorktreeBaseline>;
 
 export async function handleReviewViewerAction(
   pi: ReviewActionPi,
@@ -26,26 +30,38 @@ export async function handleReviewViewerAction(
   action: ReviewIssueSelection | undefined,
   issues: readonly ReviewIssue[],
   context: ReviewContext | undefined,
-): Promise<ReviewFixWorkflowRequest | undefined> {
+  resolveBaseline: ReviewBaselineResolver = resolveReviewWorktreeBaseline,
+): Promise<LoadedWorkflow | undefined> {
   if (!action || action.action === "close") return;
   const selected = selectedIssues(issues, action.issueIds);
   if (action.action === "fix") {
-    return handleFixAction(ctx, selected, context);
+    return await handleFixAction(ctx, selected, context, resolveBaseline);
   }
   await handleCommentAction(pi, ctx, selected, context);
 }
 
-function handleFixAction(
+async function handleFixAction(
   ctx: ReviewActionContext,
   selected: readonly ReviewIssue[],
   context: ReviewContext | undefined,
-): ReviewFixWorkflowRequest | undefined {
+  resolveBaseline: ReviewBaselineResolver,
+): Promise<LoadedWorkflow | undefined> {
+  throwIfAborted(ctx.signal);
   if (selected.length === 0) {
     ctx.ui.notify("No selected findings to fix", "warning");
     return;
   }
+  ctx.ui.notify("Verifying the reviewed snapshot before generating patch previews", "info");
+  let baseline: WorktreeBaseline;
+  try {
+    baseline = await resolveBaseline(context, ctx.cwd, ctx.signal);
+  } catch (error) {
+    throwIfAborted(ctx.signal);
+    ctx.ui.notify(formatError(error), "warning");
+    return;
+  }
   ctx.ui.notify(`Generating isolated patch previews for ${selected.length} selected finding(s)`, "info");
-  return { kind: "run-workflow", module: createReviewFixWorkflow(selected, context), args: "" };
+  return createReviewFixWorkflow(selected, context, baseline);
 }
 
 async function handleCommentAction(
@@ -122,4 +138,8 @@ function summarizeStatuses(statuses: readonly InlineCommentStatus[]): { readonly
     else failed++;
   }
   return { posted, skipped, failed };
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -1,4 +1,4 @@
-import type { WorkflowModule } from "./types.ts";
+import type { LoadedWorkflow, WorkflowModule } from "./types.ts";
 import { fileURLToPath } from "node:url";
 import * as codeReview from "../workflows/code-review.ts";
 import * as refactorScout from "../workflows/refactor-scout.ts";
@@ -19,11 +19,20 @@ import * as perfReview from "../workflows/perf-review.ts";
  * dynamically imported built-ins. Startup optimizations should happen at the extension
  * entrypoint/discovery boundary first.
  */
-function withSourceFile(mod: WorkflowModule, filename: string): WorkflowModule {
-  return { ...mod, source: { kind: "file", path: fileURLToPath(new URL(`../workflows/${filename}`, import.meta.url)) } };
+const BUILTIN_SOURCE_ROOT = fileURLToPath(new URL("..", import.meta.url));
+
+function withSourceFile(mod: WorkflowModule, filename: string): LoadedWorkflow {
+  return {
+    ...mod,
+    source: {
+      kind: "file",
+      path: fileURLToPath(new URL(`../workflows/${filename}`, import.meta.url)),
+      root: BUILTIN_SOURCE_ROOT,
+    },
+  };
 }
 
-export const BUILTIN_WORKFLOWS: WorkflowModule[] = [
+export const BUILTIN_WORKFLOWS: LoadedWorkflow[] = [
   withSourceFile(codeReview, "code-review.ts"),
   withSourceFile(refactorScout, "refactor-scout.ts"),
   withSourceFile(diagnose, "diagnose.ts"),

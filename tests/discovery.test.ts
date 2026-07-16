@@ -49,6 +49,11 @@ test("dynamic workflows default missing descriptions to an empty string", async 
     const descriptionless = workflows.get("descriptionless");
     assert.ok(descriptionless, "expected dynamic workflow without meta.description to load");
     assert.equal(descriptionless.meta.description, "");
+    assert.deepEqual(descriptionless.source, {
+      kind: "file",
+      path: join(workflowDir, "descriptionless.ts"),
+      root: tempRepo,
+    });
   } finally {
     await rm(tempRepo, { recursive: true, force: true });
   }
@@ -108,7 +113,12 @@ test("user drop-in workflows still load from an injected test directory", async 
     );
 
     const workflows = await discoverWorkflows(tempRepo, { refresh: true, userWorkflowDir });
-    assert.equal(workflows.get(name)?.meta.description, "user drop-in");
+    const workflow = workflows.get(name);
+    assert.equal(workflow?.meta.description, "user drop-in");
+    assert.deepEqual(workflow?.source, {
+      kind: "unverifiable",
+      reason: "dynamic user workflow dependencies do not have a declared trusted source root",
+    });
   } finally {
     await rm(tempUserRoot, { recursive: true, force: true });
     await rm(tempRepo, { recursive: true, force: true });

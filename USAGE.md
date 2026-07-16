@@ -95,17 +95,22 @@ A single fan-out is still the default when it can answer the question. When the 
 ```ts
 const firstPass = (await api.parallel(initialTasks)).filter((result) => result !== null);
 
+const MAX_FOLLOW_UPS = 4;
 const GapAnalysis = Type.Object({
-  items: Type.Array(Type.Object({ question: Type.String(), reason: Type.String() })),
+  items: Type.Array(
+    Type.Object({ question: Type.String(), reason: Type.String() }),
+    { maxItems: MAX_FOLLOW_UPS },
+  ),
 });
 const gaps = await api.agent(
   `Identify only material gaps that require another agent:\n${JSON.stringify(firstPass)}`,
   { schema: GapAnalysis, thinkingLevel: "low" },
 );
 
-const followUps = gaps?.items.length
+const followUpItems = gaps?.items.slice(0, MAX_FOLLOW_UPS) ?? [];
+const followUps = followUpItems.length
   ? (await api.parallel(
-      gaps.items.map((item) => () =>
+      followUpItems.map((item) => () =>
         api.agent(`Resolve this gap and cite evidence: ${JSON.stringify(item)}`, {
           thinkingLevel: "low",
         }),
@@ -119,7 +124,7 @@ return api.agent(
 );
 ```
 
-The structured gap-analysis result lets ordinary TypeScript decide whether a second pass exists. Prefer conditionals and bounded loops over new iteration, quorum, graph, reduction, or retry primitives, and do not generate follow-up agents when the first pass is already sufficient.
+The structured gap-analysis result lets ordinary TypeScript decide whether a second pass exists. Put a hard `maxItems` bound on LLM-authored task lists and defensively slice before fan-out. Prefer conditionals and bounded loops over new iteration, quorum, graph, reduction, or retry primitives, and do not generate follow-up agents when the first pass is already sufficient.
 
 ## Workflow results
 

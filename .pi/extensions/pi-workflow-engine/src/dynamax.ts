@@ -27,6 +27,7 @@ export const ADAPTIVE_WORKFLOW_GUIDANCE = `
 Adaptive multi-pass workflows are optional. Use a simple single-pass fan-out when it is sufficient. When the first pass may expose gaps, conflicts, weak claims, or missing evidence:
 - run the bounded first-pass agents;
 - give their surviving results to a structured gap-analysis agent so the LLM decides what needs follow-up;
+- put a hard maxItems bound on LLM-authored task arrays and defensively slice them before fan-out;
 - use ordinary TypeScript conditionals or bounded loops to launch follow-up agents only when gaps exist;
 - synthesize the first-pass and follow-up results together.
 Do not generate a second pass when the first pass is sufficient, and do not invent iteration, quorum, graph, reduction, or retry primitives for this pattern.`;

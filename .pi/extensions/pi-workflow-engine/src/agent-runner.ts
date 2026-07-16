@@ -9,8 +9,8 @@ import { WorkflowBudgetExceededError, type WorkflowBudget } from "./budget.ts";
 import { throwIfAborted } from "./cancellation.ts";
 import { appendSkillReminder, createAgentSkillResourceLoader, extractSkillSelectorsFromText } from "./agent-skills.ts";
 import { agentJournalKey, type WorkflowJournal } from "./journal.ts";
-import type { WorktreeRegistry } from "./worktree.ts";
-import { createAgentResumeContext, type AgentResumeBaseContext, type RepositoryResumeContext } from "./resume-context.ts";
+import type { WorktreeBaseline, WorktreeRegistry } from "./worktree.ts";
+import { createAgentResumeContext, type AgentResumeBaseContext } from "./resume-context.ts";
 
 /** Name of the synthetic terminating tool that carries structured output. */
 const FINAL_TOOL = "final_answer";
@@ -65,10 +65,13 @@ export interface RunContext {
   budget: WorkflowBudget;
   journal: WorkflowJournal;
   worktrees: WorktreeRegistry;
-  /** Repository state captured once at workflow start. Direct runner tests may omit it. */
-  repositoryResumeContext?: RepositoryResumeContext;
   createSession?: CreateAgentSession;
 }
+
+/** Runtime-only options. The authored WorkflowApi exposes only AgentOptions. */
+export type AgentExecutionOptions = AgentOptions & {
+  readonly worktreeBaseline?: WorktreeBaseline;
+};
 
 export interface ResolvedAgentModelRequest {
   readonly ref: string;
@@ -288,7 +291,7 @@ interface AgentWorkspace {
   dispose(): Promise<void>;
 }
 
-async function createAgentWorkspace(rc: RunContext, opts: AgentOptions, label: string): Promise<AgentWorkspace> {
+async function createAgentWorkspace(rc: RunContext, opts: AgentExecutionOptions, label: string): Promise<AgentWorkspace> {
   if (opts.isolation !== "worktree") {
     return {
       cwd: rc.cwd,
@@ -340,7 +343,7 @@ async function recordJournalResult(
   label: string,
   key: string,
   value: unknown,
-  context: ReturnType<typeof createAgentResumeContext> | undefined,
+  context: ReturnType<typeof createAgentResumeContext>,
 ): Promise<void> {
   try {
     const recorded = await rc.journal.record(key, value, context);
@@ -365,8 +368,8 @@ async function recordJournalResult(
 export async function runAgent(
   rc: RunContext,
   prompt: string,
-  opts: AgentOptions = {},
-  resumeBaseContext?: AgentResumeBaseContext,
+  opts: AgentExecutionOptions = {},
+  resumeBaseContext: AgentResumeBaseContext,
 ): Promise<unknown> {
   if (typeof prompt !== "string") {
     throw new Error(`agent() prompt must be a string; received ${describeAgentPrompt(prompt)}`);
@@ -385,8 +388,8 @@ export async function runAgent(
       rc.progress.agentFailed(label, error);
       throw error;
     }
-    const resumeContext = resumeBaseContext ? createAgentResumeContext(resumeBaseContext, model) : undefined;
-    const journalKey = agentJournalKey(prompt, opts);
+    const resumeContext = createAgentResumeContext(resumeBaseContext, model);
+    const journalKey = agentJournalKey(prompt, opts, opts.worktreeBaseline);
     const cached = rc.journal.lookup(journalKey, resumeContext);
     if (cached.hit) {
       rc.progress.log(`${label}: using cached result from workflow journal`);

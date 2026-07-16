@@ -8,7 +8,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
   resolveAgentModel,
-  runAgent,
+  runAgent as runAgentWithContext,
   type AgentProgress,
   type CreateAgentSession,
   type RunContext,
@@ -37,13 +37,21 @@ type FindCall = { readonly provider: string; readonly modelId: string };
 
 const RESUME_BASE_CONTEXT: AgentResumeBaseContext = {
   repository: {
+    kind: "verified",
     state: "non-git",
-    head: "non-git",
-    dirtyFingerprint: "model-resume-fixture",
-    verifiable: true,
+    workingTreeFingerprint: "model-resume-fixture",
   },
-  workflow: { name: "model-resume-test", sourceFingerprint: "source-a", verifiable: true },
+  workflow: { kind: "verified", name: "model-resume-test", sourceFingerprint: "source-a" },
 };
+
+function runAgent(
+  rc: RunContext,
+  prompt: string,
+  opts: Parameters<typeof runAgentWithContext>[2] = {},
+  resumeBaseContext: AgentResumeBaseContext = RESUME_BASE_CONTEXT,
+): Promise<unknown> {
+  return runAgentWithContext(rc, prompt, opts, resumeBaseContext);
+}
 
 function testModel(provider: string, id: string): Model<Api> {
   return {
@@ -366,7 +374,13 @@ test("runAgent returns cached journal results before queueing, budget checks, or
   };
   const progress = createProgress();
   const usage = createWorkflowUsageRecorder();
-  const journal = createMemoryBackedJournal([{ key: agentJournalKey("hello", { label: "cached" }), value: "cached-value" }]);
+  const journal = createMemoryBackedJournal([
+    {
+      key: agentJournalKey("hello", { label: "cached" }),
+      value: "cached-value",
+      context: createAgentResumeContext(RESUME_BASE_CONTEXT, undefined),
+    },
+  ]);
   const exhausted: WorkflowBudget = { total: 100, spent: () => 250, remaining: () => 0 };
 
   const result = await runAgent(createRunContext({ createSession, progress, usage, journal, budget: exhausted }), "hello", { label: "cached" });
@@ -541,7 +555,13 @@ test("runAgent cached isolated hits skip worktree creation", async () => {
   const { registry, calls } = createFakeWorktreeRegistry({ repoCwd });
   const opts = { label: "cached-isolated", isolation: "worktree" as const };
   const cached = { result: "cached", patch: "diff", changed: true };
-  const journal = createMemoryBackedJournal([{ key: agentJournalKey("hello", opts), value: cached }]);
+  const journal = createMemoryBackedJournal([
+    {
+      key: agentJournalKey("hello", opts),
+      value: cached,
+      context: createAgentResumeContext(RESUME_BASE_CONTEXT, undefined),
+    },
+  ]);
   let createSessionCalls = 0;
   const createSession: CreateAgentSession = async () => {
     createSessionCalls += 1;

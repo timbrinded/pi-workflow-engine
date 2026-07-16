@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { SelectList, Text, truncateToWidth, type Component, type SelectItem, type SelectListTheme, type TUI } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress.ts";
-import type { WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
+import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
 import type { WorkflowUsageSnapshot } from "./src/usage.ts";
@@ -114,7 +114,7 @@ async function createInvocationPerf(options: WorkflowRunOptions): Promise<PerfSi
 /**
  * Resolve an `api.workflow()` reference to a registered workflow module. Throws on an unknown name.
  */
-export async function resolveWorkflowRef(ref: WorkflowRef, perf?: PerfSink): Promise<WorkflowModule> {
+export async function resolveWorkflowRef(ref: WorkflowRef, perf?: PerfSink): Promise<LoadedWorkflow> {
   const { discoverWorkflows } = await loadDiscovery();
   const workflows = await discoverWorkflows(EXTENSION_DIR, { perf });
   const mod = workflows.get(ref);
@@ -476,11 +476,31 @@ export async function sendWorkflowResult(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
   name: string,
-  mod: WorkflowModule,
+  mod: LoadedWorkflow,
   args: string,
   options: WorkflowRunOptions,
   perfRecorder?: PerfSink,
 ): Promise<void> {
+  let invocation: WorkflowResultInvocation | undefined = { name, mod, args, options, perfRecorder };
+  while (invocation !== undefined) {
+    invocation = await runAndSendWorkflowResult(pi, ctx, invocation);
+  }
+}
+
+interface WorkflowResultInvocation {
+  readonly name: string;
+  readonly mod: LoadedWorkflow;
+  readonly args: string;
+  readonly options: WorkflowRunOptions;
+  readonly perfRecorder?: PerfSink;
+}
+
+async function runAndSendWorkflowResult(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  invocation: WorkflowResultInvocation,
+): Promise<WorkflowResultInvocation | undefined> {
+  const { name, mod, args, options, perfRecorder } = invocation;
   const { runWorkflow } = await loadEngine();
   let perfSnapshot: PerfSnapshot | undefined;
   let usageSnapshot: WorkflowUsageSnapshot | undefined;
@@ -528,10 +548,6 @@ export async function sendWorkflowResult(
     invocationKind: "command",
   });
   const reviewAction = await maybeShowReviewResultsViewer(ctx, reviewDecision);
-  let followUpRequest: Awaited<ReturnType<typeof handleReviewViewerAction>> = undefined;
-  if (reviewDecision.kind !== "send") {
-    followUpRequest = await handleReviewViewerAction(pi, ctx, reviewAction, reviewDecision.issues, reviewDecision.report.reviewContext);
-  }
   pi.sendMessage(
     {
       customType: "workflow-result",
@@ -541,15 +557,27 @@ export async function sendWorkflowResult(
     },
     { triggerTurn: false },
   );
-  if (followUpRequest?.kind === "run-workflow") {
-    await sendWorkflowResult(pi, ctx, followUpRequest.module.meta.name, followUpRequest.module, followUpRequest.args, {
-      concurrency: options.concurrency,
-      parallelSubmissionLimit: options.parallelSubmissionLimit,
-      budget: options.budget,
-      perf: options.perf,
-      resultViewer: "skip",
-    });
-  }
+  if (reviewDecision.kind === "send") return;
+
+  const followUp = await handleReviewViewerAction(pi, ctx, reviewAction, reviewDecision.issues, reviewDecision.report.reviewContext);
+  if (!followUp) return;
+  return {
+    name: followUp.meta.name,
+    mod: followUp,
+    args: "",
+    options: reviewFollowUpOptions(options),
+  };
+}
+
+function reviewFollowUpOptions(options: WorkflowRunOptions): WorkflowRunOptions {
+  return {
+    concurrency: options.concurrency,
+    parallelSubmissionLimit: options.parallelSubmissionLimit,
+    budget: options.budget,
+    perf: options.perf,
+    resultViewer: "skip",
+    signal: options.signal,
+  };
 }
 
 export default function workflowEngine(pi: ExtensionAPI): void {
@@ -680,7 +708,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         signal,
       };
       const perfRecorder = await createInvocationPerf(runOptions);
-      let mod: WorkflowModule;
+      let mod: LoadedWorkflow;
       let resultName: string;
 
       if (request.kind === "named") {

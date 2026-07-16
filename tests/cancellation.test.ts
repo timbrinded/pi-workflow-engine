@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { runAgent, type AgentProgress, type CreateAgentSession, type RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import {
+  runAgent as runAgentWithContext,
+  type AgentProgress,
+  type CreateAgentSession,
+  type RunContext,
+} from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import { WorkflowBudgetExceededError } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { isFatalWorkflowError, WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
@@ -8,6 +13,20 @@ import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import type { AgentResumeBaseContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
+
+const RESUME_BASE_CONTEXT: AgentResumeBaseContext = {
+  repository: { kind: "verified", state: "non-git", workingTreeFingerprint: "cancellation-test" },
+  workflow: { kind: "verified", name: "cancellation-test", sourceFingerprint: "source-a" },
+};
+
+function runAgent(
+  rc: RunContext,
+  prompt: string,
+  opts: Parameters<typeof runAgentWithContext>[2] = {},
+): Promise<unknown> {
+  return runAgentWithContext(rc, prompt, opts, RESUME_BASE_CONTEXT);
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

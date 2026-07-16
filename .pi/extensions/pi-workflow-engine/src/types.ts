@@ -48,7 +48,7 @@ export interface WorkflowRunOptions {
   /** Internal recorder override for command/tool invocation timing. */
   perfRecorder?: PerfSink;
   /** Resolve a sub-workflow reference to a module, enabling `api.workflow()`. When omitted, `api.workflow()` throws. */
-  resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>;
+  resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkflow>;
   /** Called with the final performance snapshot when perf is enabled. */
   onPerfSnapshot?: (snapshot: PerfSnapshot) => void;
   /** Called with the final workflow subagent usage snapshot. */
@@ -108,8 +108,6 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   cacheKey?: string;
   /** Run this agent in a disposable git worktree and return its patch with the result. */
   isolation?: "worktree";
-  /** Internal reviewed-snapshot baseline for an isolated worktree. */
-  worktreeBaseline?: WorktreeBaseline;
   /** Allowlist of concrete tool names the agent may use (e.g. ["read", "bash"]). */
   tools?: string[];
   /**
@@ -185,12 +183,23 @@ export interface WorkflowApi {
 export type WorkflowRun = (api: WorkflowApi) => Promise<unknown>;
 
 export type WorkflowSourceIdentity =
-  | { readonly kind: "file"; readonly path: string }
-  | { readonly kind: "fingerprint"; readonly fingerprint: string };
+  | { readonly kind: "file"; readonly path: string; readonly root: string }
+  | { readonly kind: "fingerprint"; readonly fingerprint: string }
+  | { readonly kind: "unverifiable"; readonly reason: string };
 
+/** The authored exports of a workflow module. */
 export interface WorkflowModule {
   meta: WorkflowMeta;
   default: WorkflowRun;
-  /** Source provenance used to invalidate resume entries when workflow code changes. */
-  source?: WorkflowSourceIdentity;
+}
+
+/** Engine-owned execution metadata that authored workflows cannot provide. */
+export interface LoadedWorkflowExecution {
+  readonly isolatedWorktreeBaseline?: WorktreeBaseline;
+}
+
+/** A validated workflow plus engine-owned provenance used for safe resume replay. */
+export interface LoadedWorkflow extends WorkflowModule {
+  readonly source: WorkflowSourceIdentity;
+  readonly execution?: LoadedWorkflowExecution;
 }

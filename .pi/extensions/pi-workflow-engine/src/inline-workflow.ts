@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
-import type { WorkflowApi, WorkflowMeta, WorkflowModule } from "./types.ts";
+import type { LoadedWorkflow, WorkflowApi, WorkflowMeta } from "./types.ts";
 import { parseWorkflowMeta } from "./workflow-module.ts";
 
 /**
@@ -29,7 +29,7 @@ type AsyncFunctionConstructor = new (...args: string[]) => InlineWorkflowExecuto
 
 const AsyncFunction = Object.getPrototypeOf(async function inlineWorkflowCompilerSentinel() {}).constructor as AsyncFunctionConstructor;
 
-export function compileInlineWorkflow(source: string): WorkflowModule {
+export function compileInlineWorkflow(source: string): LoadedWorkflow {
   rejectForbiddenModuleSyntax(source);
   const metaLiteral = extractMetaLiteral(source);
   const parsedMeta = parseWorkflowMeta(metaLiteral.value);

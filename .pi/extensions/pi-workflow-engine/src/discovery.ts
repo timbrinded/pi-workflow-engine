@@ -2,9 +2,9 @@ import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { WorkflowModule } from "./types.ts";
+import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import type { PerfSink } from "./perf.ts";
-import { parseWorkflowModule } from "./workflow-module.ts";
+import { loadWorkflow, parseWorkflowModule } from "./workflow-module.ts";
 import { BUILTIN_WORKFLOW_FILES, BUILTIN_WORKFLOWS } from "./workflows.ts";
 
 export interface DiscoverWorkflowsOptions {
@@ -13,10 +13,14 @@ export interface DiscoverWorkflowsOptions {
   readonly userWorkflowDir?: string;
 }
 
-const discoveryCache = new Map<string, Map<string, WorkflowModule>>();
+const discoveryCache = new Map<string, Map<string, LoadedWorkflow>>();
 
 /** Best-effort dynamic load of every `*.ts` workflow in a directory. */
-async function loadDir(dir: string, excludeFiles: ReadonlySet<string> = new Set()): Promise<WorkflowModule[]> {
+async function loadDir(
+  dir: string,
+  sourceIdentity: (path: string) => WorkflowSourceIdentity,
+  excludeFiles: ReadonlySet<string> = new Set(),
+): Promise<LoadedWorkflow[]> {
   let entries: string[];
   try {
     entries = await readdir(dir);
@@ -24,7 +28,7 @@ async function loadDir(dir: string, excludeFiles: ReadonlySet<string> = new Set(
     return [];
   }
 
-  const modules: WorkflowModule[] = [];
+  const modules: LoadedWorkflow[] = [];
   for (const name of entries) {
     if (excludeFiles.has(name)) continue;
     if (!name.endsWith(".ts") || name.startsWith("_") || name.startsWith(".")) continue;
@@ -32,7 +36,7 @@ async function loadDir(dir: string, excludeFiles: ReadonlySet<string> = new Set(
       const path = join(dir, name);
       const loaded: unknown = await import(pathToFileURL(path).href);
       const parsed = parseWorkflowModule(loaded);
-      if ("module" in parsed) modules.push({ ...parsed.module, source: { kind: "file", path } });
+      if ("module" in parsed) modules.push(loadWorkflow(parsed.module, sourceIdentity(path)));
       else console.error(`[workflow-engine] skipped ${name}: ${parsed.reason}`);
     } catch (error) {
       // Drop-in loading depends on the runtime resolving TS + the bundled typebox.
@@ -47,7 +51,7 @@ async function loadDir(dir: string, excludeFiles: ReadonlySet<string> = new Set(
  * All available workflows by name. Static registry wins on name collisions, so the
  * bundled example is always the verified one even if a same-named file is dropped in.
  */
-export async function discoverWorkflows(repoDir: string, options: DiscoverWorkflowsOptions = {}): Promise<Map<string, WorkflowModule>> {
+export async function discoverWorkflows(repoDir: string, options: DiscoverWorkflowsOptions = {}): Promise<Map<string, LoadedWorkflow>> {
   const userWorkflowDir = options.userWorkflowDir ?? join(homedir(), ".pi", "agent", "workflows");
   const cacheKey = `${repoDir}\0${userWorkflowDir}`;
   const cached = discoveryCache.get(cacheKey);
@@ -57,13 +61,20 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
   }
 
   const byName = await timed(options.perf, "discovery.total_ms", async () => {
-    const next = new Map<string, WorkflowModule>();
+    const next = new Map<string, LoadedWorkflow>();
     for (const mod of BUILTIN_WORKFLOWS) next.set(mod.meta.name, mod);
 
     const repoWorkflowDir = join(repoDir, "workflows");
     const [repoDynamic, userDynamic] = await Promise.all([
-      timed(options.perf, "discovery.repo_dir_ms", () => loadDir(repoWorkflowDir, BUILTIN_WORKFLOW_FILES)),
-      timed(options.perf, "discovery.user_dir_ms", () => loadDir(userWorkflowDir)),
+      timed(options.perf, "discovery.repo_dir_ms", () =>
+        loadDir(repoWorkflowDir, (path) => ({ kind: "file", path, root: repoDir }), BUILTIN_WORKFLOW_FILES),
+      ),
+      timed(options.perf, "discovery.user_dir_ms", () =>
+        loadDir(userWorkflowDir, () => ({
+          kind: "unverifiable",
+          reason: "dynamic user workflow dependencies do not have a declared trusted source root",
+        })),
+      ),
     ]);
 
     for (const mod of repoDynamic) {

@@ -31,7 +31,7 @@ export interface WorktreeRef {
 
 /** Immutable commit plus an optional patch used to reconstruct a reviewed snapshot. */
 export interface WorktreeBaseline {
-  readonly ref?: string;
+  readonly ref: string;
   readonly patch?: string;
 }
 

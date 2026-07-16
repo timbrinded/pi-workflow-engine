@@ -1,18 +1,12 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "bun:test";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
+import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { bindParallel } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { handleReviewViewerAction, type ReviewActionContext, type ReviewActionPi } from "../.pi/extensions/pi-workflow-engine/src/review/review-actions.ts";
 import {
   buildFixAgentPrompt,
-  captureReviewMaterial,
-  resolveReviewWorktreeBaseline,
   runReviewFixWorkflow,
   type ReviewFixWorkflowApi,
 } from "../.pi/extensions/pi-workflow-engine/src/review/review-fix-workflow.ts";
@@ -58,17 +52,74 @@ test("fix action returns a programmatic workflow instead of a parent follow-up",
     },
   };
 
-  const request = await handleReviewViewerAction(pi, ctx, { action: "fix", issueIds: ["R001"] }, issues, context);
+  const baseline = { ref: "0123456789012345678901234567890123456789" };
+  const request = await handleReviewViewerAction(
+    pi,
+    ctx,
+    { action: "fix", issueIds: ["R001"] },
+    issues,
+    context,
+    async (receivedContext, cwd, signal) => {
+      assert.equal(receivedContext, context);
+      assert.equal(cwd, "/repo");
+      assert.equal(signal, undefined);
+      return baseline;
+    },
+  );
 
   assert.equal(sent.length, 0);
-  assert.equal(request?.kind, "run-workflow");
-  assert.equal(request?.module.meta.name, "code-review-fix-previews");
-  assert.deepEqual(request?.module.source, {
+  assert.equal(request?.meta.name, "code-review-fix-previews");
+  assert.deepEqual(request?.source, {
     kind: "file",
     path: fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/src/review/review-fix-workflow.ts", import.meta.url)),
+    root: fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/", import.meta.url)),
   });
-  assert.equal(request?.args, "");
-  assert.deepEqual(notifications, ["Generating isolated patch previews for 1 selected finding(s)"]);
+  assert.deepEqual(request?.execution, { isolatedWorktreeBaseline: baseline });
+  assert.deepEqual(notifications, [
+    "Verifying the reviewed snapshot before generating patch previews",
+    "Generating isolated patch previews for 1 selected finding(s)",
+  ]);
+});
+
+test("fix action propagates cancellation raised during snapshot resolution", async () => {
+  const issues = toReviewIssues("code-review", createReport());
+  const controller = new AbortController();
+  const notifications: string[] = [];
+  const pi: ReviewActionPi = {
+    sendUserMessage() {},
+    async exec() {
+      return { code: 1, stdout: "", stderr: "not used", killed: false };
+    },
+  };
+  const ctx: ReviewActionContext = {
+    cwd: "/repo",
+    signal: controller.signal,
+    ui: {
+      async confirm() {
+        return true;
+      },
+      notify(message) {
+        notifications.push(message);
+      },
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      handleReviewViewerAction(
+        pi,
+        ctx,
+        { action: "fix", issueIds: ["R001"] },
+        issues,
+        undefined,
+        async () => {
+          controller.abort(new WorkflowAbortError("review action cancelled"));
+          throw new Error("snapshot resolver failed after abort");
+        },
+      ),
+    /review action cancelled/,
+  );
+  assert.deepEqual(notifications, ["Verifying the reviewed snapshot before generating patch previews"]);
 });
 
 test("fix workflow keeps finding ids, isolated patches, and per-finding failures", async () => {
@@ -76,13 +127,16 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
   const context: ReviewContext = { workflowName: "code-review", target: "review src", diffCommand: "gh pr diff 123", files: ["src/app.ts", "src/lock.ts"] };
   const calls: Array<{ prompt: string; options: Parameters<ReviewFixWorkflowApi["agent"]>[1] }> = [];
   const phases: string[] = [];
+  const parallel = bindParallel({});
+  let parallelRead = false;
   const api: ReviewFixWorkflowApi = {
-    parallel: bindParallel({}),
+    get parallel() {
+      parallelRead = true;
+      return parallel;
+    },
     phase(title) {
       phases.push(title);
     },
-    cwd: "/repo",
-    signal: undefined,
     async agent(prompt, options) {
       calls.push({ prompt, options });
       if (options.label === "fix:R002") throw new Error("validation environment unavailable");
@@ -94,13 +148,12 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
     },
   };
 
-  const baseline = { ref: "0123456789012345678901234567890123456789" };
-  const result = await runReviewFixWorkflow(api, issues, context, async () => baseline);
+  const result = await runReviewFixWorkflow(api, issues, context);
 
   assert.deepEqual(phases, ["Generate patch previews"]);
+  assert.equal(parallelRead, true);
   assert.equal(calls.length, 2);
   assert.equal(calls[0]?.options.isolation, "worktree");
-  assert.deepEqual(calls[0]?.options.worktreeBaseline, baseline);
   assert.equal(calls[0]?.options.label, "fix:R001");
   assert.equal(calls[0]?.options.phase, "Generate patch previews");
   assert.equal(calls[0]?.options.thinkingLevel, "medium");
@@ -124,188 +177,6 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
   assert.match(result.summary, /Generated 1 patch preview\(s\)/);
   assert.match(result.summary, /1 attempt\(s\) failed/);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
-});
-
-test("review fix baseline revalidates and reconstructs a dirty working-tree snapshot", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "pi-review-baseline-"));
-  try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
-    await writeFile(join(repo, "app.ts"), "export const value = 1;\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
-    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
-    await writeFile(join(repo, "app.ts"), "export const value = 2;\n");
-    const material = await captureReviewMaterial("git diff", repo);
-    const context: ReviewContext = {
-      workflowName: "code-review",
-      target: "dirty worktree",
-      diffCommand: "git diff",
-      files: ["app.ts"],
-      diffFingerprint: material.diffFingerprint,
-      baselineFingerprint: material.baselineFingerprint,
-    };
-
-    const baseline = await resolveReviewWorktreeBaseline(context, repo);
-
-    assert.equal(baseline.ref, head);
-    assert.match(baseline.patch ?? "", /\+export const value = 2/);
-  } finally {
-    await rm(repo, { recursive: true, force: true });
-  }
-});
-
-test("review fix baseline rejects a diff that changed after review", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "pi-review-stale-"));
-  try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
-    await writeFile(join(repo, "app.ts"), "before\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
-    await writeFile(join(repo, "app.ts"), "after\n");
-    const context: ReviewContext = {
-      workflowName: "code-review",
-      target: "dirty worktree",
-      diffCommand: "git diff",
-      files: ["app.ts"],
-      diffFingerprint: createHash("sha256").update("different diff").digest("hex"),
-      baselineFingerprint: createHash("sha256").update("different baseline").digest("hex"),
-    };
-
-    await assert.rejects(() => resolveReviewWorktreeBaseline(context, repo), /reviewed diff changed/);
-  } finally {
-    await rm(repo, { recursive: true, force: true });
-  }
-});
-
-test("review fix baseline resolves a ref-range target to its immutable commit", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "pi-review-range-"));
-  try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
-    await writeFile(join(repo, "app.ts"), "before\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
-    await writeFile(join(repo, "app.ts"), "reviewed\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "reviewed"], { cwd: repo }).status,
-      0,
-    );
-    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
-    const material = await captureReviewMaterial("git diff HEAD~1...HEAD", repo);
-    const context: ReviewContext = {
-      workflowName: "code-review",
-      target: "HEAD~1...HEAD",
-      diffCommand: "git diff HEAD~1...HEAD",
-      files: ["app.ts"],
-      diffFingerprint: material.diffFingerprint,
-      baselineFingerprint: material.baselineFingerprint,
-    };
-
-    assert.deepEqual(await resolveReviewWorktreeBaseline(context, repo), { ref: head });
-  } finally {
-    await rm(repo, { recursive: true, force: true });
-  }
-});
-
-test("review fix baseline rejects unchanged scoped diff when unrelated reviewed state changes", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "pi-review-baseline-state-"));
-  try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
-    await writeFile(join(repo, "app.ts"), "before\n");
-    await writeFile(join(repo, "other.ts"), "before\n");
-    assert.equal(spawnSync("git", ["add", "app.ts", "other.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
-    await writeFile(join(repo, "app.ts"), "reviewed\n");
-    const material = await captureReviewMaterial("git diff -- app.ts", repo);
-    const context: ReviewContext = {
-      workflowName: "code-review",
-      target: "app.ts",
-      diffCommand: "git diff -- app.ts",
-      files: ["app.ts"],
-      diffFingerprint: material.diffFingerprint,
-      baselineFingerprint: material.baselineFingerprint,
-    };
-
-    await writeFile(join(repo, "other.ts"), "new unrelated staged state\n");
-    assert.equal(spawnSync("git", ["add", "other.ts"], { cwd: repo }).status, 0);
-
-    await assert.rejects(() => resolveReviewWorktreeBaseline(context, repo), /reviewed snapshot changed/);
-  } finally {
-    await rm(repo, { recursive: true, force: true });
-  }
-});
-
-test("cached review baseline represents the index and excludes later unstaged content", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "pi-review-index-"));
-  try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
-    await writeFile(join(repo, "app.ts"), "before\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
-    await writeFile(join(repo, "app.ts"), "reviewed index\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    const material = await captureReviewMaterial("git diff --cached", repo);
-    const context: ReviewContext = {
-      workflowName: "code-review",
-      target: "index",
-      diffCommand: "git diff --cached",
-      files: ["app.ts"],
-      diffFingerprint: material.diffFingerprint,
-      baselineFingerprint: material.baselineFingerprint,
-    };
-    await writeFile(join(repo, "app.ts"), "later unstaged content\n");
-
-    const baseline = await resolveReviewWorktreeBaseline(context, repo);
-
-    assert.match(baseline.patch ?? "", /\+reviewed index/);
-    assert.doesNotMatch(baseline.patch ?? "", /later unstaged content/);
-  } finally {
-    await rm(repo, { recursive: true, force: true });
-  }
-});
-
-test("review baseline treats valid file operands as working-tree paths, not commit refs", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "pi-review-path-operands-"));
-  try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
-    await writeFile(join(repo, "README.md"), "before readme\n");
-    await writeFile(join(repo, "USAGE.md"), "before usage\n");
-    assert.equal(spawnSync("git", ["add", "README.md", "USAGE.md"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
-    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
-    await writeFile(join(repo, "README.md"), "reviewed readme\n");
-    await writeFile(join(repo, "USAGE.md"), "reviewed usage\n");
-
-    const paths = await captureReviewMaterial("git diff README.md USAGE.md", repo);
-    const refAndPath = await captureReviewMaterial("git diff HEAD README.md", repo);
-
-    assert.equal(paths.baseline.ref, head);
-    assert.match(paths.baseline.patch ?? "", /reviewed readme/);
-    assert.match(paths.baseline.patch ?? "", /reviewed usage/);
-    assert.equal(refAndPath.baseline.ref, head);
-    assert.match(refAndPath.diff, /reviewed readme/);
-    assert.doesNotMatch(refAndPath.diff, /reviewed usage/);
-  } finally {
-    await rm(repo, { recursive: true, force: true });
-  }
 });
 
 test("comment action falls back to parent agent when gh context is unavailable", async () => {

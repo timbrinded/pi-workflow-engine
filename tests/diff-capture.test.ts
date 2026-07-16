@@ -20,19 +20,42 @@ async function fakeBin(script: string): Promise<{ dir: string; env: NodeJS.Proce
 
 test("parseAllowedDiffCommand accepts safe git and gh diff commands", () => {
   assert.deepEqual(parseAllowedDiffCommand("git diff main...HEAD -- src/app.ts"), {
+    kind: "git",
     file: "git",
     args: ["diff", "--no-ext-diff", "main...HEAD", "--", "src/app.ts"],
+    baseline: { kind: "range", ref: "HEAD" },
   });
   assert.deepEqual(parseAllowedDiffCommand("gh pr diff 123 --patch"), {
+    kind: "pull-request",
     file: "gh",
-    args: ["pr", "diff", "123", "--patch"],
+    args: ["pr", "diff", "123", "--patch", "--color=never"],
+    pullRequestNumber: "123",
   });
   assert.deepEqual(parseAllowedDiffCommand("git diff --binary HEAD"), {
+    kind: "git",
     file: "git",
     args: ["diff", "--no-ext-diff", "--binary", "HEAD"],
+    baseline: { kind: "working-tree" },
   });
   assert.ok("error" in parseAllowedDiffCommand("git status"));
   assert.ok("error" in parseAllowedDiffCommand("git diff main; rm -rf /"));
+});
+
+test("parseAllowedDiffCommand requires explicit path and revision boundaries", () => {
+  assert.deepEqual(parseAllowedDiffCommand("git diff -- README.md USAGE.md"), {
+    kind: "git",
+    file: "git",
+    args: ["diff", "--no-ext-diff", "--", "README.md", "USAGE.md"],
+    baseline: { kind: "working-tree" },
+  });
+  assert.ok("error" in parseAllowedDiffCommand("git diff README.md USAGE.md"));
+  assert.ok("error" in parseAllowedDiffCommand("git diff HEAD:README.md HEAD:USAGE.md"));
+  assert.deepEqual(parseAllowedDiffCommand("git diff --cached -- app.ts"), {
+    kind: "git",
+    file: "git",
+    args: ["diff", "--no-ext-diff", "--cached", "--", "app.ts"],
+    baseline: { kind: "index" },
+  });
 });
 
 test("parseAllowedDiffCommand rejects side-effecting git diff options", () => {
@@ -42,6 +65,9 @@ test("parseAllowedDiffCommand rejects side-effecting git diff options", () => {
   assert.ok("error" in parseAllowedDiffCommand("git diff --output .tmp-diff HEAD"));
   assert.ok("error" in parseAllowedDiffCommand("git diff --ext-diff HEAD"));
   assert.ok("error" in parseAllowedDiffCommand("git diff --no-index a b"));
+  assert.ok("error" in parseAllowedDiffCommand("gh pr diff 123 --repo=other/repo"));
+  assert.ok("error" in parseAllowedDiffCommand("gh pr diff 123 --web"));
+  assert.ok("error" in parseAllowedDiffCommand("gh pr diff 123 --name-only"));
 });
 
 test("captureDiff captures stdout for an allowed command", async () => {

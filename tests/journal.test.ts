@@ -17,11 +17,11 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import type { AgentResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 
-const RESUME_CONTEXT: AgentResumeContext = {
-  repository: { state: "git", head: "head-a", dirtyFingerprint: "clean", verifiable: true },
-  workflow: { name: "review", sourceFingerprint: "source-a", verifiable: true },
+const RESUME_CONTEXT = {
+  repository: { kind: "verified", state: "git", head: "head-a", workingTreeFingerprint: "clean" },
+  workflow: { kind: "verified", name: "review", sourceFingerprint: "source-a" },
   model: { provider: "anthropic", id: "claude-a" },
-};
+} satisfies AgentResumeContext;
 
 test("hashAgentCall is stable for equivalent behavioral options", () => {
   const schemaA = Type.Object({ ok: Type.Boolean(), value: Type.String() });
@@ -66,45 +66,51 @@ test("agentJournalKey uses optional cache keys without hiding behavior changes",
 });
 
 test("agentJournalKey includes the isolated worktree baseline identity", () => {
-  const first = agentJournalKey("fix", {
-    isolation: "worktree",
-    worktreeBaseline: { ref: "a".repeat(40), patch: "first patch" },
-  });
+  const first = agentJournalKey(
+    "fix",
+    { isolation: "worktree" },
+    { ref: "a".repeat(40), patch: "first patch" },
+  );
   assert.notEqual(
-    agentJournalKey("fix", {
-      isolation: "worktree",
-      worktreeBaseline: { ref: "b".repeat(40), patch: "first patch" },
-    }),
+    agentJournalKey(
+      "fix",
+      { isolation: "worktree" },
+      { ref: "b".repeat(40), patch: "first patch" },
+    ),
     first,
   );
   assert.notEqual(
-    agentJournalKey("fix", {
-      isolation: "worktree",
-      worktreeBaseline: { ref: "a".repeat(40), patch: "second patch" },
-    }),
+    agentJournalKey(
+      "fix",
+      { isolation: "worktree" },
+      { ref: "a".repeat(40), patch: "second patch" },
+    ),
     first,
   );
 });
 
-test("journal lookup matches exact stable keys without suffix invalidation", async () => {
+test("journal lookup matches exact contextual keys without suffix invalidation", async () => {
   const journal = createMemoryBackedJournal([
-    { key: "a", value: "one" },
-    { key: "b", value: "two" },
-    { key: "c", value: "three" },
+    { key: "a", value: "one", context: RESUME_CONTEXT },
+    { key: "b", value: "two", context: RESUME_CONTEXT },
+    { key: "c", value: "three", context: RESUME_CONTEXT },
   ]);
 
-  assert.deepEqual(journal.lookup("a"), { hit: true, value: "one" });
-  assert.deepEqual(journal.lookup("changed"), { hit: false });
-  assert.deepEqual(journal.lookup("c"), { hit: true, value: "three" });
+  assert.deepEqual(journal.lookup("a", RESUME_CONTEXT), { hit: true, value: "one" });
+  assert.deepEqual(journal.lookup("changed", RESUME_CONTEXT), { hit: false });
+  assert.deepEqual(journal.lookup("c", RESUME_CONTEXT), { hit: true, value: "three" });
 });
 
 test("journal lookup treats duplicate keys as ambiguous misses", async () => {
   const journal = createMemoryBackedJournal([
-    { key: "same", value: "one" },
-    { key: "same", value: "two" },
+    { key: "same", value: "one", context: RESUME_CONTEXT },
+    { key: "same", value: "two", context: RESUME_CONTEXT },
   ]);
 
-  assert.deepEqual(journal.lookup("same"), { hit: false });
+  assert.deepEqual(journal.lookup("same", RESUME_CONTEXT), {
+    hit: false,
+    reason: "multiple cached entries match this agent call",
+  });
 });
 
 test("journal validates execution context and explains cache invalidation", () => {
@@ -121,7 +127,7 @@ test("journal validates execution context and explains cache invalidation", () =
   assert.deepEqual(
     journal.lookup("same", {
       ...RESUME_CONTEXT,
-      repository: { ...RESUME_CONTEXT.repository, dirtyFingerprint: "dirty-b" },
+      repository: { ...RESUME_CONTEXT.repository, workingTreeFingerprint: "dirty-b" },
     }),
     { hit: false, reason: "working tree contents changed" },
   );
@@ -135,7 +141,7 @@ test("journal validates execution context and explains cache invalidation", () =
   assert.deepEqual(
     journal.lookup("same", {
       ...RESUME_CONTEXT,
-      workflow: { ...RESUME_CONTEXT.workflow, verifiable: false },
+      workflow: { kind: "unverifiable", name: "review", reason: "test fixture" },
     }),
     { hit: false, reason: "workflow source could not be verified" },
   );
@@ -162,12 +168,12 @@ test("journal records append JSONL and explicit resume load failures are visible
   const path = join(dir, "run.jsonl");
   const journal = await createWorkflowJournal({ writePath: path });
 
-  assert.deepEqual(await journal.record("key-1", { ok: true }), { ok: true });
-  assert.deepEqual(await journal.record("key-2", null), { ok: true });
+  assert.deepEqual(await journal.record("key-1", { ok: true }, RESUME_CONTEXT), { ok: true });
+  assert.deepEqual(await journal.record("key-2", null, RESUME_CONTEXT), { ok: true });
 
   assert.deepEqual(await loadJournalEntries(path), [
-    { key: "key-1", value: { ok: true } },
-    { key: "key-2", value: null },
+    { key: "key-1", value: { ok: true }, context: RESUME_CONTEXT },
+    { key: "key-2", value: null, context: RESUME_CONTEXT },
   ]);
   assert.deepEqual(await loadJournalEntries(join(dir, "missing.jsonl")), []);
   await assert.rejects(() => createWorkflowJournal({ resumePath: join(dir, "missing.jsonl"), writePath: join(dir, "next.jsonl") }), WorkflowJournalLoadError);

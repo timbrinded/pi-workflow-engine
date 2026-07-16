@@ -1,10 +1,27 @@
 import type { PerfSink } from "./perf.ts";
 import { runBoundedProcess } from "./process-runner.ts";
 
-export interface AllowedDiffCommand {
-  readonly file: "git" | "gh";
+export type GitDiffBaselineTarget =
+  | { readonly kind: "working-tree" }
+  | { readonly kind: "index" }
+  | { readonly kind: "range"; readonly ref: string };
+
+export interface AllowedGitDiffTarget {
+  readonly kind: "git";
+  readonly file: "git";
   readonly args: readonly string[];
+  /** The semantic post-diff target used when reconstructing a review snapshot. */
+  readonly baseline: GitDiffBaselineTarget;
 }
+
+export interface AllowedPullRequestDiffTarget {
+  readonly kind: "pull-request";
+  readonly file: "gh";
+  readonly args: readonly string[];
+  readonly pullRequestNumber: string;
+}
+
+export type AllowedDiffTarget = AllowedGitDiffTarget | AllowedPullRequestDiffTarget;
 
 export interface DiffCaptureResult {
   readonly ok: boolean;
@@ -25,25 +42,32 @@ export interface DiffCaptureOptions {
 }
 
 const SAFE_REF_OR_PATH = /^[A-Za-z0-9_./:@~+=,\-]+$/;
-const SAFE_GH_FLAG = /^--[A-Za-z0-9-]+(=[A-Za-z0-9_./:@~+=,\-]+)?$/;
+const SAFE_GH_DIFF_FLAGS = new Set(["--patch", "--color=never"]);
 const SAFE_GIT_DIFF_FLAGS = new Set(["--binary", "--cached", "--staged", "--no-color", "--color=never", "--no-ext-diff"]);
 
-export function parseAllowedDiffCommand(command: string): AllowedDiffCommand | { error: string } {
+export function parseAllowedDiffCommand(command: string): AllowedDiffTarget | { error: string } {
   const tokens = command.trim().split(/\s+/).filter(Boolean);
   if (tokens.length < 2) return { error: "empty or incomplete diff command" };
   if (tokens[0] === "git" && tokens[1] === "diff") return parseGitDiff(tokens);
   if (tokens[0] === "gh" && tokens[1] === "pr" && tokens[2] === "diff" && /^\d+$/.test(tokens[3] ?? "")) {
     const flags = tokens.slice(4);
-    const unsafe = flags.find((token) => !SAFE_GH_FLAG.test(token));
-    if (unsafe) return { error: `unsupported gh pr diff token: ${unsafe}` };
-    return { file: "gh", args: ["pr", "diff", tokens[3], ...flags] };
+    const unsupported = flags.find((token) => !SAFE_GH_DIFF_FLAGS.has(token));
+    if (unsupported) return { error: `unsupported gh pr diff option: ${unsupported}` };
+    return {
+      kind: "pull-request",
+      file: "gh",
+      args: ["pr", "diff", tokens[3], "--patch", "--color=never"],
+      pullRequestNumber: tokens[3]!,
+    };
   }
   return { error: "diff command is not in the git/gh allowlist" };
 }
 
-function parseGitDiff(tokens: readonly string[]): AllowedDiffCommand | { error: string } {
+function parseGitDiff(tokens: readonly string[]): AllowedGitDiffTarget | { error: string } {
   const args = tokens.slice(2);
   const safeArgs = ["diff", "--no-ext-diff"];
+  const operands: string[] = [];
+  let staged = false;
   let pathMode = false;
 
   for (const token of args) {
@@ -55,13 +79,31 @@ function parseGitDiff(tokens: readonly string[]): AllowedDiffCommand | { error: 
     }
     if (!pathMode && token.startsWith("-")) {
       if (!isAllowedGitDiffFlag(token)) return { error: `unsupported git diff option: ${token}` };
+      staged ||= token === "--cached" || token === "--staged";
       if (token !== "--no-ext-diff") safeArgs.push(token);
       continue;
     }
+    if (!pathMode) operands.push(token);
     safeArgs.push(token);
   }
 
-  return { file: "git", args: safeArgs };
+  const baseline = classifyGitDiffBaseline(staged, operands);
+  return "error" in baseline ? baseline : { kind: "git", file: "git", args: safeArgs, baseline };
+}
+
+function classifyGitDiffBaseline(staged: boolean, operands: readonly string[]): GitDiffBaselineTarget | { readonly error: string } {
+  if (operands.length > 1) {
+    return { error: "ambiguous git diff operands; use A..B or A...B for revisions, or -- before multiple paths" };
+  }
+  if (staged) return { kind: "index" };
+
+  const range = operands.find((operand) => operand.includes(".."));
+  if (range) {
+    const separator = range.includes("...") ? "..." : "..";
+    return { kind: "range", ref: range.slice(range.indexOf(separator) + separator.length) || "HEAD" };
+  }
+
+  return { kind: "working-tree" };
 }
 
 function isAllowedGitDiffFlag(token: string): boolean {
@@ -74,9 +116,13 @@ export async function captureDiff(command: string, options: DiffCaptureOptions):
     return { ok: false, stdout: "", durationMs: 0, bytes: 0, error: parsed.error };
   }
 
+  return await captureDiffTarget(parsed, options);
+}
+
+export async function captureDiffTarget(target: AllowedDiffTarget, options: DiffCaptureOptions): Promise<DiffCaptureResult> {
   const result = await runBoundedProcess({
-    file: parsed.file,
-    args: parsed.args,
+    file: target.file,
+    args: target.args,
     cwd: options.cwd,
     env: diffCaptureEnv(options.env),
     signal: options.signal,

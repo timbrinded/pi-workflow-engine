@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { runWorkflow, runWorkflowWithContext, type WorkflowContextOptions, type WorkflowProgress } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
-import type { AgentProgress, CreateAgentSession, RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import {
+  runWorkflow,
+  runWorkflowWithContext,
+  type WorkflowContextOptions,
+  type WorkflowProgress,
+  type WorkflowRunContext,
+} from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
+import type { AgentProgress, CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import { createBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import {
@@ -15,11 +20,15 @@ import {
   workflowJournalPath,
 } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
-import type { WorkflowModule, WorkflowProgressEvent, WorkflowRef, WorkflowRunMetadata } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef, WorkflowRunMetadata } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
-import { captureRepositoryResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
+import {
+  captureRepositoryResumeContext,
+  createWorkflowSourceFingerprintCache,
+} from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
+import { createGitRepo, runGit } from "./resume-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly logs: string[];
@@ -44,7 +53,7 @@ function createProgress(): CaptureProgress {
   };
 }
 
-function workflowModule(name: string, run: WorkflowModule["default"]): WorkflowModule {
+function workflowModule(name: string, run: WorkflowModule["default"]): LoadedWorkflow {
   return {
     meta: { name, description: "" },
     default: run,
@@ -52,7 +61,7 @@ function workflowModule(name: string, run: WorkflowModule["default"]): WorkflowM
   };
 }
 
-function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>): WorkflowContextOptions {
+function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkflow>): WorkflowContextOptions {
   return { abortController: new AbortController(), submissionLimit: 16, resolveWorkflow, depth: 0, progressPrefix: "" };
 }
 
@@ -131,11 +140,11 @@ function createSequencedTextSession(onPrompt: (prompt: string) => void): CreateA
 
 async function runWithJournal(input: {
   readonly cwd: string;
-  readonly mod: WorkflowModule;
+  readonly mod: LoadedWorkflow;
   readonly resumeFrom?: string;
   readonly writeRunId: string;
   readonly createSession: CreateAgentSession;
-  readonly resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>;
+  readonly resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkflow>;
 }): Promise<unknown> {
   const usage = createWorkflowUsageRecorder();
   const progress = createProgress();
@@ -143,7 +152,7 @@ async function runWithJournal(input: {
     resumePath: input.resumeFrom ? workflowJournalPath(input.cwd, input.resumeFrom) : undefined,
     writePath: workflowJournalPath(input.cwd, input.writeRunId),
   });
-  const rc: RunContext = {
+  const rc: WorkflowRunContext = {
     cwd: input.cwd,
     hostModel: undefined,
     modelRegistry: { find: () => undefined },
@@ -157,6 +166,7 @@ async function runWithJournal(input: {
     worktrees: new WorktreeRegistry(input.cwd),
     createSession: input.createSession,
     repositoryResumeContext: await captureRepositoryResumeContext(input.cwd),
+    workflowSourceFingerprintCache: createWorkflowSourceFingerprintCache(),
   };
 
   return await runWorkflowWithContext(rc, progress, input.mod, "", contextOpts(input.resolveWorkflow));
@@ -205,11 +215,12 @@ test("resume with the same workflow replays all completed agent results from jou
   assert.equal((await loadJournalEntries(workflowJournalPath(cwd, "second-run"))).length, 2);
 });
 
-test("programmatic workflows without explicit source provenance never replay cached agents", async () => {
+test("workflows with explicitly unverifiable provenance never replay cached agents", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-unverifiable-source-"));
-  const mod: WorkflowModule = {
+  const mod: LoadedWorkflow = {
     meta: { name: "programmatic", description: "" },
     default: async (api) => api.agent("same prompt"),
+    source: { kind: "unverifiable", reason: "programmatic test workflow" },
   };
   try {
     await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
@@ -255,23 +266,6 @@ test("changing workflow implementation invalidates all calls from the old source
   assert.equal((await loadJournalEntries(workflowJournalPath(cwd, "second-run"))).length, 3);
 });
 
-function runGit(cwd: string, args: readonly string[]): void {
-  const result = spawnSync("git", [...args], { cwd, encoding: "utf8" });
-  assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
-}
-
-async function createGitRepo(options: { readonly ignoreJournal?: boolean } = {}): Promise<string> {
-  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-context-"));
-  runGit(cwd, ["init"]);
-  await writeFile(join(cwd, "tracked.txt"), "baseline\n", "utf8");
-  if (options.ignoreJournal !== false) {
-    await writeFile(join(cwd, ".gitignore"), ".pi/.workflow-runs/\n", "utf8");
-  }
-  runGit(cwd, ["add", "."]);
-  runGit(cwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "baseline"]);
-  return cwd;
-}
-
 async function assertRepositoryChangeInvalidates(
   cwd: string,
   mutate: () => Promise<void>,
@@ -288,7 +282,7 @@ async function assertRepositoryChangeInvalidates(
     resumePath: workflowJournalPath(cwd, "first-run"),
     writePath: workflowJournalPath(cwd, "second-run"),
   });
-  const rc: RunContext = {
+  const rc: WorkflowRunContext = {
     cwd,
     hostModel: undefined,
     modelRegistry: { find: () => undefined },
@@ -302,6 +296,7 @@ async function assertRepositoryChangeInvalidates(
     worktrees: new WorktreeRegistry(cwd),
     createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
     repositoryResumeContext: await captureRepositoryResumeContext(cwd),
+    workflowSourceFingerprintCache: createWorkflowSourceFingerprintCache(),
   };
 
   await runWorkflowWithContext(rc, progress, mod, "", contextOpts());
@@ -436,10 +431,10 @@ test("resume invalidates cached agents when saved workflow source changes", asyn
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-saved-source-"));
   const sourcePath = join(cwd, "saved-workflow.ts");
   const run = async (api: Parameters<WorkflowModule["default"]>[0]) => api.agent("same prompt");
-  const mod: WorkflowModule = {
+  const mod: LoadedWorkflow = {
     meta: { name: "saved-source", description: "" },
     default: run,
-    source: { kind: "file", path: sourcePath },
+    source: { kind: "file", path: sourcePath, root: cwd },
   };
   try {
     await writeFile(join(cwd, "package.json"), '{"name":"saved-source-fixture"}\n', "utf8");
@@ -467,10 +462,10 @@ test("resume invalidates file-backed workflows when a runtime helper changes", a
   const sourceDir = join(cwd, "src");
   const sourcePath = join(workflowDir, "saved-workflow.ts");
   const helperPath = join(sourceDir, "helper.ts");
-  const mod: WorkflowModule = {
+  const mod: LoadedWorkflow = {
     meta: { name: "helper-source", description: "" },
     default: async (api) => api.agent("same prompt"),
-    source: { kind: "file", path: sourcePath },
+    source: { kind: "file", path: sourcePath, root: cwd },
   };
   try {
     await mkdir(workflowDir);
@@ -490,41 +485,6 @@ test("resume invalidates file-backed workflows when a runtime helper changes", a
       createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
     });
     assert.deepEqual(livePrompts, ["same prompt"]);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test("repository capture is stable for genuine non-git directories but not failed probes", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-non-git-context-"));
-  const missing = join(cwd, "missing");
-  try {
-    await writeFile(join(cwd, "input.txt"), "first\n", "utf8");
-    const first = await captureRepositoryResumeContext(cwd);
-    const second = await captureRepositoryResumeContext(cwd);
-    assert.equal(first.verifiable, true);
-    assert.deepEqual(second, first);
-
-    await writeFile(join(cwd, "input.txt"), "second\n", "utf8");
-    const changed = await captureRepositoryResumeContext(cwd);
-    assert.equal(changed.verifiable, true);
-    assert.notEqual(changed.dirtyFingerprint, first.dirtyFingerprint);
-
-    const failed = await captureRepositoryResumeContext(missing);
-    assert.equal(failed.verifiable, false);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test("repository capture bounds untracked file content", async () => {
-  const cwd = await createGitRepo();
-  const path = join(cwd, "oversized-untracked.bin");
-  try {
-    await writeFile(path, "", "utf8");
-    await truncate(path, (32 << 20) + 1);
-    const context = await captureRepositoryResumeContext(cwd);
-    assert.equal(context.verifiable, false);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

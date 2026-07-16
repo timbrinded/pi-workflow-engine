@@ -7,16 +7,20 @@ export interface ReviewIssueSelection {
   readonly issueIds: readonly string[];
 }
 
+/** Atomic identity of the exact diff and post-change snapshot that were reviewed. */
+export interface ReviewSnapshotIdentity {
+  readonly diffFingerprint: string;
+  readonly baselineFingerprint: string;
+}
+
 export interface ReviewContext {
   readonly workflowName: string;
   readonly target: string;
   readonly diffCommand: string;
   readonly files: readonly string[];
   readonly summary?: string;
-  /** SHA-256 of the captured review diff, used to reject stale patch previews. */
-  readonly diffFingerprint?: string;
-  /** SHA-256 of the exact reviewed commit plus reconstructed binary patch. */
-  readonly baselineFingerprint?: string;
+  /** Present only when the diff and its reconstructable baseline were captured together. */
+  readonly snapshot?: ReviewSnapshotIdentity;
 }
 
 export interface ReviewIssue {

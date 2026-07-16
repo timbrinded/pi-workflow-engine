@@ -17,21 +17,37 @@ export interface BoundedProcessOptions {
   readonly exitError: (stderr: string, code: number | null, signal: NodeJS.Signals | null) => string;
 }
 
-export interface BoundedProcessResult {
-  readonly ok: boolean;
+interface BoundedProcessResultBase {
   readonly stdout: string;
   readonly stderr: string;
   readonly durationMs: number;
   readonly bytes: number;
-  readonly error?: string;
 }
+
+export type BoundedProcessFailure =
+  | { readonly kind: "spawn" | "abort" | "timeout" | "max-buffer"; readonly message: string }
+  | {
+      readonly kind: "exit";
+      readonly message: string;
+      readonly code: number | null;
+      readonly signal: NodeJS.Signals | null;
+    };
+
+export type BoundedProcessResult =
+  | (BoundedProcessResultBase & { readonly ok: true; readonly error?: undefined; readonly failure?: undefined })
+  | (BoundedProcessResultBase & {
+      readonly ok: false;
+      /** Backward-compatible display message. Branch on `failure.kind` for control flow. */
+      readonly error: string;
+      readonly failure: BoundedProcessFailure;
+    });
 
 export async function runBoundedProcess(options: BoundedProcessOptions): Promise<BoundedProcessResult> {
   const start = performance.now();
   let stdout = "";
   let stderr = "";
   let bytes = 0;
-  let error: string | undefined;
+  let pendingFailure: BoundedProcessFailure | undefined;
   const child = spawn(options.file, [...options.args], {
     cwd: options.cwd,
     env: options.env ?? process.env,
@@ -42,22 +58,22 @@ export async function runBoundedProcess(options: BoundedProcessOptions): Promise
     let settled = false;
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     const killGraceMs = Math.max(1, options.killGraceMs ?? 100);
-    const finish = (ok: boolean, finishError?: string) => {
+    const finish = (failure?: BoundedProcessFailure) => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ ok, stdout, stderr, durationMs: performance.now() - start, bytes, error: finishError });
+      const base = { stdout, stderr, durationMs: performance.now() - start, bytes };
+      resolve(failure ? { ...base, ok: false, error: failure.message, failure } : { ...base, ok: true });
     };
-    const kill = (message: string) => {
-      error = error ?? message;
+    const kill = (failure: BoundedProcessFailure) => {
+      pendingFailure ??= failure;
       child.kill("SIGTERM");
       forceKillTimer ??= setTimeout(() => {
         child.kill("SIGKILL");
-        finish(false, error);
       }, killGraceMs);
     };
-    const onAbort = () => kill(options.abortError);
-    const timeout = setTimeout(() => kill(options.timeoutError), options.timeoutMs);
+    const onAbort = () => kill({ kind: "abort", message: options.abortError });
+    const timeout = setTimeout(() => kill({ kind: "timeout", message: options.timeoutError }), options.timeoutMs);
     const cleanup = () => {
       clearTimeout(timeout);
       if (forceKillTimer) clearTimeout(forceKillTimer);
@@ -65,33 +81,37 @@ export async function runBoundedProcess(options: BoundedProcessOptions): Promise
     };
 
     if (options.signal?.aborted) {
-      kill(options.abortError);
+      onAbort();
     } else {
       options.signal?.addEventListener("abort", onAbort, { once: true });
     }
 
-    child.stdout?.on("data", (chunk: Buffer) => {
+    const captureChunk = (chunk: Buffer, append: (text: string) => void) => {
+      if (pendingFailure) return;
       bytes += chunk.length;
       if (options.maxBufferBytes !== undefined && bytes > options.maxBufferBytes) {
-        kill(options.maxBufferError ?? `process output exceeded ${options.maxBufferBytes} bytes`);
+        kill({
+          kind: "max-buffer",
+          message: options.maxBufferError ?? `process output exceeded ${options.maxBufferBytes} bytes`,
+        });
         return;
       }
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", (spawnError) => finish(false, spawnError.message));
+      append(chunk.toString("utf8"));
+    };
+    child.stdout?.on("data", (chunk: Buffer) => captureChunk(chunk, (text) => (stdout += text)));
+    child.stderr?.on("data", (chunk: Buffer) => captureChunk(chunk, (text) => (stderr += text)));
+    child.on("error", (spawnError) => finish(pendingFailure ?? { kind: "spawn", message: spawnError.message }));
     child.on("close", (code, signal) => {
-      if (error) {
-        finish(false, error);
+      if (pendingFailure) {
+        finish(pendingFailure);
         return;
       }
       if (code === 0) {
-        finish(true);
+        finish();
         return;
       }
-      finish(false, options.exitError(stderr, code, signal));
+      const message = options.exitError(stderr, code, signal);
+      finish({ kind: "exit", message, code, signal });
     });
     if (options.stdin !== undefined) {
       // The child may reject input and exit before consuming it. Its process exit

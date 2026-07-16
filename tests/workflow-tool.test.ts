@@ -175,6 +175,51 @@ test("temporary authoring, tool, and documentation guidance teach adaptive follo
   }
 });
 
+test("the documented adaptive workflow bounds LLM-authored follow-up fan-out", async () => {
+  const usage = readFileSync(new URL("../USAGE.md", import.meta.url), "utf8");
+  const example = /### Adaptive multi-pass authoring[\s\S]*?```ts\n([\s\S]*?)\n```/.exec(usage);
+  assert.ok(example, "expected the adaptive TypeScript example in USAGE.md");
+
+  const mod = compileInlineWorkflow(`
+export const meta = { name: "documented-adaptive-bound", description: "Exercise the documented adaptive workflow" };
+export default async function run(api) {
+  const initialTasks = [() => Promise.resolve("first-pass result")];
+${example[1]}
+}
+`);
+
+  const proposedGaps = Array.from({ length: 10 }, (_, index) => ({
+    question: `gap ${index + 1}`,
+    reason: `reason ${index + 1}`,
+  }));
+  const followUpPrompts: string[] = [];
+  let gapAnalysisCalls = 0;
+  let synthesisCalls = 0;
+  const agent = (async (prompt: string, options?: AgentOptions) => {
+    if (options?.schema) {
+      gapAnalysisCalls++;
+      return { items: proposedGaps };
+    }
+    if (prompt.startsWith("Resolve this gap")) {
+      followUpPrompts.push(prompt);
+      return "resolved";
+    }
+    if (prompt.startsWith("Synthesize the first pass")) {
+      synthesisCalls++;
+      return "synthesized";
+    }
+    throw new Error(`unexpected agent prompt: ${prompt}`);
+  }) as WorkflowApi["agent"];
+
+  const result = await mod.default(createFakeApi({ agent }));
+
+  assert.equal(gapAnalysisCalls, 1);
+  assert.ok(followUpPrompts.length <= 4, `expected at most 4 follow-up calls, got ${followUpPrompts.length}`);
+  assert.equal(followUpPrompts.length, 4);
+  assert.equal(synthesisCalls, 1);
+  assert.equal(result, "synthesized");
+});
+
 test("normalizeWorkflowToolRequest accepts inline workflow requests", () => {
   const script = 'export const meta = { name: "inline" };\nexport default async function run(api) { return "ok"; }';
   assert.deepEqual(normalizeWorkflowToolRequest({ script }), { kind: "inline", script });

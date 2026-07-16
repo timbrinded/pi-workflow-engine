@@ -6,7 +6,14 @@ import { getLastWorkflowInspection, sendWorkflowResult } from "../.pi/extensions
 import type { PerfSnapshot } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
 import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
-import type { WorkflowModule } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+
+function loadedWorkflow(mod: WorkflowModule): LoadedWorkflow {
+  return {
+    ...mod,
+    source: { kind: "fingerprint", fingerprint: `workflow-perf-test:${mod.meta.name}:${mod.default.toString()}` },
+  };
+}
 
 function fakeContext(signal?: AbortSignal): ExtensionContext {
   return {
@@ -37,7 +44,7 @@ test("runWorkflow exposes a perf snapshot when perf is enabled", async () => {
     default: async () => "ok",
   };
 
-  const result = await runWorkflow(fakeContext(), mod, "", {
+  const result = await runWorkflow(fakeContext(), loadedWorkflow(mod), "", {
     perf: true,
     onPerfSnapshot: (value) => {
       snapshot = value;
@@ -56,7 +63,7 @@ test("runWorkflow exposes a usage snapshot even when perf is disabled", async ()
     default: async () => "ok",
   };
 
-  const result = await runWorkflow(fakeContext(), mod, "", {
+  const result = await runWorkflow(fakeContext(), loadedWorkflow(mod), "", {
     onUsageSnapshot: (value) => {
       snapshot = value;
     },
@@ -80,7 +87,7 @@ test("runWorkflow exposes a completed progress snapshot", async () => {
     },
   };
 
-  const result = await runWorkflow(fakeContext(), mod, "", {
+  const result = await runWorkflow(fakeContext(), loadedWorkflow(mod), "", {
     onProgressSnapshot: (value) => {
       snapshot = value;
     },
@@ -105,7 +112,7 @@ test("sendWorkflowResult retains failed workflow progress snapshots for later in
     },
   };
 
-  await assert.rejects(() => sendWorkflowResult(fakePi(), fakeCommandContext(), "failing-snapshot-test", mod, "failed args", {}), /boom/);
+  await assert.rejects(() => sendWorkflowResult(fakePi(), fakeCommandContext(), "failing-snapshot-test", loadedWorkflow(mod), "failed args", {}), /boom/);
 
   const inspection = getLastWorkflowInspection();
   assert.equal(inspection?.name, "failing-snapshot-test");
@@ -115,10 +122,56 @@ test("sendWorkflowResult retains failed workflow progress snapshots for later in
   assert.equal(inspection?.snapshot.lanes[0]?.[1][0]?.details, "boom details");
 });
 
+test("runWorkflow preserves the workflow error when finalization callbacks also fail", async () => {
+  const mod: WorkflowModule = {
+    meta: { name: "primary-failure-test", description: "primary failure" },
+    default: async () => {
+      throw new Error("workflow failed first");
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      runWorkflow(fakeContext(), loadedWorkflow(mod), "", {
+        onUsageSnapshot() {
+          throw new Error("finalization callback also failed");
+        },
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.match(error.message, /workflow failed first/);
+      assert.match(error.message, /finalization callback also failed/);
+      assert.equal(error.errors.length, 2);
+      assert.match(String(error.errors[0]), /workflow failed first/);
+      assert.ok(error.errors[1] instanceof AggregateError);
+      return true;
+    },
+  );
+});
+
+test("runWorkflow reports finalization failures after a successful workflow", async () => {
+  const mod: WorkflowModule = {
+    meta: { name: "finalization-failure-test", description: "finalization failure" },
+    default: async () => "ok",
+  };
+
+  await assert.rejects(
+    () =>
+      runWorkflow(fakeContext(), loadedWorkflow(mod), "", {
+        onUsageSnapshot() {
+          throw new Error("finalization callback failed");
+        },
+      }),
+    /finalization callback failed/,
+  );
+});
+
 test("runWorkflow composes an additional abort signal during repository capture", async () => {
   const controller = new AbortController();
   controller.abort(new Error("tool aborted"));
   let workflowExecuted = false;
+  const progressSources: Array<WorkflowProgressSource | undefined> = [];
+  let progressSnapshot: WorkflowProgressSnapshot | undefined;
   const mod: WorkflowModule = {
     meta: { name: "signal-test", description: "signal" },
     default: async () => {
@@ -127,17 +180,33 @@ test("runWorkflow composes an additional abort signal during repository capture"
     },
   };
 
-  await assert.rejects(() => runWorkflow(fakeContext(), mod, "", { signal: controller.signal }), /tool aborted/);
+  await assert.rejects(
+    () =>
+      runWorkflow(fakeContext(), loadedWorkflow(mod), "", {
+        signal: controller.signal,
+        onProgressSource: (source) => progressSources.push(source),
+        onProgressSnapshot: (snapshot) => {
+          progressSnapshot = snapshot;
+        },
+      }),
+    /tool aborted/,
+  );
   assert.equal(workflowExecuted, false);
+  assert.equal(progressSources.length, 2);
+  assert.ok(progressSources[0]);
+  assert.equal(progressSources[1], undefined);
+  assert.equal(typeof progressSnapshot?.doneAt, "number");
 });
 
-test("sendWorkflowResult keeps patch previews after the original review message", async () => {
-  const sent: string[] = [];
+test("sendWorkflowResult publishes the review before reporting an unavailable fix snapshot", async () => {
+  const events: string[] = [];
   const pi = {
     sendMessage(message: unknown) {
       if (typeof message === "object" && message !== null && "details" in message) {
         const details = message.details;
-        if (typeof details === "object" && details !== null && "name" in details && typeof details.name === "string") sent.push(details.name);
+        if (typeof details === "object" && details !== null && "name" in details && typeof details.name === "string") {
+          events.push(`message:${details.name}`);
+        }
       }
     },
   } as unknown as ExtensionAPI;
@@ -149,7 +218,9 @@ test("sendWorkflowResult keeps patch previews after the original review message"
       async custom() {
         return { action: "fix", issueIds: ["R001"] };
       },
-      notify() {},
+      notify(message: string) {
+        events.push(`notify:${message}`);
+      },
       setStatus() {},
       setWidget() {},
       theme: {
@@ -180,7 +251,9 @@ test("sendWorkflowResult keeps patch previews after the original review message"
     }),
   };
 
-  await sendWorkflowResult(pi, ctx, "code-review", mod, "", { resultViewer: "open" });
+  await sendWorkflowResult(pi, ctx, "code-review", loadedWorkflow(mod), "", { resultViewer: "open" });
 
-  assert.deepEqual(sent, ["code-review", "code-review-fix-previews"]);
+  assert.equal(events[0], "message:code-review");
+  assert.equal(events[1], "notify:Verifying the reviewed snapshot before generating patch previews");
+  assert.match(events[2] ?? "", /^notify:Patch preview unavailable because the review was not captured/);
 });

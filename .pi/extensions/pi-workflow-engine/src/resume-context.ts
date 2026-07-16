@@ -1,23 +1,33 @@
-import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat, readdir, readlink, stat } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { lstat, readlink } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { throwIfAborted } from "./cancellation.ts";
-import type { WorkflowModule } from "./types.ts";
 import { runBoundedProcess, type BoundedProcessResult } from "./process-runner.ts";
+import {
+  BoundedFingerprint,
+  captureTreeFingerprint,
+  isPathWithin,
+  validateTreeFile,
+  type FingerprintCapture,
+} from "./tree-fingerprint.ts";
+import type { LoadedWorkflow } from "./types.ts";
 
-export interface RepositoryResumeContext {
-  readonly state: "git" | "unborn" | "non-git";
-  readonly head: string;
-  readonly dirtyFingerprint: string;
-  readonly verifiable: boolean;
-}
+export type RepositoryResumeContext =
+  | {
+      readonly kind: "verified";
+      readonly state: "git";
+      readonly head: string;
+      readonly workingTreeFingerprint: string;
+    }
+  | {
+      readonly kind: "verified";
+      readonly state: "unborn" | "non-git";
+      readonly workingTreeFingerprint: string;
+    }
+  | { readonly kind: "unverifiable"; readonly reason: string };
 
-export interface WorkflowResumeContext {
-  readonly name: string;
-  readonly sourceFingerprint: string;
-  readonly verifiable: boolean;
-}
+export type WorkflowResumeContext =
+  | { readonly kind: "verified"; readonly name: string; readonly sourceFingerprint: string }
+  | { readonly kind: "unverifiable"; readonly name: string; readonly reason: string };
 
 export interface ResolvedModelIdentity {
   readonly provider: string;
@@ -33,122 +43,132 @@ export interface AgentResumeContext extends AgentResumeBaseContext {
   readonly model: ResolvedModelIdentity | null;
 }
 
+export type WorkflowSourceFingerprintCache = Map<string, Promise<FingerprintCapture>>;
+
 const GIT_CONTEXT_TIMEOUT_MS = 15_000;
 const GIT_CONTEXT_MAX_BYTES = 32 << 20;
 const CONTENT_FINGERPRINT_MAX_BYTES = 32 << 20;
 const SOURCE_TREE_MAX_FILES = 4096;
-const SOURCE_TREE_MAX_ANCESTORS = 32;
 const REPOSITORY_PATHSPEC = ":(top)**";
 const WORKFLOW_JOURNAL_DIR = ".pi/.workflow-runs";
-const SOURCE_TREE_EXCLUDED_DIRECTORIES = new Set([".git", ".idea", ".artifacts", ".workflow-runs", "node_modules", "coverage"]);
+const FINGERPRINT_EXCLUDED_DIRECTORY_NAMES = new Set([".git", ".idea", ".artifacts", ".workflow-runs", "node_modules", "coverage"]);
 
-export function nonGitRepositoryResumeContext(): RepositoryResumeContext {
-  return unverifiableRepositoryResumeContext("non-git", "non-git");
+export function createWorkflowSourceFingerprintCache(): WorkflowSourceFingerprintCache {
+  return new Map();
+}
+
+export function unverifiableRepositoryResumeContext(reason: string): RepositoryResumeContext {
+  return { kind: "unverifiable", reason };
+}
+
+export function unverifiableWorkflowResumeContext(name: string, reason: string): WorkflowResumeContext {
+  return { kind: "unverifiable", name, reason };
 }
 
 export async function captureRepositoryResumeContext(cwd: string, signal?: AbortSignal): Promise<RepositoryResumeContext> {
   throwIfAborted(signal);
   const probe = await runGit(cwd, ["rev-parse", "--is-inside-work-tree"], signal);
   throwIfAborted(signal);
-  if (!probe.ok) {
-    if (await isGenuineNonGitDirectory(cwd, probe, signal)) return await captureNonGitRepositoryContext(cwd, signal);
-    return unverifiableRepositoryResumeContext("non-git", "non-git");
-  }
-  if (probe.stdout.trim() !== "true") return await captureNonGitRepositoryContext(cwd, signal);
 
-  const headResult = await runGit(cwd, ["rev-parse", "--verify", "HEAD"], signal);
-  throwIfAborted(signal);
-  if (!headResult.ok && !isExpectedUnbornHeadFailure(headResult)) {
-    return unverifiableRepositoryResumeContext("unborn", "unborn");
+  if (!probe.ok) {
+    if (probe.failure.kind === "exit") {
+      const marker = await findGitControlPath(cwd, signal);
+      if (marker.kind === "absent") return await captureNonGitRepositoryContext(cwd, signal);
+      if (marker.kind === "unknown") return unverifiableRepositoryResumeContext(marker.reason);
+    }
+    return unverifiableRepositoryResumeContext(processFailureReason("git repository probe", probe));
   }
-  const state: RepositoryResumeContext["state"] = headResult.ok ? "git" : "unborn";
-  const head = headResult.ok ? headResult.stdout.trim() : "unborn";
+
+  const insideWorkTree = probe.stdout.trim();
+  if (insideWorkTree === "false") return await captureNonGitRepositoryContext(cwd, signal);
+  if (insideWorkTree !== "true") {
+    return unverifiableRepositoryResumeContext(`git repository probe returned an unexpected value: ${insideWorkTree || "<empty>"}`);
+  }
+
+  const headResult = await runGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], signal);
+  throwIfAborted(signal);
+  const state = headResult.ok ? "git" : headResult.failure.kind === "exit" && headResult.failure.code === 1 ? "unborn" : undefined;
+  if (!state) return unverifiableRepositoryResumeContext(processFailureReason("git HEAD probe", headResult));
+
+  const head = headResult.ok ? headResult.stdout.trim() : undefined;
+  if (state === "git" && !head) return unverifiableRepositoryResumeContext("git HEAD probe returned an empty revision");
+
   const prefixResult = await runGit(cwd, ["rev-parse", "--show-prefix"], signal);
   throwIfAborted(signal);
-  if (!prefixResult.ok) {
-    return unverifiableRepositoryResumeContext(state, head);
-  }
-  const repoPrefix = prefixResult.stdout.replace(/\r?\n$/, "");
-  const dirty = await captureDirtyFingerprint(cwd, repoPrefix, signal);
-  return {
-    state,
-    head,
-    dirtyFingerprint: dirty.fingerprint,
-    verifiable: dirty.verifiable,
-  };
+  if (!prefixResult.ok) return unverifiableRepositoryResumeContext(processFailureReason("git prefix probe", prefixResult));
+
+  const dirty = await captureDirtyFingerprint(cwd, prefixResult.stdout.replace(/\r?\n$/, ""), signal);
+  if (dirty.kind === "unverifiable") return unverifiableRepositoryResumeContext(dirty.reason);
+  return state === "git"
+    ? { kind: "verified", state, head: head!, workingTreeFingerprint: dirty.fingerprint }
+    : { kind: "verified", state, workingTreeFingerprint: dirty.fingerprint };
 }
 
 async function captureNonGitRepositoryContext(cwd: string, signal: AbortSignal | undefined): Promise<RepositoryResumeContext> {
-  try {
-    const root = resolve(cwd);
-    const hash = createHash("sha256");
-    const directories = [root];
-    let contentBytes = 0;
-    let fileCount = 0;
-
-    while (directories.length > 0) {
-      throwIfAborted(signal);
-      const directory = directories.pop()!;
-      const entries = await readdir(directory, { withFileTypes: true });
-      entries.sort((left, right) => left.name.localeCompare(right.name));
-      for (const entry of entries) {
-        throwIfAborted(signal);
-        const path = join(directory, entry.name);
-        const relativePath = relative(root, path);
-        if (entry.isDirectory()) {
-          if (!SOURCE_TREE_EXCLUDED_DIRECTORIES.has(entry.name)) directories.push(path);
-          continue;
-        }
-        fileCount += 1;
-        if (fileCount > SOURCE_TREE_MAX_FILES) throw new Error(`non-git repository exceeds ${SOURCE_TREE_MAX_FILES} files`);
-        addHashPart(hash, "path", relativePath);
-        if (entry.isSymbolicLink()) {
-          addHashPart(hash, "symlink", await readlink(path));
-          continue;
-        }
-        if (!entry.isFile()) throw new Error(`non-git repository contains an unverifiable entry: ${path}`);
-        const info = await lstat(path);
-        addHashPart(hash, "mode", String(info.mode));
-        contentBytes += await addFileHashPart(
-          hash,
-          "file",
-          path,
-          CONTENT_FINGERPRINT_MAX_BYTES - contentBytes,
-          signal,
-        );
-      }
-    }
-
-    return {
-      state: "non-git",
-      head: "non-git",
-      dirtyFingerprint: hash.digest("hex"),
-      verifiable: true,
-    };
-  } catch {
-    throwIfAborted(signal);
-    return unverifiableRepositoryResumeContext("non-git", "non-git");
-  }
+  const capture = await captureTreeFingerprint({
+    root: cwd,
+    excludedDirectoryNames: FINGERPRINT_EXCLUDED_DIRECTORY_NAMES,
+    maxBytes: CONTENT_FINGERPRINT_MAX_BYTES,
+    maxFiles: SOURCE_TREE_MAX_FILES,
+    signal,
+  });
+  return capture.kind === "verified"
+    ? { kind: "verified", state: "non-git", workingTreeFingerprint: capture.fingerprint }
+    : unverifiableRepositoryResumeContext(capture.reason);
 }
 
-export async function captureWorkflowResumeContext(mod: WorkflowModule, signal?: AbortSignal): Promise<WorkflowResumeContext> {
+export async function captureWorkflowResumeContext(
+  mod: LoadedWorkflow,
+  sourceFingerprintCache: WorkflowSourceFingerprintCache,
+  signal?: AbortSignal,
+): Promise<WorkflowResumeContext> {
   throwIfAborted(signal);
-  if (mod.source?.kind === "fingerprint") {
-    return {
-      name: mod.meta.name,
-      sourceFingerprint: mod.source.fingerprint,
-      verifiable: mod.source.fingerprint.length > 0,
-    };
+  if (mod.source.kind === "unverifiable") {
+    return unverifiableWorkflowResumeContext(mod.meta.name, mod.source.reason);
   }
-  if (mod.source?.kind === "file") {
-    const source = await captureWorkflowFileFingerprint(mod.source.path, signal);
-    return { name: mod.meta.name, sourceFingerprint: source.fingerprint, verifiable: source.verifiable };
+  if (mod.source.kind === "fingerprint") {
+    return mod.source.fingerprint.length > 0
+      ? { kind: "verified", name: mod.meta.name, sourceFingerprint: mod.source.fingerprint }
+      : unverifiableWorkflowResumeContext(mod.meta.name, "workflow source fingerprint is empty");
   }
-  return {
-    name: mod.meta.name,
-    sourceFingerprint: sha256(`unverifiable-workflow-source\0${randomUUID()}`),
-    verifiable: false,
-  };
+
+  const sourcePath = resolve(mod.source.path);
+  const sourceRoot = resolve(mod.source.root);
+  if (!isPathWithin(sourceRoot, sourcePath)) {
+    return unverifiableWorkflowResumeContext(mod.meta.name, "workflow source file is outside its declared source root");
+  }
+  const sourceValidation = await validateTreeFile({
+    root: sourceRoot,
+    path: sourcePath,
+    excludedDirectoryNames: FINGERPRINT_EXCLUDED_DIRECTORY_NAMES,
+    signal,
+  });
+  if (sourceValidation.kind === "unverifiable") {
+    return unverifiableWorkflowResumeContext(mod.meta.name, `workflow source file is not part of its source tree: ${sourceValidation.reason}`);
+  }
+
+  let capture = sourceFingerprintCache.get(sourceRoot);
+  if (!capture) {
+    capture = captureTreeFingerprint({
+      root: sourceRoot,
+      excludedDirectoryNames: FINGERPRINT_EXCLUDED_DIRECTORY_NAMES,
+      maxBytes: CONTENT_FINGERPRINT_MAX_BYTES,
+      maxFiles: SOURCE_TREE_MAX_FILES,
+      signal,
+    });
+    sourceFingerprintCache.set(sourceRoot, capture);
+  }
+
+  let fingerprint: FingerprintCapture;
+  try {
+    fingerprint = await capture;
+  } catch (error) {
+    if (sourceFingerprintCache.get(sourceRoot) === capture) sourceFingerprintCache.delete(sourceRoot);
+    throw error;
+  }
+  return fingerprint.kind === "verified"
+    ? { kind: "verified", name: mod.meta.name, sourceFingerprint: fingerprint.fingerprint }
+    : unverifiableWorkflowResumeContext(mod.meta.name, fingerprint.reason);
 }
 
 export function createAgentResumeContext(
@@ -161,11 +181,40 @@ export function createAgentResumeContext(
   };
 }
 
+export function resumeContextMismatchReason(stored: AgentResumeContext, current: AgentResumeContext): string | undefined {
+  if (stored.repository.kind === "unverifiable" || current.repository.kind === "unverifiable") {
+    return "repository context could not be verified";
+  }
+  if (stored.repository.state !== current.repository.state) return "repository state changed";
+  if (
+    stored.repository.state === "git" &&
+    current.repository.state === "git" &&
+    stored.repository.head !== current.repository.head
+  ) {
+    return "repository HEAD changed";
+  }
+  if (stored.repository.workingTreeFingerprint !== current.repository.workingTreeFingerprint) {
+    return "working tree contents changed";
+  }
+  if (stored.workflow.kind === "unverifiable" || current.workflow.kind === "unverifiable") {
+    return "workflow source could not be verified";
+  }
+  if (stored.workflow.name !== current.workflow.name) return "workflow name changed";
+  if (stored.workflow.sourceFingerprint !== current.workflow.sourceFingerprint) return "workflow source changed";
+  if (stored.model?.provider !== current.model?.provider || stored.model?.id !== current.model?.id) return "effective model changed";
+  return undefined;
+}
+
+export function isAgentResumeContext(value: unknown): value is AgentResumeContext {
+  if (!isRecord(value)) return false;
+  return isRepositoryResumeContext(value.repository) && isWorkflowResumeContext(value.workflow) && isResolvedModelIdentity(value.model);
+}
+
 async function captureDirtyFingerprint(
   cwd: string,
   repoPrefix: string,
   signal: AbortSignal | undefined,
-): Promise<{ readonly fingerprint: string; readonly verifiable: boolean }> {
+): Promise<FingerprintCapture> {
   const journalExclude = `:(top,exclude,literal)${repoPrefix}${WORKFLOW_JOURNAL_DIR}`;
   const [status, staged, unstaged, untracked] = await Promise.all([
     runGit(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", REPOSITORY_PATHSPEC, journalExclude], signal),
@@ -173,44 +222,34 @@ async function captureDirtyFingerprint(
     runGit(cwd, ["diff", "--binary", "--no-ext-diff", "--no-color", "--", REPOSITORY_PATHSPEC, journalExclude], signal),
     runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--", REPOSITORY_PATHSPEC, journalExclude], signal),
   ]);
-  const commands = [status, staged, unstaged, untracked];
-  if (commands.some((result) => !result.ok)) {
-    return { fingerprint: sha256(`unverifiable\0${randomUUID()}`), verifiable: false };
-  }
+  const failed = [status, staged, unstaged, untracked].find((result) => !result.ok);
+  if (failed && !failed.ok) return { kind: "unverifiable", reason: processFailureReason("git working-tree capture", failed) };
 
-  const hash = createHash("sha256");
-  addHashPart(hash, "status", status.stdout);
-  addHashPart(hash, "staged", staged.stdout);
-  addHashPart(hash, "unstaged", unstaged.stdout);
+  const fingerprint = new BoundedFingerprint(CONTENT_FINGERPRINT_MAX_BYTES);
+  fingerprint.add("status", status.stdout);
+  fingerprint.add("staged", staged.stdout);
+  fingerprint.add("unstaged", unstaged.stdout);
 
-  const paths = untracked.stdout.split("\0").filter((path) => path.length > 0).sort();
-  let contentBytes = 0;
   try {
+    const paths = untracked.stdout.split("\0").filter((path) => path.length > 0).sort();
     for (const path of paths) {
       throwIfAborted(signal);
       const fullPath = join(cwd, path);
       const info = await lstat(fullPath);
-      addHashPart(hash, "untracked-path", path);
+      fingerprint.add("untracked-path", path);
       if (info.isSymbolicLink()) {
-        throwIfAborted(signal);
-        addHashPart(hash, "symlink", await readlink(fullPath));
+        fingerprint.add("symlink", await readlink(fullPath));
       } else if (info.isFile()) {
-        contentBytes += await addFileHashPart(
-          hash,
-          "file",
-          fullPath,
-          CONTENT_FINGERPRINT_MAX_BYTES - contentBytes,
-          signal,
-        );
+        await fingerprint.addFile("file", fullPath, signal);
       } else {
-        addHashPart(hash, "other", `${info.mode}:${info.size}`);
+        throw new Error(`untracked path is not a regular file or symbolic link: ${path}`);
       }
     }
-  } catch {
+    return { kind: "verified", fingerprint: fingerprint.digest() };
+  } catch (error) {
     throwIfAborted(signal);
-    return { fingerprint: sha256(`unverifiable\0${randomUUID()}`), verifiable: false };
+    return { kind: "unverifiable", reason: errorMessage(error) };
   }
-  return { fingerprint: hash.digest("hex"), verifiable: true };
 }
 
 async function runGit(cwd: string, args: readonly string[], signal: AbortSignal | undefined): Promise<BoundedProcessResult> {
@@ -228,161 +267,68 @@ async function runGit(cwd: string, args: readonly string[], signal: AbortSignal 
   });
 }
 
-async function captureWorkflowFileFingerprint(
-  sourcePath: string,
-  signal: AbortSignal | undefined,
-): Promise<{ readonly fingerprint: string; readonly verifiable: boolean }> {
-  try {
-    const absoluteSourcePath = resolve(sourcePath);
-    const sourceRoot = await findSourceTreeRoot(absoluteSourcePath, signal);
-    const hash = createHash("sha256");
-    const directories = [sourceRoot];
-    let contentBytes = 0;
-    let fileCount = 0;
-    let sourceSeen = false;
+type GitControlPathResult =
+  | { readonly kind: "present" | "absent" }
+  | { readonly kind: "unknown"; readonly reason: string };
 
-    while (directories.length > 0) {
-      throwIfAborted(signal);
-      const directory = directories.pop()!;
-      const entries = await readdir(directory, { withFileTypes: true });
-      entries.sort((left, right) => left.name.localeCompare(right.name));
-      for (const entry of entries) {
-        throwIfAborted(signal);
-        const path = join(directory, entry.name);
-        if (entry.isDirectory()) {
-          if (!SOURCE_TREE_EXCLUDED_DIRECTORIES.has(entry.name)) directories.push(path);
-          continue;
-        }
-        if (!entry.isFile()) throw new Error(`workflow source tree contains an unverifiable entry: ${path}`);
-        if (resolve(path) === absoluteSourcePath) sourceSeen = true;
-        fileCount += 1;
-        if (fileCount > SOURCE_TREE_MAX_FILES) throw new Error(`workflow source tree exceeds ${SOURCE_TREE_MAX_FILES} files`);
-        addHashPart(hash, "source-path", relative(sourceRoot, path));
-        contentBytes += await addFileHashPart(
-          hash,
-          "source-file",
-          path,
-          CONTENT_FINGERPRINT_MAX_BYTES - contentBytes,
-          signal,
-        );
-      }
-    }
-
-    if (!isPathWithin(sourceRoot, absoluteSourcePath) || !sourceSeen) {
-      throw new Error("workflow source file is missing from its source tree");
-    }
-    return { fingerprint: hash.digest("hex"), verifiable: true };
-  } catch {
-    throwIfAborted(signal);
-    return { fingerprint: sha256(`unverifiable-workflow-file\0${sourcePath}\0${randomUUID()}`), verifiable: false };
-  }
-}
-
-async function findSourceTreeRoot(sourcePath: string, signal: AbortSignal | undefined): Promise<string> {
-  let current = dirname(sourcePath);
-  for (let depth = 0; depth < SOURCE_TREE_MAX_ANCESTORS; depth++) {
-    throwIfAborted(signal);
-    try {
-      if ((await stat(join(current, "package.json"))).isFile()) return current;
-    } catch {
-      // Keep walking to the nearest package boundary.
-    }
-    const parent = dirname(current);
-    if (parent === current) throw new Error("workflow source has no bounded package root");
-    current = parent;
-  }
-  throw new Error(`workflow package root exceeds ${SOURCE_TREE_MAX_ANCESTORS} ancestors`);
-}
-
-async function addFileHashPart(
-  hash: ReturnType<typeof createHash>,
-  label: string,
-  path: string,
-  maxBytes: number,
-  signal: AbortSignal | undefined,
-): Promise<number> {
-  if (maxBytes < 0) throw new Error("resume-context content fingerprint exceeded its byte limit");
-  hash.update(label);
-  hash.update("\0");
-  let bytes = 0;
-  const stream = createReadStream(path, { highWaterMark: 64 << 10, signal });
-  try {
-    for await (const chunk of stream) {
-      throwIfAborted(signal);
-      const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-      bytes += buffer.length;
-      if (bytes > maxBytes) {
-        stream.destroy();
-        throw new Error(`resume-context content fingerprint exceeded ${CONTENT_FINGERPRINT_MAX_BYTES} bytes`);
-      }
-      hash.update(buffer);
-    }
-  } catch (error) {
-    throwIfAborted(signal);
-    throw error;
-  }
-  hash.update("\0");
-  return bytes;
-}
-
-async function isGenuineNonGitDirectory(
-  cwd: string,
-  probe: BoundedProcessResult,
-  signal: AbortSignal | undefined,
-): Promise<boolean> {
-  const stderr = probe.stderr.trim();
-  // Operational failures (spawn, abort, timeout, or output limit) set an error
-  // that differs from Git's stderr. Only Git's own non-repository exit is stable.
-  if (probe.error !== stderr || !/not a git repository/i.test(stderr)) return false;
-
+async function findGitControlPath(cwd: string, signal: AbortSignal | undefined): Promise<GitControlPathResult> {
   let current = resolve(cwd);
   while (true) {
     throwIfAborted(signal);
     try {
       await lstat(join(current, ".git"));
-      return false;
+      return { kind: "present" };
     } catch (error) {
-      if (!isMissingPathError(error)) return false;
+      if (!isMissingPathError(error)) {
+        return { kind: "unknown", reason: `git control-path probe failed: ${errorMessage(error)}` };
+      }
     }
     const parent = dirname(current);
-    if (parent === current) return true;
+    if (parent === current) return { kind: "absent" };
     current = parent;
   }
 }
 
-function isExpectedUnbornHeadFailure(result: BoundedProcessResult): boolean {
-  const message = `${result.stderr}\n${result.error ?? ""}`;
-  return /needed a single revision|unknown revision.*HEAD|ambiguous argument ['"]?HEAD/i.test(message);
+function processFailureReason(operation: string, result: BoundedProcessResult): string {
+  if (result.ok) return `${operation} unexpectedly succeeded`;
+  if (result.failure.kind === "exit") {
+    const termination = result.failure.code === null ? `signal ${result.failure.signal ?? "unknown"}` : `exit ${result.failure.code}`;
+    const message = sanitizeProcessMessage(result.failure.message);
+    return `${operation} failed (${termination}${message ? `: ${message}` : ""})`;
+  }
+  return `${operation} failed (${result.failure.kind}: ${result.failure.message})`;
 }
 
-function unverifiableRepositoryResumeContext(
-  state: RepositoryResumeContext["state"],
-  head: string,
-): RepositoryResumeContext {
-  return {
-    state,
-    head,
-    dirtyFingerprint: sha256(`unverifiable\0${randomUUID()}`),
-    verifiable: false,
-  };
+function isRepositoryResumeContext(value: unknown): value is RepositoryResumeContext {
+  if (!isRecord(value)) return false;
+  if (value.kind === "unverifiable") return typeof value.reason === "string";
+  if (value.kind !== "verified" || typeof value.workingTreeFingerprint !== "string") return false;
+  if (value.state === "git") return typeof value.head === "string";
+  return value.state === "unborn" || value.state === "non-git";
+}
+
+function isWorkflowResumeContext(value: unknown): value is WorkflowResumeContext {
+  if (!isRecord(value) || typeof value.name !== "string") return false;
+  if (value.kind === "unverifiable") return typeof value.reason === "string";
+  return value.kind === "verified" && typeof value.sourceFingerprint === "string";
+}
+
+function isResolvedModelIdentity(value: unknown): value is ResolvedModelIdentity | null {
+  return value === null || (isRecord(value) && typeof value.provider === "string" && typeof value.id === "string");
 }
 
 function isMissingPathError(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
-function isPathWithin(root: string, path: string): boolean {
-  const pathFromRoot = relative(root, path);
-  return pathFromRoot === "" || (!pathFromRoot.startsWith("..") && !pathFromRoot.startsWith("/"));
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
-function addHashPart(hash: ReturnType<typeof createHash>, label: string, value: string | Buffer): void {
-  hash.update(label);
-  hash.update("\0");
-  hash.update(value);
-  hash.update("\0");
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-function sha256(value: string | Buffer): string {
-  return createHash("sha256").update(value).digest("hex");
+function sanitizeProcessMessage(message: string): string {
+  return message.trim().replace(/\s+/g, " ").slice(0, 500);
 }

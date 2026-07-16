@@ -135,6 +135,17 @@ test("code-review returns the empty report when scope is unavailable", async () 
   assert.deepEqual(result.stats, { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0 });
 });
 
+test("code-review scope teaches parser-safe path and revision diff syntax", async () => {
+  const api = createScriptedApi([null], "review src/a.ts and src/b.ts");
+
+  await codeReview(api);
+
+  const prompt = api.calls[0]?.prompt ?? "";
+  assert.match(prompt, /git diff -- <path> \[<path>\.\.\.\]/);
+  assert.match(prompt, /A\.\.B.*A\.\.\.B/);
+  assert.match(prompt, /Never emit ambiguous two-operand forms/);
+});
+
 test("code-review returns the empty report when scope has no files", async () => {
   const api = createScriptedApi([
     {

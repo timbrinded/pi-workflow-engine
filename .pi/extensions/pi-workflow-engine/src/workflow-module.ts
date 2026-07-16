@@ -1,4 +1,10 @@
-import type { WorkflowMeta, WorkflowModule } from "./types.ts";
+import type {
+  LoadedWorkflow,
+  LoadedWorkflowExecution,
+  WorkflowMeta,
+  WorkflowModule,
+  WorkflowSourceIdentity,
+} from "./types.ts";
 
 type WorkflowMetaCandidate = {
   readonly name?: unknown;
@@ -28,6 +34,15 @@ export function parseWorkflowModule(value: unknown): { module: WorkflowModule } 
   if (!isWorkflowRun(candidate.default)) return { reason: "default export must be a function" };
 
   return { module: { meta: parsedMeta.meta, default: candidate.default } };
+}
+
+/** Attach engine-owned source provenance after an authored module has been validated. */
+export function loadWorkflow(
+  module: WorkflowModule,
+  source: WorkflowSourceIdentity,
+  execution?: LoadedWorkflowExecution,
+): LoadedWorkflow {
+  return execution === undefined ? { ...module, source } : { ...module, source, execution };
 }
 
 function parseWorkflowMetaObject(meta: WorkflowMetaCandidate): { meta: WorkflowMeta } | { reason: string } {

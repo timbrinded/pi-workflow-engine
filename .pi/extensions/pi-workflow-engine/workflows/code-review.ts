@@ -18,11 +18,8 @@ import {
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
 import { compactResults } from "../src/concurrency.ts";
-import { captureDiff } from "../src/diff-capture.ts";
 import type { ReviewContext } from "../src/review/review-issues.ts";
-import {
-  captureReviewMaterial,
-} from "../src/review/review-fix-workflow.ts";
+import { captureReviewMaterial } from "../src/review/review-snapshot.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -119,6 +116,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       (target
         ? `Target / instructions (verbatim): "${target}". If it names a PR number, branch, ref range, or files, build the matching diff command (use 'gh pr diff <number>' for a PR). Otherwise use the default selection below.\n`
         : "No explicit target — select the diff to review using the default below.\n") +
+      "Canonical Git syntax: use `git diff -- <path> [<path>...]` for file paths; use one `A..B` or `A...B` range operand for two revisions. Never emit ambiguous two-operand forms such as `git diff A B`.\n" +
       "Default selection — run commands to decide, falling through until you get a NON-EMPTY diff:\n" +
       "1. Get the current branch: `git branch --show-current`.\n" +
       "2. Check for an OPEN GitHub PR for this branch: `gh pr list --head <branch> --state open --json number,title`. " +
@@ -151,22 +149,16 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   // Capture the diff once, deterministically, so findings can be bounded to changed lines in code.
   let changed: Map<string, Set<number>> | null = null;
   let diffText = "";
-  let reviewMaterial: Awaited<ReturnType<typeof captureReviewMaterial>> | undefined;
-  try {
-    reviewMaterial = await captureReviewMaterial(scope.diffCommand, cwd, signal);
+  const reviewMaterial = await captureReviewMaterial(scope.diffCommand, cwd, signal);
+  if (reviewMaterial.ok) {
     diffText = reviewMaterial.diff;
     changed = changedLines(diffText);
     progress({ type: "summary", key: "diffBytes", value: Buffer.byteLength(diffText) });
-  } catch (error) {
-    log(`review snapshot capture failed (${error instanceof Error ? error.message : String(error)}) — patch previews will be unavailable`);
-    const fallbackDiff = await captureDiff(scope.diffCommand, { cwd, signal, timeoutMs: 30_000, maxBufferBytes: 16 << 20 });
-    if (fallbackDiff.ok) {
-      diffText = fallbackDiff.stdout;
-      changed = changedLines(diffText);
-      progress({ type: "summary", key: "diffBytes", value: fallbackDiff.bytes });
-    } else {
-      log(`diff capture failed (${fallbackDiff.error ?? "unknown error"}) — reviewing without the line gate`);
+    if (reviewMaterial.snapshot.status === "unavailable") {
+      log(`review snapshot unavailable (${reviewMaterial.snapshot.reason}) — patch previews will be unavailable`);
     }
+  } else {
+    log(`diff capture failed (${reviewMaterial.error}) — reviewing without the line gate; patch previews will be unavailable`);
   }
 
   const reviewContext: ReviewContext = {
@@ -175,11 +167,8 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     diffCommand: scope.diffCommand,
     files: scope.files,
     summary: scope.summary,
-    ...(reviewMaterial
-      ? {
-          diffFingerprint: reviewMaterial.diffFingerprint,
-          baselineFingerprint: reviewMaterial.baselineFingerprint,
-        }
+    ...(reviewMaterial.ok && reviewMaterial.snapshot.status === "verified"
+      ? { snapshot: reviewMaterial.snapshot.identity }
       : {}),
   };
 
