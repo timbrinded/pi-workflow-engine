@@ -27,6 +27,7 @@ Useful flags:
 /workflow:inspector                      # open the current or last workflow inspector
 /workflow code-review --result-viewer    # explicitly open the findings viewer
 /workflow code-review --review-viewer    # alias for --result-viewer
+/workflow:results                        # reopen the latest code-review findings without rerunning
 /workflow code-review --concurrency=4    # cap concurrent subagents
 /workflow code-review --budget=50000     # output-token ceiling for subagents
 /workflow code-review --resume <run-id>  # replay matching completed agent calls
@@ -68,23 +69,24 @@ Sticky mode and inspector shortcut:
 /workflow:dynamax status
 ```
 
-The workflow inspector is also registered as a first-class shortcut shown by `/hotkeys`; the default is `ctrl+shift+m`. `ctrl+o` is intentionally not used because pi already uses it for tool-output expansion and tree filtering.
+The workflow inspector and code-review results viewer are also registered as first-class shortcuts shown by `/hotkeys`. The defaults are `ctrl+shift+m` for the inspector and `ctrl+shift+r` for the latest review results. `ctrl+o` is intentionally not used because pi already uses it for tool-output expansion and tree filtering.
 
 When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives the workflow permission reminder, stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. Sticky mode, one-shot pending mode, and active Dynamax workflow runs show compact TUI status with `/workflow:dynamax on|off` and the inspector shortcut; off mode clears that status line.
 
 When the host agent calls the `workflow` tool from a TUI session, pi opens the live workflow inspector for that run. The compact workflow widget still shows the latest moving status above the editor, but the inspector is the richer view for phases, agents, findings, and logs.
 
-Configure the inspector shortcut by creating `~/.pi/agent/extensions/pi-workflow-engine.json`:
+Configure either shortcut by creating `~/.pi/agent/extensions/pi-workflow-engine.json`:
 
 ```json
 {
   "shortcuts": {
-    "inspector": "ctrl+shift+x"
+    "inspector": "ctrl+shift+x",
+    "results": "ctrl+shift+y"
   }
 }
 ```
 
-Set `"inspector": null` to disable the shortcut while keeping `/workflow:dynamax` and `/workflow:inspector` available.
+Set either shortcut to `null` to disable it while keeping `/workflow:inspector` and `/workflow:results` available.
 
 With Dynamax enabled, the host agent usually calls the `workflow` tool with `script`: a one-off inline workflow tailored to your prompt. It can still call a saved workflow by `name` when one already fits.
 
@@ -142,7 +144,7 @@ These workflow usage totals are separate from `--perf`, which is internal timing
 
 During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow:inspector` if you want to bring the last completed inspector back up afterward.
 
-Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding. The Fix action revalidates the exact reviewed PR/ref/index/working-tree snapshot, then runs each selected finding through its own worktree-isolated agent and returns the finding ID, validation summary, patch, and changed status. Failed attempts do not discard successful previews, no patch is applied to your active tree automatically, and a moved or unverifiable review target is rejected rather than patched against the wrong code.
+Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding. The viewer is centred, scales to the terminal, and shows the visible finding/detail ranges while scrolling. `/workflow:results` or `ctrl+shift+r` reopens the most recent validated code-review report in the current pi session without rerunning the workflow; selections reset when it reopens. The Fix action revalidates the exact reviewed PR/ref/index/working-tree snapshot, then runs each selected finding through its own worktree-isolated agent and returns the finding ID, validation summary, patch, and changed status. Failed attempts do not discard successful previews, no patch is applied to your active tree automatically, and a moved or unverifiable review target is rejected rather than patched against the wrong code.
 
 ### Resume a run
 

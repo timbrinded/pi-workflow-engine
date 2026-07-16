@@ -37,7 +37,7 @@ export async function handleReviewViewerAction(
   if (action.action === "fix") {
     return await handleFixAction(ctx, selected, context, resolveBaseline);
   }
-  await handleCommentAction(pi, ctx, selected, context);
+  await handleCommentAction(pi, ctx, selected, context, resolveBaseline);
 }
 
 async function handleFixAction(
@@ -69,6 +69,7 @@ async function handleCommentAction(
   ctx: ReviewActionContext,
   selected: readonly ReviewIssue[],
   context: ReviewContext | undefined,
+  resolveBaseline: ReviewBaselineResolver,
 ): Promise<void> {
   const commentable = selected.filter(isCommentableIssue);
   if (commentable.length === 0) {
@@ -76,46 +77,72 @@ async function handleCommentAction(
     return;
   }
 
+  throwIfAborted(ctx.signal);
   const confirmed = await ctx.ui.confirm(
     "Post inline PR comments?",
     `Post ${commentable.length} selected finding(s) to the upstream PR using GitHub CLI if available?`,
   );
   if (!confirmed) {
-    queueCommentFallback(pi, ctx, commentable, context, "User chose parent-agent fallback instead of direct gh posting.");
+    ctx.ui.notify("PR comment posting cancelled", "info");
+    return;
+  }
+
+  ctx.ui.notify("Verifying the reviewed snapshot before posting PR comments", "info");
+  let baseline: WorktreeBaseline;
+  try {
+    baseline = await resolveBaseline(context, ctx.cwd, ctx.signal);
+  } catch (error) {
+    throwIfAborted(ctx.signal);
+    ctx.ui.notify(formatCommentError(error), "warning");
     return;
   }
 
   const exec = toExecLike(pi);
-  const resolved = await resolveGitHubPrContext(exec, ctx.cwd, context);
+  const resolved = await resolveGitHubPrContext(exec, ctx.cwd, context, ctx.signal);
   if (!resolved.ok) {
-    queueCommentFallback(pi, ctx, commentable, context, resolved.reason);
+    await queueCommentFallback(pi, ctx, commentable, context, baseline.ref, resolved.reason);
+    return;
+  }
+  if (resolved.context.headSha !== baseline.ref) {
+    ctx.ui.notify("PR comments unavailable because the pull request head changed after snapshot verification.", "warning");
     return;
   }
 
-  const statuses = await postInlineComments(exec, ctx.cwd, resolved.context, commentable);
+  const statuses = await postInlineComments(exec, ctx.cwd, resolved.context, commentable, ctx.signal);
   const summary = summarizeStatuses(statuses);
   ctx.ui.notify(`PR comments: ${summary.posted} posted, ${summary.skipped} skipped, ${summary.failed} failed`, summary.failed > 0 ? "warning" : "info");
   if (summary.failed > 0) {
     const failedIds = new Set(statuses.filter((status) => status.status === "failed").map((status) => status.issueId));
-    queueCommentFallback(
+    await queueCommentFallback(
       pi,
       ctx,
       commentable.filter((issue) => failedIds.has(issue.id)),
       context,
+      baseline.ref,
       "Direct gh posting failed for one or more selected findings.",
     );
   }
 }
 
-function queueCommentFallback(
+async function queueCommentFallback(
   pi: ReviewActionPi,
   ctx: ReviewActionContext,
   issues: readonly ReviewIssue[],
   context: ReviewContext | undefined,
+  verifiedHead: string,
   reason: string,
-): void {
+): Promise<void> {
   if (issues.length === 0) return;
-  pi.sendUserMessage(buildCommentHandoffPrompt(issues, context, reason), { deliverAs: "followUp" });
+  const confirmed = await ctx.ui.confirm(
+    "Queue PR comment fallback?",
+    `${reason}\n\nQueue ${issues.length} finding(s) for the parent agent to post after rechecking the PR head?`,
+  );
+  throwIfAborted(ctx.signal);
+  if (!confirmed) {
+    ctx.ui.notify("PR comment fallback cancelled", "info");
+    return;
+  }
+  pi.sendUserMessage(buildCommentHandoffPrompt(issues, context, verifiedHead, reason), { deliverAs: "followUp" });
   ctx.ui.notify(`Queued PR comment request for ${issues.length} selected finding(s)`, "info");
 }
 
@@ -142,4 +169,8 @@ function summarizeStatuses(statuses: readonly InlineCommentStatus[]): { readonly
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function formatCommentError(error: unknown): string {
+  return formatError(error).replace(/^Patch preview unavailable/, "PR comments unavailable");
 }

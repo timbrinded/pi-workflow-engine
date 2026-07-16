@@ -3,7 +3,7 @@ import { Box, type Component, Text } from "@earendil-works/pi-tui";
 import type { AdvisoryFinding, AdvisoryLocation, AdvisoryReport } from "../advisory-schema.ts";
 import type { PerfAggregate } from "../perf.ts";
 import { renderIssueDetails, renderIssuesTable } from "../review/review-format.ts";
-import { toReviewIssues, type ReviewContext } from "../review/review-issues.ts";
+import { isReviewContext, toReviewIssues, type ReviewContext } from "../review/review-issues.ts";
 import { formatCount } from "./workflow-format.ts";
 import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "../usage.ts";
 
@@ -60,6 +60,7 @@ export function isAdvisoryReport(value: unknown): value is AdvisoryWorkflowResul
   if (!value.findings.every(isAdvisoryFinding)) return false;
   if (!Array.isArray(value.nextSteps) || !value.nextSteps.every((entry) => typeof entry === "string")) return false;
   if (value.stats !== undefined && !isStats(value.stats)) return false;
+  if (value.reviewContext !== undefined && !isReviewContext(value.reviewContext)) return false;
   return true;
 }
 

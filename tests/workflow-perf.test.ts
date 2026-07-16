@@ -21,6 +21,10 @@ function fakeContext(signal?: AbortSignal): ExtensionContext {
     cwd: process.cwd(),
     model: undefined,
     modelRegistry: { find: () => undefined },
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => "workflow-perf-test",
+    },
     signal,
   } as unknown as ExtensionContext;
 }

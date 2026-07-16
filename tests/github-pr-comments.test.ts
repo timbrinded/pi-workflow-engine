@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import {
+  buildInlineCommentBody,
   postInlineComments,
   resolveGitHubPrContext,
   type ExecLike,
@@ -22,6 +23,7 @@ test("posts inline comments through gh api with path line and head sha", async (
         }),
       };
     }
+    if (args.includes("--paginate")) return { code: 0, stdout: "[[]]" };
     if (args[0] === "api") {
       return { code: 0, stdout: JSON.stringify({ html_url: "https://github.com/acme/widgets/pull/123#discussion_r1" }) };
     }
@@ -48,7 +50,7 @@ test("posts inline comments through gh api with path line and head sha", async (
   const statuses = await postInlineComments(exec, "/repo", resolved.context, toReviewIssues("code-review", createReport()));
   assert.deepEqual(statuses, [{ issueId: "R001", status: "posted", url: "https://github.com/acme/widgets/pull/123#discussion_r1" }]);
 
-  const apiCall = calls.find((call) => call.args[0] === "api");
+  const apiCall = calls.find((call) => call.args.some((arg) => arg.startsWith("body=")));
   assert.ok(apiCall);
   assert.equal(apiCall.command, "gh");
   assert.equal(apiCall.cwd, "/repo");
@@ -76,6 +78,7 @@ test("posts forked PR inline comments to the base repository", async () => {
         }),
       };
     }
+    if (args.includes("--paginate")) return { code: 0, stdout: "[[]]" };
     if (args[0] === "api") {
       return { code: 0, stdout: JSON.stringify({ html_url: "https://github.com/acme/widgets/pull/456#discussion_r2" }) };
     }
@@ -102,10 +105,59 @@ test("posts forked PR inline comments to the base repository", async () => {
   const statuses = await postInlineComments(exec, "/repo", resolved.context, toReviewIssues("code-review", createReport()));
   assert.deepEqual(statuses, [{ issueId: "R001", status: "posted", url: "https://github.com/acme/widgets/pull/456#discussion_r2" }]);
 
-  const apiCall = calls.find((call) => call.args[0] === "api");
+  const apiCall = calls.find((call) => call.args.some((arg) => arg.startsWith("body=")));
   assert.ok(apiCall);
   assert.equal(apiCall.args[1], "repos/acme/widgets/pulls/456/comments");
   assert.ok(apiCall.args.includes("commit_id=forkheadsha"));
+});
+
+test("skips an identical inline comment already present on the reviewed PR head", async () => {
+  const issue = toReviewIssues("code-review", createReport())[0];
+  if (!issue) throw new Error("expected review issue");
+  let postCalls = 0;
+  const exec: ExecLike = async (_command, args) => {
+    if (args.includes("--paginate")) {
+      return {
+        code: 0,
+        stdout: JSON.stringify([[
+          { body: buildInlineCommentBody(issue), path: "src/app.ts", line: 10, commit_id: "reviewed-head" },
+        ]]),
+      };
+    }
+    postCalls++;
+    return { code: 0, stdout: "{}" };
+  };
+
+  const statuses = await postInlineComments(
+    exec,
+    "/repo",
+    { owner: "acme", repo: "widgets", number: 123, headSha: "reviewed-head" },
+    [issue],
+  );
+
+  assert.equal(postCalls, 0);
+  assert.deepEqual(statuses, [{ issueId: "R001", status: "skipped", reason: "An identical inline comment already exists on this PR head." }]);
+});
+
+test("passes abort signals to gh and stops before later comment writes", async () => {
+  const report = createReport();
+  report.findings.push({ ...report.findings[0]!, summary: "Second finding", locations: [{ file: "src/other.ts", line: 20 }] });
+  const issues = toReviewIssues("code-review", report);
+  const controller = new AbortController();
+  let postCalls = 0;
+  const exec: ExecLike = async (_command, args, options) => {
+    assert.equal(options?.signal, controller.signal);
+    if (args.includes("--paginate")) return { code: 0, stdout: "[[]]" };
+    postCalls++;
+    controller.abort(new Error("stop comment batch"));
+    return { code: 0, stdout: "{}" };
+  };
+
+  await assert.rejects(
+    () => postInlineComments(exec, "/repo", { owner: "acme", repo: "widgets", number: 123, headSha: "reviewed-head" }, issues, controller.signal),
+    /stop comment batch/,
+  );
+  assert.equal(postCalls, 1);
 });
 
 function createReport(): AdvisoryReport {

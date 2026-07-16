@@ -17,8 +17,10 @@ A **pi extension** with canonical entrypoint `.pi/extensions/pi-workflow-engine/
 
 ## What this extension does
 
-`.pi/extensions/pi-workflow-engine/index.ts` registers three surfaces:
+`.pi/extensions/pi-workflow-engine/index.ts` registers five surfaces:
 - `/workflow <name> [args]` — slash command to run a saved workflow.
+- `/workflow:inspector [last]` — opens the live or most recently completed workflow inspector.
+- `/workflow:results` — reopens the most recent code-review findings without rerunning the workflow.
 - `/workflow:dynamax on|off|status` plus the literal `dynamax` token — opt-in signals for host-agent workflow orchestration.
 - a `workflow` tool — lets the host agent run a saved workflow by `name` or a one-off inline workflow by `script` mid-conversation.
 
@@ -32,7 +34,7 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 
 ## Architecture / key files
 
-- `.pi/extensions/pi-workflow-engine/index.ts` — canonical pi extension entry; registers `/workflow`, the `workflow` tool, and result rendering.
+- `.pi/extensions/pi-workflow-engine/index.ts` — canonical pi extension entry; registers workflow commands and shortcuts, the `workflow` tool, and result rendering.
 - `.pi/extensions/pi-workflow-engine/src/agent-runner.ts` — **the bridge**. Each `agent()` is an in-process `createAgentSession(... SessionManager.inMemory())`. Structured output = one **terminating tool** whose `parameters` IS the schema; pi validates the call, `execute` captures the args in a closure, `terminate: true` ends the turn. No event parsing.
 - `.pi/extensions/pi-workflow-engine/src/concurrency.ts` — `Semaphore` (the single global concurrency cap, acquired inside every `agent()`), `parallel`, `pipeline`.
 - `.pi/extensions/pi-workflow-engine/src/engine.ts` — `runWorkflow()` binds the primitives to one run (shared semaphore + progress tracker). `DEFAULT_CONCURRENCY` lives here.

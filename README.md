@@ -133,6 +133,7 @@ Useful flags:
 /workflow code-review --inspect
 /workflow code-review --result-viewer
 /workflow code-review --no-result-viewer
+/workflow:results
 /workflow code-review --concurrency=4
 /workflow code-review --budget=50000
 /workflow code-review --resume <run-id>
@@ -141,7 +142,7 @@ Useful flags:
 
 Every workflow result includes a run id. If a long run is interrupted, rerun the same workflow with `--resume <run-id>` to replay matching completed `agent()` calls from the journal and run invalidated or missing calls live. A cache hit requires the same prompt/options, repository HEAD and contents, workflow source, and effective model; invalidations are reported in progress output. Keep those inputs stable if you want cache hits.
 
-The code-review workflow can open an interactive findings viewer. Its Fix action revalidates the exact reviewed PR/ref/index/working-tree snapshot, runs one focused agent per selected finding from that snapshot in a disposable git worktree, and returns independent patch previews without modifying your active tree. If the reviewed target moved or cannot be verified, patch generation fails closed instead of producing a patch against the wrong code. The GitHub-comment action can raise inline comments when `gh` is authenticated and PR context is available.
+The code-review workflow can open a centred, terminal-proportional interactive findings viewer. Reopen the latest code-review findings in the current pi session without rerunning it with `/workflow:results` or `ctrl+shift+r`; the shortcut is shown by `/hotkeys`. Its Fix action revalidates the exact reviewed PR/ref/index/working-tree snapshot, runs one focused agent per selected finding from that snapshot in a disposable git worktree, and returns independent patch previews without modifying your active tree. If the reviewed target moved or cannot be verified, patch generation fails closed instead of producing a patch against the wrong code. The GitHub-comment action verifies the same reviewed snapshot and current PR head, and skips identical existing comments, before writing through authenticated `gh`.
 
 For the full command guide, see [USAGE.md](USAGE.md).
 

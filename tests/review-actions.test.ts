@@ -195,12 +195,19 @@ test("comment action falls back to parent agent when gh context is unavailable",
       return { code: 1, stdout: "", stderr: "no pull request found", killed: false };
     },
   };
+  let confirmations = 0;
   const ctx: ReviewActionContext = {
     cwd: "/repo",
     ui: {
       async confirm(title, message) {
-        assert.equal(title, "Post inline PR comments?");
-        assert.match(message, /Post 1 selected finding\(s\)/);
+        confirmations++;
+        if (confirmations === 1) {
+          assert.equal(title, "Post inline PR comments?");
+          assert.match(message, /Post 1 selected finding\(s\)/);
+        } else {
+          assert.equal(title, "Queue PR comment fallback?");
+          assert.match(message, /Queue 1 finding\(s\)/);
+        }
         return true;
       },
       notify(message) {
@@ -209,7 +216,14 @@ test("comment action falls back to parent agent when gh context is unavailable",
     },
   };
 
-  const request = await handleReviewViewerAction(pi, ctx, { action: "comment", issueIds: ["R001"] }, issues, context);
+  const request = await handleReviewViewerAction(
+    pi,
+    ctx,
+    { action: "comment", issueIds: ["R001"] },
+    issues,
+    context,
+    async () => ({ ref: "0123456789012345678901234567890123456789" }),
+  );
 
   assert.equal(request, undefined);
   assert.equal(sent.length, 1);
@@ -219,7 +233,243 @@ test("comment action falls back to parent agent when gh context is unavailable",
   assert.match(sent[0]?.content ?? "", /otherwise use the GitHub CLI \(gh\)/);
   assert.match(sent[0]?.content ?? "", /Do not edit files/);
   assert.match(sent[0]?.content ?? "", /"id":"R001"/);
-  assert.deepEqual(notifications, ["Queued PR comment request for 1 selected finding(s)"]);
+  assert.match(sent[0]?.content ?? "", /verified reviewed head `0123456789012345678901234567890123456789`/);
+  assert.equal(confirmations, 2);
+  assert.deepEqual(notifications, [
+    "Verifying the reviewed snapshot before posting PR comments",
+    "Queued PR comment request for 1 selected finding(s)",
+  ]);
+});
+
+test("comment fallback does not queue after cancellation during confirmation", async () => {
+  const controller = new AbortController();
+  const issues = toReviewIssues("code-review", createReport());
+  const sent: string[] = [];
+  let confirmations = 0;
+  const pi: ReviewActionPi = {
+    sendUserMessage(content) {
+      sent.push(typeof content === "string" ? content : "non-text");
+    },
+    async exec() {
+      return { code: 1, stdout: "", stderr: "no pull request found", killed: false };
+    },
+  };
+  const ctx: ReviewActionContext = {
+    cwd: "/repo",
+    signal: controller.signal,
+    ui: {
+      async confirm() {
+        confirmations++;
+        if (confirmations === 2) controller.abort(new Error("cancel fallback"));
+        return true;
+      },
+      notify() {},
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      handleReviewViewerAction(
+        pi,
+        ctx,
+        { action: "comment", issueIds: ["R001"] },
+        issues,
+        undefined,
+        async () => ({ ref: "0123456789012345678901234567890123456789" }),
+      ),
+    /cancel fallback/,
+  );
+  assert.deepEqual(sent, []);
+});
+
+test("comment action refuses stale findings after confirmation and before posting or fallback", async () => {
+  const issues = toReviewIssues("code-review", createReport());
+  const sent: string[] = [];
+  let confirmations = 0;
+  const notifications: string[] = [];
+  const pi: ReviewActionPi = {
+    sendUserMessage(content) {
+      sent.push(typeof content === "string" ? content : "non-text");
+    },
+    async exec() {
+      throw new Error("GitHub must not be called for stale findings");
+    },
+  };
+  const ctx: ReviewActionContext = {
+    cwd: "/repo",
+    ui: {
+      async confirm() {
+        confirmations++;
+        return true;
+      },
+      notify(message) {
+        notifications.push(message);
+      },
+    },
+  };
+
+  await handleReviewViewerAction(
+    pi,
+    ctx,
+    { action: "comment", issueIds: ["R001"] },
+    issues,
+    undefined,
+    async () => {
+      throw new Error("Patch preview unavailable because the reviewed diff changed after the findings were generated.");
+    },
+  );
+
+  assert.equal(confirmations, 1);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(notifications, [
+    "Verifying the reviewed snapshot before posting PR comments",
+    "PR comments unavailable because the reviewed diff changed after the findings were generated.",
+  ]);
+});
+
+test("declining comment confirmation cancels without posting or fallback", async () => {
+  const issues = toReviewIssues("code-review", createReport());
+  const sent: string[] = [];
+  let execCalls = 0;
+  let resolverCalls = 0;
+  const notifications: string[] = [];
+  const pi: ReviewActionPi = {
+    sendUserMessage(content) {
+      sent.push(typeof content === "string" ? content : "non-text");
+    },
+    async exec() {
+      execCalls++;
+      return { code: 1, stdout: "", stderr: "not used", killed: false };
+    },
+  };
+  const ctx: ReviewActionContext = {
+    cwd: "/repo",
+    ui: {
+      async confirm() {
+        return false;
+      },
+      notify(message) {
+        notifications.push(message);
+      },
+    },
+  };
+
+  await handleReviewViewerAction(
+    pi,
+    ctx,
+    { action: "comment", issueIds: ["R001"] },
+    issues,
+    undefined,
+    async () => {
+      resolverCalls++;
+      return { ref: "0123456789012345678901234567890123456789" };
+    },
+  );
+
+  assert.equal(execCalls, 0);
+  assert.equal(resolverCalls, 0);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(notifications, ["PR comment posting cancelled"]);
+});
+
+test("comment action refuses a PR head that differs from the verified snapshot", async () => {
+  const issues = toReviewIssues("code-review", createReport());
+  const sent: string[] = [];
+  const calls: string[][] = [];
+  const notifications: string[] = [];
+  const pi: ReviewActionPi = {
+    sendUserMessage(content) {
+      sent.push(typeof content === "string" ? content : "non-text");
+    },
+    async exec(_command, args) {
+      calls.push(args);
+      return {
+        code: 0,
+        stdout: JSON.stringify({ number: 123, headRefOid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", url: "https://github.com/acme/widgets/pull/123" }),
+        stderr: "",
+        killed: false,
+      };
+    },
+  };
+  const ctx: ReviewActionContext = {
+    cwd: "/repo",
+    ui: {
+      async confirm() {
+        return true;
+      },
+      notify(message) {
+        notifications.push(message);
+      },
+    },
+  };
+
+  await handleReviewViewerAction(
+    pi,
+    ctx,
+    { action: "comment", issueIds: ["R001"] },
+    issues,
+    { workflowName: "code-review", target: "", diffCommand: "gh pr diff 123", files: ["src/app.ts"] },
+    async () => ({ ref: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }),
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.[0], "pr");
+  assert.deepEqual(sent, []);
+  assert.deepEqual(notifications, [
+    "Verifying the reviewed snapshot before posting PR comments",
+    "PR comments unavailable because the pull request head changed after snapshot verification.",
+  ]);
+});
+
+test("comment action posts only when the resolved PR head matches the verified snapshot", async () => {
+  const issues = toReviewIssues("code-review", createReport());
+  const head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const calls: string[][] = [];
+  const notifications: string[] = [];
+  const pi: ReviewActionPi = {
+    sendUserMessage() {
+      throw new Error("fallback must not run when direct posting succeeds");
+    },
+    async exec(_command, args) {
+      calls.push(args);
+      if (args[0] === "pr") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ number: 123, headRefOid: head, url: "https://github.com/acme/widgets/pull/123" }),
+          stderr: "",
+          killed: false,
+        };
+      }
+      if (args.includes("--paginate")) return { code: 0, stdout: "[[]]", stderr: "", killed: false };
+      return { code: 0, stdout: JSON.stringify({ html_url: "https://github.com/acme/widgets/pull/123#discussion_r1" }), stderr: "", killed: false };
+    },
+  };
+  const ctx: ReviewActionContext = {
+    cwd: "/repo",
+    ui: {
+      async confirm() {
+        return true;
+      },
+      notify(message) {
+        notifications.push(message);
+      },
+    },
+  };
+
+  await handleReviewViewerAction(
+    pi,
+    ctx,
+    { action: "comment", issueIds: ["R001"] },
+    issues,
+    { workflowName: "code-review", target: "", diffCommand: "gh pr diff 123", files: ["src/app.ts"] },
+    async () => ({ ref: head }),
+  );
+
+  assert.equal(calls.filter((args) => args.some((arg) => arg.startsWith("body="))).length, 1);
+  assert.deepEqual(notifications, [
+    "Verifying the reviewed snapshot before posting PR comments",
+    "PR comments: 1 posted, 0 skipped, 0 failed",
+  ]);
 });
 
 function createReport(): AdvisoryReport {

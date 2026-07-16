@@ -56,6 +56,14 @@ export interface ReviewReportWithContext extends AdvisoryReport {
   readonly reviewContext?: ReviewContext;
 }
 
+export function isReviewContext(value: unknown): value is ReviewContext {
+  if (!isRecord(value)) return false;
+  if (typeof value.workflowName !== "string" || typeof value.target !== "string" || typeof value.diffCommand !== "string") return false;
+  if (!Array.isArray(value.files) || !value.files.every((file) => typeof file === "string")) return false;
+  if (value.summary !== undefined && typeof value.summary !== "string") return false;
+  return value.snapshot === undefined || isReviewSnapshotIdentity(value.snapshot);
+}
+
 export function toReviewIssues(name: string, report: Pick<AdvisoryReport, "findings">): ReviewIssue[] {
   return report.findings.map((finding, index) => {
     const location = finding.locations[0];
@@ -103,4 +111,17 @@ export function isCommentableIssue(issue: ReviewIssue): boolean {
 
 function formatIssueId(index: number): string {
   return `R${String(index + 1).padStart(3, "0")}`;
+}
+
+function isReviewSnapshotIdentity(value: unknown): value is ReviewSnapshotIdentity {
+  if (!isRecord(value)) return false;
+  return isFingerprint(value.diffFingerprint) && isFingerprint(value.baselineFingerprint);
+}
+
+function isFingerprint(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

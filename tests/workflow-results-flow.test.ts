@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import {
+  codeReviewReport,
   decideReviewResultsPresentation,
   maybeShowReviewResultsViewer,
   type ReviewResultsViewerContext,
@@ -54,24 +55,46 @@ test("not-requested and non-TUI result flow never opens custom viewer", async ()
 
 test("forced-open direct code-review flow opens viewer and returns action before result message can be recorded", async () => {
   let customCalls = 0;
+  let customOptions: unknown;
+  const custom: ReviewResultsViewerContext["ui"]["custom"] = async <T>(_factory: unknown, options?: unknown): Promise<T> => {
+    customCalls++;
+    customOptions = options;
+    return { action: "close", issueIds: ["R001"] } as T;
+  };
   const ctx: ReviewResultsViewerContext = {
-    ui: {
-      async custom<T>() {
-        customCalls++;
-        return { action: "close", issueIds: ["R001"] } as T;
-      },
-    },
+    ui: { custom },
   };
   const decision = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true, resultViewer: "open" });
   const action = await maybeShowReviewResultsViewer(ctx, decision);
 
   assert.equal(customCalls, 1);
+  assert.deepEqual(customOptions, {
+    overlay: true,
+    overlayOptions: { anchor: "center", width: "80%", minWidth: 40, maxHeight: "80%", margin: 1 },
+  });
   assert.deepEqual(action, { action: "close", issueIds: ["R001"] } satisfies ReviewIssueSelection);
 });
 
 test("workflow tool execution path does not prompt or open a viewer", () => {
   const decision = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true, invocationKind: "tool" });
   assert.deepEqual(decision, { kind: "send", reason: "tool-invocation" });
+});
+
+test("code-review retention rejects malformed action context", () => {
+  const malformedContexts = [
+    { workflowName: "code-review", target: "PR", diffCommand: 42, files: ["src/app.ts"] },
+    { workflowName: "code-review", target: "PR", diffCommand: "gh pr diff 1", files: "src/app.ts" },
+    {
+      workflowName: "code-review",
+      target: "PR",
+      diffCommand: "gh pr diff 1",
+      files: ["src/app.ts"],
+      snapshot: { diffFingerprint: "a".repeat(64) },
+    },
+  ];
+  for (const reviewContext of malformedContexts) {
+    assert.equal(codeReviewReport("code-review", { ...createReport(), reviewContext }), undefined);
+  }
 });
 
 function createReport(): AdvisoryReport {

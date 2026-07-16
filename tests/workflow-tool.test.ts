@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "bun:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Component, KeyId, TUI } from "@earendil-works/pi-tui";
 import workflowEngine, {
   buildTemporaryWorkflowAuthorPrompt,
   getLastWorkflowInspection,
@@ -10,6 +10,11 @@ import workflowEngine, {
   normalizeWorkflowToolRequest,
 } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
+import {
+  DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
+  DEFAULT_REVIEW_RESULTS_SHORTCUT,
+  type DynamaxShortcuts,
+} from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
@@ -27,24 +32,39 @@ interface CapturedTool {
 }
 
 interface CapturedShortcut {
+  key: KeyId;
   description?: string;
   handler(ctx: ExtensionContext): unknown | Promise<unknown>;
 }
 
+interface CapturedCommand {
+  description?: string;
+  handler(args: string, ctx: ExtensionCommandContext): unknown | Promise<unknown>;
+}
+
 interface CapturedWorkflowExtension {
   tool: CapturedTool;
-  shortcut: CapturedShortcut | undefined;
+  shortcuts: readonly CapturedShortcut[];
+  commands: ReadonlyMap<string, CapturedCommand>;
 }
 
 /** Register the extension against a no-op `pi` and hand back its `workflow` tool. */
-function captureWorkflowExtension(): CapturedWorkflowExtension {
+function captureWorkflowExtension(
+  shortcuts: DynamaxShortcuts = {
+    inspector: DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
+    results: DEFAULT_REVIEW_RESULTS_SHORTCUT,
+  },
+): CapturedWorkflowExtension {
   let capturedTool: CapturedTool | undefined;
-  let capturedShortcut: CapturedShortcut | undefined;
+  const capturedShortcuts: CapturedShortcut[] = [];
+  const capturedCommands = new Map<string, CapturedCommand>();
   const fakePi = {
     on: () => {},
-    registerCommand: () => {},
-    registerShortcut: (_key: string, shortcut: CapturedShortcut) => {
-      capturedShortcut = shortcut;
+    registerCommand: (name: string, command: CapturedCommand) => {
+      capturedCommands.set(name, command);
+    },
+    registerShortcut: (key: KeyId, shortcut: Omit<CapturedShortcut, "key">) => {
+      capturedShortcuts.push({ key, ...shortcut });
     },
     registerMessageRenderer: () => {},
     registerTool: (tool: unknown) => {
@@ -54,9 +74,9 @@ function captureWorkflowExtension(): CapturedWorkflowExtension {
     sendMessage: () => {},
     sendUserMessage: () => {},
   } as unknown as ExtensionAPI;
-  workflowEngine(fakePi);
+  workflowEngine(fakePi, shortcuts);
   if (!capturedTool) throw new Error("workflow tool was not registered");
-  return { tool: capturedTool, shortcut: capturedShortcut };
+  return { tool: capturedTool, shortcuts: capturedShortcuts, commands: capturedCommands };
 }
 
 function captureWorkflowTool(): CapturedTool {
@@ -67,13 +87,20 @@ const HEADLESS_CTX = {
   cwd: process.cwd(),
   model: undefined,
   modelRegistry: { find: () => undefined },
+  sessionManager: createSessionManager("test-session"),
   hasUI: false,
   signal: undefined,
 } as unknown as ExtensionContext;
 
-function createTuiContext(): { ctx: ExtensionContext; customCalls: () => number; customRenders: () => readonly string[][] } {
+function createTuiContext(customResult?: unknown, sessionId = "test-session"): {
+  ctx: ExtensionContext;
+  customCalls: () => number;
+  customRenders: () => readonly string[][];
+  notifications: () => readonly string[];
+} {
   let customCallCount = 0;
   const customRenderLines: string[][] = [];
+  const notificationMessages: string[] = [];
   const theme = {
     fg: (_color: string, text: string) => text,
     bg: (_color: string, text: string) => text,
@@ -87,7 +114,9 @@ function createTuiContext(): { ctx: ExtensionContext; customCalls: () => number;
     cwd: process.cwd(),
     model: undefined,
     modelRegistry: { find: () => undefined },
+    sessionManager: createSessionManager(sessionId),
     hasUI: true,
+    mode: "tui",
     signal: undefined,
     ui: {
       theme,
@@ -105,13 +134,28 @@ function createTuiContext(): { ctx: ExtensionContext; customCalls: () => number;
           completed = result;
         });
         customRenderLines.push(component.render(100));
-        return completed as T;
+        return (customResult === undefined ? completed : customResult) as T;
       },
       setWidget: () => {},
       setStatus: () => {},
+      notify: (message: string) => {
+        notificationMessages.push(message);
+      },
     },
   } as unknown as ExtensionContext;
-  return { ctx, customCalls: () => customCallCount, customRenders: () => customRenderLines };
+  return {
+    ctx,
+    customCalls: () => customCallCount,
+    customRenders: () => customRenderLines,
+    notifications: () => notificationMessages,
+  };
+}
+
+function createSessionManager(sessionId: string): Pick<ExtensionContext["sessionManager"], "getSessionFile" | "getSessionId"> {
+  return {
+    getSessionFile: () => undefined,
+    getSessionId: () => sessionId,
+  };
 }
 
 function resultUsageAssistantMessages(value: unknown): unknown {
@@ -133,6 +177,31 @@ async function waitUntil(predicate: () => boolean, label: string): Promise<void>
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`Timed out waiting for ${label}`);
+}
+
+const RETAINED_REVIEW_RESULT = {
+  summary: "Review complete.",
+  findings: [{
+    summary: "Retained finding.",
+    category: "bug",
+    severity: "high",
+    confidence: "high",
+    locations: [{ file: "src/app.ts", line: 10 }],
+    evidence: ["line 10"],
+    impact: "The result must remain reopenable.",
+    recommendation: "Keep the validated report in session memory.",
+  }],
+  nextSteps: [],
+} as const;
+
+function codeReviewScript(description: string, result: unknown, preamble = ""): string {
+  return `
+export const meta = ${JSON.stringify({ name: "code-review", description })};
+export default async function run() {
+  ${preamble}
+  return ${JSON.stringify(result)};
+}
+`;
 }
 
 function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
@@ -325,9 +394,106 @@ export default async function run({ phase }) {
   assert.equal(inspection?.name, "inspect-live-probe");
 });
 
+test("the results command and shortcut reopen the last code-review findings without rerunning it", async () => {
+  const extension = captureWorkflowExtension();
+  const command = extension.commands.get("workflow:results");
+  const shortcut = extension.shortcuts.find((candidate) => candidate.description === "Open last code-review results");
+  if (!command) throw new Error("expected /workflow:results command");
+  if (!shortcut) throw new Error("expected code-review results shortcut");
+  assert.equal(shortcut.key, DEFAULT_REVIEW_RESULTS_SHORTCUT);
+
+  const runCounter = globalThis as typeof globalThis & { __piWorkflowResultsTestRuns?: number };
+  runCounter.__piWorkflowResultsTestRuns = 0;
+  const script = codeReviewScript(
+    "Retained review result probe",
+    RETAINED_REVIEW_RESULT,
+    'globalThis["__piWorkflowResultsTestRuns"] = (globalThis["__piWorkflowResultsTestRuns"] ?? 0) + 1;',
+  );
+  try {
+    await extension.tool.execute("call-results-retain", { script }, undefined, () => {}, HEADLESS_CTX);
+    assert.equal(runCounter.__piWorkflowResultsTestRuns, 1);
+
+    const tui = createTuiContext({ action: "fix", issueIds: ["R001"] });
+    await command.handler("", tui.ctx as ExtensionCommandContext);
+    assert.equal(tui.customCalls(), 1);
+    assert.match(tui.customRenders()[0]?.join("\n") ?? "", /Review results/);
+    assert.match(tui.customRenders()[0]?.join("\n") ?? "", /R001/);
+    assert.match(tui.notifications().join("\n"), /Verifying the reviewed snapshot/);
+    assert.equal(runCounter.__piWorkflowResultsTestRuns, 1);
+
+    await shortcut.handler(tui.ctx);
+    assert.equal(tui.customCalls(), 2);
+    assert.equal(runCounter.__piWorkflowResultsTestRuns, 1);
+  } finally {
+    delete runCounter.__piWorkflowResultsTestRuns;
+  }
+});
+
+test("an empty code review replaces stale retained findings", async () => {
+  const extension = captureWorkflowExtension();
+  const command = extension.commands.get("workflow:results");
+  if (!command) throw new Error("expected /workflow:results command");
+  const populatedScript = codeReviewScript("Populated review result probe", RETAINED_REVIEW_RESULT);
+  const emptyScript = codeReviewScript("Empty review result probe", { summary: "No findings.", findings: [], nextSteps: [] });
+  await extension.tool.execute("call-results-populated", { script: populatedScript }, undefined, () => {}, HEADLESS_CTX);
+  await extension.tool.execute("call-results-empty", { script: emptyScript }, undefined, () => {}, HEADLESS_CTX);
+
+  const tui = createTuiContext();
+  await command.handler("", tui.ctx as ExtensionCommandContext);
+
+  assert.equal(tui.customCalls(), 0);
+  assert.equal(tui.notifications().at(-1), "The last code review had no findings");
+});
+
+test("a malformed code-review context clears the retained report instead of reopening stale findings", async () => {
+  const extension = captureWorkflowExtension();
+  const command = extension.commands.get("workflow:results");
+  if (!command) throw new Error("expected /workflow:results command");
+  const populatedScript = codeReviewScript("Populated context probe", RETAINED_REVIEW_RESULT);
+  const malformedScript = codeReviewScript("Malformed context probe", {
+    ...RETAINED_REVIEW_RESULT,
+    reviewContext: { workflowName: "code-review", target: "PR", diffCommand: 123, files: ["src/app.ts"] },
+  });
+  await extension.tool.execute("call-results-valid-context", { script: populatedScript }, undefined, () => {}, HEADLESS_CTX);
+  await extension.tool.execute("call-results-invalid-context", { script: malformedScript }, undefined, () => {}, HEADLESS_CTX);
+
+  const tui = createTuiContext();
+  await command.handler("", tui.ctx as ExtensionCommandContext);
+
+  assert.equal(tui.customCalls(), 0);
+  assert.equal(tui.notifications().at(-1), "No code-review result is available yet. Run /workflow code-review first.");
+});
+
+test("retained code-review results stay isolated to their originating session", async () => {
+  const extension = captureWorkflowExtension();
+  const command = extension.commands.get("workflow:results");
+  if (!command) throw new Error("expected /workflow:results command");
+  const sessionA = {
+    ...HEADLESS_CTX,
+    sessionManager: createSessionManager("session-a"),
+  } as ExtensionContext;
+  await extension.tool.execute(
+    "call-results-session-a",
+    { script: codeReviewScript("Session isolation probe", RETAINED_REVIEW_RESULT) },
+    undefined,
+    () => {},
+    sessionA,
+  );
+
+  const sessionB = createTuiContext(undefined, "session-b");
+  await command.handler("", sessionB.ctx as ExtensionCommandContext);
+  assert.equal(sessionB.customCalls(), 0);
+  assert.match(sessionB.notifications().at(-1) ?? "", /No code-review result is available/);
+
+  const reopenedA = createTuiContext(undefined, "session-a");
+  await command.handler("", reopenedA.ctx as ExtensionCommandContext);
+  assert.equal(reopenedA.customCalls(), 1);
+});
+
 test("the inspector shortcut opens the active workflow inspector while the workflow tool is running", async () => {
-  const { tool, shortcut } = captureWorkflowExtension();
+  const { tool, shortcuts } = captureWorkflowExtension();
   const { ctx, customCalls, customRenders } = createTuiContext();
+  const shortcut = shortcuts.find((candidate) => candidate.description === "Open workflow inspector");
   if (!shortcut) throw new Error("expected Dynamax inspector shortcut");
   const script = `
 export const meta = { name: "inspect-live-shortcut-probe", description: "Live inspector shortcut probe" };

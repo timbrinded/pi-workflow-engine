@@ -7,14 +7,21 @@ import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRe
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
 import type { WorkflowUsageSnapshot } from "./src/usage.ts";
-import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
+import { ADAPTIVE_WORKFLOW_GUIDANCE, dynamaxSessionKey, registerDynamax } from "./src/dynamax.ts";
+import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
 import { handleReviewViewerAction } from "./src/review/review-actions.ts";
-import { decideReviewResultsPresentation, extensionContextMode, maybeShowReviewResultsViewer } from "./src/review/review-results-flow.ts";
+import {
+  codeReviewReport,
+  decideReviewResultsPresentation,
+  extensionContextMode,
+  maybeShowReviewResultsViewer,
+} from "./src/review/review-results-flow.ts";
 import {
   formatWorkflowDetailLines,
   isAdvisoryReport,
   isWorkflowResult,
   renderWorkflowResult,
+  type AdvisoryWorkflowResult,
   type WorkflowPerfDetails,
   type WorkflowResultEnvelope,
 } from "./src/ui/workflow-result-renderer.ts";
@@ -217,6 +224,7 @@ export interface ActiveWorkflowInspection {
 
 let lastWorkflowInspection: LastWorkflowInspection | undefined;
 let activeWorkflowInspection: ActiveWorkflowInspection | undefined;
+const codeReviewResults = new WeakMap<ExtensionAPI, Map<string, AdvisoryWorkflowResult>>();
 
 export function getLastWorkflowInspection(): LastWorkflowInspection | undefined {
   return lastWorkflowInspection;
@@ -244,6 +252,49 @@ async function openAvailableWorkflowInspector(ctx: ExtensionContext): Promise<vo
     return;
   }
   await openWorkflowInspector(ctx, inspection);
+}
+
+function rememberCodeReviewResult(pi: ExtensionAPI, ctx: ExtensionContext, name: string, result: unknown): void {
+  if (name !== "code-review") return;
+  const key = dynamaxSessionKey(ctx);
+  const report = codeReviewReport(name, result);
+  if (!report) {
+    codeReviewResults.get(pi)?.delete(key);
+    return;
+  }
+  const retained = codeReviewResults.get(pi) ?? new Map<string, AdvisoryWorkflowResult>();
+  retained.set(key, report);
+  codeReviewResults.set(pi, retained);
+}
+
+async function openAvailableReviewResults(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  if (!ctx.hasUI || extensionContextMode(ctx) !== "tui") {
+    ctx.ui.notify("Code-review results viewer requires the TUI", "warning");
+    return;
+  }
+  const lastCodeReviewResult = codeReviewResults.get(pi)?.get(dynamaxSessionKey(ctx));
+  if (!lastCodeReviewResult) {
+    ctx.ui.notify("No code-review result is available yet. Run /workflow code-review first.", "warning");
+    return;
+  }
+  if (lastCodeReviewResult.findings.length === 0) {
+    ctx.ui.notify("The last code review had no findings", "info");
+    return;
+  }
+
+  const decision = decideReviewResultsPresentation({
+    workflowName: "code-review",
+    result: lastCodeReviewResult,
+    mode: "tui",
+    hasUI: true,
+    resultViewer: "open",
+    invocationKind: "command",
+  });
+  if (decision.kind !== "open") return;
+
+  const action = await maybeShowReviewResultsViewer(ctx, decision);
+  const followUp = await handleReviewViewerAction(pi, ctx, action, decision.issues, decision.report.reviewContext);
+  if (followUp) await sendWorkflowResult(pi, ctx, followUp.meta.name, followUp, "", { resultViewer: "skip" });
 }
 
 function snapshotGetter(inspection: LastWorkflowInspection | ActiveWorkflowInspection): () => WorkflowProgressSnapshot {
@@ -459,7 +510,7 @@ export async function pickWorkflow(
 
 export async function sendWorkflowResult(
   pi: ExtensionAPI,
-  ctx: ExtensionCommandContext,
+  ctx: ExtensionContext,
   name: string,
   mod: LoadedWorkflow,
   args: string,
@@ -482,7 +533,7 @@ interface WorkflowResultInvocation {
 
 async function runAndSendWorkflowResult(
   pi: ExtensionAPI,
-  ctx: ExtensionCommandContext,
+  ctx: ExtensionContext,
   invocation: WorkflowResultInvocation,
 ): Promise<WorkflowResultInvocation | undefined> {
   const { name, mod, args, options, perfRecorder } = invocation;
@@ -523,6 +574,7 @@ async function runAndSendWorkflowResult(
       options.onProgressSnapshot?.(snapshot);
     },
   });
+  rememberCodeReviewResult(pi, ctx, name, result);
   const perf = compactPerfSnapshot(perfSnapshot);
   const reviewDecision = decideReviewResultsPresentation({
     workflowName: name,
@@ -565,8 +617,16 @@ function reviewFollowUpOptions(options: WorkflowRunOptions): WorkflowRunOptions 
   };
 }
 
-export default function workflowEngine(pi: ExtensionAPI): void {
-  registerDynamax(pi, undefined, { openInspector: openAvailableWorkflowInspector });
+export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShortcuts = resolveDynamaxShortcuts()): void {
+  registerDynamax(pi, shortcuts, { openInspector: openAvailableWorkflowInspector });
+  if (shortcuts.results) {
+    pi.registerShortcut(shortcuts.results, {
+      description: "Open last code-review results",
+      handler: async (ctx) => {
+        await openAvailableReviewResults(pi, ctx);
+      },
+    });
+  }
 
   pi.registerMessageRenderer("workflow-result", (message, { expanded }, theme) => {
     const details = message.details;
@@ -588,6 +648,17 @@ export default function workflowEngine(pi: ExtensionAPI): void {
         return;
       }
       await openAvailableWorkflowInspector(ctx);
+    },
+  });
+
+  pi.registerCommand("workflow:results", {
+    description: "Reopen the last code-review findings viewer",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      if (args.trim()) {
+        ctx.ui.notify("Usage: /workflow:results", "warning");
+        return;
+      }
+      await openAvailableReviewResults(pi, ctx);
     },
   });
 
@@ -768,6 +839,7 @@ export default function workflowEngine(pi: ExtensionAPI): void {
           lastWorkflowInspection = { name: resultName, args: resultArgs, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
         },
       });
+      rememberCodeReviewResult(pi, ctx, resultName, result);
       const perf = compactPerfSnapshot(perfSnapshot);
       return {
         content: [{ type: "text", text: formatMessageContent(resultName, result, usageSnapshot, perf, runMetadata) }],
