@@ -22,6 +22,7 @@ import {
   workflowRunRecordPath,
   type WorkflowRunStore,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { WorkflowProviderUsageLimitError } from "../.pi/extensions/pi-workflow-engine/src/provider-usage-limit.ts";
 
 const USAGE: WorkflowUsageSnapshot = {
   agents: [],
@@ -129,6 +130,94 @@ test("workflow run records enforce queued running paused and terminal transition
     () => transitionWorkflowRun(completed, { state: "running", progress: progress("completed") }),
     /completed -> running/,
   );
+});
+
+test("background provider limits persist a bounded resumable pause record", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-provider-pause-"));
+  const ctx = fakeContext(cwd);
+  const resetAt = Date.now() + 120_000;
+  const limited: LoadedWorkflow = {
+    ...workflow("provider-pause"),
+    source: {
+      kind: "file",
+      path: "/extension/workflows/provider-pause.ts",
+      root: "/extension",
+      fingerprint: "provider-pause-source",
+    },
+    default: async () => {
+      throw new WorkflowProviderUsageLimitError({
+        stopReason: "error",
+        providerMessage: "HTTP 429 Too Many Requests; authorization: SECRET_TOKEN",
+        provider: "openai",
+        model: "gpt-test",
+        api: "openai-responses",
+        resetHint: "retry-after: 120",
+        resetAt,
+      });
+    },
+  };
+  try {
+    await assert.rejects(
+      runWorkflow(ctx, limited, "", {
+        runId: "provider-pause-run",
+        background: { sessionId: "workflow-run-store-test", requestedAt: 1 },
+        autoResumeOnUsageLimit: true,
+        usageLimitMaxAttempts: 3,
+        usageLimitMaxDelayMs: 30_000,
+      }),
+      WorkflowProviderUsageLimitError,
+    );
+
+    const record = await new ProjectWorkflowRunStore(cwd).load("provider-pause-run");
+    assert.equal(record?.state, "paused");
+    if (record?.state !== "paused") throw new Error("Expected provider pause record.");
+    assert.equal(record.pause?.kind, "provider_usage_limit");
+    assert.equal(record.pause?.reason, "provider_usage_limit");
+    assert.equal(record.pause?.provider, "openai");
+    assert.equal(record.pause?.attempt, 1);
+    assert.equal(record.pause?.maxAttempts, 3);
+    assert.equal(record.pause?.autoResume, true);
+    assert.ok((record.pause?.nextEligibleAt ?? 0) <= Date.now() + 30_000);
+    assert.ok((record.pause?.nextEligibleAt ?? 0) >= Date.now() + 29_000);
+    assert.doesNotMatch(record.pause?.providerMessage ?? "", /SECRET_TOKEN/);
+    assert.equal(record.options.usageLimitAttempt, 0);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("provider-limit auto resume stays disabled when invocation arguments are not persisted", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-provider-args-"));
+  const ctx = fakeContext(cwd);
+  const limited: LoadedWorkflow = {
+    ...workflow("provider-args"),
+    source: {
+      kind: "file",
+      path: "/extension/workflows/provider-args.ts",
+      root: "/extension",
+      fingerprint: "provider-args-source",
+    },
+    default: async () => {
+      throw new WorkflowProviderUsageLimitError({
+        stopReason: "error",
+        providerMessage: "rate_limit_error",
+      });
+    },
+  };
+  try {
+    await assert.rejects(runWorkflow(ctx, limited, "private invocation args", {
+      runId: "provider-args-run",
+      background: { sessionId: "workflow-run-store-test", requestedAt: 1 },
+      autoResumeOnUsageLimit: true,
+    }), WorkflowProviderUsageLimitError);
+    const record = await new ProjectWorkflowRunStore(cwd).load("provider-args-run");
+    assert.equal(record?.state, "paused");
+    if (record?.state !== "paused") throw new Error("Expected provider pause record.");
+    assert.equal(record.options.argumentsPresent, true);
+    assert.equal(record.pause?.autoResume, false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test("project run store atomically reloads records and isolates corrupt or future files", async () => {

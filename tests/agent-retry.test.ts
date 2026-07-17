@@ -17,6 +17,7 @@ import { WorkflowBudgetExceededError, createBudget } from "../.pi/extensions/pi-
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { parallel } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { WorkflowStructuredOutputError } from "../.pi/extensions/pi-workflow-engine/src/structured-output.ts";
+import { WorkflowProviderUsageLimitError } from "../.pi/extensions/pi-workflow-engine/src/provider-usage-limit.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { AgentRunnerSession, CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import {
@@ -408,4 +409,28 @@ test("exhausted provider failures keep parallel default and settled semantics", 
       },
     },
   }]);
+});
+
+test("a background provider usage limit aborts queued parallel work before another session starts", async () => {
+  const sessions = scriptedSessions([
+    { messages: [assistantMessage({ stopReason: "error", errorMessage: "HTTP 429 Too Many Requests; retry-after: 60" })] },
+    { messages: [assistantMessage({ text: "must not start" })] },
+  ]);
+  const controller = new AbortController();
+  const rc = createRunContext({
+    createSession: sessions.createSession,
+    pauseOnProviderUsageLimit: true,
+    signal: controller.signal,
+  });
+
+  await assert.rejects(
+    () => parallel([
+      () => runAgent(rc, "first", { label: "limited" }),
+      () => runAgent(rc, "second", { label: "queued" }),
+    ], { limit: 1, signal: controller.signal, abortController: controller }),
+    WorkflowProviderUsageLimitError,
+  );
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(sessions.sessionsCreated(), 1);
+  assert.equal(sessions.promptCalls(), 1);
 });

@@ -30,6 +30,10 @@ import {
   WORKFLOW_BUDGET_MIN,
   WORKFLOW_MAX_AGENTS_MAX,
   WORKFLOW_MAX_AGENTS_MIN,
+  WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX,
+  WORKFLOW_USAGE_LIMIT_ATTEMPTS_MIN,
+  WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS,
+  WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
 } from "./src/options.ts";
 import { executeWorkflowInvocation, type WorkflowExecution, type WorkflowPerfDetails } from "./src/workflow-execution.ts";
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
@@ -641,16 +645,19 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
       reviewSessions.remember(ctx, execution, options);
     },
   });
+  backgroundWorkflows.onRunSettled((ctx, runId) => workflowRuns.runSettled(ctx, runId));
   registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
   registerWorkflowModelProfileCommand(pi);
   registerWorkflowRunCommand(pi, workflowRuns);
   pi.on("session_start", async (_event, ctx) => {
     await backgroundWorkflows.sessionStarted(ctx);
+    await workflowRuns.sessionStarted(ctx);
   });
   pi.on("agent_settled", async (_event, ctx) => {
     await backgroundWorkflows.agentSettled(ctx);
   });
   pi.on("session_shutdown", async (_event, ctx) => {
+    workflowRuns.sessionShutdown(ctx);
     await backgroundWorkflows.sessionShutdown(ctx);
     const key = sessionKey(ctx);
     workflowInspections.get(pi)?.delete(key);
@@ -765,6 +772,7 @@ function registerWorkflowTool(
       "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
       ADAPTIVE_WORKFLOW_GUIDANCE,
       "Set background: true only when the user explicitly wants the workflow to continue after this tool call; the tool returns a durable run ID and completion is delivered later.",
+      "Set autoResumeOnUsageLimit: true only for an explicitly backgrounded workflow when the user wants bounded automatic continuation after a recognized provider usage window.",
       "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
     ],
     parameters: Type.Object({
@@ -786,6 +794,23 @@ function registerWorkflowTool(
       agentRetries: Type.Optional(
         Type.Integer({
           description: `Retries per agent for classified transient provider failures; clamped to ${WORKFLOW_AGENT_RETRIES_MIN}-${WORKFLOW_AGENT_RETRIES_MAX}`,
+        }),
+      ),
+      autoResumeOnUsageLimit: Type.Optional(
+        Type.Boolean({ description: "For a background run, opt into bounded automatic resume after a recognized provider usage limit" }),
+      ),
+      usageLimitMaxAttempts: Type.Optional(
+        Type.Integer({
+          minimum: WORKFLOW_USAGE_LIMIT_ATTEMPTS_MIN,
+          maximum: WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX,
+          description: "Maximum total run attempts in one automatic provider-limit resume chain",
+        }),
+      ),
+      usageLimitMaxDelayMs: Type.Optional(
+        Type.Integer({
+          minimum: WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
+          maximum: WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS,
+          description: "Maximum delay accepted from a provider reset hint before automatic resume",
         }),
       ),
       budget: Type.Optional(
@@ -844,6 +869,9 @@ function registerWorkflowTool(
         maxAgents: params.maxAgents,
         agentTimeoutMs: params.agentTimeoutMs,
         agentRetries: params.agentRetries,
+        autoResumeOnUsageLimit: params.autoResumeOnUsageLimit,
+        usageLimitMaxAttempts: params.usageLimitMaxAttempts,
+        usageLimitMaxDelayMs: params.usageLimitMaxDelayMs,
         budget: params.budget,
         perf: params.perf,
         resumeFromRunId,

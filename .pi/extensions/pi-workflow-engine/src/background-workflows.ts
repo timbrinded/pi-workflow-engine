@@ -52,9 +52,12 @@ interface ActiveBackgroundRun {
   readonly isSettled: () => boolean;
 }
 
+type BackgroundWorkflowSettledListener = (ctx: ExtensionContext, runId: string) => void | Promise<void>;
+
 /** Owns background runs for one extension instance and routes their durable completion delivery. */
 export class BackgroundWorkflowCoordinator {
   private readonly active = new Map<string, ActiveBackgroundRun>();
+  private readonly settledListeners = new Set<BackgroundWorkflowSettledListener>();
   private readonly pendingDelivery = new Map<string, Set<string>>();
   private readonly shuttingDown = new Set<string>();
   private readonly storeForCwd: (cwd: string) => WorkflowRunStore;
@@ -110,6 +113,7 @@ export class BackgroundWorkflowCoordinator {
         settled = true;
         this.active.delete(input.runId);
         this.updateBackgroundSurface(input.ctx);
+        await this.notifyRunSettled(input.ctx, input.runId);
         scheduleDelivery();
       }
     })();
@@ -142,6 +146,11 @@ export class BackgroundWorkflowCoordinator {
     );
   }
 
+  onRunSettled(listener: BackgroundWorkflowSettledListener): () => void {
+    this.settledListeners.add(listener);
+    return () => this.settledListeners.delete(listener);
+  }
+
   async stop(ctx: ExtensionContext, runId: string): Promise<WorkflowRunRecord> {
     const active = this.active.get(runId);
     if (!active || active.sessionId !== ctx.sessionManager.getSessionId()) {
@@ -162,6 +171,10 @@ export class BackgroundWorkflowCoordinator {
 
   async agentSettled(ctx: ExtensionContext): Promise<void> {
     await this.flushPending(ctx);
+  }
+
+  async durableRunSettled(ctx: ExtensionContext, runId: string): Promise<void> {
+    await this.queueOrDeliver(ctx, runId);
   }
 
   async sessionStarted(ctx: ExtensionContext): Promise<void> {
@@ -247,6 +260,16 @@ export class BackgroundWorkflowCoordinator {
     }
     this.addPending(sessionId, runId);
     if (ctx.isIdle()) await this.flushPending(ctx);
+  }
+
+  private async notifyRunSettled(ctx: ExtensionContext, runId: string): Promise<void> {
+    for (const listener of this.settledListeners) {
+      try {
+        await listener(ctx, runId);
+      } catch (error) {
+        this.log(`[workflow:${runId}] background settlement listener failed: ${unknownErrorMessage(error)}`);
+      }
+    }
   }
 
   private async flushPending(ctx: ExtensionContext): Promise<void> {

@@ -10,7 +10,10 @@ import { runAgent, type AgentExecutionOptions, type RunContext } from "./agent-r
 import { ProgressTracker } from "./progress.ts";
 import { createPerfRecorder, type PerfSink, type PerfSnapshot } from "./perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "./usage.ts";
-import { resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "./options.ts";
+import {
+  resolveWorkflowRunOptions,
+  type ResolvedWorkflowRunOptions,
+} from "./options.ts";
 import type { AgentOptions, IsolatedAgentResult, LoadedWorkflow, WorkflowApi, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
 import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
@@ -28,6 +31,10 @@ import {
   type WorkflowRunStore,
 } from "./workflow-run-store.ts";
 import { createWorkflowRunRecord } from "./workflow-run-record.ts";
+import {
+  createProviderUsageLimitPauseRecord,
+  WorkflowProviderUsageLimitError,
+} from "./provider-usage-limit.ts";
 
 /** The workflow-facing slice of the progress tracker (satisfied by `ProgressTracker`). */
 export interface WorkflowProgress {
@@ -160,6 +167,7 @@ export async function runResolvedWorkflow(
       agentLimiter: new WorkflowAgentLimiter(resolvedOptions.maxAgents),
       agentTimeoutMs: resolvedOptions.agentTimeoutMs,
       agentRetries: resolvedOptions.agentRetries,
+      pauseOnProviderUsageLimit: resolvedOptions.background !== undefined,
       retryScheduler: dependencies.retryScheduler ?? defaultAgentRetryScheduler,
       modelProfiles,
       progress,
@@ -216,6 +224,28 @@ export async function runResolvedWorkflow(
   function persistTerminalWorkflowError(error: unknown): void {
     const pauseError = backgroundPauseError(error, ctx.signal, resolvedOptions.signal);
     if (pauseError) {
+      if (pauseError instanceof WorkflowProviderUsageLimitError) {
+        if (resolvedOptions.background === undefined) {
+          durableRun.transition({
+            state: "failed",
+            progress: progress.snapshot(),
+            usage: usage.snapshot(),
+            error: pauseError,
+          });
+          return;
+        }
+        const providerPause = createProviderUsageLimitPauseRecord(
+          pauseError,
+          resolvedOptions,
+          mod.source.kind === "file" && args.length === 0,
+        );
+        durableRun.transition({
+          state: "paused",
+          progress: progress.snapshot(),
+          ...providerPause,
+        });
+        return;
+      }
       durableRun.transition({
         state: "paused",
         progress: progress.snapshot(),

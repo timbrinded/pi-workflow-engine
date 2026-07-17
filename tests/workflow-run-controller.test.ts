@@ -13,14 +13,52 @@ import {
   backgroundOrigin,
 } from "../.pi/extensions/pi-workflow-engine/src/background-workflows.ts";
 import { WorkflowPauseError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
+import { WorkflowProviderUsageLimitError } from "../.pi/extensions/pi-workflow-engine/src/provider-usage-limit.ts";
 import { runResolvedWorkflow, runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { WorkflowRunController } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-controller.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import type { WorkflowUsageLimitSchedulerClock } from "../.pi/extensions/pi-workflow-engine/src/workflow-usage-limit-scheduler.ts";
 
 interface Notification {
   readonly message: string;
   readonly level: string;
+}
+
+class ManualClock implements WorkflowUsageLimitSchedulerClock {
+  readonly delays: number[] = [];
+  cleared = 0;
+  private current = 0;
+  private nextId = 0;
+  private readonly timers = new Map<number, { readonly due: number; readonly callback: () => void }>();
+
+  now(): number {
+    return this.current;
+  }
+
+  setNow(now: number): void {
+    this.current = now;
+  }
+
+  setTimeout(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.delays.push(delayMs);
+    this.timers.set(id, { due: this.current + delayMs, callback });
+    return id;
+  }
+
+  clearTimeout(handle: unknown): void {
+    if (typeof handle === "number" && this.timers.delete(handle)) this.cleared++;
+  }
+
+  advance(delayMs: number): void {
+    this.current += delayMs;
+    for (const [id, timer] of [...this.timers]) {
+      if (timer.due > this.current) continue;
+      this.timers.delete(id);
+      timer.callback();
+    }
+  }
 }
 
 function workflow(): LoadedWorkflow {
@@ -186,6 +224,77 @@ test("workflow runs command resumes paused runs and restarts terminal runs with 
     });
     assert.ok(sent.length >= 2);
   } finally {
+    await background.sessionShutdown(ctx);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("provider-limit timers resume from the journal and manual stop cancels pending work", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-provider-limit-"));
+  const notifications: Notification[] = [];
+  const branch: unknown[] = [];
+  const ctx = context(cwd, notifications, "rpc", branch);
+  const clock = new ManualClock();
+  const background = new BackgroundWorkflowCoordinator({
+    sendMessage(message) {
+      branch.push({ type: "message", message: { role: "custom", ...message } });
+    },
+  } as Pick<ExtensionAPI, "sendMessage">);
+  const resumable = registeredWorkflow();
+  const limited: LoadedWorkflow = {
+    ...resumable,
+    default: async () => {
+      throw new WorkflowProviderUsageLimitError({
+        stopReason: "error",
+        providerMessage: "HTTP 429 Too Many Requests; retry-after: 60",
+        provider: "openai",
+        resetAt: Date.now() + 60_000,
+      });
+    },
+  };
+  const controller = new WorkflowRunController(background, {
+    schedulerClock: clock,
+    resolveWorkflow: async (name) => name === resumable.meta.name ? resumable : undefined,
+    execute: async (backgroundCtx, _name, workflowToRun, options) => {
+      await runResolvedWorkflow(backgroundCtx, workflowToRun, "", options);
+    },
+  });
+  background.onRunSettled((settledCtx, runId) => controller.runSettled(settledCtx, runId));
+  const store = new ProjectWorkflowRunStore(cwd);
+  try {
+    await assert.rejects(runWorkflow(ctx as ExtensionContext, limited, "", {
+      runId: "auto-resume-source",
+      background: backgroundOrigin(ctx, 1),
+      autoResumeOnUsageLimit: true,
+      usageLimitMaxAttempts: 3,
+    }), WorkflowProviderUsageLimitError);
+    const paused = await store.load("auto-resume-source");
+    if (paused?.state !== "paused" || !paused.pause) throw new Error("Expected provider-limit pause.");
+    clock.setNow(paused.pause.nextEligibleAt - 1_000);
+    await controller.sessionStarted(ctx);
+    assert.equal(clock.delays.at(-1), 1_000);
+    clock.advance(1_000);
+    await waitFor(async () => (await store.list()).some((record) =>
+      record.options.resumeFromRunId === "auto-resume-source"
+      && record.options.usageLimitAttempt === 1
+      && record.state === "completed"
+    ));
+
+    await assert.rejects(runWorkflow(ctx as ExtensionContext, limited, "", {
+      runId: "manual-stop-source",
+      background: backgroundOrigin(ctx, 2),
+      autoResumeOnUsageLimit: true,
+      usageLimitMaxAttempts: 3,
+    }), WorkflowProviderUsageLimitError);
+    const manual = await store.load("manual-stop-source");
+    if (manual?.state !== "paused" || !manual.pause) throw new Error("Expected manual-stop pause.");
+    clock.setNow(manual.pause.nextEligibleAt - 2_000);
+    await controller.runSettled(ctx, manual.runId);
+    await controller.handleCommand("stop manual-stop-source", ctx);
+    assert.equal((await store.load("manual-stop-source"))?.state, "stopped");
+    assert.ok(clock.cleared >= 1);
+  } finally {
+    controller.sessionShutdown(ctx);
     await background.sessionShutdown(ctx);
     await rm(cwd, { recursive: true, force: true });
   }

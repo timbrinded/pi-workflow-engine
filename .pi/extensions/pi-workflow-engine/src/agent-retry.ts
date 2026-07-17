@@ -1,5 +1,9 @@
 import { isRetryableAssistantError, type AssistantMessage } from "@earendil-works/pi-ai";
 import { abortReason, throwIfAborted } from "./cancellation.ts";
+import {
+  providerUsageLimitFromMessages,
+  type WorkflowProviderUsageLimitError,
+} from "./provider-usage-limit.ts";
 
 export const AGENT_RETRY_BASE_DELAY_MS = 1_000;
 export const AGENT_RETRY_MAX_DELAY_MS = 30_000;
@@ -67,7 +71,12 @@ export function agentRetryDelayMs(retryAttempt: number): number {
   return Math.min(AGENT_RETRY_MAX_DELAY_MS, AGENT_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, retryAttempt - 1));
 }
 
-export function providerErrorFromMessages(messages: readonly unknown[]): WorkflowProviderError | undefined {
+export function providerErrorFromMessages(
+  messages: readonly unknown[],
+  options: { readonly pauseOnUsageLimit?: boolean } = {},
+): WorkflowProviderError | WorkflowProviderUsageLimitError | undefined {
+  const usageLimit = providerUsageLimitFromMessages(messages);
+  if (usageLimit && options.pauseOnUsageLimit) return usageLimit;
   const message = messages.findLast(isAssistantMessage);
   if (!message || message.stopReason !== "error") return undefined;
   const errorMessage = typeof message.errorMessage === "string" && message.errorMessage.length > 0

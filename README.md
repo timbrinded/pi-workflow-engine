@@ -69,6 +69,8 @@ bundle a second agent runtime.
   usage, and final outcome beside its replay journal for restart-safe history.
 - **Opt-in background runs.** The host-facing `workflow` tool can return a durable
   run ID immediately and deliver one completion or failure message later.
+- **Bounded provider-limit continuation.** An explicitly backgrounded run can opt
+  into durable usage-window pauses and restart-safe automatic journal resume.
 - **Recent-run navigation.** `/workflow:runs` lists retained project runs and
   opens their phases, agents, outcomes, and valid lifecycle actions.
 

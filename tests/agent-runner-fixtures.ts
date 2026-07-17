@@ -122,6 +122,7 @@ export function createRunContext(input: {
   readonly agentLimiter?: WorkflowAgentLimiter;
   readonly agentTimeoutMs?: number;
   readonly agentRetries?: number;
+  readonly pauseOnProviderUsageLimit?: boolean;
   readonly retryScheduler?: AgentRetryScheduler;
   readonly modelProfiles?: ResolvedWorkflowModelProfiles;
   readonly signal?: AbortSignal;
@@ -136,6 +137,7 @@ export function createRunContext(input: {
     agentLimiter: input.agentLimiter ?? new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: input.agentTimeoutMs ?? DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     agentRetries: input.agentRetries ?? DEFAULT_WORKFLOW_AGENT_RETRIES,
+    pauseOnProviderUsageLimit: input.pauseOnProviderUsageLimit ?? false,
     retryScheduler: input.retryScheduler ?? defaultAgentRetryScheduler,
     modelProfiles: input.modelProfiles ?? hostWorkflowModelProfiles(input.hostModel),
     progress: input.progress ?? createProgress(),

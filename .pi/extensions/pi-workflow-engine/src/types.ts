@@ -52,6 +52,14 @@ export interface WorkflowRunOptions {
   agentTimeoutMs?: number;
   /** Retry count for transient provider/session failures. Defaults to zero. */
   agentRetries?: number;
+  /** Explicitly schedule resumable background runs after recognized provider usage windows. */
+  autoResumeOnUsageLimit?: boolean;
+  /** Maximum recognized usage-limit pauses before automatic scheduling stops. */
+  usageLimitMaxAttempts?: number;
+  /** Maximum delay accepted from a provider reset hint. */
+  usageLimitMaxDelayMs?: number;
+  /** Internal count carried into a scheduler-created successor run. */
+  usageLimitAttempt?: number;
   /** Output-token ceiling across recorded subagent attempts. Omit for no limit (budget.total === null). */
   budget?: number;
   /** Internal/test override for the generated run id. Omit to generate a new id. */
