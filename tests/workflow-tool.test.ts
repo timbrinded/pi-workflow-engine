@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "bun:test";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component, KeyId, TUI } from "@earendil-works/pi-tui";
@@ -18,6 +20,9 @@ import {
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+
+const WORKFLOW_TOOL_TEST_CWD = mkdtempSync(join(tmpdir(), "pi-workflow-tool-tests-"));
+process.on("exit", () => rmSync(WORKFLOW_TOOL_TEST_CWD, { recursive: true, force: true }));
 
 interface CapturedTool {
   name: string;
@@ -84,7 +89,7 @@ function captureWorkflowTool(): CapturedTool {
 }
 
 const HEADLESS_CTX = {
-  cwd: process.cwd(),
+  cwd: WORKFLOW_TOOL_TEST_CWD,
   model: undefined,
   modelRegistry: { find: () => undefined },
   sessionManager: createSessionManager("test-session"),
@@ -111,7 +116,7 @@ function createTuiContext(customResult?: unknown, sessionId = "test-session"): {
     requestRender: () => {},
   } as Pick<TUI, "terminal" | "requestRender">;
   const ctx = {
-    cwd: process.cwd(),
+    cwd: WORKFLOW_TOOL_TEST_CWD,
     model: undefined,
     modelRegistry: { find: () => undefined },
     sessionManager: createSessionManager(sessionId),

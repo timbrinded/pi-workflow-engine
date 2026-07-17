@@ -21,6 +21,13 @@ import {
   captureWorkflowResumeContext,
   type AgentResumeBaseContext,
 } from "./resume-context.ts";
+import {
+  DurableWorkflowRun,
+  ProjectWorkflowRunStore,
+  workflowRunRecordPath,
+  type WorkflowRunStore,
+} from "./workflow-run-store.ts";
+import { createWorkflowRunRecord } from "./workflow-run-record.ts";
 
 /** The workflow-facing slice of the progress tracker (satisfied by `ProgressTracker`). */
 export interface WorkflowProgress {
@@ -80,14 +87,27 @@ export async function runResolvedWorkflow(
   resolvedOptions: ResolvedWorkflowRunOptions,
   dependencies: WorkflowEngineDependencies = {},
 ): Promise<unknown> {
-  const progress = new ProgressTracker(ctx, mod.meta.name);
+  const runId = resolvedOptions.runId ?? createWorkflowRunId();
+  let durableProgress: DurableWorkflowRun | undefined;
+  const progress = new ProgressTracker(ctx, mod.meta.name, runId, (snapshot) => durableProgress?.updateProgress(snapshot));
   const progressSource = { snapshot: () => progress.snapshot() };
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
   const usage = createWorkflowUsageRecorder((snapshot) => progress.updateUsage(snapshot));
   const budget = createBudget(resolvedOptions.budget, usage);
-  const runId = resolvedOptions.runId ?? createWorkflowRunId();
   const journalPath = workflowJournalPath(ctx.cwd, runId);
   const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
+  const runStore = new ProjectWorkflowRunStore(ctx.cwd);
+  let persistenceFailureReported = false;
+  const durableRun = new DurableWorkflowRun(
+    runStore,
+    createWorkflowRunRecord({ runId, workflow: mod, options: resolvedOptions, progress: progress.snapshot() }),
+    (error) => {
+      if (persistenceFailureReported) return;
+      persistenceFailureReported = true;
+      process.stderr.write(`[${mod.meta.name}] run persistence failed: ${unknownErrorMessage(error)}\n`);
+    },
+  );
+  durableProgress = durableRun;
   const worktrees = dependencies.worktrees ?? new WorktreeRegistry(ctx.cwd);
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
@@ -110,8 +130,14 @@ export async function runResolvedWorkflow(
     }
 
     const journal = await createWorkflowJournal({ resumePath, writePath: journalPath });
+    durableRun.transition({ state: "running", progress: progress.snapshot() });
     await notifyLifecycleObserver(progress, "run metadata callback", () =>
-      resolvedOptions.onRunMetadata?.({ runId, resumedFromRunId: resolvedOptions.resumeFromRunId, journalPath }),
+      resolvedOptions.onRunMetadata?.({
+        runId,
+        resumedFromRunId: resolvedOptions.resumeFromRunId,
+        journalPath,
+        recordPath: workflowRunRecordPath(ctx.cwd, runId),
+      }),
     );
     progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
     const modelProfiles = dependencies.modelProfiles ?? resolveWorkflowModelProfiles({
@@ -157,10 +183,37 @@ export async function runResolvedWorkflow(
       perf,
       usage,
       progress,
+      runStore,
       worktrees,
       unlinkSignals: [unlinkContextAbortSignal, unlinkOptionAbortSignal],
     }),
   );
+
+  if (workflowOutcome.ok && finalizationOutcome.ok) {
+    durableRun.transition({
+      state: "completed",
+      progress: progress.snapshot(),
+      usage: usage.snapshot(),
+      result: workflowOutcome.value,
+    });
+  } else if (!workflowOutcome.ok) {
+    const error = finalizationOutcome.ok
+      ? workflowOutcome.error
+      : combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error);
+    persistTerminalWorkflowError(error);
+  } else if (!finalizationOutcome.ok) {
+    persistTerminalWorkflowError(finalizationOutcome.error);
+  }
+  await durableRun.flush().catch(() => undefined);
+
+  function persistTerminalWorkflowError(error: unknown): void {
+    durableRun.transition({
+      state: ctx.signal?.aborted || resolvedOptions.signal?.aborted ? "stopped" : "failed",
+      progress: progress.snapshot(),
+      usage: usage.snapshot(),
+      error,
+    });
+  }
 
   if (workflowOutcome.ok) {
     if (finalizationOutcome.ok) return workflowOutcome.value;
@@ -184,6 +237,7 @@ interface WorkflowFinalizationInput {
   readonly perf: PerfSink;
   readonly usage: WorkflowUsageSink;
   readonly progress: ProgressTracker;
+  readonly runStore: WorkflowRunStore;
   readonly worktrees: WorktreeRegistry;
   readonly unlinkSignals: readonly (() => void)[];
 }
@@ -217,6 +271,7 @@ async function finalizeWorkflowRun(input: WorkflowFinalizationInput): Promise<vo
         run: () => input.worktrees.removeAll(),
       },
       { name: "journal pruning", criticality: "best-effort", run: () => pruneWorkflowJournals(input.cwd) },
+      { name: "run record pruning", criticality: "best-effort", run: () => input.runStore.prune() },
       { name: "progress completion", criticality: "best-effort", run: () => input.progress.done() },
       {
         name: "progress snapshot callback",

@@ -64,6 +64,8 @@ bundle a second agent runtime.
   git worktree and receive its patch.
 - **Safe replay.** Interrupted runs reuse a completed call only when every
   captured observable surface and its effective execution identity still match.
+- **Durable run records.** Each run checkpoints its lifecycle, compact progress,
+  usage, and final outcome beside its replay journal for restart-safe history.
 
 ## Built-in workflows
 

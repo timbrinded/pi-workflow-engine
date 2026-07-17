@@ -10,7 +10,7 @@ function headlessContext(): ExtensionContext {
 }
 
 test("ProgressTracker tracks rows by id and keeps status counts correct", () => {
-  const tracker = new ProgressTracker(headlessContext(), "progress-test");
+  const tracker = new ProgressTracker(headlessContext(), "progress-test", "progress-test-run");
   const ids = Array.from({ length: 1_000 }, (_value, index) => tracker.agentQueued("Bulk", `agent:${index}`));
 
   assert.deepEqual(tracker.statusCounts(), { queued: 1_000, running: 0, done: 0, failed: 0, total: 1_000 });
@@ -30,7 +30,7 @@ test("ProgressTracker caps lane items and reports overflow", () => {
   const previous = process.env.PI_WORKFLOW_LANE_ITEM_LIMIT;
   process.env.PI_WORKFLOW_LANE_ITEM_LIMIT = "3";
   try {
-    const tracker = new ProgressTracker(headlessContext(), "lane-test");
+    const tracker = new ProgressTracker(headlessContext(), "lane-test", "lane-test-run");
     for (let i = 0; i < 5; i++) {
       tracker.event({ type: "lane_item", lane: "Findings", title: `Finding ${i}`, status: "pending" });
     }
@@ -46,7 +46,7 @@ test("ProgressTracker caps lane items and reports overflow", () => {
 });
 
 test("ProgressTracker snapshots copy retained state", () => {
-  const tracker = new ProgressTracker(headlessContext(), "copy-test");
+  const tracker = new ProgressTracker(headlessContext(), "copy-test", "copy-test-run");
   const id = tracker.agentQueued("Copy", "agent");
   tracker.agentStart("Copy", "agent", id);
   tracker.event({ type: "lane_item", lane: "Findings", title: "Finding", status: "success", details: "evidence" });
@@ -92,7 +92,7 @@ test("ProgressTracker publishes the shared usage line in compact status", () => 
   });
   const usage = recorder.snapshot();
   const usageLine = formatWorkflowUsageLine(usage);
-  const tracker = new ProgressTracker(ctx, "status-test");
+  const tracker = new ProgressTracker(ctx, "status-test", "status-test-run");
 
   try {
     tracker.updateUsage(usage);

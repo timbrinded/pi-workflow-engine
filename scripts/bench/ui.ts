@@ -61,6 +61,7 @@ function createSnapshot(config: { agents: number; laneItems: number; phases: num
     createdAt: Date.now() + index,
   }));
   return {
+    runId: "ui-benchmark",
     title: "bench-workflow",
     startedAt: Date.now() - 12_345,
     currentPhase: "Benchmark",
@@ -97,7 +98,7 @@ function createAgents(totalAgents: number, phaseCount: number, phaseIndex: numbe
 }
 
 function simulateProgressEvents(agentCount: number, itemCount: number): void {
-  const tracker = new ProgressTracker(fakeHeadlessContext(), "bench-progress");
+  const tracker = new ProgressTracker(fakeHeadlessContext(), "bench-progress", "ui-benchmark-progress");
   const start = performance.now();
   for (let i = 0; i < agentCount; i++) {
     const row = tracker.agentQueued("Bench", `agent:${i}`);
