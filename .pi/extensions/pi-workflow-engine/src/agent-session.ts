@@ -25,7 +25,7 @@ import {
   type EffectiveAgentSessionIdentity,
   type EffectiveToolInfoLike,
 } from "./agent-session-identity.ts";
-import { throwIfAborted } from "./cancellation.ts";
+import { raceWithAbort, throwIfAborted } from "./cancellation.ts";
 
 export const FINAL_TOOL = "final_answer";
 
@@ -187,13 +187,13 @@ export async function promptAgentSession(input: {
     const unlinkPromptAbort = linkSessionAbort(rc.signal, session);
     try {
       try {
-        await rc.perf.time("agent.prompt_ms", () => session.prompt(finalPrompt), tags);
+        await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(finalPrompt), rc.signal), tags);
         if (opts.schema) {
           for (let attempt = 0; handle.structuredResult() === null && attempt < SCHEMA_REPROMPT_ATTEMPTS; attempt++) {
             throwIfAborted(rc.signal);
             rc.progress.log(`${label}: no final answer; re-prompting (${attempt + 1}/${SCHEMA_REPROMPT_ATTEMPTS})`);
             rc.perf.counter("agent.structured_reprompt", 1, tags);
-            await rc.perf.time("agent.prompt_ms", () => session.prompt(SCHEMA_REPROMPT), tags);
+            await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(SCHEMA_REPROMPT), rc.signal), tags);
           }
         }
 
@@ -280,13 +280,13 @@ async function defaultCreateSession(options: CreateAgentSessionOptions): Promise
 
 function linkSessionAbort(signal: AbortSignal | undefined, session: AgentRunnerSession): () => void {
   if (!signal) return () => {};
+  const onAbort = () => {
+    void session.abort().catch(() => undefined);
+  };
   if (signal.aborted) {
-    void session.abort();
+    onAbort();
     return () => {};
   }
-  const onAbort = () => {
-    void session.abort();
-  };
   signal.addEventListener("abort", onAbort, { once: true });
   return () => signal.removeEventListener("abort", onAbort);
 }

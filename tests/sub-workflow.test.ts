@@ -7,6 +7,8 @@ import {
   type WorkflowRunContext,
 } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
+import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { AgentProgress, CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
@@ -60,6 +62,8 @@ function createRc(
     hostModel: undefined,
     modelRegistry: { find: () => undefined },
     semaphore,
+    agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
+    agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     progress,
     signal: undefined,
     perf: new PerfRecorder(),
@@ -387,6 +391,25 @@ test("parent and sub-workflow agents share the run's concurrency cap", async () 
 
   // Semaphore(1) is shared across the parent and the sub-workflow, so no two agents run at once.
   assert.equal(max, 1);
+});
+
+test("parent and sub-workflow agents share the run's live-agent limit", async () => {
+  const progress = createProgress();
+  const limiter = new WorkflowAgentLimiter(1);
+  const rc: WorkflowRunContext = {
+    ...createRc(progress, new Semaphore(1), NOOP_SESSION),
+    agentLimiter: limiter,
+  };
+  const child = workflowModule("child", async (api) => await api.agent("child"));
+  const parent = workflowModule("parent", async (api) => {
+    await api.agent("parent");
+    return await api.workflow("child");
+  });
+
+  await assert.rejects(
+    () => runWorkflowWithContext(rc, progress, parent, "", contextOpts(async () => child)),
+    /live-agent limit of 1/,
+  );
 });
 
 test("resolveWorkflowRef resolves a registered workflow by name", async () => {

@@ -40,6 +40,32 @@ export function linkAbortSignal(parent: AbortSignal | undefined, controller: Abo
   return () => parent.removeEventListener("abort", onAbort);
 }
 
+export async function raceWithAbort<T>(operation: () => Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  throwIfAborted(signal);
+  if (!signal) return await operation();
+
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const finish = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      action();
+    };
+    const onAbort = () => finish(() => reject(abortReason(signal)));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    void operation().then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
 function safeInstanceOf<T>(value: unknown, constructor: abstract new (...args: never[]) => T): value is T {
   try {
     return value instanceof constructor;

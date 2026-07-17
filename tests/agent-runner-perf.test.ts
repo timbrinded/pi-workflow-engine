@@ -9,6 +9,8 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
+import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
@@ -80,6 +82,8 @@ function createRunContext(
     hostModel: undefined,
     modelRegistry: { find: () => undefined },
     semaphore: new Semaphore(1),
+    agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
+    agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     progress: createProgress(),
     signal,
     perf,
