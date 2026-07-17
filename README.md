@@ -66,6 +66,8 @@ bundle a second agent runtime.
   captured observable surface and its effective execution identity still match.
 - **Durable run records.** Each run checkpoints its lifecycle, compact progress,
   usage, and final outcome beside its replay journal for restart-safe history.
+- **Opt-in background runs.** The host-facing `workflow` tool can return a durable
+  run ID immediately and deliver one completion or failure message later.
 
 ## Built-in workflows
 

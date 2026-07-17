@@ -33,6 +33,8 @@ import {
 } from "./src/options.ts";
 import { executeWorkflowInvocation, type WorkflowExecution, type WorkflowPerfDetails } from "./src/workflow-execution.ts";
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
+import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
+import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -462,6 +464,7 @@ export interface WorkflowToolRequestParams {
   readonly name?: string;
   readonly script?: string;
   readonly resumeFromRunId?: string;
+  readonly background?: boolean;
 }
 
 export type WorkflowToolRequest =
@@ -625,9 +628,17 @@ function createReviewSessionCoordinator(pi: ExtensionAPI): ReviewSessionCoordina
 
 export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShortcuts = resolveDynamaxShortcuts()): void {
   const reviewSessions = createReviewSessionCoordinator(pi);
+  const backgroundWorkflows = new BackgroundWorkflowCoordinator(pi);
   registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
   registerWorkflowModelProfileCommand(pi);
-  pi.on("session_shutdown", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
+    await backgroundWorkflows.sessionStarted(ctx);
+  });
+  pi.on("agent_settled", async (_event, ctx) => {
+    await backgroundWorkflows.agentSettled(ctx);
+  });
+  pi.on("session_shutdown", async (_event, ctx) => {
+    await backgroundWorkflows.sessionShutdown(ctx);
     const key = sessionKey(ctx);
     workflowInspections.get(pi)?.delete(key);
     reviewSessions.dispose(ctx);
@@ -712,16 +723,20 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
 
-  registerWorkflowTool(pi, reviewSessions);
+  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows);
 }
 
 /** Register the host-facing workflow tool independently from command and lifecycle surfaces. */
-function registerWorkflowTool(pi: ExtensionAPI, reviewSessions: ReviewSessionCoordinator): void {
+function registerWorkflowTool(
+  pi: ExtensionAPI,
+  reviewSessions: ReviewSessionCoordinator,
+  backgroundWorkflows: BackgroundWorkflowCoordinator,
+): void {
   pi.registerTool({
     name: "workflow",
     label: "Workflow",
     description:
-      "ONLY call workflow when the user opted into multi-agent orchestration via the literal token `dynamax`, sticky `/workflow:dynamax on`, an explicit request to run or author a workflow, or a command/skill instruction. Runs either a registered named workflow or an inline one-off workflow script (fan-out → verify → synthesize) and returns its structured result.",
+      "ONLY call workflow when the user opted into multi-agent orchestration via the literal token `dynamax`, sticky `/workflow:dynamax on`, an explicit request to run or author a workflow, or a command/skill instruction. Runs either a registered named workflow or an inline one-off workflow script (fan-out → verify → synthesize), synchronously by default or explicitly in the background.",
     promptSnippet: "Run an existing named workflow or an inline one-off workflow script",
     promptGuidelines: [
       "Use workflow only when the user opted into workflow orchestration via `dynamax`, `/workflow:dynamax on`, an explicit request to run/author a workflow, or a command/skill instruction.",
@@ -735,6 +750,7 @@ function registerWorkflowTool(pi: ExtensionAPI, reviewSessions: ReviewSessionCoo
       "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
       "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
       ADAPTIVE_WORKFLOW_GUIDANCE,
+      "Set background: true only when the user explicitly wants the workflow to continue after this tool call; the tool returns a durable run ID and completion is delivered later.",
       "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
     ],
     parameters: Type.Object({
@@ -767,15 +783,17 @@ function registerWorkflowTool(pi: ExtensionAPI, reviewSessions: ReviewSessionCoo
       ),
       perf: Type.Optional(Type.Boolean({ description: "Include workflow performance timing aggregates in the result details" })),
       resumeFromRunId: Type.Optional(Type.String({ minLength: 1, description: "Workflow run id to resume from by replaying matching completed agent results" })),
+      background: Type.Optional(Type.Boolean({ description: "Return a durable run ID immediately and deliver completion to this conversation later" })),
     }),
     renderCall(args, theme) {
       const suffix = args.args ? ` ${theme.fg("dim", args.args)}` : "";
+      const background = args.background ? ` ${theme.fg("dim", "(background)")}` : "";
       if (args.name?.trim()) {
-        return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", args.name.trim())}${suffix}`, 0, 0);
+        return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", args.name.trim())}${background}${suffix}`, 0, 0);
       }
       const preview = compactInlinePreview(args.script);
       const previewSuffix = preview ? ` ${theme.fg("dim", preview)}` : "";
-      return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", "inline")}${suffix}${previewSuffix}`, 0, 0);
+      return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", "inline")}${background}${suffix}${previewSuffix}`, 0, 0);
     },
     renderResult(result, { expanded, isPartial }, theme) {
       if (isPartial) return new Text(theme.fg("accent", "Running workflow…"), 0, 0);
@@ -799,6 +817,10 @@ function registerWorkflowTool(pi: ExtensionAPI, reviewSessions: ReviewSessionCoo
           content: [{ type: "text", text: "resumeFromRunId must be non-empty." }],
           details: { error: "invalid_resume_from_run_id" },
         };
+      }
+      if (params.background) {
+        const unavailable = backgroundUnavailableResult(ctx.mode);
+        if (unavailable) return unavailable;
       }
 
       const runOptions = resolveWorkflowRunOptions({
@@ -842,6 +864,26 @@ function registerWorkflowTool(pi: ExtensionAPI, reviewSessions: ReviewSessionCoo
       }
 
       const resultArgs = params.args ?? "";
+      if (params.background) {
+        return await startBackgroundWorkflowTool({
+          coordinator: backgroundWorkflows,
+          ctx,
+          name: resultName,
+          options: runOptions,
+          async execute(backgroundCtx, backgroundOptions) {
+            const execution = await executeResolvedWorkflow(
+              pi,
+              backgroundCtx,
+              resultName,
+              mod,
+              resultArgs,
+              backgroundOptions,
+              perfRecorder,
+            );
+            reviewSessions.remember(ctx, execution, backgroundOptions);
+          },
+        });
+      }
       const execution = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
       reviewSessions.remember(ctx, execution, runOptions);
       return {

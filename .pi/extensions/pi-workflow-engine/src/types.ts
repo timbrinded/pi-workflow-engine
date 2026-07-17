@@ -35,6 +35,12 @@ export interface WorkflowRunMetadata {
   readonly recordPath: string;
 }
 
+export interface WorkflowBackgroundOrigin {
+  /** Stable pi session id used to route and deduplicate completion delivery. */
+  readonly sessionId: string;
+  readonly requestedAt: number;
+}
+
 export interface WorkflowRunOptions {
   inspect?: boolean;
   perf?: boolean;
@@ -50,6 +56,8 @@ export interface WorkflowRunOptions {
   budget?: number;
   /** Internal/test override for the generated run id. Omit to generate a new id. */
   runId?: string;
+  /** Internal origin metadata for an explicitly backgrounded tool invocation. */
+  background?: WorkflowBackgroundOrigin;
   /** Replay completed agent results from this prior run id when call and execution context still match. */
   resumeFromRunId?: string;
   resultViewer?: "open" | "skip";
