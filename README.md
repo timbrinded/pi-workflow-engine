@@ -12,8 +12,8 @@ extension lets pi fan the work out and bring the evidence back together.
 
 The process is simple: **scope → fan out → verify → synthesize**. You see the work
 live in the TUI, concurrency stays bounded, and the final answer includes the
-subagents' combined usage and estimated cost when the provider exposes enough
-data to calculate them.
+subagents' combined fresh-input, cache, and output usage when available, plus
+the cost reported by each provider session.
 
 ![A lead agent coordinating subagents](assets/preview.png)
 
@@ -53,7 +53,8 @@ bundle a second agent runtime.
 - **Typed handoffs.** A TypeBox schema becomes the agent's terminating tool
   contract—there is no JSON scraping.
 - **Live progress.** Phases, agents, findings, and logs are visible in the TUI,
-  alongside usage and estimated cost when provider data is available.
+  alongside fresh-input, cache-read, cache-write, output, and provider-reported
+  cost when those usage components are available.
 - **Bounded execution.** One semaphore covers nested fan-out, pipelines, and
   sub-workflows; every run also caps live model-call starts and each call's duration,
   with opt-in bounded retries for transient provider failures.

@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { WorkflowProgressEvent } from "./types.ts";
 import type { AgentRowStatus, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "./progress-types.ts";
+import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./usage.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { statusTextFromCounts, type WorkflowStatusCounts } from "./ui/workflow-format.ts";
 import { createWorkflowWidget, type WorkflowWidget } from "./ui/workflow-widget.ts";
@@ -73,6 +74,7 @@ export class ProgressTracker {
   private tui: Pick<TUI, "requestRender"> | undefined;
   private widgetInterval: ReturnType<typeof setInterval> | undefined;
   private lastStatusText: string | undefined;
+  private usageSnapshot: WorkflowUsageSnapshot | undefined;
   private renderQueued = false;
 
   constructor(
@@ -199,6 +201,11 @@ export class ProgressTracker {
     this.render();
   }
 
+  updateUsage(snapshot: WorkflowUsageSnapshot): void {
+    this.usageSnapshot = snapshot;
+    this.render();
+  }
+
   snapshot(): WorkflowProgressSnapshot {
     return {
       title: this.title,
@@ -214,6 +221,7 @@ export class ProgressTracker {
       lanes: [...this.lanes.entries()].map(([lane, items]) => [lane, items.map((item) => ({ ...item }))]),
       laneOverflow: [...this.laneOverflow.entries()],
       logs: [...this.logs],
+      usage: this.usageSnapshot,
     };
   }
 
@@ -283,7 +291,7 @@ export class ProgressTracker {
   }
 
   private publishStatus(): void {
-    const next = statusTextFromCounts(
+    const status = statusTextFromCounts(
       {
         title: this.title,
         doneAt: this.doneAt,
@@ -293,6 +301,8 @@ export class ProgressTracker {
       this.statusCountsSnapshot(),
       this.ctx.ui.theme,
     );
+    const usage = formatWorkflowUsageLine(this.usageSnapshot);
+    const next = usage ? `${status} · ${usage}` : status;
     if (next === this.lastStatusText) return;
     this.ctx.ui.setStatus("workflow", next);
     this.lastStatusText = next;

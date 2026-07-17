@@ -187,9 +187,11 @@ Workflow results are rendered in pi with:
 - recommendations;
 - next steps;
 - run stats when available;
-- workflow-level token and cost totals gathered from subagent sessions when provider usage is available.
+- workflow-level fresh-input, cache-read, cache-write, output, and cost totals gathered from subagent sessions when provider usage is available.
 
 These workflow usage totals are separate from `--perf`, which is internal timing only. They are also separate from pi's built-in footer and `/session` totals, which may still show host-session usage only unless pi core adds a first-class extension usage API. If a model has no pricing configured, token totals can be non-zero while displayed cost remains `$0.000`.
+
+The result, inspector overview, compact widget, and status line all use the same usage summary. Providers with a complete breakdown show `fresh`, `cache read`, `cache write`, and `output` separately. Zero cache components are omitted. If a provider reports only some components, the summary labels mixed-run component totals with `≥` and preserves the provider's aggregate `total`; if it reports no components, the summary falls back to aggregate `tokens`. Costs are summed from provider session totals and are never inferred from local pricing.
 
 During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow:inspector` if you want to bring the last completed inspector back up afterward.
 

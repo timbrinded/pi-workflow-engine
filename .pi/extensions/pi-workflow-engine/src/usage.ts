@@ -6,12 +6,22 @@ export interface WorkflowUsageCost {
   readonly total: number;
 }
 
+export type WorkflowUsageCoverage = "none" | "partial" | "complete";
+
+export interface WorkflowUsageComponentCoverage {
+  readonly input: WorkflowUsageCoverage;
+  readonly output: WorkflowUsageCoverage;
+  readonly cacheRead: WorkflowUsageCoverage;
+  readonly cacheWrite: WorkflowUsageCoverage;
+}
+
 export interface WorkflowUsageTotals {
   readonly input: number;
   readonly output: number;
   readonly cacheRead: number;
   readonly cacheWrite: number;
   readonly totalTokens: number;
+  readonly coverage: WorkflowUsageComponentCoverage;
   readonly cost: WorkflowUsageCost;
 }
 
@@ -36,7 +46,21 @@ export interface WorkflowUsageSink {
 }
 
 const ZERO_COST: WorkflowUsageCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-const ZERO_TOTALS: WorkflowUsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: ZERO_COST };
+const ZERO_COVERAGE: WorkflowUsageComponentCoverage = {
+  input: "none",
+  output: "none",
+  cacheRead: "none",
+  cacheWrite: "none",
+};
+const ZERO_TOTALS: WorkflowUsageTotals = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  coverage: ZERO_COVERAGE,
+  cost: ZERO_COST,
+};
 
 interface AssistantUsageMessage {
   readonly provider?: string;
@@ -46,6 +70,8 @@ interface AssistantUsageMessage {
 
 export class WorkflowUsageRecorder implements WorkflowUsageSink {
   private readonly agents: WorkflowAgentUsage[] = [];
+
+  constructor(private readonly onSnapshot?: (snapshot: WorkflowUsageSnapshot) => void) {}
 
   recordAgentSession(input: { label: string; phase?: string; messages: readonly unknown[] }): void {
     const assistantMessages = input.messages.flatMap((message) => {
@@ -64,6 +90,7 @@ export class WorkflowUsageRecorder implements WorkflowUsageSink {
       assistantMessages: assistantMessages.length,
       usage,
     });
+    this.onSnapshot?.(this.snapshot());
   }
 
   snapshot(): WorkflowUsageSnapshot {
@@ -79,8 +106,8 @@ export class WorkflowUsageRecorder implements WorkflowUsageSink {
   }
 }
 
-export function createWorkflowUsageRecorder(): WorkflowUsageSink {
-  return new WorkflowUsageRecorder();
+export function createWorkflowUsageRecorder(onSnapshot?: (snapshot: WorkflowUsageSnapshot) => void): WorkflowUsageSink {
+  return new WorkflowUsageRecorder(onSnapshot);
 }
 
 export function emptyWorkflowUsageTotals(): WorkflowUsageTotals {
@@ -96,17 +123,43 @@ export function isWorkflowUsageSnapshot(value: unknown): value is WorkflowUsageS
 
 export function hasWorkflowUsage(snapshot: unknown): snapshot is WorkflowUsageSnapshot {
   if (!isWorkflowUsageSnapshot(snapshot)) return false;
-  return snapshot.assistantMessages > 0 || snapshot.totals.totalTokens > 0 || snapshot.totals.cost.total > 0;
+  return snapshot.totals.totalTokens > 0 || snapshot.totals.cost.total > 0;
 }
 
 export function formatWorkflowUsageLine(snapshot: unknown): string | undefined {
   if (!hasWorkflowUsage(snapshot)) return undefined;
-  const parts = [`↑${formatUsageCount(snapshot.totals.input)}`, `↓${formatUsageCount(snapshot.totals.output)}`];
-  if (snapshot.totals.cacheRead > 0) parts.push(`R${formatUsageCount(snapshot.totals.cacheRead)}`);
-  if (snapshot.totals.cacheWrite > 0) parts.push(`W${formatUsageCount(snapshot.totals.cacheWrite)}`);
+  const parts = formatWorkflowUsageComponents(snapshot.totals);
   parts.push(`cost $${snapshot.totals.cost.total.toFixed(3)}`);
   parts.push(`agents ${snapshot.agents.length}`);
   return `Usage: ${parts.join(" · ")}`;
+}
+
+function formatWorkflowUsageComponents(totals: WorkflowUsageTotals): string[] {
+  const parts: string[] = [];
+  const completeCacheBreakdown =
+    totals.coverage.cacheRead === "complete" && totals.coverage.cacheWrite === "complete";
+  appendUsageComponent(parts, completeCacheBreakdown ? "fresh" : "input", totals.input, totals.coverage.input);
+  appendUsageComponent(parts, "cache read", totals.cacheRead, totals.coverage.cacheRead);
+  appendUsageComponent(parts, "cache write", totals.cacheWrite, totals.coverage.cacheWrite);
+  appendUsageComponent(parts, "output", totals.output, totals.coverage.output);
+
+  const knownComponents = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
+  if (parts.length === 0 && totals.totalTokens > 0) parts.push(`tokens ${formatUsageCount(totals.totalTokens)}`);
+  else if (!hasCompleteCoverage(totals.coverage) && totals.totalTokens !== knownComponents) {
+    parts.push(`total ${formatUsageCount(totals.totalTokens)}`);
+  }
+  return parts;
+}
+
+function appendUsageComponent(
+  parts: string[],
+  label: string,
+  value: number,
+  coverage: WorkflowUsageCoverage,
+): void {
+  if (value <= 0 || coverage === "none") return;
+  const count = formatUsageCount(value);
+  parts.push(`${label} ${coverage === "partial" ? `≥${count}` : count}`);
 }
 
 function isWorkflowAgentUsage(value: unknown): value is WorkflowAgentUsage {
@@ -126,7 +179,18 @@ function isWorkflowUsageTotals(value: unknown): value is WorkflowUsageTotals {
   if (finiteNumber(value.cacheRead) === undefined) return false;
   if (finiteNumber(value.cacheWrite) === undefined) return false;
   if (finiteNumber(value.totalTokens) === undefined) return false;
+  if (!isWorkflowUsageCoverage(value.coverage)) return false;
   return isWorkflowUsageCost(value.cost);
+}
+
+function isWorkflowUsageCoverage(value: unknown): value is WorkflowUsageComponentCoverage {
+  if (!isRecord(value)) return false;
+  return (
+    isCoverageValue(value.input) &&
+    isCoverageValue(value.output) &&
+    isCoverageValue(value.cacheRead) &&
+    isCoverageValue(value.cacheWrite)
+  );
 }
 
 function isWorkflowUsageCost(value: unknown): value is WorkflowUsageCost {
@@ -158,14 +222,26 @@ function parseUsageTotals(value: unknown): WorkflowUsageTotals | undefined {
   const output = finiteNumber(value.output);
   const cacheRead = finiteNumber(value.cacheRead);
   const cacheWrite = finiteNumber(value.cacheWrite);
+  const reportedTotal = finiteNumber(value.totalTokens);
   const cost = parseUsageCost(value.cost);
-  if (input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined || !cost) return undefined;
+  if (!cost) return undefined;
+  if (input === undefined && output === undefined && cacheRead === undefined && cacheWrite === undefined && reportedTotal === undefined) {
+    return undefined;
+  }
+  const coverage: WorkflowUsageComponentCoverage = {
+    input: input === undefined ? "none" : "complete",
+    output: output === undefined ? "none" : "complete",
+    cacheRead: cacheRead === undefined ? "none" : "complete",
+    cacheWrite: cacheWrite === undefined ? "none" : "complete",
+  };
+  const componentTotal = (input ?? 0) + (output ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);
   return {
-    input,
-    output,
-    cacheRead,
-    cacheWrite,
-    totalTokens: input + output + cacheRead + cacheWrite,
+    input: input ?? 0,
+    output: output ?? 0,
+    cacheRead: cacheRead ?? 0,
+    cacheWrite: cacheWrite ?? 0,
+    totalTokens: hasCompleteCoverage(coverage) ? componentTotal : (reportedTotal ?? componentTotal),
+    coverage,
     cost,
   };
 }
@@ -177,12 +253,20 @@ function parseUsageCost(value: unknown): WorkflowUsageCost | undefined {
   const cacheRead = finiteNumber(value.cacheRead);
   const cacheWrite = finiteNumber(value.cacheWrite);
   const total = finiteNumber(value.total);
-  if (input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined || total === undefined) return undefined;
-  return { input, output, cacheRead, cacheWrite, total };
+  if (total === undefined) return undefined;
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+    cacheRead: cacheRead ?? 0,
+    cacheWrite: cacheWrite ?? 0,
+    total,
+  };
 }
 
 function sumTotals(values: readonly WorkflowUsageTotals[]): WorkflowUsageTotals {
-  return values.reduce((sum, value) => addTotals(sum, value), emptyWorkflowUsageTotals());
+  const [first, ...rest] = values;
+  if (!first) return emptyWorkflowUsageTotals();
+  return rest.reduce(addTotals, cloneTotals(first));
 }
 
 function addTotals(left: WorkflowUsageTotals, right: WorkflowUsageTotals): WorkflowUsageTotals {
@@ -192,6 +276,12 @@ function addTotals(left: WorkflowUsageTotals, right: WorkflowUsageTotals): Workf
     cacheRead: left.cacheRead + right.cacheRead,
     cacheWrite: left.cacheWrite + right.cacheWrite,
     totalTokens: left.totalTokens + right.totalTokens,
+    coverage: {
+      input: combineCoverage(left.coverage.input, right.coverage.input),
+      output: combineCoverage(left.coverage.output, right.coverage.output),
+      cacheRead: combineCoverage(left.coverage.cacheRead, right.coverage.cacheRead),
+      cacheWrite: combineCoverage(left.coverage.cacheWrite, right.coverage.cacheWrite),
+    },
     cost: {
       input: left.cost.input + right.cost.input,
       output: left.cost.output + right.cost.output,
@@ -209,8 +299,26 @@ function cloneTotals(value: WorkflowUsageTotals): WorkflowUsageTotals {
     cacheRead: value.cacheRead,
     cacheWrite: value.cacheWrite,
     totalTokens: value.totalTokens,
+    coverage: { ...value.coverage },
     cost: { ...value.cost },
   };
+}
+
+function combineCoverage(left: WorkflowUsageCoverage, right: WorkflowUsageCoverage): WorkflowUsageCoverage {
+  return left === right ? left : "partial";
+}
+
+function hasCompleteCoverage(coverage: WorkflowUsageComponentCoverage): boolean {
+  return (
+    coverage.input === "complete" &&
+    coverage.output === "complete" &&
+    coverage.cacheRead === "complete" &&
+    coverage.cacheWrite === "complete"
+  );
+}
+
+function isCoverageValue(value: unknown): value is WorkflowUsageCoverage {
+  return value === "none" || value === "partial" || value === "complete";
 }
 
 function formatUsageCount(count: number): string {

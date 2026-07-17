@@ -83,7 +83,7 @@ export async function runResolvedWorkflow(
   const progress = new ProgressTracker(ctx, mod.meta.name);
   const progressSource = { snapshot: () => progress.snapshot() };
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
-  const usage = createWorkflowUsageRecorder();
+  const usage = createWorkflowUsageRecorder((snapshot) => progress.updateUsage(snapshot));
   const budget = createBudget(resolvedOptions.budget, usage);
   const runId = resolvedOptions.runId ?? createWorkflowRunId();
   const journalPath = workflowJournalPath(ctx.cwd, runId);
