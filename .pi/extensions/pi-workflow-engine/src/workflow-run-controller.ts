@@ -10,6 +10,7 @@ import { resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "./op
 import type { LoadedWorkflow } from "./types.ts";
 import {
   availableWorkflowRunActions,
+  canRelaunchWorkflowRun,
   formatWorkflowRunDetails,
   formatWorkflowRunHistory,
   parseWorkflowRunsCommand,
@@ -17,9 +18,14 @@ import {
   WORKFLOW_RUN_HISTORY_LIMIT,
   type WorkflowRunLifecycleAction,
 } from "./workflow-run-history.ts";
-import type { WorkflowRunRecord } from "./workflow-run-record.ts";
+import { transitionWorkflowRun, type WorkflowRunRecord } from "./workflow-run-record.ts";
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
+import { emptyWorkflowUsageTotals } from "./usage.ts";
+import {
+  WorkflowUsageLimitScheduler,
+  type WorkflowUsageLimitSchedulerClock,
+} from "./workflow-usage-limit-scheduler.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
 import {
   WorkflowRunNavigator,
@@ -35,16 +41,46 @@ interface WorkflowRunControllerDependencies {
     options: ResolvedWorkflowRunOptions,
   ) => Promise<void>;
   readonly storeForCwd?: (cwd: string) => WorkflowRunStore;
+  readonly schedulerClock?: WorkflowUsageLimitSchedulerClock;
+  readonly log?: (message: string) => void;
 }
 
 export class WorkflowRunController {
   private readonly storeForCwd: (cwd: string) => WorkflowRunStore;
+  private readonly usageLimitScheduler: WorkflowUsageLimitScheduler;
+  private readonly log: (message: string) => void;
 
   constructor(
     private readonly background: BackgroundWorkflowCoordinator,
     private readonly dependencies: WorkflowRunControllerDependencies,
   ) {
     this.storeForCwd = dependencies.storeForCwd ?? ((cwd) => new ProjectWorkflowRunStore(cwd));
+    this.log = dependencies.log ?? ((message) => process.stderr.write(`${message}\n`));
+    this.usageLimitScheduler = new WorkflowUsageLimitScheduler(
+      (ctx, runId, attempt) => this.autoResume(ctx, runId, attempt),
+      dependencies.schedulerClock,
+      dependencies.log,
+    );
+  }
+
+  async runSettled(ctx: ExtensionContext, runId: string): Promise<void> {
+    const record = await this.loadRecord(ctx.cwd, runId);
+    if (record && canRelaunchWorkflowRun(record)) this.usageLimitScheduler.arm(ctx, record);
+  }
+
+  async sessionStarted(ctx: ExtensionContext): Promise<void> {
+    this.usageLimitScheduler.activateSession(ctx);
+    try {
+      for (const record of await this.storeForCwd(ctx.cwd).list()) {
+        if (canRelaunchWorkflowRun(record)) this.usageLimitScheduler.arm(ctx, record);
+      }
+    } catch (error) {
+      this.log(`[workflow] provider-limit recovery could not load run history: ${unknownErrorMessage(error)}`);
+    }
+  }
+
+  sessionShutdown(ctx: Pick<ExtensionContext, "sessionManager">): void {
+    this.usageLimitScheduler.cancelSession(ctx);
   }
 
   async handleCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -136,10 +172,28 @@ export class WorkflowRunController {
 
     try {
       if (action === "stop") {
+        if (record.state === "paused") {
+          this.usageLimitScheduler.cancel(runId);
+          const stopped = transitionWorkflowRun(record, {
+            state: "stopped",
+            progress: record.progress,
+            usage: record.usage ?? record.progress.usage ?? {
+              agents: [],
+              totals: emptyWorkflowUsageTotals(),
+              assistantMessages: 0,
+            },
+            error: new Error("Workflow stopped by user."),
+          });
+          await this.storeForCwd(ctx.cwd).save(stopped);
+          await this.background.durableRunSettled(ctx, runId);
+          ctx.ui.notify(`Workflow run ${runId} is now stopped.`, "info");
+          return;
+        }
         const stopped = await this.background.stop(ctx, runId);
         ctx.ui.notify(`Workflow run ${runId} is now ${stopped.state}.`, "info");
         return;
       }
+      this.usageLimitScheduler.cancel(runId);
       const message = await this.relaunch(ctx, record, action);
       ctx.ui.notify(message, "info");
     } catch (error) {
@@ -176,6 +230,12 @@ export class WorkflowRunController {
       maxAgents: record.options.maxAgents,
       agentTimeoutMs: record.options.agentTimeoutMs,
       agentRetries: record.options.agentRetries,
+      autoResumeOnUsageLimit: record.options.autoResumeOnUsageLimit,
+      usageLimitMaxAttempts: record.options.usageLimitMaxAttempts,
+      usageLimitMaxDelayMs: record.options.usageLimitMaxDelayMs,
+      usageLimitAttempt: action === "resume"
+        ? (record.state === "paused" ? record.pause?.attempt : undefined) ?? record.options.usageLimitAttempt
+        : 0,
       budget: record.options.budget ?? undefined,
       resultViewer: "skip",
       resumeFromRunId: action === "resume" ? record.runId : undefined,
@@ -192,6 +252,21 @@ export class WorkflowRunController {
     const message = first?.type === "text" ? first.text : `Workflow ${action} started.`;
     if (typeof result.details.error === "string") throw new Error(message);
     return message;
+  }
+
+  private async autoResume(ctx: ExtensionContext, runId: string, attempt: number): Promise<void> {
+    const record = await this.loadRecord(ctx.cwd, runId);
+    if (
+      record?.state !== "paused"
+      || record.pause?.kind !== "provider_usage_limit"
+      || !record.pause.autoResume
+      || record.pause.attempt !== attempt
+      || !canRelaunchWorkflowRun(record)
+    ) {
+      return;
+    }
+    const message = await this.relaunch(ctx, record, "resume");
+    ctx.ui.notify(message, "info");
   }
 
   private async loadRecord(cwd: string, runId: string): Promise<WorkflowRunRecord | undefined> {

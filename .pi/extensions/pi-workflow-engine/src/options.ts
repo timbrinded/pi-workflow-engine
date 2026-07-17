@@ -12,10 +12,26 @@ export const DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS = 1_800_000;
 export const WORKFLOW_AGENT_RETRIES_MIN = 0;
 export const WORKFLOW_AGENT_RETRIES_MAX = 10;
 export const DEFAULT_WORKFLOW_AGENT_RETRIES = 0;
+export const WORKFLOW_USAGE_LIMIT_ATTEMPTS_MIN = 1;
+export const WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX = 10;
+export const DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS = 3;
+export const WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS = 5_000;
+export const WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS = 86_400_000;
+export const DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS = 21_600_000;
 
 export type ResolvedWorkflowRunOptions = Omit<
   WorkflowRunOptions,
-  "perf" | "concurrency" | "parallelSubmissionLimit" | "maxAgents" | "agentTimeoutMs" | "agentRetries" | "budget"
+  | "perf"
+  | "concurrency"
+  | "parallelSubmissionLimit"
+  | "maxAgents"
+  | "agentTimeoutMs"
+  | "agentRetries"
+  | "autoResumeOnUsageLimit"
+  | "usageLimitMaxAttempts"
+  | "usageLimitMaxDelayMs"
+  | "usageLimitAttempt"
+  | "budget"
 > & {
   readonly perf: boolean;
   readonly concurrency: number;
@@ -23,6 +39,10 @@ export type ResolvedWorkflowRunOptions = Omit<
   readonly maxAgents: number;
   readonly agentTimeoutMs: number;
   readonly agentRetries: number;
+  readonly autoResumeOnUsageLimit: boolean;
+  readonly usageLimitMaxAttempts: number;
+  readonly usageLimitMaxDelayMs: number;
+  readonly usageLimitAttempt: number;
   readonly budget: number | null;
 };
 
@@ -59,6 +79,18 @@ export function resolveWorkflowRunOptions(
     DEFAULT_WORKFLOW_AGENT_RETRIES,
   );
   const budget = resolveBudget(input.budget, env.PI_WORKFLOW_BUDGET);
+  const usageLimitMaxAttempts = clampInteger(
+    input.usageLimitMaxAttempts ?? parseWorkflowIntegerString(env.PI_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS),
+    WORKFLOW_USAGE_LIMIT_ATTEMPTS_MIN,
+    WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX,
+    DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS,
+  );
+  const usageLimitMaxDelayMs = clampInteger(
+    input.usageLimitMaxDelayMs ?? parseWorkflowIntegerString(env.PI_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS),
+    WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
+    WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS,
+    DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS,
+  );
   return {
     ...input,
     perf: input.perf ?? env.PI_WORKFLOW_PERF === "1",
@@ -67,6 +99,15 @@ export function resolveWorkflowRunOptions(
     maxAgents,
     agentTimeoutMs,
     agentRetries,
+    autoResumeOnUsageLimit: input.autoResumeOnUsageLimit ?? env.PI_WORKFLOW_USAGE_LIMIT_AUTO_RESUME === "1",
+    usageLimitMaxAttempts,
+    usageLimitMaxDelayMs,
+    usageLimitAttempt: clampInteger(
+      input.usageLimitAttempt,
+      0,
+      WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX,
+      0,
+    ),
     budget: budget ?? null,
   };
 }

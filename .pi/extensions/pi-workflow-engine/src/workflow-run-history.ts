@@ -34,7 +34,10 @@ export function availableWorkflowRunActions(
 ): readonly WorkflowRunLifecycleAction[] {
   const actions: WorkflowRunLifecycleAction[] = ["inspect"];
   if ((record.state === "queued" || record.state === "running") && active) actions.push("stop");
-  if (record.state === "paused" && canRelaunchWorkflowRun(record)) actions.push("resume");
+  if (record.state === "paused") {
+    actions.push("stop");
+    if (canRelaunchWorkflowRun(record)) actions.push("resume");
+  }
   if (
     (record.state === "completed" || record.state === "failed" || record.state === "stopped")
     && canRelaunchWorkflowRun(record)
@@ -91,6 +94,14 @@ export function formatWorkflowRunDetails(
     `Actions: ${availableWorkflowRunActions(record, active).join(", ")}`,
   ];
   if (usage) lines.push(usage);
+  if (record.state === "paused" && record.pause?.kind === "provider_usage_limit") {
+    lines.push(
+      `Provider limit attempt: ${record.pause.attempt}/${record.pause.maxAttempts}`,
+      `Next eligible: ${new Date(record.pause.nextEligibleAt).toISOString()}`,
+      `Automatic resume: ${record.pause.autoResume ? "scheduled" : "disabled"}`,
+      `Provider message: ${record.pause.providerMessage}`,
+    );
+  }
   if (shownAgents.length > 0) {
     lines.push("Agents:", ...shownAgents.map((agent) => `- ${agent}`));
     if (agents.length > shownAgents.length) lines.push(`… ${agents.length - shownAgents.length} agents hidden`);

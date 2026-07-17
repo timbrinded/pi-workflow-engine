@@ -5,6 +5,8 @@ import {
   DEFAULT_WORKFLOW_AGENT_RETRIES,
   DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
   DEFAULT_WORKFLOW_MAX_AGENTS,
+  DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS,
+  DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS,
   defaultConcurrency,
   resolveWorkflowRunOptions,
 } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
@@ -30,6 +32,10 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
     maxAgents: DEFAULT_WORKFLOW_MAX_AGENTS,
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     agentRetries: DEFAULT_WORKFLOW_AGENT_RETRIES,
+    autoResumeOnUsageLimit: false,
+    usageLimitMaxAttempts: DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS,
+    usageLimitMaxDelayMs: DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS,
+    usageLimitAttempt: 0,
     budget: null,
   });
 
@@ -41,6 +47,9 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_MAX_AGENTS: "12" }).maxAgents, 12);
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_AGENT_TIMEOUT_MS: "45000" }).agentTimeoutMs, 45_000);
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_AGENT_RETRIES: "2" }).agentRetries, 2);
+  assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_USAGE_LIMIT_AUTO_RESUME: "1" }).autoResumeOnUsageLimit, true);
+  assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS: "4" }).usageLimitMaxAttempts, 4);
+  assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS: "120000" }).usageLimitMaxDelayMs, 120_000);
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_MAX_AGENTS: "1.5" }).maxAgents, DEFAULT_WORKFLOW_MAX_AGENTS);
   assert.equal(
     resolveWorkflowRunOptions({}, { PI_WORKFLOW_AGENT_TIMEOUT_MS: "1500.75" }).agentTimeoutMs,

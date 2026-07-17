@@ -74,6 +74,7 @@ interface RunContextBase {
   agentLimiter: WorkflowAgentLimiter;
   agentTimeoutMs: number;
   agentRetries: number;
+  pauseOnProviderUsageLimit?: boolean;
   retryScheduler: AgentRetryScheduler;
   modelProfiles: ResolvedWorkflowModelProfiles;
   progress: AgentProgress;

@@ -204,7 +204,9 @@ export async function promptAgentSession(input: {
       try {
         const promptSession = async (text: string) => {
           await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(text), rc.signal), tags);
-          const failure = providerErrorFromMessages(session.state.messages);
+          const failure = providerErrorFromMessages(session.state.messages, {
+            pauseOnUsageLimit: rc.pauseOnProviderUsageLimit,
+          });
           if (failure) throw failure;
         };
         await promptSession(finalPrompt);

@@ -106,12 +106,12 @@ test("workflow run lifecycle actions are gated by state, local activity, and saf
   assert.deepEqual(availableWorkflowRunActions(record("queued"), true), ["inspect", "stop"]);
   assert.deepEqual(availableWorkflowRunActions(record("running"), true), ["inspect", "stop"]);
   assert.deepEqual(availableWorkflowRunActions(record("running"), false), ["inspect"]);
-  assert.deepEqual(availableWorkflowRunActions(record("paused"), false), ["inspect", "resume"]);
+  assert.deepEqual(availableWorkflowRunActions(record("paused"), false), ["inspect", "stop", "resume"]);
   assert.deepEqual(availableWorkflowRunActions(record("completed"), false), ["inspect", "restart"]);
   assert.deepEqual(availableWorkflowRunActions(record("failed"), false), ["inspect", "restart"]);
   assert.deepEqual(availableWorkflowRunActions(record("stopped"), false), ["inspect", "restart"]);
   assert.deepEqual(availableWorkflowRunActions(record("completed", 0, false, false), false), ["inspect", "restart"]);
-  assert.deepEqual(availableWorkflowRunActions(record("paused", 0, true), false), ["inspect"]);
+  assert.deepEqual(availableWorkflowRunActions(record("paused", 0, true), false), ["inspect", "stop"]);
   assert.equal(formatWorkflowRunDuration(record("paused"), now), "2s");
 });
 

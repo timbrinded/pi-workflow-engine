@@ -1,5 +1,11 @@
 import { validateWorkflowRunId } from "./journal.ts";
-import type { ResolvedWorkflowRunOptions } from "./options.ts";
+import {
+  type ResolvedWorkflowRunOptions,
+  WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX,
+  WORKFLOW_USAGE_LIMIT_ATTEMPTS_MIN,
+  WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS,
+  WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
+} from "./options.ts";
 import type { WorkflowProgressSnapshot } from "./progress-types.ts";
 import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import { isWorkflowUsageSnapshot, type WorkflowUsageSnapshot } from "./usage.ts";
@@ -47,6 +53,11 @@ export interface PersistedWorkflowRunOptions {
   readonly maxAgents: number;
   readonly agentTimeoutMs: number;
   readonly agentRetries: number;
+  /** Explicit scheduler opt-in. Omitted on records created before provider-limit scheduling. */
+  readonly autoResumeOnUsageLimit?: boolean;
+  readonly usageLimitMaxAttempts?: number;
+  readonly usageLimitMaxDelayMs?: number;
+  readonly usageLimitAttempt?: number;
   readonly budget: number | null;
   /** Whether replay would require redacted invocation arguments. Omitted on legacy records. */
   readonly argumentsPresent?: boolean;
@@ -59,6 +70,23 @@ export interface PersistedWorkflowIdentity {
   readonly sourceKind: WorkflowSourceIdentity["kind"];
   readonly sourceFingerprint?: string;
 }
+
+export interface WorkflowProviderUsageLimitPause {
+  readonly kind: "provider_usage_limit";
+  readonly reason: "provider_usage_limit";
+  readonly providerMessage: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly api?: string;
+  readonly resetHint?: string;
+  /** Total run attempt number, including the initial run. */
+  readonly attempt: number;
+  readonly nextEligibleAt: number;
+  readonly autoResume: boolean;
+  readonly maxAttempts: number;
+}
+
+export type WorkflowRunPause = WorkflowProviderUsageLimitPause;
 
 interface WorkflowRunRecordBase {
   readonly version: typeof WORKFLOW_RUN_RECORD_VERSION;
@@ -76,7 +104,7 @@ interface WorkflowRunRecordBase {
 export type WorkflowRunRecord = WorkflowRunRecordBase & (
   | { readonly state: "queued"; readonly startedAt?: number; readonly endedAt?: never; readonly result?: never; readonly message?: never }
   | { readonly state: "running"; readonly startedAt: number; readonly endedAt?: never; readonly result?: never; readonly message?: never }
-  | { readonly state: "paused"; readonly startedAt: number; readonly endedAt?: never; readonly result?: never; readonly message: string }
+  | { readonly state: "paused"; readonly startedAt: number; readonly endedAt?: never; readonly result?: never; readonly message: string; readonly pause?: WorkflowRunPause }
   | { readonly state: "completed"; readonly startedAt: number; readonly endedAt: number; readonly usage: WorkflowUsageSnapshot; readonly result: WorkflowRunStoredResult; readonly message?: never }
   | { readonly state: "failed" | "stopped"; readonly startedAt: number; readonly endedAt: number; readonly usage: WorkflowUsageSnapshot; readonly result?: never; readonly message: string }
 );
@@ -84,7 +112,7 @@ export type WorkflowRunRecord = WorkflowRunRecordBase & (
 export type WorkflowRunTransition =
   | { readonly state: "queued"; readonly progress: WorkflowProgressSnapshot; readonly at?: number }
   | { readonly state: "running"; readonly progress: WorkflowProgressSnapshot; readonly at?: number }
-  | { readonly state: "paused"; readonly progress: WorkflowProgressSnapshot; readonly message: string; readonly at?: number }
+  | { readonly state: "paused"; readonly progress: WorkflowProgressSnapshot; readonly message: string; readonly pause?: WorkflowRunPause; readonly at?: number }
   | { readonly state: "completed"; readonly progress: WorkflowProgressSnapshot; readonly usage: WorkflowUsageSnapshot; readonly result: unknown; readonly at?: number }
   | { readonly state: "failed" | "stopped"; readonly progress: WorkflowProgressSnapshot; readonly usage: WorkflowUsageSnapshot; readonly error: unknown; readonly at?: number };
 
@@ -152,7 +180,13 @@ export function transitionWorkflowRun(record: WorkflowRunRecord, transition: Wor
     case "running":
       return { ...base, state: "running", startedAt: record.startedAt ?? at };
     case "paused":
-      return { ...base, state: "paused", startedAt: record.startedAt ?? record.createdAt, message: boundedText(transition.message) };
+      return {
+        ...base,
+        state: "paused",
+        startedAt: record.startedAt ?? record.createdAt,
+        message: persistedErrorMessage(transition.message),
+        pause: transition.pause === undefined ? undefined : compactWorkflowRunPause(transition.pause),
+      };
     case "completed":
       return {
         ...base,
@@ -213,6 +247,10 @@ function persistedWorkflowRunOptions(
     maxAgents: options.maxAgents,
     agentTimeoutMs: options.agentTimeoutMs,
     agentRetries: options.agentRetries,
+    autoResumeOnUsageLimit: options.autoResumeOnUsageLimit,
+    usageLimitMaxAttempts: options.usageLimitMaxAttempts,
+    usageLimitMaxDelayMs: options.usageLimitMaxDelayMs,
+    usageLimitAttempt: options.usageLimitAttempt,
     budget: options.budget,
     argumentsPresent,
     resultViewer: options.resultViewer,
@@ -405,6 +443,17 @@ function persistedErrorMessage(error: unknown): string {
   );
 }
 
+function compactWorkflowRunPause(pause: WorkflowRunPause): WorkflowRunPause {
+  return {
+    ...pause,
+    providerMessage: persistedErrorMessage(pause.providerMessage),
+    provider: pause.provider === undefined ? undefined : boundedText(pause.provider),
+    model: pause.model === undefined ? undefined : boundedText(pause.model),
+    api: pause.api === undefined ? undefined : boundedText(pause.api),
+    resetHint: pause.resetHint === undefined ? undefined : persistedErrorMessage(pause.resetHint),
+  };
+}
+
 function boundedText(value: string): string {
   return value.length <= MAX_PERSISTED_TEXT ? value : `${value.slice(0, MAX_PERSISTED_TEXT - 1)}…`;
 }
@@ -421,19 +470,20 @@ export function isWorkflowRunRecord(value: unknown): value is WorkflowRunRecord 
   if (value.usage !== undefined && !isWorkflowUsageSnapshot(value.usage)) return false;
   if (value.result !== undefined && !isWorkflowRunStoredResult(value.result)) return false;
   if (value.message !== undefined && typeof value.message !== "string") return false;
+  if (value.pause !== undefined && !isWorkflowRunPause(value.pause)) return false;
   if (value.background !== undefined && !isPersistedWorkflowBackground(value.background)) return false;
   switch (value.state) {
     case "queued":
-      return value.endedAt === undefined && value.result === undefined && value.message === undefined;
+      return value.endedAt === undefined && value.result === undefined && value.message === undefined && value.pause === undefined;
     case "running":
-      return value.startedAt !== undefined && value.endedAt === undefined && value.result === undefined && value.message === undefined;
+      return value.startedAt !== undefined && value.endedAt === undefined && value.result === undefined && value.message === undefined && value.pause === undefined;
     case "paused":
       return value.startedAt !== undefined && value.endedAt === undefined && value.result === undefined && value.message !== undefined;
     case "completed":
-      return value.startedAt !== undefined && value.endedAt !== undefined && value.usage !== undefined && value.result !== undefined && value.message === undefined;
+      return value.startedAt !== undefined && value.endedAt !== undefined && value.usage !== undefined && value.result !== undefined && value.message === undefined && value.pause === undefined;
     case "failed":
     case "stopped":
-      return value.startedAt !== undefined && value.endedAt !== undefined && value.usage !== undefined && value.result === undefined && value.message !== undefined;
+      return value.startedAt !== undefined && value.endedAt !== undefined && value.usage !== undefined && value.result === undefined && value.message !== undefined && value.pause === undefined;
   }
 }
 
@@ -450,11 +500,40 @@ function isPersistedWorkflowRunOptions(value: unknown): value is PersistedWorkfl
   if (typeof value.inspect !== "boolean" || typeof value.perf !== "boolean") return false;
   if (!isFiniteNumber(value.concurrency) || !isFiniteNumber(value.maxAgents)) return false;
   if (!isFiniteNumber(value.agentTimeoutMs) || !isFiniteNumber(value.agentRetries)) return false;
+  if (value.autoResumeOnUsageLimit !== undefined && typeof value.autoResumeOnUsageLimit !== "boolean") return false;
+  if (
+    value.usageLimitMaxAttempts !== undefined
+    && !isIntegerInRange(value.usageLimitMaxAttempts, WORKFLOW_USAGE_LIMIT_ATTEMPTS_MIN, WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX)
+  ) return false;
+  if (
+    value.usageLimitMaxDelayMs !== undefined
+    && !isIntegerInRange(value.usageLimitMaxDelayMs, WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS, WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS)
+  ) return false;
+  if (
+    value.usageLimitAttempt !== undefined
+    && !isIntegerInRange(value.usageLimitAttempt, 0, WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX)
+  ) return false;
   if (value.parallelSubmissionLimit !== null && !isFiniteNumber(value.parallelSubmissionLimit)) return false;
   if (value.budget !== null && !isFiniteNumber(value.budget)) return false;
   if (value.argumentsPresent !== undefined && typeof value.argumentsPresent !== "boolean") return false;
   if (value.resultViewer !== undefined && value.resultViewer !== "open" && value.resultViewer !== "skip") return false;
   return value.resumeFromRunId === undefined || typeof value.resumeFromRunId === "string";
+}
+
+function isWorkflowRunPause(value: unknown): value is WorkflowRunPause {
+  if (!isRecord(value) || value.kind !== "provider_usage_limit" || value.reason !== "provider_usage_limit") return false;
+  if (typeof value.providerMessage !== "string") return false;
+  if (value.provider !== undefined && typeof value.provider !== "string") return false;
+  if (value.model !== undefined && typeof value.model !== "string") return false;
+  if (value.api !== undefined && typeof value.api !== "string") return false;
+  if (value.resetHint !== undefined && typeof value.resetHint !== "string") return false;
+  return (
+    isIntegerInRange(value.attempt, 1, Number.MAX_SAFE_INTEGER) &&
+    isFiniteNumber(value.nextEligibleAt) && value.nextEligibleAt >= 0 &&
+    typeof value.autoResume === "boolean" &&
+    isIntegerInRange(value.maxAttempts, WORKFLOW_USAGE_LIMIT_ATTEMPTS_MIN, WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX) &&
+    (!value.autoResume || value.attempt < value.maxAttempts)
+  );
 }
 
 function isWorkflowProgressSnapshot(value: unknown): value is WorkflowProgressSnapshot {
@@ -536,6 +615,10 @@ function isValidRunId(value: unknown): value is string {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function isIntegerInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= min && value <= max;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
