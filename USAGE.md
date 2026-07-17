@@ -144,6 +144,25 @@ The workflow inspector and code-review results viewer are also registered as fir
 
 When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives the workflow permission reminder, stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. Sticky mode, one-shot pending mode, and active Dynamax workflow runs show compact TUI status with `/workflow:dynamax on|off` and the inspector shortcut; off mode clears that status line.
 
+### Prompt editor cue
+
+The intended static multicolour `dynamax` cue is blocked on a safe pi editor
+decoration API. As of pi 0.80.7, the [official extension
+API](https://pi.dev/docs/latest/extensions#custom-editor) exposes
+`setEditorComponent`, which replaces the whole editor, but no hook that styles
+a token while preserving the stock editor. Replacing `CustomEditor` would make
+this package responsible for cursor movement, selection, deletion, paste,
+multiline input, undo/redo, completion, IME handling, and composition with every
+other editor extension. A current [launch-time compatibility
+failure](https://github.com/QuintinShaw/pi-dynamic-workflows/issues/72) in the
+reference rainbow editor demonstrates that risk.
+
+Until pi exposes a visual-only decoration/render hook, pi-workflow-engine does
+not call `setEditorComponent`: `dynamax` remains ordinary prompt text, unsupported
+or off environments emit no warning, and one-shot/sticky activation semantics
+remain unchanged. A future implementation should add a static decoration first;
+animation remains optional and must not drive continuous full-editor rerenders.
+
 When the host agent calls the `workflow` tool from a TUI session, pi opens the live workflow inspector for that run. The compact workflow widget still shows the latest moving status above the editor, but the inspector is the richer view for phases, agents, findings, and logs.
 
 Configure either shortcut by creating `~/.pi/agent/extensions/pi-workflow-engine.json`:

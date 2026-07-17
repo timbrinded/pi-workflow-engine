@@ -64,6 +64,7 @@ interface FakeUiState {
   widgets: Map<string, unknown>;
   widgetPlacements: Map<string, string | undefined>;
   statuses: Map<string, string | undefined>;
+  editorComponentChanges: number;
   customComponent: Component | undefined;
   renderRequests: number;
 }
@@ -120,6 +121,7 @@ function createFakeContext(sessionId: string, hasUI = true): { ctx: ExtensionCom
     widgets: new Map(),
     widgetPlacements: new Map(),
     statuses: new Map(),
+    editorComponentChanges: 0,
     customComponent: undefined,
     renderRequests: 0,
   };
@@ -150,6 +152,10 @@ function createFakeContext(sessionId: string, hasUI = true): { ctx: ExtensionCom
       setStatus: (key: string, text: string | undefined) => {
         uiState.statuses.set(key, text);
       },
+      setEditorComponent: () => {
+        uiState.editorComponentChanges += 1;
+      },
+      getEditorComponent: () => undefined,
       custom: async <T>(
         factory: (tuiArg: TUI, themeArg: ExtensionContext["ui"]["theme"], keybindings: never, done: (result: T) => void) => Component,
       ): Promise<T> => {
@@ -185,6 +191,24 @@ test("hasDynamaxToken matches exact dynamax word case-insensitively", () => {
   assert.equal(hasDynamaxToken("(dynamax)"), true);
   assert.equal(hasDynamaxToken("notdynamax"), false);
   assert.equal(hasDynamaxToken("dynamaxing"), false);
+  assert.equal(hasDynamaxToken("pre_dynamax"), false);
+  assert.equal(hasDynamaxToken("dynamax_mode"), false);
+});
+
+test("Dynamax preserves the stock editor when pi has no decoration hook", async () => {
+  const captured = captureDynamax("ctrl+shift+x");
+  const sessionStart = captured.handlers.get("session_start")?.[0];
+  const input = captured.handlers.get("input")?.[0];
+  if (!sessionStart || !input) throw new Error("expected Dynamax startup and input handlers");
+  const { ctx, ui } = createFakeContext("session-a");
+
+  await sessionStart({}, ctx);
+  assert.equal(ui.editorComponentChanges, 0);
+  assert.deepEqual(ui.notifications, []);
+
+  await input({ source: "interactive", text: "dynamax inspect this branch" }, ctx);
+  assert.equal(ui.editorComponentChanges, 0);
+  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /one-shot pending/);
 });
 
 test("dynamax one-shot state is consumed by system reminder", () => {
