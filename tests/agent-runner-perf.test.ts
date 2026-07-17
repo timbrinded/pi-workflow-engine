@@ -11,6 +11,7 @@ import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/can
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
 import { defaultAgentRetryScheduler } from "../.pi/extensions/pi-workflow-engine/src/agent-retry.ts";
+import { hostWorkflowModelProfiles } from "../.pi/extensions/pi-workflow-engine/src/model-profiles.ts";
 import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import {
@@ -81,6 +82,7 @@ function createRunContext(
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     agentRetries: 0,
     retryScheduler: defaultAgentRetryScheduler,
+    modelProfiles: hostWorkflowModelProfiles(undefined),
     progress: createProgress(),
     signal,
     perf,

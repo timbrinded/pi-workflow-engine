@@ -24,6 +24,7 @@ import {
   agentRetryDelayMs,
   WorkflowProviderError,
 } from "./agent-retry.ts";
+import { resolveAgentModelProfile } from "./model-profiles.ts";
 
 export type {
   AgentExecutionOptions,
@@ -59,8 +60,11 @@ export async function runAgent(
 
   return await rc.perf.time("agent.total_ms", async () => {
     throwIfAborted(rc.signal);
-    const model = resolveModel(rc, opts, label);
-    const replay = createAgentReplayPlan(prompt, opts);
+    const routing = resolveAgentRouting(rc, opts, label);
+    const effectiveOpts = routing.thinkingLevel === opts.thinkingLevel
+      ? opts
+      : { ...opts, thinkingLevel: routing.thinkingLevel };
+    const replay = createAgentReplayPlan(prompt, effectiveOpts);
     if (!isReplayEnabled(replay)) assertWorkflowBudgetAvailable(rc.budget);
 
     const rowId = rc.progress.agentQueued(opts.phase, label);
@@ -84,9 +88,9 @@ export async function runAgent(
               outcome = await executeAgentAttempt({
                 rc: agentRc,
                 prompt,
-                opts,
+                opts: effectiveOpts,
                 resumeBaseContext,
-                model,
+                model: routing.model,
                 replay: attemptPlan,
                 label,
                 rowId,
@@ -163,13 +167,20 @@ function createAgentLiveScope(rc: RunContext, label: string) {
   };
 }
 
-function resolveModel(
+function resolveAgentRouting(
   rc: RunContext,
   opts: AgentExecutionOptions,
   label: string,
-): ResolvedAgentModel["model"] {
+): { readonly model: ResolvedAgentModel["model"]; readonly thinkingLevel: AgentExecutionOptions["thinkingLevel"] } {
   try {
-    return resolveAgentModel(opts.model, rc.modelRegistry, rc.hostModel).model;
+    return resolveAgentModelProfile(
+      {
+        request: opts,
+        profiles: rc.modelProfiles,
+        resolveExplicitModel: (modelRef) => resolveAgentModel(modelRef, rc.modelRegistry, rc.hostModel).model,
+        hostModel: rc.hostModel,
+      },
+    );
   } catch (error) {
     rc.progress.agentFailed(label, error);
     throw error;

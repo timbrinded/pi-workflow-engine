@@ -105,7 +105,7 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
       label: `find:${lens.label}`,
       tools,
       toolHints,
-      thinkingLevel: "low",
+      profile: "small",
       schema: AdvisoryCandidatesSchema,
     });
     const candidates = (found?.candidates ?? []).slice(0, perLens);
@@ -142,7 +142,7 @@ export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Ver
       label: `verify:${location.file.split("/").pop() ?? location.file}`,
       tools,
       toolHints,
-      thinkingLevel: "low",
+      profile: "small",
       schema: AdvisoryVerdictSchema,
     });
     if (!judged) return null;

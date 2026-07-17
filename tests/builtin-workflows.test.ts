@@ -15,6 +15,7 @@ interface AgentCall {
   tools: string[] | undefined;
   toolHints: readonly string[] | undefined;
   resume: AgentOptions["resume"];
+  profile: AgentOptions["profile"];
 }
 
 interface ScriptedApi extends WorkflowApi {
@@ -42,6 +43,7 @@ function createScriptedApi(responses: unknown[], args = ""): ScriptedApi {
       tools: opts?.tools,
       toolHints: opts?.toolHints,
       resume: opts?.resume,
+      profile: opts?.profile,
     });
     if (queue.length === 0) throw new Error(`No scripted response for agent ${opts?.label ?? "(unlabelled)"}`);
     return queue.shift();
@@ -116,21 +118,25 @@ test("built-in advisory workflows request dynamic search-like tools", async () =
   await codeReview(codeReviewApi);
   assert.deepEqual(codeReviewApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
   assert.deepEqual(codeReviewApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
+  assert.equal(codeReviewApi.calls[0]?.profile, "medium");
 
   const diagnoseApi = createScriptedApi([null], "failing command");
   await diagnose(diagnoseApi);
   assert.deepEqual(diagnoseApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
   assert.deepEqual(diagnoseApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
+  assert.equal(diagnoseApi.calls[0]?.profile, "medium");
 
   const refactorApi = createScriptedApi([{ target: ".", files: [], summary: "Nothing to scout." }]);
   await refactorScout(refactorApi);
   assert.deepEqual(refactorApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
   assert.deepEqual(refactorApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
+  assert.equal(refactorApi.calls[0]?.profile, "medium");
 
   const perfApi = createScriptedApi([{ target: "startup", files: [], commands: [], summary: "No path identified." }]);
   await perfReview(perfApi);
   assert.deepEqual(perfApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
   assert.deepEqual(perfApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
+  assert.equal(perfApi.calls[0]?.profile, "medium");
 });
 
 test("code-review returns the empty report when scope is unavailable", async () => {
@@ -205,6 +211,9 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
   assert.match(synthesize?.prompt ?? "", /confirmed bug impact/);
   assert.deepEqual(synthesize?.tools, []);
   assert.equal(synthesize?.resume, "read-only");
+  assert.equal(synthesize?.profile, "medium");
+  assert.ok(api.calls.filter((call) => call.label?.startsWith("find:")).every((call) => call.profile === "small"));
+  assert.ok(api.calls.filter((call) => call.label?.startsWith("verify:")).every((call) => call.profile === "small"));
 });
 
 test("refactor-scout returns the empty report when no files are scoped", async () => {

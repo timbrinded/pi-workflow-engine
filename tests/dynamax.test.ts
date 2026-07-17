@@ -205,6 +205,7 @@ test("dynamax reminder teaches optional adaptive multi-pass workflows", () => {
   assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /only when gaps exist/);
   assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /Do not generate a second pass when the first pass is sufficient/);
   assert.ok(DYNAMAX_REMINDER.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
+  assert.match(DYNAMAX_REMINDER, /profile to "small", "medium", or "big"/);
 });
 
 test("dynamax sticky mode remains active until cleared", () => {

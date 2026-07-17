@@ -35,7 +35,53 @@ Useful flags:
 /workflow code-review --budget=50000     # output-token ceiling for subagents
 /workflow code-review --resume <run-id>  # replay matching completed agent calls
 /workflow code-review --refresh          # rediscover newly added workflow files
+/workflow:models                         # inspect small/medium/big model routes
 ```
+
+## Workflow model profiles
+
+Workflow authors can route a stage through `profile: "small"`, `"medium"`, or
+`"big"` without hard-coding a provider. Inspect the effective routes with:
+
+```text
+/workflow:models
+/workflow:models set small openai/gpt-5-mini low
+/workflow:models set medium anthropic/claude-sonnet-4-5 medium --project
+/workflow:models clear medium --project
+```
+
+`set` and `clear` use the user scope unless `--project` is present. User profiles
+live at `~/.pi/agent/workflow-models.json`; project profiles live at
+`<project>/.pi/workflow-models.json` and override the user file one profile at a
+time. A minimal file is:
+
+```json
+{
+  "profiles": {
+    "small": {
+      "model": "openai/gpt-5-mini",
+      "thinkingLevel": "low"
+    },
+    "big": {
+      "model": "anthropic/claude-opus-4-5"
+    }
+  }
+}
+```
+
+Models must be exact `provider/model` identities already available to pi. The
+file accepts only `model` and optional `thinkingLevel`; provider credentials and
+secrets stay in pi's provider configuration. The engine never ranks models by
+price, model-name substrings, or assumed capability.
+
+Routing is resolved per field: an agent's explicit `model` or `thinkingLevel`
+wins, then its requested profile, then host inheritance. A configured profile
+without `thinkingLevel` inherits the host effort. An entirely unconfigured tier
+uses the host model and the built-in bounded effort for that tier (`low`,
+`medium`, or `high` respectively); `/workflow:models` labels that route as a host
+fallback. Invalid JSON, unknown fields, malformed identities, and configured
+models missing from pi's registry fail with the config path and a corrective
+command instead of selecting another model.
 
 ## Built-in workflows
 
@@ -109,7 +155,7 @@ const GapAnalysis = Type.Object({
 });
 const gaps = await api.agent(
   `Identify only material gaps that require another agent:\n${JSON.stringify(firstPass)}`,
-  { schema: GapAnalysis, thinkingLevel: "low" },
+  { schema: GapAnalysis, profile: "small" },
 );
 
 const followUpItems = gaps?.items.slice(0, MAX_FOLLOW_UPS) ?? [];
@@ -117,7 +163,7 @@ const followUps = followUpItems.length
   ? (await api.parallel(
       followUpItems.map((item) => () =>
         api.agent(`Resolve this gap and cite evidence: ${JSON.stringify(item)}`, {
-          thinkingLevel: "low",
+          profile: "small",
         }),
       ),
     )).filter((result) => result !== null)
@@ -125,7 +171,7 @@ const followUps = followUpItems.length
 
 return api.agent(
   `Synthesize the first pass and any follow-ups:\n${JSON.stringify({ firstPass, followUps })}`,
-  { thinkingLevel: "medium" },
+  { profile: "medium" },
 );
 ```
 
@@ -208,14 +254,14 @@ export default async function run({ agent, parallel, phase, args }: WorkflowApi)
         schema: Finding,
         tools: SEARCH_TOOLS,
         toolHints: SEARCH_TOOL_HINTS,
-        thinkingLevel: "low",
+        profile: "small",
         resume: "read-only",
       }),
       () => agent(`Find edge cases: ${args}`, {
         schema: Finding,
         tools: SEARCH_TOOLS,
         toolHints: SEARCH_TOOL_HINTS,
-        thinkingLevel: "low",
+        profile: "small",
         resume: "read-only",
       }),
     ]),
@@ -223,7 +269,7 @@ export default async function run({ agent, parallel, phase, args }: WorkflowApi)
 
   phase("Synthesize");
   return agent(`Summarize: ${JSON.stringify(findings)}`, {
-    thinkingLevel: "medium",
+    profile: "medium",
     tools: [],
     resume: "read-only",
   });
@@ -260,13 +306,15 @@ try {
 }
 ```
 
-Set `thinkingLevel` on fan-out agents. Otherwise many subagents can inherit an expensive global reasoning level.
+Set a model `profile` on each stage so users can tune workflow routing centrally.
+Use explicit `model` or `thinkingLevel` only when that one call intentionally
+overrides its profile.
 
 `tools` is a strict allowlist. If you set `tools: ["read", "bash"]`, extension tools such as `ast-grep`, `mgrep`, `fffind`, or `ffgrep` are hidden from that subagent. Add `toolHints: ["search"]` to dynamically expose installed grep/find/search-like tools while keeping the concrete base allowlist portable. The built-in advisory workflows use `tools: ["read", "bash", "grep", "find", "ls"]` plus `toolHints: ["search"]`.
 
 Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; if `tools` is also restricted, the engine automatically keeps `read` available so the subagent can load the selected `SKILL.md`. When `skills` is omitted, clear prompt text such as `/skill:name`, `include skill name`, or `use the name skill` is also treated as an opt-in. Pass `skills: []` to suppress that inference.
 
-Set `model` only when a subagent should use a specific model. Bare ids keep the Anthropic shorthand; `provider/id` targets built-in, custom, or local providers. Omitted models inherit the host/session default; malformed or unknown explicit refs fail fast.
+Set `model` only when a subagent should use a specific model. Bare ids keep the Anthropic shorthand; `provider/id` targets built-in, custom, or local providers. Explicit models override a requested profile; calls with neither inherit the host/session default. Malformed or unknown explicit refs fail fast.
 
 ### Mutating agents in worktrees
 
@@ -276,7 +324,7 @@ Use `isolation: "worktree"` only for agents that should edit files. The agent ru
 const edit = await agent("Rename this helper and update its call sites.", {
   tools: ["read", "bash", "edit", "grep", "find", "ls"],
   isolation: "worktree",
-  thinkingLevel: "medium",
+  profile: "medium",
 });
 
 if (edit.changed) {
@@ -331,8 +379,8 @@ export default async function run({ agent, parallel, phase, args }) {
   phase("Find");
   const Finding = Type.Object({ summary: Type.String() });
   const findings = await parallel([
-    () => agent(`Find correctness issues: ${args}`, { schema: Finding, thinkingLevel: "low" }),
-    () => agent(`Find edge cases: ${args}`, { schema: Finding, thinkingLevel: "low" }),
+    () => agent(`Find correctness issues: ${args}`, { schema: Finding, profile: "small" }),
+    () => agent(`Find edge cases: ${args}`, { schema: Finding, profile: "small" }),
   ]);
   return { summary: JSON.stringify(findings) };
 }
@@ -344,6 +392,7 @@ Inline rules:
 - default-export an async workflow function;
 - no imports or dynamic `import()`;
 - use the injected `Type` object for schemas;
+- request `profile: "small"`, `"medium"`, or `"big"` instead of hard-coding provider models when the stage is portable;
 - add `skills: ["skill-name"]` per `agent()` call when a subagent should use a pi skill; no skills are exposed by default;
 - no extra exports or code after the default export.
 

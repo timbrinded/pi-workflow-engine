@@ -81,7 +81,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Inspect repository structure, scripts, likely hot-path files, and any existing benchmark or measurement commands. " +
       "Prefer identifying what to measure before claiming bottlenecks. Return files, commands, summary, and known measurements or the lack of them. " +
       `This workflow will fan out across ${PERF_LENSES.length} lenses with up to ${PER_LENS} candidates per lens. Structured output only.`,
-    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, thinkingLevel: "medium", schema: ScopeSchema },
+    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
   if (!scope || scope.files.length === 0) {
@@ -169,7 +169,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       phase: "Synthesize",
       label: "synthesize",
       tools: [],
-      thinkingLevel: "medium",
+      profile: "medium",
       resume: "read-only",
       schema: AdvisoryReportSchema,
     },
