@@ -31,6 +31,7 @@ Useful flags:
 /workflow code-review --concurrency=4    # cap concurrent subagents
 /workflow code-review --max-agents=20    # cap total live agent calls in the run
 /workflow code-review --agent-timeout-ms=600000 # abort one live agent after 10 minutes
+/workflow code-review --agent-retries=2  # retry classified transient provider failures
 /workflow code-review --budget=50000     # output-token ceiling for subagents
 /workflow code-review --resume <run-id>  # replay matching completed agent calls
 /workflow code-review --refresh          # rediscover newly added workflow files
@@ -358,15 +359,24 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 | `--parallel-limit=N` / `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` | Limit eager `parallel()` submission. |
 | `--max-agents=N` / `PI_WORKFLOW_MAX_AGENTS=N` | Cap live model calls across the complete run, including sub-workflows. Default `64`; values are clamped to `1`–`10000`. Replay hits do not consume the cap. The `workflow` tool field is `maxAgents`. |
 | `--agent-timeout-ms=N` / `PI_WORKFLOW_AGENT_TIMEOUT_MS=N` | Abort one live agent after this duration. Default `1800000` (30 minutes); values are clamped to `1000`–`86400000`. The session is aborted and its isolated worktree is cleaned up. The `workflow` tool field is `agentTimeoutMs`. |
-| `--budget=N` / `PI_WORKFLOW_BUDGET=N` | Set an output-token ceiling for completed subagents. `agent()` throws `WorkflowBudgetExceededError` before starting another agent once the ceiling is reached; agents already running may overshoot because the engine does not reserve per-agent estimates. |
+| `--agent-retries=N` / `PI_WORKFLOW_AGENT_RETRIES=N` | Retry terminal assistant failures that pi classifies as transient provider or transport errors. Default `0`; values are clamped to `0`–`10`. Backoff starts at one second, doubles, and caps at 30 seconds. The `workflow` tool field is `agentRetries`. |
+| `--budget=N` / `PI_WORKFLOW_BUDGET=N` | Set an output-token ceiling across recorded subagent attempts, including failed provider attempts. `agent()` throws `WorkflowBudgetExceededError` before starting another model request once the ceiling is reached; agents already running may overshoot because the engine does not reserve per-agent estimates. |
 | `--perf` / `PI_WORKFLOW_PERF=1` | Include internal timing aggregates. Usage/cost totals are reported separately from perf. |
 | `PI_WORKFLOW_LANE_ITEM_LIMIT=N` | Cap retained progress lane items. |
 
 These controls bound different dimensions: concurrency limits how many agents
 are active together, `max-agents` limits how many live model calls the run may
-start in total, `agent-timeout-ms` bounds one active call, and `budget` limits
-recorded output tokens. Host cancellation takes precedence over limit and
-timeout failures.
+start in total, `agent-timeout-ms` bounds one active call (including retry
+backoff), and `budget` limits recorded output tokens. Every retry consumes
+another live-agent admission and remains inside the original timeout, budget,
+and abort scope. Usage from failed attempts is retained, so it can exhaust the
+budget before the next retry begins. Host cancellation takes precedence over
+limit and timeout failures.
+
+Workflow subagents disable pi's session-level automatic retry so this run-level
+policy is authoritative and visible in the existing agent progress row. Invalid
+models, schema-contract failures, exhausted budgets, agent limits, worktree
+failures, timeouts, and host aborts are never provider-retried.
 
 ## Common fixes
 

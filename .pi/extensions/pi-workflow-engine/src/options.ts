@@ -9,16 +9,20 @@ export const DEFAULT_WORKFLOW_MAX_AGENTS = 64;
 export const WORKFLOW_AGENT_TIMEOUT_MIN_MS = 1_000;
 export const WORKFLOW_AGENT_TIMEOUT_MAX_MS = 86_400_000;
 export const DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS = 1_800_000;
+export const WORKFLOW_AGENT_RETRIES_MIN = 0;
+export const WORKFLOW_AGENT_RETRIES_MAX = 10;
+export const DEFAULT_WORKFLOW_AGENT_RETRIES = 0;
 
 export type ResolvedWorkflowRunOptions = Omit<
   WorkflowRunOptions,
-  "perf" | "concurrency" | "parallelSubmissionLimit" | "maxAgents" | "agentTimeoutMs" | "budget"
+  "perf" | "concurrency" | "parallelSubmissionLimit" | "maxAgents" | "agentTimeoutMs" | "agentRetries" | "budget"
 > & {
   readonly perf: boolean;
   readonly concurrency: number;
   readonly parallelSubmissionLimit: number | null;
   readonly maxAgents: number;
   readonly agentTimeoutMs: number;
+  readonly agentRetries: number;
   readonly budget: number | null;
 };
 
@@ -48,6 +52,12 @@ export function resolveWorkflowRunOptions(
     WORKFLOW_AGENT_TIMEOUT_MAX_MS,
     DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
   );
+  const agentRetries = clampInteger(
+    input.agentRetries ?? parseWorkflowIntegerString(env.PI_WORKFLOW_AGENT_RETRIES),
+    WORKFLOW_AGENT_RETRIES_MIN,
+    WORKFLOW_AGENT_RETRIES_MAX,
+    DEFAULT_WORKFLOW_AGENT_RETRIES,
+  );
   const budget = resolveBudget(input.budget, env.PI_WORKFLOW_BUDGET);
   return {
     ...input,
@@ -56,6 +66,7 @@ export function resolveWorkflowRunOptions(
     parallelSubmissionLimit: parallelSubmissionLimit ?? null,
     maxAgents,
     agentTimeoutMs,
+    agentRetries,
     budget: budget ?? null,
   };
 }

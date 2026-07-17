@@ -30,6 +30,7 @@ import {
   MAX_SCHEMA_REPAIR_ATTEMPTS,
   WorkflowStructuredOutputError,
 } from "./structured-output.ts";
+import { providerErrorFromMessages } from "./agent-retry.ts";
 
 export const FINAL_TOOL = "final_answer";
 
@@ -119,8 +120,8 @@ export async function openAgentSession(input: {
         }),
       ]
     : [];
-  const createSubagentSession = (sessionOptions: ToolSessionOptions) =>
-    rc.perf.time(
+  const createSubagentSession = async (sessionOptions: ToolSessionOptions) => {
+    const created = await rc.perf.time(
       "agent.create_session_ms",
       () => {
         const options = {
@@ -140,6 +141,9 @@ export async function openAgentSession(input: {
       },
       tags,
     );
+    created.session.setAutoRetryEnabled?.(false);
+    return created;
+  };
 
   let session: AgentRunnerSession | undefined;
   try {
@@ -198,14 +202,19 @@ export async function promptAgentSession(input: {
     const unlinkPromptAbort = linkSessionAbort(rc.signal, session);
     try {
       try {
-        await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(finalPrompt), rc.signal), tags);
+        const promptSession = async (text: string) => {
+          await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(text), rc.signal), tags);
+          const failure = providerErrorFromMessages(session.state.messages);
+          if (failure) throw failure;
+        };
+        await promptSession(finalPrompt);
         if (opts.schema) {
           for (let attempt = 0; !handle.hasStructuredResult() && attempt < MAX_SCHEMA_REPAIR_ATTEMPTS; attempt++) {
             throwIfAborted(rc.signal);
             session.setActiveToolsByName?.([FINAL_TOOL]);
             rc.progress.log(`${label}: no final answer; re-prompting (${attempt + 1}/${MAX_SCHEMA_REPAIR_ATTEMPTS})`);
             rc.perf.counter("agent.structured_reprompt", 1, tags);
-            await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(SCHEMA_REPROMPT), rc.signal), tags);
+            await promptSession(SCHEMA_REPROMPT);
           }
         }
 

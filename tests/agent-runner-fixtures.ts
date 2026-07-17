@@ -12,7 +12,15 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
-import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
+import {
+  DEFAULT_WORKFLOW_AGENT_RETRIES,
+  DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
+  DEFAULT_WORKFLOW_MAX_AGENTS,
+} from "../.pi/extensions/pi-workflow-engine/src/options.ts";
+import {
+  defaultAgentRetryScheduler,
+  type AgentRetryScheduler,
+} from "../.pi/extensions/pi-workflow-engine/src/agent-retry.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createBudget, type WorkflowBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
@@ -109,6 +117,8 @@ export function createRunContext(input: {
   readonly worktrees?: WorktreeRegistry;
   readonly agentLimiter?: WorkflowAgentLimiter;
   readonly agentTimeoutMs?: number;
+  readonly agentRetries?: number;
+  readonly retryScheduler?: AgentRetryScheduler;
   readonly signal?: AbortSignal;
 }): RunContext {
   const usage = input.usage ?? createWorkflowUsageRecorder();
@@ -120,6 +130,8 @@ export function createRunContext(input: {
     semaphore: new Semaphore(1),
     agentLimiter: input.agentLimiter ?? new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: input.agentTimeoutMs ?? DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
+    agentRetries: input.agentRetries ?? DEFAULT_WORKFLOW_AGENT_RETRIES,
+    retryScheduler: input.retryScheduler ?? defaultAgentRetryScheduler,
     progress: input.progress ?? createProgress(),
     signal: input.signal,
     perf: new PerfRecorder(),

@@ -24,6 +24,8 @@ import {
   type ResolvedWorkflowRunOptions,
   WORKFLOW_AGENT_TIMEOUT_MAX_MS,
   WORKFLOW_AGENT_TIMEOUT_MIN_MS,
+  WORKFLOW_AGENT_RETRIES_MAX,
+  WORKFLOW_AGENT_RETRIES_MIN,
   WORKFLOW_BUDGET_MAX,
   WORKFLOW_BUDGET_MIN,
   WORKFLOW_MAX_AGENTS_MAX,
@@ -285,6 +287,7 @@ const INVALID_BUDGET_OPTION = "--budget requires a positive integer output-token
 const INVALID_RESUME_OPTION = "--resume requires a workflow run id";
 const INVALID_MAX_AGENTS_OPTION = "--max-agents requires an integer";
 const INVALID_AGENT_TIMEOUT_OPTION = "--agent-timeout-ms requires an integer";
+const INVALID_AGENT_RETRIES_OPTION = "--agent-retries requires an integer";
 
 function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean; optionErrors?: string[] } {
   const tokens = input.split(/\s+/).filter(Boolean);
@@ -362,6 +365,22 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
       if (parsed === undefined) optionErrors.push(INVALID_AGENT_TIMEOUT_OPTION);
       else {
         options.agentTimeoutMs = parsed;
+        i++;
+      }
+      continue;
+    }
+    if (token.startsWith("--agent-retries=")) {
+      const parsed = parseWorkflowIntegerString(token.slice("--agent-retries=".length));
+      if (parsed === undefined) optionErrors.push(INVALID_AGENT_RETRIES_OPTION);
+      else options.agentRetries = parsed;
+      continue;
+    }
+    if (token === "--agent-retries") {
+      const next = tokens[i + 1];
+      const parsed = parseWorkflowIntegerString(next);
+      if (parsed === undefined) optionErrors.push(INVALID_AGENT_RETRIES_OPTION);
+      else {
+        options.agentRetries = parsed;
         i++;
       }
       continue;
@@ -732,6 +751,11 @@ function registerWorkflowTool(pi: ExtensionAPI, reviewSessions: ReviewSessionCoo
           description: `Maximum live duration per agent in milliseconds; clamped to ${WORKFLOW_AGENT_TIMEOUT_MIN_MS}-${WORKFLOW_AGENT_TIMEOUT_MAX_MS}`,
         }),
       ),
+      agentRetries: Type.Optional(
+        Type.Integer({
+          description: `Retries per agent for classified transient provider failures; clamped to ${WORKFLOW_AGENT_RETRIES_MIN}-${WORKFLOW_AGENT_RETRIES_MAX}`,
+        }),
+      ),
       budget: Type.Optional(
         Type.Integer({
           minimum: WORKFLOW_BUDGET_MIN,
@@ -781,6 +805,7 @@ function registerWorkflowTool(pi: ExtensionAPI, reviewSessions: ReviewSessionCoo
         parallelSubmissionLimit: params.parallelSubmissionLimit,
         maxAgents: params.maxAgents,
         agentTimeoutMs: params.agentTimeoutMs,
+        agentRetries: params.agentRetries,
         budget: params.budget,
         perf: params.perf,
         resumeFromRunId,

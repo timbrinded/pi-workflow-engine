@@ -10,6 +10,7 @@ import { WorkflowBudgetExceededError } from "../.pi/extensions/pi-workflow-engin
 import { isFatalWorkflowError, WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
+import { defaultAgentRetryScheduler } from "../.pi/extensions/pi-workflow-engine/src/agent-retry.ts";
 import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
@@ -63,6 +64,8 @@ function createRunContext(createSession: CreateAgentSession, signal: AbortSignal
     semaphore,
     agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
+    agentRetries: 0,
+    retryScheduler: defaultAgentRetryScheduler,
     progress,
     signal,
     perf: new NoopPerfRecorder(),

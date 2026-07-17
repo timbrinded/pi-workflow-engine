@@ -17,8 +17,8 @@ export class WorkflowBudgetExceededError extends Error {
 /**
  * The budget handle exposed on `WorkflowApi`. Mirrors the built-in Workflow tool:
  * `total` is the output-token ceiling (or `null` when unset), `spent()` is the
- * output tokens consumed by completed agents this run, and `remaining()` is the
- * headroom left (`Infinity` when there is no ceiling).
+ * output tokens consumed by recorded subagent attempts this run, and
+ * `remaining()` is the headroom left (`Infinity` when there is no ceiling).
  *
  * `spent()`/`remaining()` are LIVE — they re-read usage on every call so that
  * `while (budget.total && budget.remaining() > N) { await agent(...) }` loops and
@@ -26,7 +26,7 @@ export class WorkflowBudgetExceededError extends Error {
  */
 export interface WorkflowBudget {
   readonly total: number | null;
-  /** Output tokens consumed by completed agents this run (sub-workflows included). */
+  /** Output tokens consumed by recorded subagent attempts this run (sub-workflows included). */
   spent(): number;
   /** `total - spent()` clamped at 0, or `Infinity` when `total` is null. */
   remaining(): number;

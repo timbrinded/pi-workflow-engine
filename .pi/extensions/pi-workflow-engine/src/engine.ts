@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { bindParallel, bindPipeline, Semaphore } from "./concurrency.ts";
 import { WorkflowAgentLimiter } from "./agent-limits.ts";
+import { defaultAgentRetryScheduler, type AgentRetryScheduler } from "./agent-retry.ts";
 import { linkAbortSignal, throwIfAborted } from "./cancellation.ts";
 import { createBudget } from "./budget.ts";
 import { runAgent, type AgentExecutionOptions, type RunContext } from "./agent-runner.ts";
@@ -52,6 +53,7 @@ type Outcome<T> =
 
 export interface WorkflowEngineDependencies {
   readonly worktrees?: WorktreeRegistry;
+  readonly retryScheduler?: AgentRetryScheduler;
 }
 
 /**
@@ -117,6 +119,8 @@ export async function runResolvedWorkflow(
       semaphore: new Semaphore(resolvedOptions.concurrency),
       agentLimiter: new WorkflowAgentLimiter(resolvedOptions.maxAgents),
       agentTimeoutMs: resolvedOptions.agentTimeoutMs,
+      agentRetries: resolvedOptions.agentRetries,
+      retryScheduler: dependencies.retryScheduler ?? defaultAgentRetryScheduler,
       progress,
       signal: runAbortController.signal,
       perf,
