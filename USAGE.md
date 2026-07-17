@@ -35,6 +35,8 @@ Useful flags:
 /workflow code-review --budget=50000     # output-token ceiling for subagents
 /workflow code-review --resume <run-id>  # replay matching completed agent calls
 /workflow code-review --refresh          # rediscover newly added workflow files
+/workflow:runs                           # browse recent durable project runs
+/workflow:inspector <run-id>             # inspect one retained run directly
 /workflow:models                         # inspect small/medium/big model routes
 ```
 
@@ -209,7 +211,23 @@ The host-facing `workflow` tool accepts `background: true`. It returns as soon a
 
 Background runs are detached from the initiating tool-call signal, so the host agent can finish that turn and continue the conversation. When the run completes or fails, the extension waits for the originating session to become idle and inserts one concise `workflow-result` message containing the run ID, terminal state, and summary. Delivery state is stored with the run record; on reload, the extension checks both that state and the session message history before retrying, which suppresses duplicates even if persistence failed immediately after message insertion.
 
-A graceful pi session shutdown aborts active background work and records it as `paused` instead of successful. Resuming the originating pi session delivers that interruption once. If the originating session no longer exists, the record remains in `.pi/.workflow-runs/`, delivery is marked unavailable, and a fallback is written to stderr. Background mode is supported in long-lived TUI and RPC sessions; `print` and `json` modes reject it because those processes exit after the prompt. This feature is in-process rather than a daemon: a hard process kill cannot keep model work running, but the last atomic run checkpoint remains available.
+A graceful pi session shutdown aborts active background work and records it as `paused` instead of successful. Reopening the same session after an ungraceful process exit also reconciles a retained `queued` or `running` background record to `paused`. Resuming the originating pi session delivers that interruption once. If the originating session no longer exists, the record remains in `.pi/.workflow-runs/`, delivery is marked unavailable, and a fallback is written to stderr. Background mode is supported in long-lived TUI and RPC sessions; `print` and `json` modes reject it because those processes exit after the prompt. This feature is in-process rather than a daemon: a hard process kill cannot keep model work running, but the last atomic run checkpoint remains available.
+
+### Recent runs and lifecycle actions
+
+`/workflow:runs` opens a bounded project-history navigator. Each row includes an accessible state label, workflow name, age, duration, usage summary, and full run ID. Use `up`/`down` to select, `enter` to inspect retained phases, agents, findings, logs, and the final result or error, and `q`/`escape` to close. The footer shows only lifecycle keys valid for the selected record: `s` stops an active background run; `r` resumes an eligible paused run or restarts an eligible terminal run. The background activity line is present only while this session owns active background work.
+
+The same operations are available without the navigator:
+
+```text
+/workflow:runs inspect <run-id>
+/workflow:runs stop <run-id>
+/workflow:runs resume <run-id>
+/workflow:runs restart <run-id>
+/workflow:inspector <run-id>
+```
+
+Inspect is always safe. Stop is available only for a background run active in the current session. Resume is limited to paused registered workflows whose source fingerprint is unchanged and whose invocation had no redacted arguments; it starts a new background run ID with `resumeFromRunId` journal replay. Restart is limited to completed, failed, or stopped registered workflows that had no arguments and also creates a new background run ID. Inline workflows and argument-bearing invocations are intentionally not relaunched because their executable input was not persisted. In `print` and `json` modes, list and inspect return formatted text without opening TUI components, while resume/restart report that background execution requires TUI or RPC mode.
 
 Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding. The viewer is centred, scales to the terminal, and shows the visible finding/detail ranges while scrolling. `/workflow:results` or `ctrl+shift+r` reopens the most recent validated code-review report in the current pi session without rerunning the workflow; selections reset when it reopens.
 

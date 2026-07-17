@@ -15,6 +15,7 @@ import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-eng
 import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import {
   createWorkflowRunRecord,
+  transitionWorkflowRun,
   type WorkflowRunRecord,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-record.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
@@ -99,6 +100,7 @@ async function startRun(
   await coordinator.start({
     ctx,
     runId,
+    name: mod.meta.name,
     async run(signal, onStarted) {
       await runWorkflow(
         { ...ctx, signal },
@@ -152,7 +154,7 @@ test("background start returns after durable metadata and delivers success once 
 
 test("background start rejects a run whose running state was not durably recorded", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-not-running-"));
-  const harness: SessionHarness = { branch: [], idle: true };
+  const harness: SessionHarness = { branch: [], idle: false };
   const ctx = context(cwd, "session-not-running", harness);
   const store = new ProjectWorkflowRunStore(cwd);
   const coordinator = new BackgroundWorkflowCoordinator(fakePi(harness, []));
@@ -170,6 +172,7 @@ test("background start rejects a run whose running state was not durably recorde
       coordinator.start({
         ctx,
         runId,
+        name: "background-not-running",
         run: async (backgroundSignal, onStarted) => {
           signal = backgroundSignal;
           onStarted();
@@ -206,6 +209,100 @@ test("background failures are delivered without rejecting unrelated host work", 
   }
 });
 
+test("an active background run can be stopped without affecting unrelated host work", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-stop-"));
+  const harness: SessionHarness = { branch: [], idle: true };
+  const sent: SentMessage[] = [];
+  const ctx = context(cwd, "session-stop", harness);
+  const coordinator = new BackgroundWorkflowCoordinator(fakePi(harness, sent));
+  try {
+    await startRun(
+      coordinator,
+      ctx,
+      workflow("background-stop", async (api) =>
+        await raceWithAbort(() => new Promise<never>(() => {}), api.signal)),
+      "background-stop-run",
+    );
+    assert.deepEqual([...coordinator.activeRunIds(ctx)], ["background-stop-run"]);
+
+    const stopped = await coordinator.stop(ctx, "background-stop-run");
+    assert.equal(stopped.state, "stopped");
+    assert.equal(coordinator.activeRunIds(ctx).size, 0);
+    await waitFor(async () =>
+      (await new ProjectWorkflowRunStore(cwd).load("background-stop-run"))?.background?.delivery.state === "delivered"
+    );
+    assert.equal(sent.length, 1);
+    assert.match(sent[0]?.content ?? "", /State: stopped/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("stop is bounded for an uncooperative workflow and cannot later become successful", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-forced-stop-"));
+  const harness: SessionHarness = { branch: [], idle: false };
+  const logs: string[] = [];
+  const ctx = context(cwd, "session-forced-stop", harness);
+  const coordinator = new BackgroundWorkflowCoordinator(fakePi(harness, []), {
+    shutdownWaitMs: 1,
+    log: (message) => logs.push(message),
+  });
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    await startRun(
+      coordinator,
+      ctx,
+      workflow("background-forced-stop", async () => {
+        await gate;
+        return { summary: "must remain stopped" };
+      }),
+      "background-forced-stop-run",
+    );
+
+    const stopped = await coordinator.stop(ctx, "background-forced-stop-run");
+    assert.equal(stopped.state, "stopped");
+    assert.match(logs.join("\n"), /forced to stopped/);
+
+    release?.();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal((await new ProjectWorkflowRunStore(cwd).load("background-forced-stop-run"))?.state, "stopped");
+  } finally {
+    release?.();
+    await coordinator.sessionShutdown(ctx);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("restart recovery marks an interrupted run from the same session paused before delivery", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-hard-restart-"));
+  const harness: SessionHarness = { branch: [], idle: true };
+  const ctx = context(cwd, "session-hard-restart", harness);
+  const store = new ProjectWorkflowRunStore(cwd);
+  const runId = "background-hard-restart-run";
+  const queued = createWorkflowRunRecord({
+    runId,
+    workflow: workflow("background-hard-restart", async () => undefined),
+    options: resolveWorkflowRunOptions({ background: backgroundOrigin(ctx, 1) }),
+    progress: progress(runId),
+  });
+  await store.save(transitionWorkflowRun(queued, { state: "running", progress: progress(runId), at: 2 }));
+  const sent: SentMessage[] = [];
+  try {
+    const recovered = new BackgroundWorkflowCoordinator(fakePi(harness, sent));
+    await recovered.sessionStarted(ctx);
+
+    const record = await store.load(runId);
+    assert.equal(record?.state, "paused");
+    assert.equal(record?.background?.delivery.state, "delivered");
+    assert.match(sent[0]?.content ?? "", /host process ended/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("session shutdown pauses an active run and restart recovery delivers the interruption once", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-shutdown-"));
   const harness: SessionHarness = { branch: [], idle: true };
@@ -216,6 +313,7 @@ test("session shutdown pauses an active run and restart recovery delivers the in
     await first.start({
       ctx,
       runId: "background-paused-run",
+      name: "background-paused",
       async run(signal, onStarted) {
         await runWorkflow(
           { ...ctx, signal },

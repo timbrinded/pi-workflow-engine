@@ -9,14 +9,18 @@ import {
 import { updateWorkflowRunDelivery } from "./workflow-run-background.ts";
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
+import { truncateDisplay } from "./ui/workflow-format.ts";
+import { emptyWorkflowUsageTotals } from "./usage.ts";
 
 const BACKGROUND_DELIVERY_CUSTOM_TYPE = "workflow-result";
+const BACKGROUND_WIDGET_KEY = "workflow-background";
 const SHUTDOWN_WAIT_MS = 5_000;
 const SUMMARY_LIMIT = 500;
 
 export interface BackgroundWorkflowStartInput {
   readonly ctx: ExtensionContext;
   readonly runId: string;
+  readonly name: string;
   readonly run: (signal: AbortSignal, onStarted: () => void) => Promise<void>;
 }
 
@@ -42,6 +46,7 @@ interface BackgroundWorkflowDependencies {
 
 interface ActiveBackgroundRun {
   readonly controller: AbortController;
+  readonly name: string;
   readonly sessionId: string;
   readonly settled: Promise<void>;
   readonly isSettled: () => boolean;
@@ -104,10 +109,17 @@ export class BackgroundWorkflowCoordinator {
       } finally {
         settled = true;
         this.active.delete(input.runId);
+        this.updateBackgroundSurface(input.ctx);
         scheduleDelivery();
       }
     })();
-    this.active.set(input.runId, { controller, sessionId, settled: settledPromise, isSettled: () => settled });
+    this.active.set(input.runId, {
+      controller,
+      name: input.name,
+      sessionId,
+      settled: settledPromise,
+      isSettled: () => settled,
+    });
 
     await started;
     const record = await this.storeForCwd(input.ctx.cwd).load(input.runId);
@@ -117,7 +129,35 @@ export class BackgroundWorkflowCoordinator {
     }
 
     accepted = true;
+    this.updateBackgroundSurface(input.ctx);
     scheduleDelivery();
+  }
+
+  activeRunIds(ctx: Pick<ExtensionContext, "sessionManager">): ReadonlySet<string> {
+    const sessionId = ctx.sessionManager.getSessionId();
+    return new Set(
+      [...this.active.entries()]
+        .filter(([, run]) => run.sessionId === sessionId)
+        .map(([runId]) => runId),
+    );
+  }
+
+  async stop(ctx: ExtensionContext, runId: string): Promise<WorkflowRunRecord> {
+    const active = this.active.get(runId);
+    if (!active || active.sessionId !== ctx.sessionManager.getSessionId()) {
+      throw new Error(`Workflow run ${runId} is not active in this session.`);
+    }
+    active.controller.abort(new WorkflowAbortError("Workflow stopped by user."));
+    await waitForRuns([active.settled], this.shutdownWaitMs);
+    const store = this.storeForCwd(ctx.cwd);
+    if (!active.isSettled()) {
+      await forceStoppedRecord(store, runId);
+      this.log(`[workflow:${runId}] background workflow did not settle after stop; retained state was forced to stopped.`);
+    }
+    const record = await store.load(runId);
+    if (!record) throw new Error(`Workflow run ${runId} was not found after stopping.`);
+    if (record.state !== "stopped") throw new Error(`Workflow run ${runId} settled as ${record.state} instead of stopped.`);
+    return record;
   }
 
   async agentSettled(ctx: ExtensionContext): Promise<void> {
@@ -136,8 +176,15 @@ export class BackgroundWorkflowCoordinator {
     const sessionId = ctx.sessionManager.getSessionId();
     const availability = new Map<string, SessionAvailability>();
 
-    for (const record of records) {
+    for (const loadedRecord of records) {
+      let record = loadedRecord;
       try {
+        record = await reconcileInterruptedRun(
+          store,
+          record,
+          sessionId,
+          this.active.has(record.runId),
+        );
         if (!isPendingBackgroundOutcome(record)) continue;
         const originSessionId = record.background.origin.sessionId;
         if (originSessionId === sessionId) {
@@ -184,6 +231,7 @@ export class BackgroundWorkflowCoordinator {
         this.log(`[workflow:${runId}] failed to force paused state during shutdown: ${unknownErrorMessage(error)}`);
       }
     }
+    if (ctx.hasUI) ctx.ui.setWidget(BACKGROUND_WIDGET_KEY, undefined);
   }
 
   private async queueOrDeliver(ctx: ExtensionContext, runId: string): Promise<void> {
@@ -222,6 +270,28 @@ export class BackgroundWorkflowCoordinator {
     this.pendingDelivery.set(sessionId, pending);
   }
 
+  private updateBackgroundSurface(ctx: ExtensionContext): void {
+    if (!ctx.hasUI) return;
+    const sessionId = ctx.sessionManager.getSessionId();
+    const runs = [...this.active.entries()]
+      .filter(([, run]) => run.sessionId === sessionId)
+      .map(([runId, run]) => ({ runId, name: run.name }));
+    if (runs.length === 0) {
+      ctx.ui.setWidget(BACKGROUND_WIDGET_KEY, undefined);
+      return;
+    }
+    ctx.ui.setWidget(
+      BACKGROUND_WIDGET_KEY,
+      (tui, theme) => ({
+        render: (width?: number) => [
+          truncateDisplay(formatBackgroundActivity(runs, theme), width ?? tui.terminal.columns),
+        ],
+        invalidate() {},
+      }),
+      { placement: "aboveEditor" },
+    );
+  }
+
   private async deliver(ctx: ExtensionContext, runId: string): Promise<boolean> {
     const store = this.storeForCwd(ctx.cwd);
     const record = await store.load(runId);
@@ -244,6 +314,16 @@ export class BackgroundWorkflowCoordinator {
     await markDelivery(store, runId, { state: "delivered", deliveredAt: Date.now() });
     return true;
   }
+}
+
+function formatBackgroundActivity(
+  runs: readonly { readonly runId: string; readonly name: string }[],
+  theme: ExtensionContext["ui"]["theme"],
+): string {
+  const visible = runs.slice(0, 2).map((run) => `${run.name} ${run.runId.slice(0, 8)}`);
+  const hidden = runs.length - visible.length;
+  const suffix = hidden > 0 ? ` · +${hidden} more` : "";
+  return `${theme.fg("accent", "●")} ${theme.bold("Background workflows")} ${theme.fg("dim", `· ${visible.join(" · ")}${suffix}`)}`;
 }
 
 export function backgroundOrigin(ctx: Pick<ExtensionContext, "sessionManager">, requestedAt = Date.now()): WorkflowBackgroundOrigin {
@@ -322,6 +402,44 @@ async function forcePausedRecord(store: WorkflowRunStore, runId: string): Promis
     progress: record.progress,
     message: "Workflow paused because its host session shut down",
   }));
+}
+
+async function forceStoppedRecord(store: WorkflowRunStore, runId: string): Promise<void> {
+  const record = await store.load(runId);
+  if (!record || (record.state !== "queued" && record.state !== "running")) return;
+  await store.save(transitionWorkflowRun(record, {
+    state: "stopped",
+    progress: record.progress,
+    usage: record.usage ?? record.progress.usage ?? {
+      agents: [],
+      totals: emptyWorkflowUsageTotals(),
+      assistantMessages: 0,
+    },
+    error: new WorkflowAbortError("Workflow stopped by user."),
+  }));
+}
+
+async function reconcileInterruptedRun(
+  store: WorkflowRunStore,
+  record: WorkflowRunRecord,
+  sessionId: string,
+  active: boolean,
+): Promise<WorkflowRunRecord> {
+  if (
+    active
+    || record.background?.delivery.state !== "pending"
+    || record.background.origin.sessionId !== sessionId
+    || (record.state !== "queued" && record.state !== "running")
+  ) {
+    return record;
+  }
+  const paused = transitionWorkflowRun(record, {
+    state: "paused",
+    progress: record.progress,
+    message: "Workflow paused because its host process ended before completion",
+  });
+  await store.save(paused);
+  return paused;
 }
 
 async function defaultSessionAvailability(cwd: string, sessionId: string): Promise<SessionAvailability> {

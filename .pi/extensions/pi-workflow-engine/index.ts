@@ -35,6 +35,7 @@ import { executeWorkflowInvocation, type WorkflowExecution, type WorkflowPerfDet
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
 import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
+import { registerWorkflowRunCommand, WorkflowRunController } from "./src/workflow-run-controller.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -629,8 +630,20 @@ function createReviewSessionCoordinator(pi: ExtensionAPI): ReviewSessionCoordina
 export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShortcuts = resolveDynamaxShortcuts()): void {
   const reviewSessions = createReviewSessionCoordinator(pi);
   const backgroundWorkflows = new BackgroundWorkflowCoordinator(pi);
+  const workflowRuns = new WorkflowRunController(backgroundWorkflows, {
+    async resolveWorkflow(name) {
+      const { discoverWorkflows } = await loadDiscovery();
+      return (await discoverWorkflows(EXTENSION_DIR)).get(name);
+    },
+    async execute(ctx, name, workflow, options) {
+      const perfRecorder = await createInvocationPerf(options);
+      const execution = await executeResolvedWorkflow(pi, ctx, name, workflow, "", options, perfRecorder);
+      reviewSessions.remember(ctx, execution, options);
+    },
+  });
   registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
   registerWorkflowModelProfileCommand(pi);
+  registerWorkflowRunCommand(pi, workflowRuns);
   pi.on("session_start", async (_event, ctx) => {
     await backgroundWorkflows.sessionStarted(ctx);
   });
@@ -664,11 +677,12 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   });
 
   pi.registerCommand("workflow:inspector", {
-    description: "Open the current or last workflow inspector",
+    description: "Open the current, last, or a retained run inspector",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const trimmed = args.trim();
       if (trimmed && trimmed !== "last") {
-        ctx.ui.notify("Usage: /workflow:inspector [last]", "warning");
+        if (await workflowRuns.inspectStoredRun(ctx, trimmed)) return;
+        ctx.ui.notify(`Workflow run ${trimmed} was not found.`, "warning");
         return;
       }
       await openAvailableWorkflowInspector(pi, ctx);

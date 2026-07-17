@@ -107,6 +107,37 @@ test("workflow inspector renders a completed retained snapshot", () => {
   assert.match(rendered, /src\/app\.ts:10/);
 });
 
+test("workflow inspector exposes a bounded retained result section", () => {
+  const snapshot: WorkflowProgressSnapshot = {
+    runId: "retained-result-test",
+    title: "retained-result",
+    startedAt: Date.now() - 1_000,
+    doneAt: Date.now(),
+    currentPhase: "Complete",
+    phases: [],
+    counters: [],
+    summary: [],
+    lanes: [],
+    laneOverflow: [],
+    logs: [],
+  };
+  const tui = { requestRender() {}, terminal: { rows: 24, columns: 100 } } as Pick<TUI, "requestRender" | "terminal">;
+  const inspector = new WorkflowInspector(
+    () => snapshot,
+    tui,
+    createTestTheme(),
+    () => {},
+    { label: "COMPLETED outcome", text: JSON.stringify({ summary: "retained result" }, null, 2) },
+  );
+
+  for (let index = 0; index < 4; index++) inspector.handleInput("\t");
+  const rendered = inspector.render(100);
+  assert.match(rendered.join("\n"), /Result/);
+  assert.match(rendered.join("\n"), /COMPLETED outcome/);
+  assert.match(rendered.join("\n"), /retained result/);
+  assert.ok(rendered.length <= 24);
+});
+
 test("workflow inspector and widget share the workflow usage formatter", () => {
   const now = Date.now();
   const snapshot: WorkflowProgressSnapshot = {

@@ -407,9 +407,11 @@ test("runWorkflow persists one stable identity across metadata progress journal 
     assert.equal(record?.journalFile, "integrated-run.jsonl");
     assert.equal(record?.state, "completed");
     assert.equal(record?.options.concurrency, 3);
+    assert.equal(record?.options.argumentsPresent, true);
     assert.deepEqual(record?.result, { kind: "value", value: { summary: "done" } });
     assert.doesNotMatch(content, /SECRET_RAW_ARGS/);
     assert.equal(metadata?.recordPath, workflowRunRecordPath(cwd, "integrated-run"));
+    assert.equal((await stat(metadata?.journalPath ?? "")).isFile(), true);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

@@ -100,7 +100,13 @@ export async function runResolvedWorkflow(
   let persistenceFailureReported = false;
   const durableRun = new DurableWorkflowRun(
     runStore,
-    createWorkflowRunRecord({ runId, workflow: mod, options: resolvedOptions, progress: progress.snapshot() }),
+    createWorkflowRunRecord({
+      runId,
+      workflow: mod,
+      options: resolvedOptions,
+      progress: progress.snapshot(),
+      argumentsPresent: args.length > 0,
+    }),
     (error) => {
       if (persistenceFailureReported) return;
       persistenceFailureReported = true;

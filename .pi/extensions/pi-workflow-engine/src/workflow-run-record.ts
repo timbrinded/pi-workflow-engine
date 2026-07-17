@@ -48,6 +48,8 @@ export interface PersistedWorkflowRunOptions {
   readonly agentTimeoutMs: number;
   readonly agentRetries: number;
   readonly budget: number | null;
+  /** Whether replay would require redacted invocation arguments. Omitted on legacy records. */
+  readonly argumentsPresent?: boolean;
   readonly resultViewer?: "open" | "skip";
   readonly resumeFromRunId?: string;
 }
@@ -91,6 +93,7 @@ export function createWorkflowRunRecord(input: {
   readonly workflow: LoadedWorkflow;
   readonly options: ResolvedWorkflowRunOptions;
   readonly progress: WorkflowProgressSnapshot;
+  readonly argumentsPresent?: boolean;
 }): WorkflowRunRecord {
   const runId = validateWorkflowRunId(input.runId);
   assertMatchingRun(runId, input.progress.runId);
@@ -100,7 +103,7 @@ export function createWorkflowRunRecord(input: {
     state: "queued",
     workflow: persistedWorkflowIdentity(input.workflow),
     journalFile: `${runId}.jsonl`,
-    options: persistedWorkflowRunOptions(input.options),
+    options: persistedWorkflowRunOptions(input.options, input.argumentsPresent ?? false),
     createdAt: input.progress.startedAt,
     updatedAt: input.progress.startedAt,
     progress: compactWorkflowProgress(input.progress),
@@ -198,7 +201,10 @@ function persistedWorkflowIdentity(workflow: LoadedWorkflow): PersistedWorkflowI
   };
 }
 
-function persistedWorkflowRunOptions(options: ResolvedWorkflowRunOptions): PersistedWorkflowRunOptions {
+function persistedWorkflowRunOptions(
+  options: ResolvedWorkflowRunOptions,
+  argumentsPresent: boolean,
+): PersistedWorkflowRunOptions {
   return {
     inspect: options.inspect ?? false,
     perf: options.perf,
@@ -208,6 +214,7 @@ function persistedWorkflowRunOptions(options: ResolvedWorkflowRunOptions): Persi
     agentTimeoutMs: options.agentTimeoutMs,
     agentRetries: options.agentRetries,
     budget: options.budget,
+    argumentsPresent,
     resultViewer: options.resultViewer,
     resumeFromRunId: options.resumeFromRunId,
   };
@@ -445,6 +452,7 @@ function isPersistedWorkflowRunOptions(value: unknown): value is PersistedWorkfl
   if (!isFiniteNumber(value.agentTimeoutMs) || !isFiniteNumber(value.agentRetries)) return false;
   if (value.parallelSubmissionLimit !== null && !isFiniteNumber(value.parallelSubmissionLimit)) return false;
   if (value.budget !== null && !isFiniteNumber(value.budget)) return false;
+  if (value.argumentsPresent !== undefined && typeof value.argumentsPresent !== "boolean") return false;
   if (value.resultViewer !== undefined && value.resultViewer !== "open" && value.resultViewer !== "skip") return false;
   return value.resumeFromRunId === undefined || typeof value.resumeFromRunId === "string";
 }
