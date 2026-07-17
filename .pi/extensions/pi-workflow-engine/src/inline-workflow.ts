@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
 import type { LoadedWorkflow, WorkflowApi } from "./types.ts";
+import { unknownErrorMessage } from "./unknown-error.ts";
 import { parseWorkflowMeta } from "./workflow-module.ts";
 
 /**
@@ -138,8 +139,7 @@ function compileExecutor(defaultExpression: string): InlineWorkflowExecutor {
   try {
     return new AsyncFunction("api", "Type", `"use strict";\nconst workflow = ${defaultExpression};\nreturn await workflow(api);`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new InlineWorkflowCompileError(`inline workflow default export did not compile: ${message}`);
+    throw new InlineWorkflowCompileError(`inline workflow default export did not compile: ${unknownErrorMessage(error)}`);
   }
 }
 

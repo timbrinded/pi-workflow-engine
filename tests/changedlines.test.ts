@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { changedLines, inDiff } from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
+import {
+  buildCodeReviewScopeBlock,
+  dedupeCodeReviewCandidates,
+} from "../.pi/extensions/pi-workflow-engine/src/review/code-review-orchestration.ts";
 
 function lines(map: Map<string, Set<number>>, file: string): number[] {
   return [...(map.get(file) ?? [])].sort((a, b) => a - b);
@@ -28,6 +32,42 @@ index e0f74bf..54295d7 100644
   assert.equal(inDiff(changed, "sum.js", 7), false);
   assert.equal(inDiff(changed, "other.js", 3), false);
   assert.equal(inDiff(changed, "sum.js"), true);
+});
+
+test("code-review scope construction bounds embedded diffs and preserves context", () => {
+  const block = buildCodeReviewScopeBlock({
+    diffCommand: "git diff HEAD",
+    files: ["src/app.ts"],
+    summary: "One changed file.",
+    conventions: "Keep helpers pure.",
+    diffText: "x".repeat(60_001),
+    target: "focus on parsing",
+  });
+
+  assert.match(block, /## Diff command\ngit diff HEAD/);
+  assert.match(block, /## Changed files\n- src\/app\.ts/);
+  assert.match(block, /\.\.\. \(truncated — run `git diff HEAD` for the full diff\)/);
+  assert.match(block, /## User instructions \(verbatim\)\nfocus on parsing/);
+});
+
+test("code-review candidate deduplication retains first discovery order", () => {
+  const candidate = (summary: string, file: string, line: number) => ({
+    summary,
+    category: "bug",
+    locations: [{ file, line }],
+    impact: `${summary} impact`,
+  });
+  const first = candidate("first", "src/app.ts", 11);
+  const duplicate = candidate("duplicate", "./src/app.ts", 12);
+  const distinct = candidate("distinct", "src/app.ts", 30);
+
+  assert.deepEqual(dedupeCodeReviewCandidates([
+    { angle: "logic", candidates: [first] },
+    { angle: "edge", candidates: [duplicate, distinct] },
+  ]), [
+    { angle: "logic", candidate: first },
+    { angle: "edge", candidate: distinct },
+  ]);
 });
 
 test("changedLines records multi-hunk edits and new files", () => {

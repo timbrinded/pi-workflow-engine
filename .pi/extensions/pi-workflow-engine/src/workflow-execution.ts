@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ResolvedWorkflowRunOptions } from "./options.ts";
 import type { PerfAggregate, PerfSink, PerfSnapshot } from "./perf.ts";
-import type { WorkflowProgressSnapshot } from "./progress.ts";
+import type { WorkflowProgressSnapshot } from "./progress-types.ts";
 import type {
   LoadedWorkflow,
   WorkflowProgressSource,

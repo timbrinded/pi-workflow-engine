@@ -59,12 +59,8 @@ export const AdvisoryReportWithStatsSchema = Type.Object({
   stats: Type.Optional(Type.Record(Type.String(), Type.Union([Type.String(), Type.Number()]))),
 });
 
-export type AdvisorySeverity = Static<typeof AdvisorySeveritySchema>;
-export type AdvisoryConfidence = Static<typeof AdvisoryConfidenceSchema>;
-export type AdvisoryVerifierVerdict = Static<typeof AdvisoryVerifierVerdictSchema>;
 export type AdvisoryLocation = Static<typeof AdvisoryLocationSchema>;
 export type AdvisoryCandidate = Static<typeof AdvisoryCandidateSchema>;
-export type AdvisoryCandidates = Static<typeof AdvisoryCandidatesSchema>;
 export type AdvisoryVerdict = Static<typeof AdvisoryVerdictSchema>;
 export type AdvisoryFinding = Static<typeof AdvisoryFindingSchema>;
 export type AdvisoryReport = Static<typeof AdvisoryReportSchema>;

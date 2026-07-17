@@ -3,7 +3,7 @@ import { test } from "bun:test";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { createTestTheme } from "./fixtures/theme.ts";
 import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
-import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
+import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import { WorkflowInspector } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import { isAdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import { renderWorkflowResultText } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts";

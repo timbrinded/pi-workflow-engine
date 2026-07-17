@@ -1,5 +1,6 @@
 import { lstat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { isMissingPathError } from "./filesystem-error.ts";
 import { hashIdentity } from "./identity-fingerprint.ts";
 import { logicalWorkspacePath, portableRelativePath } from "./replay-path-identity.ts";
 import { captureTreeFingerprint, isPathWithin, validateTreeFile, type FingerprintCapture } from "./tree-fingerprint.ts";
@@ -146,8 +147,4 @@ function nonEmptyString(value: string, label: string): string {
   if (typeof value !== "string") throw new Error(`${label} is not a string`);
   if (value.length === 0) throw new Error(`${label} is empty`);
   return value;
-}
-
-function isMissingPathError(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }

@@ -47,6 +47,25 @@ test("parseWorkflowInvocation extracts tuning flags from slash command args", ()
   assert.deepEqual(equalsForm.options, { budget: 50000, resumeFromRunId: "old-run" });
 });
 
+test("parseWorkflowInvocation preserves concurrency value consumption semantics", () => {
+  const equalsForm = parseWorkflowInvocation("code-review --concurrency=4 review src");
+  assert.equal(equalsForm.options.concurrency, 4);
+  assert.equal(equalsForm.args, "review src");
+
+  const nextTokenForm = parseWorkflowInvocation("code-review --concurrency 4 review src");
+  assert.equal(nextTokenForm.options.concurrency, 4);
+  assert.equal(nextTokenForm.args, "review src");
+
+  const invalidValue = parseWorkflowInvocation("code-review --concurrency nope review src");
+  assert.equal(invalidValue.options.concurrency, undefined);
+  assert.equal(invalidValue.args, "review src");
+
+  const consumedOptionToken = parseWorkflowInvocation("code-review --concurrency --perf review src");
+  assert.equal(consumedOptionToken.options.concurrency, undefined);
+  assert.equal(consumedOptionToken.options.perf, undefined);
+  assert.equal(consumedOptionToken.args, "review src");
+});
+
 test("parseWorkflowInvocation rejects invalid budget flags without consuming positional args", () => {
   const cases = [
     { input: "code-review --budget", args: "" },
@@ -201,5 +220,5 @@ test("buildTemporaryWorkflowAuthorPrompt asks for an inline one-shot workflow", 
   assert.match(prompt, /workflow tool with a script argument, not a saved workflow name/);
   assert.match(prompt, /Use the injected Type object/);
   assert.match(prompt, /Set thinkingLevel explicitly/);
-  assert.match(prompt, /skills: \["skill-name"\]/);
+  assert.match(prompt, /skills: \["skill-name"]/);
 });

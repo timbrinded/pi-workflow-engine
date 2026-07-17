@@ -1,7 +1,7 @@
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { AdvisoryReportWithStatsSchema } from "../advisory-schema.ts";
-import { formatReviewDiffTarget, isReviewDiffTarget, ReviewDiffTargetSchema } from "../diff-capture.ts";
+import { formatReviewDiffTarget, isReviewDiffTarget, ReviewDiffTargetSchema } from "../review-diff-target.ts";
 
 /** Atomic identity of the exact diff and post-change snapshot that were reviewed. */
 export const ReviewSnapshotIdentitySchema = Type.Object({

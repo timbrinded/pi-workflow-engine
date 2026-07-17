@@ -4,15 +4,16 @@ import {
   AdvisoryReportSchema,
   AdvisoryVerdictSchema,
   type AdvisoryCandidate,
-  type AdvisoryReport,
   type AdvisoryVerdict,
 } from "../src/advisory-schema.ts";
 import {
   advisoryDedupKey as dedupKey,
   backfillAdvisoryFindings,
+  emptyAdvisoryReport,
   formatEvidence,
   formatLocation,
   primaryLocation,
+  publishVerifiedKeptProgress,
   recordVerdictProgress,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
@@ -93,7 +94,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   );
 
   if (!scope) {
-    return emptyReport(
+    return emptyAdvisoryReport(
       "Diagnosis could not establish a scope.",
       ["Provide the failing command, error message, or regression description and rerun diagnose."],
       makeStats(0, 0),
@@ -178,14 +179,10 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const refuted = verified.filter((finding) => finding.verdict === "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
-  progress({ type: "counter", key: "verified", label: "verified", value: verified.length });
-  progress({ type: "counter", key: "kept", label: "kept", value: surviving.length });
-  progress({ type: "summary", key: "verified", value: verified.length });
-  progress({ type: "summary", key: "kept", value: surviving.length });
-  log(`${verified.length} verified → ${surviving.length} kept`);
+  publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
 
   if (surviving.length === 0) {
-    return emptyReport(
+    return emptyAdvisoryReport(
       "No root-cause hypothesis survived verification.",
       ["Capture the exact failing command and error output.", "Rerun diagnose with a narrower symptom or more evidence."],
       stats,
@@ -222,17 +219,13 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     },
   );
 
-  if (!report) return emptyReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun diagnose with a narrower symptom."], stats);
+  if (!report) return emptyAdvisoryReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun diagnose with a narrower symptom."], stats);
 
   const findings = backfillAdvisoryFindings(report.findings, ranked, {
     impact: "Impact not restated by synthesis.",
     recommendation: "Validate this diagnosis with the smallest safe reproduction command.",
   });
   return { ...report, findings, stats };
-}
-
-function emptyReport(summary: string, nextSteps: string[], stats: WorkflowRunStats): AdvisoryReport & { stats: WorkflowRunStats } {
-  return { summary, findings: [], nextSteps, stats };
 }
 
 function dedupe(candidates: Hypothesis[], onDropped: (dropped: number) => void): Hypothesis[] {

@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
-import { parseAllowedDiffCommand, type ReviewDiffTarget } from "../.pi/extensions/pi-workflow-engine/src/diff-capture.ts";
+import { parseAllowedDiffCommand, type ReviewDiffTarget } from "../.pi/extensions/pi-workflow-engine/src/review-diff-target.ts";
 import type { ReviewContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-report.ts";
 import {
   captureReviewMaterial,

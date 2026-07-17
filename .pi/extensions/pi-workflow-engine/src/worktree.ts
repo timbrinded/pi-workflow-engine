@@ -266,11 +266,48 @@ export async function addWorktree(options: {
   const message = result.error ?? (result.stderr.trim() || "git worktree add failed");
   if (!isInvalidHeadError(message)) return { path, error: message };
 
-  const snapshotError = await createUnbornRepoSnapshot({ repoCwd: options.repoCwd, path, timeoutMs: options.timeoutMs, signal: options.signal })
+  return await addUnbornRepositoryWorktree({
+    repoCwd: options.repoCwd,
+    path,
+    addError: message,
+    runner,
+    signal: options.signal,
+    snapshotTimeoutMs: options.timeoutMs,
+    timeoutMs,
+  });
+}
+
+async function addUnbornRepositoryWorktree(options: {
+  readonly repoCwd: string;
+  readonly path: string;
+  readonly addError: string;
+  readonly runner: WorktreeGitRunner;
+  readonly signal?: AbortSignal;
+  readonly snapshotTimeoutMs?: number;
+  readonly timeoutMs: number;
+}): Promise<WorktreeRef | WorktreeAddFailure> {
+  const snapshotError = await createUnbornRepoSnapshot({
+    repoCwd: options.repoCwd,
+    path: options.path,
+    timeoutMs: options.snapshotTimeoutMs,
+    signal: options.signal,
+  })
     .then(() => undefined)
     .catch((error: unknown) => unknownErrorMessage(error));
-  if (snapshotError !== undefined) return { path, snapshot: true, error: `git worktree add failed (${message}); unborn-repo snapshot fallback failed: ${snapshotError}` };
-  return await finalizeWorktreeRef({ path, snapshot: true, runner, signal: options.signal, timeoutMs });
+  if (snapshotError !== undefined) {
+    return {
+      path: options.path,
+      snapshot: true,
+      error: `git worktree add failed (${options.addError}); unborn-repo snapshot fallback failed: ${snapshotError}`,
+    };
+  }
+  return await finalizeWorktreeRef({
+    path: options.path,
+    snapshot: true,
+    runner: options.runner,
+    signal: options.signal,
+    timeoutMs: options.timeoutMs,
+  });
 }
 
 async function finalizeWorktreeRef(options: {

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { dynamaxSessionKey } from "../dynamax.ts";
+import { sessionKey } from "../session-identity.ts";
 import { resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "../options.ts";
 import type { LoadedWorkflow } from "../types.ts";
 import type { WorkflowExecution } from "../workflow-execution.ts";
@@ -42,7 +42,7 @@ export class ReviewSessionCoordinator {
   ): void {
     const name = execution.envelope.name;
     if (name !== "code-review") return;
-    const key = dynamaxSessionKey(ctx);
+    const key = sessionKey(ctx);
     const report = codeReviewReport(name, execution.envelope.result);
     if (!report) {
       this.sessions.delete(key);
@@ -72,7 +72,7 @@ export class ReviewSessionCoordinator {
     });
     if (decision.kind !== "open") return;
 
-    const retained = this.sessions.get(dynamaxSessionKey(ctx));
+    const retained = this.sessions.get(sessionKey(ctx));
     if (!retained) return;
     await this.openAndHandle(ctx, retained, decision.issues);
   }
@@ -82,7 +82,7 @@ export class ReviewSessionCoordinator {
       ctx.ui.notify("Code-review results viewer requires the TUI", "warning");
       return;
     }
-    const retained = this.sessions.get(dynamaxSessionKey(ctx));
+    const retained = this.sessions.get(sessionKey(ctx));
     if (!retained) {
       ctx.ui.notify("No code-review result is available yet. Run /workflow code-review first.", "warning");
       return;
@@ -96,7 +96,7 @@ export class ReviewSessionCoordinator {
   }
 
   dispose(ctx: ExtensionContext): void {
-    this.sessions.delete(dynamaxSessionKey(ctx));
+    this.sessions.delete(sessionKey(ctx));
   }
 
   private async openAndHandle(

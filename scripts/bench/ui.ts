@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ProgressTracker, type AgentRowSnapshot, type WorkflowLaneItemSnapshot, type WorkflowProgressSnapshot } from "../../.pi/extensions/pi-workflow-engine/src/progress.ts";
+import { ProgressTracker } from "../../.pi/extensions/pi-workflow-engine/src/progress.ts";
+import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import { statusText } from "../../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
 import { renderWorkflowWidgetLines } from "../../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
 import { createTestTheme } from "../../tests/fixtures/theme.ts";

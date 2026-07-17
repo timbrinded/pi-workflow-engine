@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto";
 import { throwIfAborted } from "../cancellation.ts";
+import { captureDiffTarget, type DiffCaptureFailure } from "../diff-capture.ts";
 import {
-  captureDiffTarget,
-  type DiffCaptureFailure,
+  reviewGitDiffBaseline,
   type GitReviewDiffTarget,
   type PullRequestReviewDiffTarget,
   type ReviewDiffTarget,
-  reviewGitDiffBaseline,
-} from "../diff-capture.ts";
+} from "../review-diff-target.ts";
 import { runBoundedProcess } from "../process-runner.ts";
 import { unknownErrorMessage } from "../unknown-error.ts";
 import type { WorktreeBaseline } from "../worktree.ts";

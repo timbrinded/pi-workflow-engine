@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Static, TSchema } from "typebox";
 import { bindParallel, bindPipeline, Semaphore } from "./concurrency.ts";
 import { linkAbortSignal, throwIfAborted } from "./cancellation.ts";
 import { createBudget } from "./budget.ts";
@@ -7,7 +8,7 @@ import { ProgressTracker } from "./progress.ts";
 import { createPerfRecorder, type PerfSink, type PerfSnapshot } from "./perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "./usage.ts";
 import { resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "./options.ts";
-import type { AgentOptions, LoadedWorkflow, WorkflowApi, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
+import type { AgentOptions, IsolatedAgentResult, LoadedWorkflow, WorkflowApi, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
 import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
 import { WorktreeRegistry } from "./worktree.ts";
@@ -232,6 +233,30 @@ function combinedWorkflowError(workflowError: unknown, finalizationError: unknow
   );
 }
 
+function createWorkflowAgent(
+  rc: WorkflowRunContext,
+  scope: WorkflowScope,
+  mod: LoadedWorkflow,
+  resumeContext: AgentResumeBaseContext,
+): WorkflowApi["agent"] {
+  function agent<S extends TSchema>(
+    prompt: string,
+    opts: AgentOptions<S> & { schema: S; isolation: "worktree" },
+  ): Promise<IsolatedAgentResult<Static<S> | null>>;
+  function agent(prompt: string, opts: AgentOptions & { isolation: "worktree" }): Promise<IsolatedAgentResult<string>>;
+  function agent<S extends TSchema>(prompt: string, opts: AgentOptions<S> & { schema: S }): Promise<Static<S> | null>;
+  function agent(prompt: string, opts?: AgentOptions): Promise<string>;
+  function agent(prompt: string, agentOpts?: AgentOptions): Promise<unknown> {
+    const scopedOptions = scope.agentOptions(agentOpts);
+    const executionOptions: AgentExecutionOptions =
+      scopedOptions.isolation === "worktree" && mod.isolatedWorktreeBaseline !== undefined
+        ? { ...scopedOptions, worktreeBaseline: mod.isolatedWorktreeBaseline }
+        : scopedOptions;
+    return runAgent(rc, prompt, executionOptions, resumeContext);
+  }
+  return agent;
+}
+
 /**
  * Build the `WorkflowApi` from an existing run context and invoke the module. Reused for both
  * the top-level run and every `api.workflow()` sub-step, so children share the parent's semaphore,
@@ -250,14 +275,7 @@ export async function runWorkflowWithContext(
     workflow: await captureWorkflowResumeContext(mod, rc.signal),
   };
 
-  const agent = ((prompt: string, agentOpts?: AgentOptions) => {
-    const scopedOptions = scope.agentOptions(agentOpts);
-    const executionOptions: AgentExecutionOptions =
-      scopedOptions.isolation === "worktree" && mod.isolatedWorktreeBaseline !== undefined
-        ? { ...scopedOptions, worktreeBaseline: mod.isolatedWorktreeBaseline }
-        : scopedOptions;
-    return runAgent(rc, prompt, executionOptions, resumeContext);
-  }) as WorkflowApi["agent"];
+  const agent = createWorkflowAgent(rc, scope, mod, resumeContext);
 
   const workflow: WorkflowApi["workflow"] =
     depth >= 1

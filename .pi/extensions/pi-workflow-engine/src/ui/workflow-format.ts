@@ -1,7 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { AgentRowSnapshot, WorkflowProgressSnapshot } from "../progress.ts";
-import type { WorkflowLaneItemStatus } from "../types.ts";
+import type { AgentRowSnapshot, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "../progress-types.ts";
 
 export type WorkflowDisplayStatus = WorkflowLaneItemStatus | "queued" | "done" | "failed";
 export type WorkflowThemeColor = Parameters<Theme["fg"]>[0];
@@ -47,10 +46,6 @@ export function statusIcon(status: WorkflowDisplayStatus, theme: Theme): string 
     case "pending":
       return theme.fg("dim", "○");
   }
-}
-
-export function badge(label: string, color: WorkflowThemeColor, theme: Theme): string {
-  return theme.fg(color, `[${label}]`);
 }
 
 export function truncateDisplay(text: string, width: number): string {

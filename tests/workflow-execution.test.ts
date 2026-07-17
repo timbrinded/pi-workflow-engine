@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
-import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
+import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import {
   executeWorkflowInvocation,
