@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "bun:test";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
@@ -10,6 +13,9 @@ import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 
+const WORKFLOW_TEST_CWD = mkdtempSync(join(tmpdir(), "pi-workflow-engine-tests-"));
+process.on("exit", () => rmSync(WORKFLOW_TEST_CWD, { recursive: true, force: true }));
+
 function loadedWorkflow(mod: WorkflowModule): LoadedWorkflow {
   return {
     ...mod,
@@ -20,7 +26,7 @@ function loadedWorkflow(mod: WorkflowModule): LoadedWorkflow {
 function fakeContext(signal?: AbortSignal): ExtensionContext {
   return {
     hasUI: false,
-    cwd: process.cwd(),
+    cwd: WORKFLOW_TEST_CWD,
     model: undefined,
     modelRegistry: { find: () => undefined },
     sessionManager: {

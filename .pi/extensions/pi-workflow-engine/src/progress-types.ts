@@ -35,6 +35,7 @@ export interface WorkflowLaneItemSnapshot {
 }
 
 export interface WorkflowProgressSnapshot {
+  readonly runId: string;
   readonly title: string;
   readonly startedAt: number;
   readonly doneAt?: number;

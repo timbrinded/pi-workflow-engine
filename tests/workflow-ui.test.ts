@@ -68,6 +68,7 @@ test("workflow formatting helpers format durations, counts, agents, and truncati
 test("workflow inspector renders a completed retained snapshot", () => {
   const now = Date.now();
   const snapshot: WorkflowProgressSnapshot = {
+    runId: "completed-retained-test",
     title: "code-review",
     startedAt: now - 1_000,
     doneAt: now,
@@ -109,6 +110,7 @@ test("workflow inspector renders a completed retained snapshot", () => {
 test("workflow inspector and widget share the workflow usage formatter", () => {
   const now = Date.now();
   const snapshot: WorkflowProgressSnapshot = {
+    runId: "usage-surfaces-test",
     title: "usage-surfaces",
     startedAt: now - 1_000,
     currentPhase: "Find",
@@ -132,6 +134,7 @@ test("workflow inspector and widget share the workflow usage formatter", () => {
 test("workflow inspector expands findings as formatted multi-line details", () => {
   const now = Date.now();
   const snapshot: WorkflowProgressSnapshot = {
+    runId: "expanded-finding-test",
     title: "code-review",
     startedAt: now - 1_000,
     doneAt: now,
@@ -175,6 +178,7 @@ test("workflow inspector expands findings as formatted multi-line details", () =
 test("workflow widget renders bounded rows for large snapshots", () => {
   const theme = createTestTheme();
   const snapshot = {
+    runId: "large-snapshot-test",
     title: "large",
     startedAt: Date.now() - 1_000,
     currentPhase: "Fan-out",

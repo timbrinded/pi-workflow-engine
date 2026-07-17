@@ -80,6 +80,8 @@ export class ProgressTracker {
   constructor(
     private readonly ctx: ExtensionContext,
     private readonly title: string,
+    private readonly runId: string,
+    private readonly onSnapshot?: (snapshot: WorkflowProgressSnapshot) => void,
   ) {
     this.ensurePhase(this.currentPhase);
   }
@@ -97,14 +99,14 @@ export class ProgressTracker {
     this.currentPhase = title;
     this.ensurePhase(title);
     if (!this.ctx.hasUI) process.stderr.write(`[${this.title}] ${title}\n`);
-    this.render();
+    this.publish();
   }
 
   log(message: string): void {
     this.logs.push(message);
     while (this.logs.length > LOG_LIMIT) this.logs.shift();
     if (!this.ctx.hasUI) process.stderr.write(`[${this.title}] ${message}\n`);
-    this.render();
+    this.publish();
   }
 
   event(event: WorkflowProgressEvent): void {
@@ -139,7 +141,7 @@ export class ProgressTracker {
         this.summary.set(event.key, event.value);
         break;
     }
-    this.render();
+    this.publish();
   }
 
   agentQueued(phase: string | undefined, label: string): number {
@@ -148,7 +150,7 @@ export class ProgressTracker {
     this.ensurePhase(phase ?? this.currentPhase).agents.push(row);
     this.rowsById.set(id, row);
     this.agentCounts.queued++;
-    this.render();
+    this.publish();
     return id;
   }
 
@@ -170,7 +172,7 @@ export class ProgressTracker {
       this.rowsById.set(nextRow.id, nextRow);
       this.agentCounts.running++;
     }
-    this.render();
+    this.publish();
   }
 
   agentTool(label: string, tool: string, id?: number): void {
@@ -179,7 +181,7 @@ export class ProgressTracker {
       row.lastTool = tool;
       row.toolUses += 1;
     }
-    this.render();
+    this.publish();
   }
 
   agentDone(label: string, id?: number): void {
@@ -188,7 +190,7 @@ export class ProgressTracker {
       this.transitionAgentStatus(row, "done");
       row.doneAt = Date.now();
     }
-    this.render();
+    this.publish();
   }
 
   agentFailed(label: string, error: unknown, id?: number): void {
@@ -198,16 +200,17 @@ export class ProgressTracker {
       row.doneAt = Date.now();
       row.error = unknownErrorMessage(error);
     }
-    this.render();
+    this.publish();
   }
 
   updateUsage(snapshot: WorkflowUsageSnapshot): void {
     this.usageSnapshot = snapshot;
-    this.render();
+    this.publish();
   }
 
   snapshot(): WorkflowProgressSnapshot {
     return {
+      runId: this.runId,
       title: this.title,
       startedAt: this.startedAt,
       doneAt: this.doneAt,
@@ -273,7 +276,8 @@ export class ProgressTracker {
     return this.rowsById.get(id);
   }
 
-  private render(): void {
+  private publish(): void {
+    this.publishSnapshot();
     if (!this.ctx.hasUI) return;
     this.ensureWidget();
     this.widget?.invalidate();
@@ -344,6 +348,7 @@ export class ProgressTracker {
   done(status?: string): void {
     this.doneAt = Date.now();
     this.stopWidgetTimer();
+    this.publishSnapshot();
     if (!this.ctx.hasUI) return;
     this.ctx.ui.setWidget("workflow", undefined);
     this.ctx.ui.setStatus("workflow", status);
@@ -352,6 +357,10 @@ export class ProgressTracker {
     this.widgetRegistered = false;
     this.widget = undefined;
     this.tui = undefined;
+  }
+
+  private publishSnapshot(): void {
+    this.onSnapshot?.(this.snapshot());
   }
 }
 

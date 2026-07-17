@@ -10,6 +10,7 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-execution.ts";
 
 const snapshot: WorkflowProgressSnapshot = {
+  runId: "workflow-execution-test",
   title: "test",
   startedAt: 0,
   currentPhase: "test",

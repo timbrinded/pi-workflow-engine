@@ -193,16 +193,22 @@ test("repository capture excludes root and nested workflow journals from a subdi
   const cwd = join(root, "nested");
   const rootJournal = join(root, ".pi", ".workflow-runs", "root.jsonl");
   const nestedJournal = join(cwd, ".pi", ".workflow-runs", "nested.jsonl");
+  const rootRecord = join(root, ".pi", ".workflow-runs", "root.run.json");
+  const nestedRecord = join(cwd, ".pi", ".workflow-runs", "nested.run.json");
   try {
     await mkdir(join(cwd, ".pi", ".workflow-runs"), { recursive: true });
     await mkdir(join(root, ".pi", ".workflow-runs"), { recursive: true });
     await writeFile(rootJournal, "one\n", "utf8");
     await writeFile(nestedJournal, "one\n", "utf8");
+    await writeFile(rootRecord, "one\n", "utf8");
+    await writeFile(nestedRecord, "one\n", "utf8");
     const first = await captureRepositoryResumeContext(cwd, ["."]);
     assert.equal(first.kind, "verified");
 
     await writeFile(rootJournal, "two\n", "utf8");
     await writeFile(nestedJournal, "two\n", "utf8");
+    await writeFile(rootRecord, "two\n", "utf8");
+    await writeFile(nestedRecord, "two\n", "utf8");
     assert.deepEqual(await captureRepositoryResumeContext(cwd, ["."]), first);
   } finally {
     await rm(root, { recursive: true, force: true });

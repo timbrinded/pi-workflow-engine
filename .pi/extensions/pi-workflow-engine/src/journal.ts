@@ -60,7 +60,7 @@ export function createWorkflowRunId(): string {
 }
 
 export function workflowJournalPath(cwd: string, runId: string): string {
-  return join(cwd, WORKFLOW_RUNS_DIR, `${validateRunId(runId)}.jsonl`);
+  return join(cwd, WORKFLOW_RUNS_DIR, `${validateWorkflowRunId(runId)}.jsonl`);
 }
 
 export function agentJournalKey(prompt: string, opts: AgentOptions = {}, worktreeBaseline?: WorktreeBaseline): string {
@@ -248,7 +248,7 @@ export async function pruneWorkflowJournals(cwd: string, keep = WORKFLOW_JOURNAL
   await Promise.all(stale.map((entry) => rm(entry.path, { force: true }).catch(() => undefined)));
 }
 
-function validateRunId(runId: string): string {
+export function validateWorkflowRunId(runId: string): string {
   const trimmed = runId.trim();
   if (!/^[A-Za-z0-9_.-]+$/.test(trimmed)) {
     throw new Error("Workflow run id must contain only letters, numbers, dots, underscores, or hyphens.");

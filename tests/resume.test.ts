@@ -23,6 +23,7 @@ import {
   loadJournalEntries,
   workflowJournalPath,
 } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
+import { workflowRunRecordPath } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
 import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef, WorkflowRunMetadata } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
@@ -765,5 +766,6 @@ test("runWorkflow reports run metadata and logs the generated run id", async () 
     runId: "new-run",
     resumedFromRunId: "old-run",
     journalPath: workflowJournalPath(cwd, "new-run"),
+    recordPath: workflowRunRecordPath(cwd, "new-run"),
   });
 });

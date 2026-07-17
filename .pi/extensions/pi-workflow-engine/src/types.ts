@@ -32,6 +32,7 @@ export interface WorkflowRunMetadata {
   readonly runId: string;
   readonly resumedFromRunId?: string;
   readonly journalPath: string;
+  readonly recordPath: string;
 }
 
 export interface WorkflowRunOptions {
