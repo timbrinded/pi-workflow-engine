@@ -6,6 +6,7 @@ import {
   createAgentReplayPlan,
   isReplayEnabled,
   settleAgentAttempt,
+  type AgentAttemptResult,
   type AgentReplayPlan,
 } from "./agent-replay.ts";
 import {
@@ -19,6 +20,10 @@ import type {
 } from "./agent-runner-types.ts";
 import type { AgentResumeBaseContext } from "./resume-context.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
+import {
+  agentRetryDelayMs,
+  WorkflowProviderError,
+} from "./agent-retry.ts";
 
 export type {
   AgentExecutionOptions,
@@ -36,7 +41,7 @@ export type { ResolvedAgentModel, ResolvedAgentModelRequest } from "./agent-sess
  * Run one subagent to completion in an isolated in-memory session.
  *
  * Session construction, replay validation, and workspace cleanup live in focused
- * modules; this boundary owns only admission, progress, and the one cache-to-live retry.
+ * modules; this boundary owns admission, progress, and bounded cache/provider retries.
  */
 export async function runAgent(
   rc: RunContext,
@@ -72,19 +77,41 @@ export async function runAgent(
           }
 
           let attemptPlan: AgentReplayPlan = replay;
+          let providerRetries = 0;
           while (true) {
-            const outcome = await executeAgentAttempt({
-              rc: agentRc,
-              prompt,
-              opts,
-              resumeBaseContext,
-              model,
-              replay: attemptPlan,
-              label,
-              rowId,
-              tags,
-              admitLiveAgent: liveScope.admit,
-            });
+            let outcome: AgentAttemptResult;
+            try {
+              outcome = await executeAgentAttempt({
+                rc: agentRc,
+                prompt,
+                opts,
+                resumeBaseContext,
+                model,
+                replay: attemptPlan,
+                label,
+                rowId,
+                tags,
+                admitLiveAgent: liveScope.admit,
+              });
+            } catch (error) {
+              if (!(error instanceof WorkflowProviderError) || !error.retryable) throw error;
+              if (providerRetries >= agentRc.agentRetries) {
+                if (agentRc.agentRetries > 0) {
+                  rc.progress.log(`${label}: transient provider failure after ${providerRetries} retries; giving up`);
+                }
+                throw error;
+              }
+
+              assertWorkflowBudgetAvailable(agentRc.budget);
+              providerRetries++;
+              const delayMs = agentRetryDelayMs(providerRetries);
+              rc.progress.log(`${label}: transient provider failure; retry ${providerRetries}/${agentRc.agentRetries} in ${delayMs}ms`);
+              rc.perf.counter("agent.provider_retry", 1, tags);
+              rc.perf.observe("agent.provider_retry_delay_ms", delayMs, tags);
+              attemptPlan = { kind: "off" };
+              await agentRc.retryScheduler.sleep(delayMs, agentRc.signal);
+              continue;
+            }
             const settlement = await settleAgentAttempt({ rc: agentRc, label, tags, replay: attemptPlan, outcome });
             if (settlement.kind === "retry-live") {
               attemptPlan = { kind: "off" };
@@ -116,14 +143,14 @@ function createAgentLiveScope(rc: RunContext, label: string) {
   const controller = new AbortController();
   const unlink = linkAbortSignal(rc.signal, controller);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let admitted = false;
+  let timerStarted = false;
 
   return {
     signal: controller.signal,
     admit() {
-      if (admitted) return;
-      rc.agentLimiter.admit(rc.signal);
-      admitted = true;
+      rc.agentLimiter.admit(controller.signal);
+      if (timerStarted) return;
+      timerStarted = true;
       timer = setTimeout(
         () => controller.abort(new WorkflowAgentTimeoutError(label, rc.agentTimeoutMs)),
         rc.agentTimeoutMs,

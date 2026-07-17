@@ -42,7 +42,9 @@ export interface WorkflowRunOptions {
   maxAgents?: number;
   /** Maximum live duration of one agent call in milliseconds. */
   agentTimeoutMs?: number;
-  /** Output-token ceiling for the whole run. Omit for no limit (budget.total === null). */
+  /** Retry count for transient provider/session failures. Defaults to zero. */
+  agentRetries?: number;
+  /** Output-token ceiling across recorded subagent attempts. Omit for no limit (budget.total === null). */
   budget?: number;
   /** Internal/test override for the generated run id. Omit to generate a new id. */
   runId?: string;

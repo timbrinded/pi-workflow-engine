@@ -3,6 +3,7 @@ import type { CreateAgentSessionOptions, ModelRegistry } from "@earendil-works/p
 import type { WorkflowBudget } from "./budget.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { WorkflowAgentLimiter } from "./agent-limits.ts";
+import type { AgentRetryScheduler } from "./agent-retry.ts";
 import type { WorkflowJournal } from "./journal.ts";
 import type { PerfSink } from "./perf.ts";
 import type { AgentOptions } from "./types.ts";
@@ -47,6 +48,7 @@ export interface AgentRunnerSession {
   getActiveToolNames?(): readonly string[];
   getToolDefinition?(name: string): EffectiveToolDefinitionLike | undefined;
   setActiveToolsByName?(toolNames: readonly string[]): void;
+  setAutoRetryEnabled?(enabled: boolean): void;
 }
 
 type InjectedAgentSessionOptions = Omit<CreateAgentSessionOptions, "modelRegistry"> & {
@@ -70,6 +72,8 @@ interface RunContextBase {
   semaphore: Semaphore;
   agentLimiter: WorkflowAgentLimiter;
   agentTimeoutMs: number;
+  agentRetries: number;
+  retryScheduler: AgentRetryScheduler;
   progress: AgentProgress;
   signal: AbortSignal | undefined;
   perf: PerfSink;

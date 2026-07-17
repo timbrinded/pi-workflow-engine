@@ -15,6 +15,7 @@ import type { AgentProgress, CreateAgentSession } from "../.pi/extensions/pi-wor
 import { createBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
+import { defaultAgentRetryScheduler } from "../.pi/extensions/pi-workflow-engine/src/agent-retry.ts";
 import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import {
   createWorkflowJournal,
@@ -218,6 +219,8 @@ async function runWithJournal(input: {
     semaphore: new Semaphore(4),
     agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
+    agentRetries: 0,
+    retryScheduler: defaultAgentRetryScheduler,
     progress,
     signal: undefined,
     perf: new NoopPerfRecorder(),
@@ -355,6 +358,8 @@ async function assertRepositoryChangeInvalidates(
     semaphore: new Semaphore(4),
     agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
+    agentRetries: 0,
+    retryScheduler: defaultAgentRetryScheduler,
     progress,
     signal: undefined,
     perf: new NoopPerfRecorder(),
