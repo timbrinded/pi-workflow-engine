@@ -18,8 +18,9 @@ import {
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
 import { compactResults } from "../src/concurrency.ts";
-import { captureDiff } from "../src/diff-capture.ts";
-import type { ReviewContext } from "../src/review/review-issues.ts";
+import { formatReviewDiffTarget, parseAllowedDiffCommand } from "../src/diff-capture.ts";
+import type { ReviewContext } from "../src/review/review-report.ts";
+import { captureReviewMaterial, type ReviewMaterialCaptureResult } from "../src/review/review-snapshot.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -95,7 +96,15 @@ export function inDiff(changed: Map<string, Set<number>>, file: string, line?: n
   return set.has(line) || set.has(line - 1) || set.has(line + 1);
 }
 
-export default async function run(api: WorkflowApi): Promise<unknown> {
+export interface CodeReviewDependencies {
+  readonly captureReviewMaterial?: (
+    target: Parameters<typeof captureReviewMaterial>[0],
+    cwd: string,
+    signal?: AbortSignal,
+  ) => Promise<ReviewMaterialCaptureResult>;
+}
+
+export default async function run(api: WorkflowApi, dependencies: CodeReviewDependencies = {}): Promise<unknown> {
   const { agent, parallel, phase, log, progress, args, cwd, signal } = api;
   const target = args.trim();
   let fileCount = 0;
@@ -116,6 +125,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       (target
         ? `Target / instructions (verbatim): "${target}". If it names a PR number, branch, ref range, or files, build the matching diff command (use 'gh pr diff <number>' for a PR). Otherwise use the default selection below.\n`
         : "No explicit target — select the diff to review using the default below.\n") +
+      "Canonical Git syntax: use `git diff -- <path> [<path>...]` for file paths; use one `A..B` or `A...B` range operand for two revisions. Never emit ambiguous two-operand forms such as `git diff A B`.\n" +
       "Default selection — run commands to decide, falling through until you get a NON-EMPTY diff:\n" +
       "1. Get the current branch: `git branch --show-current`.\n" +
       "2. Check for an OPEN GitHub PR for this branch: `gh pr list --head <branch> --state open --json number,title`. " +
@@ -136,45 +146,53 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
 
   fileCount = scope.files.length;
   progress({ type: "summary", key: "files", value: scope.files.join(", ") || "(none)" });
-  progress({ type: "summary", key: "diffCommand", value: scope.diffCommand });
+  const diffTarget = parseAllowedDiffCommand(scope.diffCommand);
+  if ("error" in diffTarget) {
+    throw new Error(`Code-review target rejected: ${diffTarget.error}`);
+  }
+  const diffCommand = formatReviewDiffTarget(diffTarget);
+  progress({ type: "summary", key: "diffCommand", value: diffCommand });
   progress({ type: "counter", key: "files", label: "files", value: fileCount });
 
   if (scope.files.length === 0) {
     return { summary: "No changes found to review.", findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) };
   }
 
-  const reviewContext: ReviewContext = {
-    workflowName: "code-review",
-    target,
-    diffCommand: scope.diffCommand,
-    files: scope.files,
-    summary: scope.summary,
-  };
-
   log(`${scope.files.length} changed files`);
 
   // Capture the diff once, deterministically, so findings can be bounded to changed lines in code.
-  let changed: Map<string, Set<number>> | null = null;
-  let diffText = "";
-  const capturedDiff = await captureDiff(scope.diffCommand, { cwd, signal, timeoutMs: 30_000, maxBufferBytes: 16 << 20 });
-  if (capturedDiff.ok) {
-    diffText = capturedDiff.stdout;
-    changed = changedLines(diffText);
-    progress({ type: "summary", key: "diffBytes", value: capturedDiff.bytes });
-  } else {
-    log(`diff capture failed (${capturedDiff.error ?? "unknown error"}) — reviewing without the line gate`);
+  const reviewMaterial = await (dependencies.captureReviewMaterial ?? captureReviewMaterial)(diffTarget, cwd, signal);
+  if (!reviewMaterial.ok) {
+    throw new Error(`Code-review diff capture failed: ${reviewMaterial.error}`);
   }
+  const diffText = reviewMaterial.diff;
+  const changed = changedLines(diffText);
+  progress({ type: "summary", key: "diffBytes", value: Buffer.byteLength(diffText) });
+  if (reviewMaterial.snapshot.status === "unavailable") {
+    log(`review snapshot unavailable (${reviewMaterial.snapshot.reason}) — patch previews will be unavailable`);
+  }
+
+  const reviewContext: ReviewContext = {
+    workflowName: "code-review",
+    target,
+    diffTarget,
+    files: scope.files,
+    summary: scope.summary,
+    ...(reviewMaterial.snapshot.status === "verified"
+      ? { snapshot: reviewMaterial.snapshot.identity }
+      : {}),
+  };
 
   const diffBlock = diffText
     ? `\n## Diff (review is bounded to these changed lines)\n\`\`\`diff\n${
         diffText.length > DIFF_EMBED_CAP
-          ? `${diffText.slice(0, DIFF_EMBED_CAP)}\n... (truncated — run \`${scope.diffCommand}\` for the full diff)`
+          ? `${diffText.slice(0, DIFF_EMBED_CAP)}\n... (truncated — run \`${diffCommand}\` for the full diff)`
           : diffText
       }\n\`\`\`\n`
     : "";
 
   const scopeBlock =
-    `## Diff command\n${scope.diffCommand}\n\n## Changed files\n${scope.files.map((file) => `- ${file}`).join("\n")}\n\n` +
+    `## Diff command\n${diffCommand}\n\n## Changed files\n${scope.files.map((file) => `- ${file}`).join("\n")}\n\n` +
     `## Summary\n${scope.summary}\n\n## Conventions\n${scope.conventions ?? "(none noted)"}\n` +
     diffBlock +
     (target ? `\n## User instructions (verbatim)\n${target}\n` : "");
@@ -204,14 +222,11 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       const raw = (found?.candidates ?? []).slice(0, PER_ANGLE);
       rawCandidateCount += raw.length;
       progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: raw.length });
-      const gate = changed;
-      const bounded = gate ? raw.filter((candidate) => inDiff(gate, primaryLocation(candidate).file, primaryLocation(candidate).line)) : raw;
+      const bounded = raw.filter((candidate) => inDiff(changed, primaryLocation(candidate).file, primaryLocation(candidate).line));
       const dropped = raw.length - bounded.length;
       if (dropped > 0) {
         droppedCandidateCount += dropped;
         progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: dropped });
-      }
-      if (gate && dropped > 0) {
         log(`find:${angle.label}: dropped ${dropped} out-of-diff candidate(s)`);
       }
       for (const candidate of bounded) {
@@ -295,7 +310,14 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final advisory report. " +
       "Return summary, findings, and nextSteps. For each finding: category must be bug or cleanup; severity is impact level (low/medium/high), not category; " +
       "confidence must be high for CONFIRMED and medium for PLAUSIBLE; copy locations and evidence arrays from the verified finding; impact is the concrete failure or maintenance scenario; recommendation is an advisory fix direction, not an edit. Structured output only.",
-    { phase: "Synthesize", label: "synthesize", thinkingLevel: "medium", schema: AdvisoryReportSchema },
+    {
+      phase: "Synthesize",
+      label: "synthesize",
+      tools: [],
+      thinkingLevel: "medium",
+      resume: "read-only",
+      schema: AdvisoryReportSchema,
+    },
   );
 
   if (!report) return { summary: "Synthesis produced no output.", findings: [], nextSteps: ["Re-run the workflow or inspect verifier evidence manually."], stats, reviewContext };

@@ -162,7 +162,14 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Return the shared advisory report shape. Categories should come from the verified candidates. " +
       "Severity is maintenance or future-correctness impact. Confidence is high for CONFIRMED, medium for PLAUSIBLE unless verifier confidence says otherwise. " +
       "Recommendations must be safe first refactor steps, not rewrites. Include concrete nextSteps for the host developer. Structured output only.",
-    { phase: "Synthesize", label: "synthesize", thinkingLevel: "medium", schema: AdvisoryReportSchema },
+    {
+      phase: "Synthesize",
+      label: "synthesize",
+      tools: [],
+      thinkingLevel: "medium",
+      resume: "read-only",
+      schema: AdvisoryReportSchema,
+    },
   );
 
   if (!report) return emptyReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun the workflow with a narrower target."], stats);

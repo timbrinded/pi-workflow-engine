@@ -1,13 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { Type } from "typebox";
-import { runAgent, type AgentProgress, type CreateAgentSession, type RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import {
+  runAgent as runAgentWithContext,
+  type AgentProgress,
+  type CreateAgentSession,
+  type RunContext,
+} from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import type { AgentResumeBaseContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
+
+const RESUME_BASE_CONTEXT: AgentResumeBaseContext = {
+  workflow: { kind: "verified", name: "agent-perf-test", sourceFingerprint: "source-a" },
+};
+
+function runAgent(
+  rc: RunContext,
+  prompt: string,
+  opts: Parameters<typeof runAgentWithContext>[2] = {},
+): Promise<unknown> {
+  return runAgentWithContext(rc, prompt, opts, RESUME_BASE_CONTEXT);
+}
 
 function createProgress(): AgentProgress & { readonly events: string[] } {
   const events: string[] = [];

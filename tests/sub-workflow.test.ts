@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { runWorkflowWithContext, type WorkflowContextOptions, type WorkflowProgress } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
+import {
+  runWorkflowWithContext,
+  type WorkflowContextOptions,
+  type WorkflowProgress,
+  type WorkflowRunContext,
+} from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
-import type { AgentProgress, CreateAgentSession, RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
-import type { WorkflowModule, WorkflowProgressEvent, WorkflowRef } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import type { AgentProgress, CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
-import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import { WorktreeRegistry, type WorktreeGitCommandOptions } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly phases: string[];
@@ -47,7 +52,7 @@ function createRc(
   semaphore: Semaphore,
   createSession?: CreateAgentSession,
   usage: WorkflowUsageSink = createWorkflowUsageRecorder(),
-): RunContext {
+): WorkflowRunContext {
   return {
     cwd: process.cwd(),
     hostModel: undefined,
@@ -64,11 +69,15 @@ function createRc(
   };
 }
 
-function workflowModule(name: string, run: WorkflowModule["default"]): WorkflowModule {
-  return { meta: { name, description: "" }, default: run };
+function workflowModule(name: string, run: WorkflowModule["default"]): LoadedWorkflow {
+  return {
+    meta: { name, description: "" },
+    default: run,
+    source: { kind: "fingerprint", fingerprint: `sub-workflow-test:${name}:${run.toString()}` },
+  };
 }
 
-function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>): WorkflowContextOptions {
+function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkflow>): WorkflowContextOptions {
   return { abortController: new AbortController(), submissionLimit: 16, resolveWorkflow, depth: 0, progressPrefix: "" };
 }
 
@@ -166,6 +175,76 @@ test("api.workflow() throws when no resolver is configured", async () => {
   const parent = workflowModule("parent", async (api) => api.workflow("child"));
 
   await assert.rejects(() => runWorkflowWithContext(rc, progress, parent, "", contextOpts(undefined)), /not enabled/);
+});
+
+test("engine execution metadata injects the reviewed baseline into isolated worktree creation", async () => {
+  const progress = createProgress();
+  const baselineRef = "0123456789012345678901234567890123456789";
+  const gitCalls: WorktreeGitCommandOptions[] = [];
+  const worktrees = new WorktreeRegistry(process.cwd(), {
+    runner: {
+      async runGit(options) {
+        gitCalls.push(options);
+        let stdout = "";
+        if (options.args.includes("--is-inside-work-tree")) stdout = "true\n";
+        else if (options.args[0] === "rev-parse") stdout = `${baselineRef}\n`;
+        return { ok: true, stdout, stderr: "" };
+      },
+    },
+    patchCapture: async () => ({ patch: "", changed: false }),
+  });
+  let sessionCwd: string | undefined;
+  const createSession: CreateAgentSession = async (options) => {
+    sessionCwd = options.cwd;
+    return await NOOP_SESSION(options);
+  };
+  const baseline = {
+    ref: baselineRef,
+    patch: "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-before\n+reviewed\n",
+  };
+  const mod: LoadedWorkflow = {
+    ...workflowModule("baseline-injection", async (api) => await api.agent("fix", { isolation: "worktree" })),
+    isolatedWorktreeBaseline: baseline,
+  };
+  const rc: WorkflowRunContext = {
+    ...createRc(progress, new Semaphore(1), createSession),
+    worktrees,
+  };
+
+  const result = await runWorkflowWithContext(rc, progress, mod, "", contextOpts());
+
+  assert.deepEqual(result, { result: "ok", patch: "", changed: false });
+  assert.match(sessionCwd ?? "", /pi-workflow-/);
+  const add = gitCalls.find((call) => call.args[0] === "worktree" && call.args[1] === "add");
+  assert.equal(add?.args.at(-1), baseline.ref);
+  const apply = gitCalls.find((call) => call.args[0] === "apply");
+  assert.equal(apply?.stdin, baseline.patch);
+});
+
+test("runWorkflowWithContext does not enter a workflow aborted after source capture starts", async () => {
+  const progress = createProgress();
+  const controller = new AbortController();
+  const rc: WorkflowRunContext = { ...createRc(progress, new Semaphore(1)), signal: controller.signal };
+  let workflowExecuted = false;
+  const mod: LoadedWorkflow = {
+    meta: { name: "cancel-before-default", description: "" },
+    source: { kind: "fingerprint", fingerprint: "stable-source" },
+    default: async () => {
+      workflowExecuted = true;
+      return "unexpected";
+    },
+  };
+  queueMicrotask(() => controller.abort(new Error("cancel before workflow default")));
+
+  await assert.rejects(
+    () =>
+      runWorkflowWithContext(rc, progress, mod, "", {
+        abortController: controller,
+        submissionLimit: 1,
+      }),
+    /cancel before workflow default/,
+  );
+  assert.equal(workflowExecuted, false);
 });
 
 test("sub-workflow phases nest under '<name> ▸ <title>'", async () => {

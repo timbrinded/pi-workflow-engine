@@ -1,6 +1,6 @@
 {
   "name": "pi-workflow-engine",
-  "version": "0.10.3",
+  "version": "0.11.0",
   "type": "module",
   "description": "Zero-dependency Dynamax workflows for pi: live parallel subagents, typed handoffs, synthesized results.",
   "keywords": [
@@ -35,7 +35,7 @@
     "image": "https://raw.githubusercontent.com/timbrinded/pi-workflow-engine/master/assets/preview.png"
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "bun test --timeout=30000",
     "test:changedlines": "bun test tests/changedlines.test.ts",
     "test:concurrency": "bun test tests/concurrency.test.ts",
@@ -46,17 +46,17 @@
     "bench:discovery": "bun run scripts/bench/discovery.ts",
     "bench:startup": "bun run scripts/bench/startup.ts",
     "bench:ui": "bun run scripts/bench/ui.ts",
-    "prepublishOnly": "tsgo --noEmit && bun run test"
+    "prepublishOnly": "tsc --noEmit && bun run test"
   },
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": "0.79.10",
-    "@earendil-works/pi-ai": "0.79.10",
-    "@earendil-works/pi-coding-agent": "0.79.10",
-    "@earendil-works/pi-tui": "0.79.10",
-    "typebox": "1.3.0"
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
-    "@typescript/native-preview": "^7.0.0-dev.20260623.1"
+    "typescript": "^7.0.2"
   }
 }

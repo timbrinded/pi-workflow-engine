@@ -10,14 +10,19 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, KeyId, TUI } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
-import { DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT, resolveDynamaxShortcuts } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import {
+  DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
+  resolveDynamaxShortcuts,
+} from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
+import {
+  ADAPTIVE_WORKFLOW_GUIDANCE,
   appendDynamaxContextReminder,
   appendDynamaxSystemReminder,
   clearDynamax,
   consumeDynamaxOneShot,
   createDynamaxRuntime,
   createDynamaxState,
+  DYNAMAX_REMINDER,
   DYNAMAX_STATUS_KEY,
   DYNAMAX_WIDGET_KEY,
   type DynamaxRuntimeStore,
@@ -105,7 +110,7 @@ function captureDynamax(
     events: { on: () => {}, emit: async () => {} },
   } as unknown as ExtensionAPI;
 
-  registerDynamax(fakePi, { inspector: shortcut }, { openInspector });
+  registerDynamax(fakePi, { inspector: shortcut, results: null }, { openInspector });
   return { commands, shortcuts, handlers };
 }
 
@@ -193,6 +198,15 @@ test("dynamax one-shot state is consumed by system reminder", () => {
   assert.equal(appendDynamaxSystemReminder("base", state), "base");
 });
 
+test("dynamax reminder teaches optional adaptive multi-pass workflows", () => {
+  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /simple single-pass fan-out/);
+  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /structured gap-analysis agent/);
+  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /ordinary TypeScript conditionals or bounded loops/);
+  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /only when gaps exist/);
+  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /Do not generate a second pass when the first pass is sufficient/);
+  assert.ok(DYNAMAX_REMINDER.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
+});
+
 test("dynamax sticky mode remains active until cleared", () => {
   const state = createDynamaxState();
   setDynamaxSticky(state, true);
@@ -229,10 +243,32 @@ test("appendDynamaxContextReminder appends a hidden custom message only when sti
   assert.equal(isRecord(reminder) ? reminder.display : undefined, false);
 });
 
-test("resolveDynamaxShortcuts reads configurable inspector shortcut", () => {
+test("resolveDynamaxShortcuts reads configurable workflow UI shortcuts", () => {
   const shortcuts = resolveDynamaxShortcuts(resolve("tests/fixtures/dynamax-shortcuts.json"));
 
-  assert.deepEqual(shortcuts, { inspector: "ctrl+shift+x" });
+  assert.deepEqual(shortcuts, { inspector: "ctrl+shift+x", results: "ctrl+shift+y" });
+});
+
+test("resolveDynamaxShortcuts rejects invalid keys and prevents shortcut collisions", () => {
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (message?: unknown) => warnings.push(String(message));
+  try {
+    assert.deepEqual(resolveDynamaxShortcuts(resolve("tests/fixtures/dynamax-shortcuts-invalid.json")), {
+      inspector: DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
+      results: null,
+    });
+    assert.deepEqual(resolveDynamaxShortcuts(resolve("tests/fixtures/dynamax-shortcuts-collision.json")), {
+      inspector: "ctrl+shift+x",
+      results: null,
+    });
+  } finally {
+    console.warn = warn;
+  }
+
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0] ?? "", /Invalid inspector shortcut/);
+  assert.match(warnings[1] ?? "", /disabling the results shortcut/);
 });
 
 test("dynamax runtime store isolates state by session", () => {
@@ -367,12 +403,12 @@ test("updateDynamaxSurfaces clears inactive UI", () => {
   const { ctx, ui } = createFakeContext("session-a");
 
   setDynamaxSticky(runtime.state, true);
-  updateDynamaxSurfaces(ctx, runtime, { inspector: "ctrl+shift+x" });
+  updateDynamaxSurfaces(ctx, runtime, { inspector: "ctrl+shift+x", results: null });
   assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /sticky on/);
   assert.equal(ui.widgets.get(DYNAMAX_WIDGET_KEY), undefined);
 
   clearDynamax(runtime.state);
-  updateDynamaxSurfaces(ctx, runtime, { inspector: "ctrl+shift+x" });
+  updateDynamaxSurfaces(ctx, runtime, { inspector: "ctrl+shift+x", results: null });
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), undefined);
   assert.equal(ui.widgets.get(DYNAMAX_WIDGET_KEY), undefined);
 });

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "bun:test";
 import { createSyntheticSourceInfo, type Skill } from "@earendil-works/pi-coding-agent";
 import {
   appendSkillReminder,
+  captureAgentSkillIdentities,
   extractSkillSelectorsFromText,
   normalizeSkillSelector,
   resolveAgentSkillRequest,
@@ -75,4 +79,26 @@ test("appendSkillReminder points the subagent at selected SKILL.md files only", 
   assert.match(prompt, /Workflow subagent skills enabled: diagnose/);
   assert.match(prompt, /\/skills\/diagnose\/SKILL.md/);
   assert.match(prompt, /No other skills are available/);
+});
+
+test("skill identity uses the stable workspace namespace", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "pi-workflow-skill-identity-"));
+  const skillDir = join(workspaceRoot, "skills", "diagnose");
+  const filePath = join(skillDir, "SKILL.md");
+  try {
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(filePath, "# Diagnose\n", "utf8");
+    const selected = { ...skill("diagnose"), filePath, baseDir: skillDir };
+
+    const capture = await captureAgentSkillIdentities([selected], {
+      sessionCwd: join(workspaceRoot, ".worktrees", "attempt"),
+      workspaceRoot,
+    });
+
+    assert.equal(capture.kind, "verified");
+    if (capture.kind !== "verified") assert.fail("expected skill identity capture");
+    assert.equal(capture.skills[0]?.path, "workspace:skills/diagnose");
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
 });

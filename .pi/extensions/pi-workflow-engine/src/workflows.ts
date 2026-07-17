@@ -1,8 +1,9 @@
-import type { WorkflowModule } from "./types.ts";
+import { fileURLToPath } from "node:url";
 import * as codeReview from "../workflows/code-review.ts";
 import * as refactorScout from "../workflows/refactor-scout.ts";
 import * as diagnose from "../workflows/diagnose.ts";
 import * as perfReview from "../workflows/perf-review.ts";
+import type { WorkflowModule } from "./types.ts";
 
 /**
  * Workflows statically imported by the extension. These are loaded through pi's own
@@ -18,6 +19,30 @@ import * as perfReview from "../workflows/perf-review.ts";
  * dynamically imported built-ins. Startup optimizations should happen at the extension
  * entrypoint/discovery boundary first.
  */
-export const BUILTIN_WORKFLOWS: WorkflowModule[] = [codeReview, refactorScout, diagnose, perfReview];
-export const BUILTIN_WORKFLOW_FILES = new Set(["code-review.ts", "refactor-scout.ts", "diagnose.ts", "perf-review.ts"]);
+export const BUILTIN_SOURCE_ROOT = fileURLToPath(new URL("..", import.meta.url));
+
+export interface BuiltinWorkflowDefinition {
+  readonly module: WorkflowModule;
+  readonly filename: string;
+  readonly path: string;
+  readonly root: string;
+}
+
+export const BUILTIN_WORKFLOW_DEFINITIONS: readonly BuiltinWorkflowDefinition[] = [
+  defineBuiltinWorkflow(codeReview, "code-review.ts"),
+  defineBuiltinWorkflow(refactorScout, "refactor-scout.ts"),
+  defineBuiltinWorkflow(diagnose, "diagnose.ts"),
+  defineBuiltinWorkflow(perfReview, "perf-review.ts"),
+];
+export const BUILTIN_WORKFLOWS = BUILTIN_WORKFLOW_DEFINITIONS.map(({ module }) => module);
+export const BUILTIN_WORKFLOW_FILES = new Set(BUILTIN_WORKFLOW_DEFINITIONS.map(({ filename }) => filename));
 export const BUILTIN_WORKFLOW_NAMES = BUILTIN_WORKFLOWS.map((mod) => mod.meta.name);
+
+function defineBuiltinWorkflow(module: WorkflowModule, filename: string): BuiltinWorkflowDefinition {
+  return {
+    module: { meta: module.meta, default: module.default },
+    filename,
+    path: fileURLToPath(new URL(`../workflows/${filename}`, import.meta.url)),
+    root: BUILTIN_SOURCE_ROOT,
+  };
+}

@@ -7,14 +7,6 @@ export interface ReviewIssueSelection {
   readonly issueIds: readonly string[];
 }
 
-export interface ReviewContext {
-  readonly workflowName: string;
-  readonly target: string;
-  readonly diffCommand: string;
-  readonly files: readonly string[];
-  readonly summary?: string;
-}
-
 export interface ReviewIssue {
   readonly id: string;
   readonly index: number;
@@ -25,9 +17,22 @@ export interface ReviewIssue {
   readonly finding: AdvisoryFinding;
 }
 
-export interface ReviewReportWithContext extends AdvisoryReport {
-  readonly stats?: Record<string, string | number>;
-  readonly reviewContext?: ReviewContext;
+/** Stable prompt-facing representation shared by review follow-up actions. */
+export interface SerializedReviewIssue {
+  readonly id: string;
+  readonly summary: string;
+  readonly category: string;
+  readonly severity: string;
+  readonly confidence: string;
+  readonly location: {
+    readonly file?: string;
+    readonly line?: number;
+    readonly symbol?: string;
+    readonly display: string;
+  };
+  readonly impact: string;
+  readonly evidence: readonly string[];
+  readonly recommendation: string;
 }
 
 export function toReviewIssues(name: string, report: Pick<AdvisoryReport, "findings">): ReviewIssue[] {
@@ -52,7 +57,28 @@ export function formatIssueLocation(issue: ReviewIssue): string {
   return `${issue.file}${line}${symbol}`;
 }
 
-export function isCommentableIssue(issue: ReviewIssue): boolean {
+export function serializeReviewIssue(issue: ReviewIssue): SerializedReviewIssue {
+  return {
+    id: issue.id,
+    summary: issue.finding.summary,
+    category: issue.finding.category,
+    severity: issue.finding.severity,
+    confidence: issue.finding.confidence,
+    location: {
+      file: issue.file,
+      line: issue.line,
+      symbol: issue.symbol,
+      display: formatIssueLocation(issue),
+    },
+    impact: issue.finding.impact,
+    evidence: issue.finding.evidence,
+    recommendation: issue.finding.recommendation,
+  };
+}
+
+export function isCommentableIssue(
+  issue: ReviewIssue,
+): issue is ReviewIssue & { readonly file: string; readonly line: number } {
   return typeof issue.file === "string" && issue.file.trim().length > 0 && typeof issue.line === "number" && Number.isFinite(issue.line);
 }
 

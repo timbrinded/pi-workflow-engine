@@ -17,8 +17,10 @@ A **pi extension** with canonical entrypoint `.pi/extensions/pi-workflow-engine/
 
 ## What this extension does
 
-`.pi/extensions/pi-workflow-engine/index.ts` registers three surfaces:
+`.pi/extensions/pi-workflow-engine/index.ts` registers five surfaces:
 - `/workflow <name> [args]` — slash command to run a saved workflow.
+- `/workflow:inspector [last]` — opens the live or most recently completed workflow inspector.
+- `/workflow:results` — reopens the most recent code-review findings without rerunning the workflow.
 - `/workflow:dynamax on|off|status` plus the literal `dynamax` token — opt-in signals for host-agent workflow orchestration.
 - a `workflow` tool — lets the host agent run a saved workflow by `name` or a one-off inline workflow by `script` mid-conversation.
 
@@ -32,7 +34,7 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 
 ## Architecture / key files
 
-- `.pi/extensions/pi-workflow-engine/index.ts` — canonical pi extension entry; registers `/workflow`, the `workflow` tool, and result rendering.
+- `.pi/extensions/pi-workflow-engine/index.ts` — canonical pi extension entry; registers workflow commands and shortcuts, the `workflow` tool, and result rendering.
 - `.pi/extensions/pi-workflow-engine/src/agent-runner.ts` — **the bridge**. Each `agent()` is an in-process `createAgentSession(... SessionManager.inMemory())`. Structured output = one **terminating tool** whose `parameters` IS the schema; pi validates the call, `execute` captures the args in a closure, `terminate: true` ends the turn. No event parsing.
 - `.pi/extensions/pi-workflow-engine/src/concurrency.ts` — `Semaphore` (the single global concurrency cap, acquired inside every `agent()`), `parallel`, `pipeline`.
 - `.pi/extensions/pi-workflow-engine/src/engine.ts` — `runWorkflow()` binds the primitives to one run (shared semaphore + progress tracker). `DEFAULT_CONCURRENCY` lives here.
@@ -44,7 +46,7 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 
 ## Critical non-obvious facts (read before editing)
 
-- **Core deps belong in `peerDependencies: "*"`, not `dependencies`/`devDependencies`.** pi bundles `@earendil-works/{pi-ai,pi-agent-core,pi-coding-agent,pi-tui}` and `typebox`. Local `node_modules` copies exist only so TypeScript Native Preview (`tsgo`) has types.
+- **Core deps belong in `peerDependencies: "*"`, not `dependencies`/`devDependencies`.** pi bundles `@earendil-works/{pi-ai,pi-agent-core,pi-coding-agent,pi-tui}` and `typebox`. Local `node_modules` copies exist only so TypeScript 7 (`tsc`) has types.
 - **At runtime, pi resolves those bare imports to its bundled copies via jiti `virtualModules`** (bun-binary mode: `virtualModules` + `tryNative:false`), intercepting before `node_modules` — so there is no dual-package hazard regardless of what's installed locally.
 - **`jiti` is NOT a virtual module.** A dynamically `import()`-ed drop-in workflow may resolve a *different* `typebox` than pi's bundled one, breaking schema validation. **Therefore guaranteed workflows must be statically imported and registered in `.pi/extensions/pi-workflow-engine/src/workflows.ts`** (they ride pi's jiti and share its typebox). Dynamic discovery is best-effort only.
 - **Inline workflow scripts must never use `import`/dynamic `import()`.** They compile in-process via `AsyncFunction` and receive the extension's injected Type value so `agent({ schema })` preserves pi's bundled TypeBox identity. The `export const meta` block must stay a pure literal so metadata can be validated before untrusted code runs.
@@ -56,8 +58,8 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 ## Local development
 
 ```bash
-bun install            # installs peers + devDeps (tsgo, @types/node) for typecheck
-bun run typecheck      # tsgo --noEmit — must be clean before commit
+bun install            # installs peers + devDeps (TypeScript 7, @types/node) for typecheck
+bun run typecheck      # tsc --noEmit — must be clean before commit
 bun run test           # no-LLM test suite via Bun's built-in test runner
 bun run test:smoke     # optional focused discovery smoke
 pi -e .                                      # load this package manifest/entrypoint ephemerally

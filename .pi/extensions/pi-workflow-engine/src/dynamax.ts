@@ -23,6 +23,15 @@ export const DYNAMAX_TOKEN_PATTERN = /(^|[^A-Za-z0-9_])dynamax([^A-Za-z0-9_]|$)/
 export const DYNAMAX_STATUS_KEY = "dynamax";
 export const DYNAMAX_WIDGET_KEY = "workflow-dynamax";
 
+export const ADAPTIVE_WORKFLOW_GUIDANCE = `
+Adaptive multi-pass workflows are optional. Use a simple single-pass fan-out when it is sufficient. When the first pass may expose gaps, conflicts, weak claims, or missing evidence:
+- run the bounded first-pass agents;
+- give their surviving results to a structured gap-analysis agent so the LLM decides what needs follow-up;
+- put a hard maxItems bound on LLM-authored task arrays and defensively slice them before fan-out;
+- use ordinary TypeScript conditionals or bounded loops to launch follow-up agents only when gaps exist;
+- synthesize the first-pass and follow-up results together.
+Do not generate a second pass when the first pass is sufficient, and do not invent iteration, quorum, graph, reduction, or retry primitives for this pattern.`;
+
 export const DYNAMAX_REMINDER = `
 ## dynamax workflow opt-in
 
@@ -34,6 +43,8 @@ Inline workflow rules:
 - Set thinkingLevel explicitly on each agent() call so fan-out remains bounded.
 - Subagents receive no skills by default. Add \`skills: ["skill-name"]\` per agent only when that stage should load that skill; grant the smallest useful set.
 - Provide exactly one of workflow.name or workflow.script.
+
+${ADAPTIVE_WORKFLOW_GUIDANCE}
 `;
 
 const DYNAMAX_CONTEXT_CUSTOM_TYPE = "workflow-dynamax-reminder";
@@ -145,7 +156,7 @@ export function registerDynamax(
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
-    clearDynamaxSurfaces(ctx, getDynamaxRuntime(runtimes, ctx));
+    clearDynamaxSurfaces(ctx);
   });
 
   pi.on("input", (event, ctx) => {
@@ -266,7 +277,7 @@ export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui"
   ctx.ui.setWidget(DYNAMAX_WIDGET_KEY, undefined);
   ctx.ui.setStatus(DYNAMAX_WIDGET_KEY, undefined);
   if (!isDynamaxActive(runtime.state) && !runtime.runningWorkflow) {
-    clearDynamaxSurfaces(ctx, runtime);
+    clearDynamaxSurfaces(ctx);
     return;
   }
 
@@ -274,7 +285,7 @@ export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui"
   ctx.ui.setStatus(DYNAMAX_STATUS_KEY, status);
 }
 
-export function clearDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">, runtime: DynamaxRuntime): void {
+export function clearDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
   if (!ctx.hasUI) return;
   ctx.ui.setWidget(DYNAMAX_WIDGET_KEY, undefined);
   ctx.ui.setStatus(DYNAMAX_STATUS_KEY, undefined);

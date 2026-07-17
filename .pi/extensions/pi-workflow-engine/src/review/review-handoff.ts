@@ -1,47 +1,13 @@
-import { formatIssueLocation, type ReviewContext, type ReviewIssue } from "./review-issues.ts";
+import { serializeReviewIssue, type ReviewIssue } from "./review-issues.ts";
+import type { ReviewContext } from "./review-report.ts";
+import { serializeReviewContext } from "./review-report.ts";
 
-export interface ReviewHandoffPayload {
-  readonly context: ReviewContext | undefined;
-  readonly issues: readonly ReviewHandoffIssue[];
-}
-
-export interface ReviewHandoffIssue {
-  readonly id: string;
-  readonly summary: string;
-  readonly category: string;
-  readonly severity: string;
-  readonly confidence: string;
-  readonly location: {
-    readonly file?: string;
-    readonly line?: number;
-    readonly symbol?: string;
-    readonly display: string;
-  };
-  readonly impact: string;
-  readonly evidence: readonly string[];
-  readonly recommendation: string;
-}
-
-export function buildFixHandoffPrompt(issues: readonly ReviewIssue[], context: ReviewContext | undefined): string {
-  return `Use the workflow-code-review-actions skill if available.
-
-Mode: fix selected code-review findings.
-
-Selected findings JSON:
-\`\`\`json
-${JSON.stringify(toHandoffPayload(issues, context))}
-\`\`\`
-
-Instructions:
-- Inspect the selected issue JSON before editing.
-- Make minimal edits that address only the selected findings.
-- Preserve unrelated user changes and avoid broad refactors.
-- Run focused validation if an appropriate local check is available.
-- Do not post GitHub PR comments or any upstream review comments.
-- Summarize changed files and validation results when done.`;
-}
-
-export function buildCommentHandoffPrompt(issues: readonly ReviewIssue[], context: ReviewContext | undefined, reason: string): string {
+export function buildCommentHandoffPrompt(
+  issues: readonly ReviewIssue[],
+  context: ReviewContext | undefined,
+  verifiedHead: string,
+  reason: string,
+): string {
   return `Use the workflow-code-review-actions skill if available.
 
 Mode: post inline GitHub PR comments for selected code-review findings.
@@ -56,6 +22,7 @@ ${JSON.stringify(toHandoffPayload(issues, context))}
 Instructions:
 - Do not edit files or make code changes.
 - Prefer installed GitHub MCP/tools if present; otherwise use the GitHub CLI (gh).
+- Before posting, resolve the current PR head and require it to equal the verified reviewed head \`${verifiedHead}\`; stop if it differs.
 - With gh, resolve the PR using \`gh pr view\` and \`gh repo view\`, then call \`gh api repos/{owner}/{repo}/pulls/{number}/comments\` with \`commit_id\`, \`path\`, \`line\`, and \`side=RIGHT\`.
 - Do not post duplicate comments.
 - Do not post line-less findings as inline comments.
@@ -63,28 +30,9 @@ Instructions:
 - Summarize posted, skipped, and failed comments when done.`;
 }
 
-function toHandoffPayload(issues: readonly ReviewIssue[], context: ReviewContext | undefined): ReviewHandoffPayload {
+function toHandoffPayload(issues: readonly ReviewIssue[], context: ReviewContext | undefined) {
   return {
-    context,
-    issues: issues.map(toHandoffIssue),
-  };
-}
-
-function toHandoffIssue(issue: ReviewIssue): ReviewHandoffIssue {
-  return {
-    id: issue.id,
-    summary: issue.finding.summary,
-    category: issue.finding.category,
-    severity: issue.finding.severity,
-    confidence: issue.finding.confidence,
-    location: {
-      file: issue.file,
-      line: issue.line,
-      symbol: issue.symbol,
-      display: formatIssueLocation(issue),
-    },
-    impact: issue.finding.impact,
-    evidence: issue.finding.evidence,
-    recommendation: issue.finding.recommendation,
+    context: serializeReviewContext(context),
+    issues: issues.map(serializeReviewIssue),
   };
 }

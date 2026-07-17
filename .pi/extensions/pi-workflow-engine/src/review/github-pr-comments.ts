@@ -1,4 +1,6 @@
-import { isCommentableIssue, type ReviewContext, type ReviewIssue } from "./review-issues.ts";
+import { throwIfAborted } from "../cancellation.ts";
+import { isCommentableIssue, type ReviewIssue } from "./review-issues.ts";
+import type { ReviewContext } from "./review-report.ts";
 
 export interface ExecResultLike {
   readonly stdout: string;
@@ -34,12 +36,13 @@ export async function resolveGitHubPrContext(
   exec: ExecLike,
   cwd: string,
   reviewContext: ReviewContext | undefined,
+  signal?: AbortSignal,
 ): Promise<ResolveGitHubPrContextResult> {
-  const parsedNumber = parsePrNumber(reviewContext?.diffCommand);
+  const parsedNumber = reviewContext?.diffTarget.kind === "pull-request" ? reviewContext.diffTarget.number : undefined;
   const prArgs = parsedNumber
     ? ["pr", "view", String(parsedNumber), "--json", PR_VIEW_JSON_FIELDS]
     : ["pr", "view", "--json", PR_VIEW_JSON_FIELDS];
-  const prView = await runJson(exec, cwd, prArgs);
+  const prView = await runJson(exec, cwd, prArgs, signal);
   if (!prView.ok) return { ok: false, reason: prView.reason };
 
   const number = numberField(prView.value, "number") ?? parsedNumber;
@@ -52,7 +55,7 @@ export async function resolveGitHubPrContext(
   let owner = baseFromUrl?.owner;
   let repo = baseFromUrl?.repo;
   if (!owner || !repo) {
-    const repoView = await runJson(exec, cwd, ["repo", "view", "--json", "nameWithOwner"]);
+    const repoView = await runJson(exec, cwd, ["repo", "view", "--json", "nameWithOwner"], signal);
     if (!repoView.ok) return { ok: false, reason: repoView.reason };
     const nameWithOwner = stringField(repoView.value, "nameWithOwner");
     const parsed = parseNameWithOwner(nameWithOwner);
@@ -84,6 +87,7 @@ export async function postInlineComment(
   cwd: string,
   prContext: GitHubPrContext,
   issue: ReviewIssue,
+  signal?: AbortSignal,
 ): Promise<InlineCommentStatus> {
   if (!isCommentableIssue(issue)) return { issueId: issue.id, status: "skipped", reason: "Finding has no commentable file/line." };
 
@@ -100,7 +104,7 @@ export async function postInlineComment(
     `line=${issue.line}`,
     "-f",
     "side=RIGHT",
-  ]);
+  ], signal);
   if (!result.ok) return { issueId: issue.id, status: "failed", reason: result.reason };
   return { issueId: issue.id, status: "posted", url: parsePostedCommentUrl(result.stdout) };
 }
@@ -110,24 +114,49 @@ export async function postInlineComments(
   cwd: string,
   prContext: GitHubPrContext,
   issues: readonly ReviewIssue[],
+  signal?: AbortSignal,
 ): Promise<InlineCommentStatus[]> {
+  throwIfAborted(signal);
+  const existing = await loadExistingInlineCommentKeys(exec, cwd, prContext, signal);
+  if (!existing.ok) {
+    return issues.map((issue) => ({ issueId: issue.id, status: "failed", reason: existing.reason }));
+  }
+
   const statuses: InlineCommentStatus[] = [];
   for (const issue of issues) {
-    statuses.push(await postInlineComment(exec, cwd, prContext, issue));
+    throwIfAborted(signal);
+    const key = inlineCommentKey(issue, prContext.headSha);
+    if (key && existing.keys.has(key)) {
+      statuses.push({ issueId: issue.id, status: "skipped", reason: "An identical inline comment already exists on this PR head." });
+      continue;
+    }
+    const status = await postInlineComment(exec, cwd, prContext, issue, signal);
+    statuses.push(status);
+    if (key && status.status === "posted") existing.keys.add(key);
   }
   return statuses;
 }
 
-function parsePrNumber(diffCommand: string | undefined): number | undefined {
-  if (!diffCommand) return undefined;
-  const match = /(?:^|\s)gh\s+pr\s+diff\s+(\d+)(?:\s|$)/.exec(diffCommand);
-  if (!match) return undefined;
-  const parsed = Number(match[1]);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+async function loadExistingInlineCommentKeys(
+  exec: ExecLike,
+  cwd: string,
+  prContext: GitHubPrContext,
+  signal: AbortSignal | undefined,
+): Promise<{ readonly ok: true; readonly keys: Set<string> } | { readonly ok: false; readonly reason: string }> {
+  const endpoint = `repos/${prContext.owner}/${prContext.repo}/pulls/${prContext.number}/comments`;
+  const result = await runJson(exec, cwd, ["api", endpoint, "--paginate", "--slurp"], signal);
+  if (!result.ok) return { ok: false, reason: `Could not inspect existing PR comments: ${result.reason}` };
+  const keys = parseExistingInlineCommentKeys(result.value);
+  return keys ? { ok: true, keys } : { ok: false, reason: "Could not inspect existing PR comments: unexpected GitHub response." };
 }
 
-async function runJson(exec: ExecLike, cwd: string, args: string[]): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly reason: string }> {
-  const result = await runCommand(exec, cwd, args);
+async function runJson(
+  exec: ExecLike,
+  cwd: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly reason: string }> {
+  const result = await runCommand(exec, cwd, args, signal);
   if (!result.ok) return result;
   try {
     return { ok: true, value: JSON.parse(result.stdout) };
@@ -136,14 +165,44 @@ async function runJson(exec: ExecLike, cwd: string, args: string[]): Promise<{ r
   }
 }
 
-async function runCommand(exec: ExecLike, cwd: string, args: string[]): Promise<{ readonly ok: true; readonly stdout: string } | { readonly ok: false; readonly reason: string }> {
+async function runCommand(
+  exec: ExecLike,
+  cwd: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<{ readonly ok: true; readonly stdout: string } | { readonly ok: false; readonly reason: string }> {
+  throwIfAborted(signal);
   try {
-    const result = await exec("gh", args, { cwd, timeout: 30_000 });
+    const result = await exec("gh", args, { cwd, timeout: 30_000, signal });
+    throwIfAborted(signal);
     if (result.code !== 0) return { ok: false, reason: result.stderr?.trim() || `gh exited with code ${result.code}` };
     return { ok: true, stdout: result.stdout };
   } catch (error) {
+    throwIfAborted(signal);
     return { ok: false, reason: error instanceof Error ? error.message : "gh command failed." };
   }
+}
+
+function parseExistingInlineCommentKeys(value: unknown): Set<string> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const comments = value.every(Array.isArray) ? value.flat() : value;
+  const keys = new Set<string>();
+  for (const comment of comments) {
+    const body = stringField(comment, "body");
+    const path = stringField(comment, "path");
+    const line = numberField(comment, "line");
+    const headSha = stringField(comment, "commit_id");
+    if (body && path && line !== undefined && headSha) keys.add(commentKey(body, path, line, headSha));
+  }
+  return keys;
+}
+
+function inlineCommentKey(issue: ReviewIssue, headSha: string): string | undefined {
+  return isCommentableIssue(issue) ? commentKey(buildInlineCommentBody(issue), issue.file, issue.line, headSha) : undefined;
+}
+
+function commentKey(body: string, path: string, line: number, headSha: string): string {
+  return JSON.stringify([body, path, line, headSha]);
 }
 
 function numberField(value: unknown, key: string): number | undefined {

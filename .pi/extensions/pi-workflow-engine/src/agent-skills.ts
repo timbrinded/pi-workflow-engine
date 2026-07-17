@@ -1,6 +1,9 @@
 import { DefaultResourceLoader, getAgentDir, type ResourceDiagnostic, type Skill } from "@earendil-works/pi-coding-agent";
+import { dirname, resolve } from "node:path";
+import { logicalWorkspacePath, type ReplayWorkspaceRoots } from "./replay-path-identity.ts";
+import { captureTreeFingerprint } from "./tree-fingerprint.ts";
+import type { ResolvedSkillIdentity } from "./resume-context.ts";
 
-export type AgentSkillOption = readonly string[] | undefined;
 export type AgentSkillRequestSource = "explicit" | "prompt";
 
 export interface AgentSkillRequest {
@@ -20,6 +23,18 @@ export interface AgentSkillResourceSetup {
   readonly unmatchedSelectors: readonly string[];
   readonly diagnostics: readonly ResourceDiagnostic[];
 }
+
+export type AgentSkillIdentityCapture =
+  | { readonly kind: "verified"; readonly skills: readonly ResolvedSkillIdentity[] }
+  | { readonly kind: "unverifiable"; readonly reason: string };
+
+export interface AgentSkillIdentityOptions extends ReplayWorkspaceRoots {
+  readonly signal?: AbortSignal;
+}
+
+const SKILL_FINGERPRINT_EXCLUSIONS = new Set([".git", "node_modules"]);
+const SKILL_FINGERPRINT_MAX_BYTES = 8 << 20;
+const SKILL_FINGERPRINT_MAX_FILES = 1024;
 
 const SLASH_SKILL_PATTERN = /\/skill:([a-z0-9][a-z0-9-]{0,63})/gi;
 const SKILLS_FIELD_PATTERN = /(?<!\/)\bskills?\s*[:=]\s*([^\n.;]+)/gi;
@@ -129,6 +144,33 @@ export function appendSkillReminder(prompt: string, skills: readonly Pick<Skill,
   if (skills.length === 0) return prompt;
   const skillList = skills.map((skill) => `${skill.name} (${skill.filePath})`).join(", ");
   return `${prompt}\n\nWorkflow subagent skills enabled: ${skillList}. If you rely on an enabled skill, first read its SKILL.md with the read tool and follow its instructions. No other skills are available in this subagent.`;
+}
+
+/** Capture the exact selected skill directories before journal lookup. */
+export async function captureAgentSkillIdentities(
+  skills: readonly Skill[],
+  options: AgentSkillIdentityOptions,
+): Promise<AgentSkillIdentityCapture> {
+  const identities: ResolvedSkillIdentity[] = [];
+  for (const skill of skills) {
+    const root = resolve(dirname(skill.filePath));
+    const capture = await captureTreeFingerprint({
+      root,
+      excludedRelativePaths: SKILL_FINGERPRINT_EXCLUSIONS,
+      maxBytes: SKILL_FINGERPRINT_MAX_BYTES,
+      maxFiles: SKILL_FINGERPRINT_MAX_FILES,
+      signal: options.signal,
+    });
+    if (capture.kind === "unverifiable") {
+      return { kind: "unverifiable", reason: `skill ${skill.name} could not be fingerprinted: ${capture.reason}` };
+    }
+    identities.push({
+      name: skill.name,
+      path: logicalWorkspacePath(root, options) ?? `external:${skill.name}`,
+      fingerprint: capture.fingerprint,
+    });
+  }
+  return { kind: "verified", skills: identities };
 }
 
 function collectPatternMatches(text: string, pattern: RegExp, selectors: string[], captureIndex: number): void {

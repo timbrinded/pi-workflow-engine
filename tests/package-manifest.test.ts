@@ -8,6 +8,13 @@ import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 
 const repoDir = fileURLToPath(new URL("..", import.meta.url));
 const skillPath = "skills/workflow-code-review-actions/SKILL.md";
+const bundledRuntimePeers = [
+  "@earendil-works/pi-agent-core",
+  "@earendil-works/pi-ai",
+  "@earendil-works/pi-coding-agent",
+  "@earendil-works/pi-tui",
+  "typebox",
+] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -40,6 +47,17 @@ test("package manifest includes code-review actions skill", async () => {
   assert.match(skill, /GitHub PR inline comments/);
   assert.match(skill, /gh/);
   assert.match(skill, /GitHub MCP\/tools/);
+});
+
+test("package manifest leaves bundled runtime packages host-provided", async () => {
+  const parsed: unknown = JSON.parse(await readFile(join(repoDir, "package.json"), "utf8"));
+  assert.ok(isRecord(parsed), "package.json must be an object");
+  assert.ok(isRecord(parsed.peerDependencies), "package.json must contain peerDependencies");
+
+  assert.deepEqual(Object.keys(parsed.peerDependencies).sort(), [...bundledRuntimePeers].sort());
+  for (const packageName of bundledRuntimePeers) {
+    assert.equal(parsed.peerDependencies[packageName], "*", `${packageName} must use the host-provided version`);
+  }
 });
 
 test("package skills parse cleanly with pi's strict skill loader", () => {

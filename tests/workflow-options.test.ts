@@ -21,7 +21,7 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
     perf: true,
     concurrency: 64,
     parallelSubmissionLimit: 1,
-    budget: undefined,
+    budget: null,
   });
 
   assert.equal(resolveWorkflowRunOptions({ concurrency: -5 }, {}).concurrency, 1);
@@ -85,11 +85,18 @@ test("resolveWorkflowRunOptions resolves budget env values strictly and rejects 
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_BUDGET: "50000" }).budget, 50000);
 
   for (const value of ["abc", "", "0", "1.5"]) {
-    assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_BUDGET: value }).budget, undefined, value);
+    assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_BUDGET: value }).budget, null, value);
   }
 
   assert.throws(() => resolveWorkflowRunOptions({ budget: Number.NaN }, {}), RangeError);
   assert.throws(() => resolveWorkflowRunOptions({ budget: Infinity }, {}), RangeError);
+});
+
+test("resolved workflow options remain plain spreadable data", () => {
+  const resolved = resolveWorkflowRunOptions({}, { PI_WORKFLOW_BUDGET: "100" });
+
+  assert.deepEqual({ ...resolved }, resolved);
+  assert.deepEqual(Object.getOwnPropertySymbols(resolved), []);
 });
 
 test("parses result viewer workflow options", () => {

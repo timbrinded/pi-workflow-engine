@@ -1,66 +1,15 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Text } from "@earendil-works/pi-tui";
-import type { AdvisoryFinding, AdvisoryLocation, AdvisoryReport } from "../advisory-schema.ts";
-import type { PerfAggregate } from "../perf.ts";
+import { isAdvisoryReport, type AdvisoryReportWithStats } from "../advisory-schema.ts";
 import { renderIssueDetails, renderIssuesTable } from "../review/review-format.ts";
-import { toReviewIssues, type ReviewContext } from "../review/review-issues.ts";
+import { toReviewIssues } from "../review/review-issues.ts";
 import { formatCount } from "./workflow-format.ts";
-import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "../usage.ts";
-
-export interface WorkflowPerfDetails {
-  readonly enabled: boolean;
-  readonly startedAt: number;
-  readonly aggregates: readonly PerfAggregate[];
-}
-
-export interface WorkflowResultEnvelope {
-  name: string;
-  result: unknown;
-  completedAt: number;
-  usage?: WorkflowUsageSnapshot;
-  perf?: WorkflowPerfDetails;
-  runId?: string;
-  resumedFromRunId?: string;
-}
-
-export interface AdvisoryWorkflowResult extends AdvisoryReport {
-  stats?: Record<string, string | number>;
-  reviewContext?: ReviewContext;
-}
+import { formatWorkflowUsageLine } from "../usage.ts";
+import type { WorkflowPerfDetails, WorkflowResultEnvelope } from "../workflow-execution.ts";
 
 export function isWorkflowResult(value: unknown): value is WorkflowResultEnvelope {
   if (!isRecord(value)) return false;
   return typeof value.name === "string" && "result" in value && typeof value.completedAt === "number";
-}
-
-function isAdvisoryLocation(value: unknown): value is AdvisoryLocation {
-  if (!isRecord(value)) return false;
-  if (typeof value.file !== "string") return false;
-  if (value.line !== undefined && typeof value.line !== "number") return false;
-  if (value.symbol !== undefined && typeof value.symbol !== "string") return false;
-  return true;
-}
-
-function isAdvisoryFinding(value: unknown): value is AdvisoryFinding {
-  if (!isRecord(value)) return false;
-  if (typeof value.summary !== "string") return false;
-  if (typeof value.category !== "string") return false;
-  if (!isSeverity(value.severity)) return false;
-  if (!isConfidence(value.confidence)) return false;
-  if (!Array.isArray(value.locations) || !value.locations.every(isAdvisoryLocation)) return false;
-  if (!Array.isArray(value.evidence) || !value.evidence.every((entry) => typeof entry === "string")) return false;
-  if (typeof value.impact !== "string") return false;
-  if (typeof value.recommendation !== "string") return false;
-  return true;
-}
-
-export function isAdvisoryReport(value: unknown): value is AdvisoryWorkflowResult {
-  if (!isRecord(value)) return false;
-  if (typeof value.summary !== "string" || !Array.isArray(value.findings)) return false;
-  if (!value.findings.every(isAdvisoryFinding)) return false;
-  if (!Array.isArray(value.nextSteps) || !value.nextSteps.every((entry) => typeof entry === "string")) return false;
-  if (value.stats !== undefined && !isStats(value.stats)) return false;
-  return true;
 }
 
 export interface WorkflowRunDisplayMetadata {
@@ -105,7 +54,7 @@ export function renderWorkflowResultText(
 
 function renderAdvisoryResult(
   name: string,
-  result: AdvisoryWorkflowResult,
+  result: AdvisoryReportWithStats,
   expanded: boolean,
   theme: Theme,
   usage?: unknown,
@@ -211,19 +160,6 @@ function safeJson(value: unknown): string {
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
-}
-
-function isSeverity(value: unknown): value is AdvisoryFinding["severity"] {
-  return value === "low" || value === "medium" || value === "high";
-}
-
-function isConfidence(value: unknown): value is AdvisoryFinding["confidence"] {
-  return value === "low" || value === "medium" || value === "high";
-}
-
-function isStats(value: unknown): value is Record<string, string | number> {
-  if (!isRecord(value)) return false;
-  return Object.values(value).every((entry) => typeof entry === "string" || typeof entry === "number");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

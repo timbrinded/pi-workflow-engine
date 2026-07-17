@@ -1,10 +1,11 @@
 import type { Static, TSchema } from "typebox";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { WorkflowBudget } from "./budget.ts";
-import type { Pipeline } from "./concurrency.ts";
+import type { Pipeline, WorkflowParallel } from "./concurrency.ts";
 import type { PerfSink, PerfSnapshot } from "./perf.ts";
 import type { WorkflowProgressSnapshot } from "./progress.ts";
 import type { WorkflowUsageSnapshot } from "./usage.ts";
+import type { WorktreeBaseline } from "./worktree.ts";
 
 /** A reference to a registered workflow by name. */
 export type WorkflowRef = string;
@@ -39,7 +40,7 @@ export interface WorkflowRunOptions {
   budget?: number;
   /** Internal/test override for the generated run id. Omit to generate a new id. */
   runId?: string;
-  /** Replay completed agent results from this prior run id when prompt/options hashes still match. */
+  /** Replay completed agent results from this prior run id when call and execution context still match. */
   resumeFromRunId?: string;
   resultViewer?: "open" | "skip";
   /** Additional abort signal to compose with the host context signal. */
@@ -47,17 +48,17 @@ export interface WorkflowRunOptions {
   /** Internal recorder override for command/tool invocation timing. */
   perfRecorder?: PerfSink;
   /** Resolve a sub-workflow reference to a module, enabling `api.workflow()`. When omitted, `api.workflow()` throws. */
-  resolveWorkflow?: (ref: WorkflowRef) => Promise<WorkflowModule>;
+  resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkflow>;
   /** Called with the final performance snapshot when perf is enabled. */
-  onPerfSnapshot?: (snapshot: PerfSnapshot) => void;
+  onPerfSnapshot?: (snapshot: PerfSnapshot) => void | Promise<void>;
   /** Called with the final workflow subagent usage snapshot. */
-  onUsageSnapshot?: (snapshot: WorkflowUsageSnapshot) => void;
+  onUsageSnapshot?: (snapshot: WorkflowUsageSnapshot) => void | Promise<void>;
   /** Called once run identity and journal paths are known. */
-  onRunMetadata?: (metadata: WorkflowRunMetadata) => void;
+  onRunMetadata?: (metadata: WorkflowRunMetadata) => void | Promise<void>;
   /** Called with the live progress source while a workflow is running, then undefined when it ends. */
-  onProgressSource?: (source: WorkflowProgressSource | undefined) => void;
+  onProgressSource?: (source: WorkflowProgressSource | undefined) => void | Promise<void>;
   /** Called with the final completed progress snapshot after live workflow UI teardown. */
-  onProgressSnapshot?: (snapshot: WorkflowProgressSnapshot) => void;
+  onProgressSnapshot?: (snapshot: WorkflowProgressSnapshot) => void | Promise<void>;
 }
 
 export interface WorkflowProgressSource {
@@ -68,6 +69,7 @@ export interface WorkflowProgressSource {
 export type WorkflowLaneItemStatus = "pending" | "running" | "success" | "warning" | "error";
 
 export type AgentToolHint = "search";
+export type AgentResumePolicy = "read-only" | "off";
 
 export interface IsolatedAgentResult<T> {
   readonly result: T;
@@ -105,6 +107,20 @@ export interface AgentOptions<S extends TSchema = TSchema> {
    * with identical prompts/options, e.g. `${stage}:${item.id}`.
    */
   cacheKey?: string;
+  /**
+   * Resume policy for this call. Shared-workspace agents run live unless they
+   * explicitly declare themselves read-only. Those calls bind replay to the full
+   * Git-visible workspace; isolated agents bind to their disposable baseline.
+   * Use "off" to disable both journal reads and writes.
+   */
+  resume?: AgentResumePolicy;
+  /**
+   * Additional ignored/generated inputs under the workflow cwd that this
+   * read-only agent may observe. Git-visible files across the repository are
+   * captured automatically; list cwd-relative ignored paths here or use
+   * `resume: "off"` when their bounded contents cannot be captured.
+   */
+  resumeInputs?: readonly string[];
   /** Run this agent in a disposable git worktree and return its patch with the result. */
   isolation?: "worktree";
   /** Allowlist of concrete tool names the agent may use (e.g. ["read", "bash"]). */
@@ -151,9 +167,9 @@ export interface WorkflowApi {
   workflow(ref: WorkflowRef, args?: string): Promise<unknown>;
   /**
    * Run every thunk concurrently and wait for all (a barrier). Recoverable thunk
-   * failures become null slots; filter nulls before consuming survivors.
+   * failures become null slots by default; settled mode retains serialisable errors.
    */
-  parallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>;
+  parallel: WorkflowParallel;
   /**
    * Run each item through all stages independently — no barrier between stages.
    * A recoverable stage failure drops that item to null and skips its later stages.
@@ -181,7 +197,19 @@ export interface WorkflowApi {
 
 export type WorkflowRun = (api: WorkflowApi) => Promise<unknown>;
 
+export type WorkflowSourceIdentity =
+  | { readonly kind: "file"; readonly path: string; readonly root: string; readonly fingerprint: string }
+  | { readonly kind: "fingerprint"; readonly fingerprint: string }
+  | { readonly kind: "unverifiable"; readonly reason: string };
+
+/** The authored exports of a workflow module. */
 export interface WorkflowModule {
   meta: WorkflowMeta;
   default: WorkflowRun;
+}
+
+/** A validated workflow plus engine-owned provenance used for safe resume replay. */
+export interface LoadedWorkflow extends WorkflowModule {
+  readonly source: WorkflowSourceIdentity;
+  readonly isolatedWorktreeBaseline?: WorktreeBaseline;
 }

@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { WorkflowLaneItemStatus, WorkflowProgressEvent } from "./types.ts";
+import { unknownErrorMessage } from "./unknown-error.ts";
 import { statusTextFromCounts, type WorkflowStatusCounts } from "./ui/workflow-format.ts";
 import { createWorkflowWidget, type WorkflowWidget } from "./ui/workflow-widget.ts";
 
@@ -228,7 +229,7 @@ export class ProgressTracker {
     if (row) {
       this.transitionAgentStatus(row, "failed");
       row.doneAt = Date.now();
-      row.error = errorMessage(error);
+      row.error = unknownErrorMessage(error);
     }
     this.render();
   }
@@ -383,8 +384,4 @@ function laneItemLimitFromEnv(): number {
   const parsed = Number(process.env.PI_WORKFLOW_LANE_ITEM_LIMIT ?? "");
   if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_LANE_ITEM_LIMIT;
   return Math.trunc(parsed);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

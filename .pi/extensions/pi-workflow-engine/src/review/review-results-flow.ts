@@ -1,15 +1,15 @@
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { WorkflowRunOptions } from "../types.ts";
-import { isAdvisoryReport, type AdvisoryWorkflowResult } from "../ui/workflow-result-renderer.ts";
 import { toReviewIssues, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
+import { isReviewReport, type ReviewReport } from "./review-report.ts";
 import { ReviewResultsViewer } from "./review-results-viewer.ts";
 
 export type ReviewResultsPresentationDecision =
   | {
       readonly kind: "send";
-      readonly reason: "tool-invocation" | "not-code-review" | "not-advisory" | "no-findings" | "disabled" | "not-tui" | "not-requested";
+      readonly reason: "not-code-review" | "not-advisory" | "no-findings" | "disabled" | "not-tui" | "not-requested";
     }
-  | { readonly kind: "open"; readonly report: AdvisoryWorkflowResult; readonly issues: readonly ReviewIssue[]; readonly findingCount: number };
+  | { readonly kind: "open"; readonly issues: readonly ReviewIssue[] };
 
 export interface ReviewResultsDecisionInput {
   readonly workflowName: string;
@@ -17,40 +17,35 @@ export interface ReviewResultsDecisionInput {
   readonly mode?: string;
   readonly hasUI: boolean;
   readonly resultViewer?: WorkflowRunOptions["resultViewer"];
-  readonly invocationKind?: "command" | "tool";
+}
+
+export function codeReviewReport(workflowName: string, result: unknown): ReviewReport | undefined {
+  return workflowName === "code-review" && isReviewReport(result) ? result : undefined;
 }
 
 export interface ReviewResultsViewerContext {
-  readonly ui: Pick<ExtensionCommandContext["ui"], "custom">;
-}
-
-export function extensionContextMode(ctx: ExtensionCommandContext): string | undefined {
-  const candidate = (ctx as ExtensionCommandContext & { readonly mode?: unknown }).mode;
-  return typeof candidate === "string" ? candidate : undefined;
+  readonly ui: Pick<ExtensionContext["ui"], "custom">;
 }
 
 export function decideReviewResultsPresentation(input: ReviewResultsDecisionInput): ReviewResultsPresentationDecision {
-  if (input.invocationKind === "tool") return { kind: "send", reason: "tool-invocation" };
   if (input.workflowName !== "code-review") return { kind: "send", reason: "not-code-review" };
-  if (!isAdvisoryReport(input.result)) return { kind: "send", reason: "not-advisory" };
-  if (input.result.findings.length === 0) return { kind: "send", reason: "no-findings" };
+  const report = codeReviewReport(input.workflowName, input.result);
+  if (!report) return { kind: "send", reason: "not-advisory" };
+  if (report.findings.length === 0) return { kind: "send", reason: "no-findings" };
   if (input.resultViewer === "skip") return { kind: "send", reason: "disabled" };
   if (input.mode !== "tui" || !input.hasUI) return { kind: "send", reason: "not-tui" };
 
   if (input.resultViewer !== "open") return { kind: "send", reason: "not-requested" };
 
-  const issues = toReviewIssues(input.workflowName, input.result);
-  return { kind: "open", report: input.result, issues, findingCount: issues.length };
+  return { kind: "open", issues: toReviewIssues(input.workflowName, report) };
 }
 
-export async function maybeShowReviewResultsViewer(
+export async function showReviewResultsViewer(
   ctx: ReviewResultsViewerContext,
-  decision: ReviewResultsPresentationDecision,
-): Promise<ReviewIssueSelection | undefined> {
-  if (decision.kind !== "open") return undefined;
-
+  issues: readonly ReviewIssue[],
+): Promise<ReviewIssueSelection> {
   return await ctx.ui.custom<ReviewIssueSelection>(
-    (tui, theme, _keybindings, done) => new ReviewResultsViewer(decision.issues, "code-review", theme, () => tui.requestRender(), done),
-    { overlay: true, overlayOptions: { anchor: "right-center", width: "80%", maxHeight: "90%", margin: 1 } },
+    (tui, theme, _keybindings, done) => new ReviewResultsViewer(issues, "code-review", tui, theme, done),
+    { overlay: true, overlayOptions: { anchor: "center", width: "80%", minWidth: 40, maxHeight: "80%", margin: 1 } },
   );
 }

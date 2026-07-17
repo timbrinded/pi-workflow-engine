@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
-import { pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 
 function createFakeApi(overrides: Partial<WorkflowApi> = {}, onAgent?: (opts: AgentOptions | undefined) => void): WorkflowApi {
@@ -15,7 +15,7 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}, onAgent?: (opts: Ag
     workflow: async () => {
       throw new Error("sub-workflows are not enabled in this context");
     },
-    parallel: async <T>(thunks: Array<() => Promise<T>>) => await Promise.all(thunks.map((thunk) => thunk())),
+    parallel,
     pipeline,
     phase() {},
     log() {},
@@ -50,6 +50,8 @@ export default async function run({ phase, args }) {
   const result = await mod.default(createFakeApi({ args: "hello", phase: (title) => phases.push(title) }));
 
   assert.deepEqual(mod.meta, { name: "inline-smoke", description: "Smoke workflow", phases: [{ title: "Run" }] });
+  assert.equal(mod.source.kind, "fingerprint");
+  assert.ok(mod.source.kind === "fingerprint" && mod.source.fingerprint.length > 0);
   assert.deepEqual(result, { summary: "args:hello" });
   assert.deepEqual(phases, ["Run"]);
 });

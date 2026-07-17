@@ -1,5 +1,6 @@
 {
   "shortcuts": {
-    "inspector": "ctrl+shift+x"
+    "inspector": "ctrl+shift+x",
+    "results": "ctrl+shift+y"
   }
 }

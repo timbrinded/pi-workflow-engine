@@ -1,5 +1,6 @@
 import { Type } from "typebox";
-import type { WorkflowApi, WorkflowMeta, WorkflowModule } from "./types.ts";
+import { createHash } from "node:crypto";
+import type { LoadedWorkflow, WorkflowApi } from "./types.ts";
 import { parseWorkflowMeta } from "./workflow-module.ts";
 
 /**
@@ -28,7 +29,7 @@ type AsyncFunctionConstructor = new (...args: string[]) => InlineWorkflowExecuto
 
 const AsyncFunction = Object.getPrototypeOf(async function inlineWorkflowCompilerSentinel() {}).constructor as AsyncFunctionConstructor;
 
-export function compileInlineWorkflow(source: string): WorkflowModule {
+export function compileInlineWorkflow(source: string): LoadedWorkflow {
   rejectForbiddenModuleSyntax(source);
   const metaLiteral = extractMetaLiteral(source);
   const parsedMeta = parseWorkflowMeta(metaLiteral.value);
@@ -36,7 +37,11 @@ export function compileInlineWorkflow(source: string): WorkflowModule {
 
   const defaultExpression = extractDefaultWorkflowExpression(source, metaLiteral.endOffset);
   const executor = compileExecutor(defaultExpression);
-  return { meta: parsedMeta.meta, default: (api) => executor(api, Type) };
+  return {
+    meta: parsedMeta.meta,
+    default: (api) => executor(api, Type),
+    source: { kind: "fingerprint", fingerprint: createHash("sha256").update(source).digest("hex") },
+  };
 }
 
 export function extractMetaLiteral(source: string): InlineMetaLiteral {

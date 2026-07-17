@@ -4,7 +4,7 @@ import codeReview from "../.pi/extensions/pi-workflow-engine/workflows/code-revi
 import diagnose from "../.pi/extensions/pi-workflow-engine/workflows/diagnose.ts";
 import perfReview from "../.pi/extensions/pi-workflow-engine/workflows/perf-review.ts";
 import refactorScout from "../.pi/extensions/pi-workflow-engine/workflows/refactor-scout.ts";
-import { pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AdvisoryCandidate, AdvisoryFinding, AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 
@@ -14,6 +14,7 @@ interface AgentCall {
   phase: string | undefined;
   tools: string[] | undefined;
   toolHints: readonly string[] | undefined;
+  resume: AgentOptions["resume"];
 }
 
 interface ScriptedApi extends WorkflowApi {
@@ -34,7 +35,14 @@ function createScriptedApi(responses: unknown[], args = ""): ScriptedApi {
   const logs: string[] = [];
   const events: WorkflowProgressEvent[] = [];
   const agent = (async (prompt: string, opts?: AgentOptions) => {
-    calls.push({ prompt, label: opts?.label, phase: opts?.phase, tools: opts?.tools, toolHints: opts?.toolHints });
+    calls.push({
+      prompt,
+      label: opts?.label,
+      phase: opts?.phase,
+      tools: opts?.tools,
+      toolHints: opts?.toolHints,
+      resume: opts?.resume,
+    });
     if (queue.length === 0) throw new Error(`No scripted response for agent ${opts?.label ?? "(unlabelled)"}`);
     return queue.shift();
   }) as WorkflowApi["agent"];
@@ -48,7 +56,7 @@ function createScriptedApi(responses: unknown[], args = ""): ScriptedApi {
     workflow: async () => {
       throw new Error("sub-workflows are not enabled in these tests");
     },
-    parallel: async <T>(thunks: Array<() => Promise<T>>) => await Promise.all(thunks.map((thunk) => thunk())),
+    parallel,
     pipeline,
     phase: (title) => phases.push(title),
     log: (message) => logs.push(message),
@@ -135,6 +143,17 @@ test("code-review returns the empty report when scope is unavailable", async () 
   assert.deepEqual(result.stats, { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0 });
 });
 
+test("code-review scope teaches parser-safe path and revision diff syntax", async () => {
+  const api = createScriptedApi([null], "review src/a.ts and src/b.ts");
+
+  await codeReview(api);
+
+  const prompt = api.calls[0]?.prompt ?? "";
+  assert.match(prompt, /git diff -- <path> \[<path>\.\.\.\]/);
+  assert.match(prompt, /A\.\.B.*A\.\.\.B/);
+  assert.match(prompt, /Never emit ambiguous two-operand forms/);
+});
+
 test("code-review returns the empty report when scope has no files", async () => {
   const api = createScriptedApi([
     {
@@ -155,7 +174,7 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
   const surviving = candidate("confirmed bug", "bug");
   const api = createScriptedApi([
     {
-      diffCommand: "not a diff command",
+      diffCommand: "git diff",
       files: ["src/example.ts"],
       summary: "One risky change.",
       conventions: "Prefer direct tests.",
@@ -169,7 +188,13 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
     report("One confirmed bug.", [finding("confirmed bug", "bug")]),
   ]);
 
-  const result = asReportResult(await codeReview(api));
+  const result = asReportResult(await codeReview(api, {
+    captureReviewMaterial: async () => ({
+      ok: true,
+      diff: "diff --git a/src/example.ts b/src/example.ts\n--- a/src/example.ts\n+++ b/src/example.ts\n@@ -11,1 +11,2 @@\n unchanged\n+confirmed bug\n",
+      snapshot: { status: "unavailable", reason: "fixture" },
+    }),
+  }));
   const synthesize = api.calls.find((call) => call.label === "synthesize");
 
   assert.equal(result.summary, "One confirmed bug.");
@@ -178,6 +203,8 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
   assert.equal(result.stats.kept, 1);
   assert.match(synthesize?.prompt ?? "", /src\.example\.ts:12 proves the bug|src\/example\.ts:12 proves the bug/);
   assert.match(synthesize?.prompt ?? "", /confirmed bug impact/);
+  assert.deepEqual(synthesize?.tools, []);
+  assert.equal(synthesize?.resume, "read-only");
 });
 
 test("refactor-scout returns the empty report when no files are scoped", async () => {
