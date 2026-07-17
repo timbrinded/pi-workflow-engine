@@ -161,7 +161,8 @@ workflows, and registration.
 - **Agent sessions:** each call uses an in-process pi `AgentSession` with an
   in-memory session manager.
 - **Structured output:** the schema is a terminating tool definition validated
-  by pi.
+  by pi. Omission gets at most two `final_answer`-only repair prompts; clean
+  exhaustion raises a typed recoverable error instead of returning `null`.
 - **Recoverable failures:** a failed parallel branch becomes `null`; surviving
   work continues.
 - **Fatal failures:** cancellation aborts siblings and drains submitted work

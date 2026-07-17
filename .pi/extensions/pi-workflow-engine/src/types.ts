@@ -138,7 +138,10 @@ export interface AgentOptions<S extends TSchema = TSchema> {
    * prompt inference for prompts that mention skills only as subject matter.
    */
   skills?: readonly string[];
-  /** typebox schema. When set, the agent is forced to return matching structured data. */
+  /**
+   * typebox schema. The agent must call the validated `final_answer` tool; bounded
+   * repair exhaustion throws `WorkflowStructuredOutputError` instead of returning null.
+   */
   schema?: S;
 }
 
@@ -151,11 +154,11 @@ export interface WorkflowApi {
   agent<S extends TSchema>(
     prompt: string,
     opts: AgentOptions<S> & { schema: S; isolation: "worktree" },
-  ): Promise<IsolatedAgentResult<Static<S> | null>>;
+  ): Promise<IsolatedAgentResult<Static<S>>>;
   /** Run a text subagent in a disposable worktree and return its final text plus patch. */
   agent(prompt: string, opts: AgentOptions & { isolation: "worktree" }): Promise<IsolatedAgentResult<string>>;
-  /** Run a subagent and return its validated structured output (null if it never produced one). */
-  agent<S extends TSchema>(prompt: string, opts: AgentOptions<S> & { schema: S }): Promise<Static<S> | null>;
+  /** Run a subagent and return validated structured output; rejects with a recoverable typed error on repair exhaustion. */
+  agent<S extends TSchema>(prompt: string, opts: AgentOptions<S> & { schema: S }): Promise<Static<S>>;
   /** Run a subagent and return its final assistant text. */
   agent(prompt: string, opts?: AgentOptions): Promise<string>;
   /**

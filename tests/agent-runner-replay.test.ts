@@ -23,6 +23,7 @@ import {
   createRegistry,
   createRunContext,
   createTextSession,
+  executeTestFinalAnswer,
   runAgent,
   testModel,
 } from "./agent-runner-fixtures.ts";
@@ -395,11 +396,23 @@ test("resume off never inspects hostile schemas", async () => {
     },
   });
   const result = await runAgent(
-    createRunContext({ createSession: async () => createTextSession() }),
+    createRunContext({
+      createSession: async (options) => {
+        const created = createTextSession();
+        return {
+          session: {
+            ...created.session,
+            async prompt() {
+              await executeTestFinalAnswer(options, { ok: true });
+            },
+          },
+        };
+      },
+    }),
     "hello",
     { resume: "off", schema: schema as unknown as TSchema },
   );
-  assert.equal(result, null);
+  assert.deepEqual(result, { ok: true });
 });
 
 test("runAgent returns cached results when journal write-through fails", async () => {

@@ -18,6 +18,7 @@ import {
   createProgress,
   createRunContext,
   createTextSession,
+  executeTestFinalAnswer,
   runAgent,
   writeProjectSkill,
 } from "./agent-runner-fixtures.ts";
@@ -359,7 +360,9 @@ test("runAgent dynamically enables installed search-like tools", async () => {
     return {
       session: {
         state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
-        async prompt() {},
+        async prompt() {
+          await executeTestFinalAnswer(options, { ok: true });
+        },
         subscribe() {
           return () => {};
         },
@@ -393,7 +396,7 @@ test("runAgent dynamically enables installed search-like tools", async () => {
     schema: Type.Object({ ok: Type.Boolean() }),
   });
 
-  assert.equal(result, null);
+  assert.deepEqual(result, { ok: true });
   assert.equal(observedTools, undefined);
   assert.deepEqual(observedExcludeTools, ["edit", "write"]);
   assert.deepEqual(activatedTools, ["read", "bash", "grep", "find", "ls", "final_answer", "ffgrep", "mgrep", "ast-grep"]);
@@ -413,7 +416,10 @@ test("runAgent falls back to concrete tools when dynamic tool APIs are unavailab
         state: { messages: [{ role: "assistant", content: [{ type: "text", text: isFirstCall ? "wide" : "strict" }] }] },
         async prompt() {
           if (isFirstCall) firstPrompted = true;
-          else secondPrompted = true;
+          else {
+            secondPrompted = true;
+            await executeTestFinalAnswer(options, { ok: true });
+          }
         },
         subscribe() {
           return () => {};
@@ -433,7 +439,7 @@ test("runAgent falls back to concrete tools when dynamic tool APIs are unavailab
     schema: Type.Object({ ok: Type.Boolean() }),
   });
 
-  assert.equal(result, null);
+  assert.deepEqual(result, { ok: true });
   assert.deepEqual(calls, [
     { tools: undefined, excludeTools: ["edit", "write"] },
     { tools: ["read", "bash", "grep", "find", "ls", "final_answer"], excludeTools: undefined },
