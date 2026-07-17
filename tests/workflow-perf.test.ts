@@ -5,7 +5,7 @@ import { runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts"
 import { RequiredFinalizerError } from "../.pi/extensions/pi-workflow-engine/src/finalizers.ts";
 import { getLastWorkflowInspection, sendWorkflowResult } from "../.pi/extensions/pi-workflow-engine";
 import type { PerfSnapshot } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
-import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
+import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";

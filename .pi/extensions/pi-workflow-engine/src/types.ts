@@ -3,9 +3,11 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { WorkflowBudget } from "./budget.ts";
 import type { Pipeline, WorkflowParallel } from "./concurrency.ts";
 import type { PerfSink, PerfSnapshot } from "./perf.ts";
-import type { WorkflowProgressSnapshot } from "./progress.ts";
+import type { WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "./progress-types.ts";
 import type { WorkflowUsageSnapshot } from "./usage.ts";
 import type { WorktreeBaseline } from "./worktree.ts";
+
+export type { WorkflowLaneItemStatus } from "./progress-types.ts";
 
 /** A reference to a registered workflow by name. */
 export type WorkflowRef = string;
@@ -66,8 +68,6 @@ export interface WorkflowProgressSource {
 }
 
 /** Options for a single `agent()` call. */
-export type WorkflowLaneItemStatus = "pending" | "running" | "success" | "warning" | "error";
-
 export type AgentToolHint = "search";
 export type AgentResumePolicy = "read-only" | "off";
 

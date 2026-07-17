@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "../progress.ts";
+import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { agentDetailParts, agentLabelColor, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
 
 const MAX_WIDGET_LINES = 12;

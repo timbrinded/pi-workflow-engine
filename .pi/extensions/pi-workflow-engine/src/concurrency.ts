@@ -275,6 +275,21 @@ export async function pipeline<Item, A, B, C>(
   stage2: (prev: A, item: Item, index: number) => Promise<B>,
   stage3: (prev: B, item: Item, index: number) => Promise<C>,
 ): Promise<Array<C | null>>;
+export async function pipeline<Item, A, B, C, D>(
+  items: readonly Item[],
+  stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+  stage2: (prev: A, item: Item, index: number) => Promise<B>,
+  stage3: (prev: B, item: Item, index: number) => Promise<C>,
+  stage4: (prev: C, item: Item, index: number) => Promise<D>,
+): Promise<Array<D | null>>;
+export async function pipeline<Item, A, B, C, D, E>(
+  items: readonly Item[],
+  stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+  stage2: (prev: A, item: Item, index: number) => Promise<B>,
+  stage3: (prev: B, item: Item, index: number) => Promise<C>,
+  stage4: (prev: C, item: Item, index: number) => Promise<D>,
+  stage5: (prev: D, item: Item, index: number) => Promise<E>,
+): Promise<Array<E | null>>;
 export async function pipeline(
   items: readonly unknown[],
   ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
@@ -302,6 +317,21 @@ export function bindPipeline(options: PipelineOptions): Pipeline {
     stage2: (prev: A, item: Item, index: number) => Promise<B>,
     stage3: (prev: B, item: Item, index: number) => Promise<C>,
   ): Promise<Array<C | null>>;
+  async function boundPipeline<Item, A, B, C, D>(
+    items: readonly Item[],
+    stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+    stage2: (prev: A, item: Item, index: number) => Promise<B>,
+    stage3: (prev: B, item: Item, index: number) => Promise<C>,
+    stage4: (prev: C, item: Item, index: number) => Promise<D>,
+  ): Promise<Array<D | null>>;
+  async function boundPipeline<Item, A, B, C, D, E>(
+    items: readonly Item[],
+    stage1: (prev: Item, item: Item, index: number) => Promise<A>,
+    stage2: (prev: A, item: Item, index: number) => Promise<B>,
+    stage3: (prev: B, item: Item, index: number) => Promise<C>,
+    stage4: (prev: C, item: Item, index: number) => Promise<D>,
+    stage5: (prev: D, item: Item, index: number) => Promise<E>,
+  ): Promise<Array<E | null>>;
   async function boundPipeline(
     items: readonly unknown[],
     ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>

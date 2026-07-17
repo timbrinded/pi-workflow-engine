@@ -1,7 +1,7 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../progress.ts";
-import { agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
+import type {Theme} from "@earendil-works/pi-coding-agent";
+import {matchesKey, type TUI, visibleWidth, wrapTextWithAnsi} from "@earendil-works/pi-tui";
+import type {AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot} from "../progress-types.ts";
+import {agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay} from "./workflow-format.ts";
 
 type Section = "Overview" | "Agents" | "Findings" | "Logs";
 
@@ -109,8 +109,7 @@ export class WorkflowInspector {
 
   private tabs(): string {
     return SECTIONS.map((section, index) => {
-      const label = index === this.sectionIndex ? this.theme.fg("accent", this.theme.bold(section)) : this.theme.fg("muted", section);
-      return label;
+      return index === this.sectionIndex ? this.theme.fg("accent", this.theme.bold(section)) : this.theme.fg("muted", section);
     }).join(this.theme.fg("dim", "  |  "));
   }
 

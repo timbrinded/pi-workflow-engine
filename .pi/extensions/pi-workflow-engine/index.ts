@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { SelectList, Text, truncateToWidth, type Component, type SelectItem, type SelectListTheme, type TUI } from "@earendil-works/pi-tui";
 import { isAdvisoryReport } from "./src/advisory-schema.ts";
-import type { WorkflowProgressSnapshot } from "./src/progress.ts";
+import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink } from "./src/perf.ts";
@@ -30,12 +30,8 @@ import { executeWorkflowInvocation, type WorkflowExecution, type WorkflowPerfDet
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 
 function summarize(result: unknown): string {
-  if (isRecord(result) && typeof result.summary === "string") return result.summary;
+  if (typeof result === "object" && result !== null && "summary" in result && typeof result.summary === "string") return result.summary;
   return typeof result === "string" ? result : "Workflow finished.";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function formatMessageContent(
@@ -283,6 +279,14 @@ export function parseWorkflowInvocation(input: string): WorkflowInvocation {
 const INVALID_BUDGET_OPTION = "--budget requires a positive integer output-token count";
 const INVALID_RESUME_OPTION = "--resume requires a workflow run id";
 
+type WorkflowOptionValueSource = "equals" | "next-token";
+
+interface WorkflowOptionValue {
+  readonly candidate: string | undefined;
+  readonly source: WorkflowOptionValueSource;
+  readonly consumedTokenCount: 0 | 1;
+}
+
 function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean; optionErrors?: string[] } {
   const tokens = input.split(/\s+/).filter(Boolean);
   const kept: string[] = [];
@@ -311,14 +315,10 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
       options.resultViewer = "skip";
       continue;
     }
-    if (token.startsWith("--concurrency=")) {
-      options.concurrency = parseNumericOption(token.slice("--concurrency=".length));
-      continue;
-    }
-    if (token === "--concurrency") {
-      const next = tokens[i + 1];
-      options.concurrency = parseNumericOption(next);
-      if (next !== undefined) i++;
+    const concurrencyValue = readWorkflowOptionValue(tokens, i, "--concurrency");
+    if (concurrencyValue) {
+      options.concurrency = parseNumericOption(concurrencyValue.candidate);
+      i += concurrencyValue.consumedTokenCount;
       continue;
     }
     if (token.startsWith("--parallel-limit=")) {
@@ -367,6 +367,17 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
     kept.push(token);
   }
   return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined, optionErrors: optionErrors.length > 0 ? optionErrors : undefined };
+}
+
+function readWorkflowOptionValue(tokens: readonly string[], index: number, option: string): WorkflowOptionValue | undefined {
+  const token = tokens[index];
+  const equalsPrefix = `${option}=`;
+  if (token.startsWith(equalsPrefix)) {
+    return { candidate: token.slice(equalsPrefix.length), source: "equals", consumedTokenCount: 0 };
+  }
+  if (token !== option) return undefined;
+  const candidate = tokens[index + 1];
+  return { candidate, source: "next-token", consumedTokenCount: candidate === undefined ? 0 : 1 };
 }
 
 function parseBudgetOption(value: string): number | undefined {
@@ -656,7 +667,11 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
 
-  // workflow tool — lets the host agent fan out mid-conversation.
+  registerWorkflowTool(pi, reviewSessions);
+}
+
+/** Register the host-facing workflow tool independently from command and lifecycle surfaces. */
+function registerWorkflowTool(pi: ExtensionAPI, reviewSessions: ReviewSessionCoordinator): void {
   pi.registerTool({
     name: "workflow",
     label: "Workflow",

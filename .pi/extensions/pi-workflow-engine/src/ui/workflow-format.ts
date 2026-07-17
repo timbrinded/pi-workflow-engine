@@ -1,7 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { AgentRowSnapshot, WorkflowProgressSnapshot } from "../progress.ts";
-import type { WorkflowLaneItemStatus } from "../types.ts";
+import type { AgentRowSnapshot, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "../progress-types.ts";
 
 export type WorkflowDisplayStatus = WorkflowLaneItemStatus | "queued" | "done" | "failed";
 export type WorkflowThemeColor = Parameters<Theme["fg"]>[0];

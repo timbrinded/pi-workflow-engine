@@ -1,9 +1,10 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { captureDiff, parseAllowedDiffCommand, reviewDiffCommand } from "../.pi/extensions/pi-workflow-engine/src/diff-capture.ts";
+import { captureDiff } from "../.pi/extensions/pi-workflow-engine/src/diff-capture.ts";
+import { parseAllowedDiffCommand, reviewDiffCommand } from "../.pi/extensions/pi-workflow-engine/src/review-diff-target.ts";
 
 async function fakeBin(script: string): Promise<{ dir: string; env: NodeJS.ProcessEnv; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), "workflow-engine-diff-bin-"));
@@ -17,6 +18,14 @@ async function fakeBin(script: string): Promise<{ dir: string; env: NodeJS.Proce
     cleanup: () => rm(dir, { recursive: true, force: true }),
   };
 }
+
+test("review target contracts stay independent from process capture", async () => {
+  const reportSource = await readFile(".pi/extensions/pi-workflow-engine/src/review/review-report.ts", "utf8");
+  const targetSource = await readFile(".pi/extensions/pi-workflow-engine/src/review-diff-target.ts", "utf8");
+
+  assert.doesNotMatch(reportSource, /diff-capture\.ts/);
+  assert.doesNotMatch(targetSource, /process-runner|node:child_process/);
+});
 
 test("parseAllowedDiffCommand accepts safe git and gh diff commands", () => {
   assert.deepEqual(parseAllowedDiffCommand("git diff main...HEAD -- src/app.ts"), {

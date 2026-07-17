@@ -19,7 +19,8 @@ import {
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
 import { compactResults } from "../src/concurrency.ts";
-import { formatReviewDiffTarget, parseAllowedDiffCommand } from "../src/diff-capture.ts";
+import { formatReviewDiffTarget, parseAllowedDiffCommand } from "../src/review-diff-target.ts";
+import { buildCodeReviewScopeBlock, dedupeCodeReviewCandidates } from "../src/review/code-review-orchestration.ts";
 import type { ReviewContext } from "../src/review/review-report.ts";
 import { captureReviewMaterial, type ReviewMaterialCaptureResult } from "../src/review/review-snapshot.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
@@ -63,7 +64,6 @@ const ANGLES: Angle[] = [
 const TOOLS = DEFAULT_ADVISORY_TOOLS;
 const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_ANGLE = 6;
-const DIFF_EMBED_CAP = 60_000;
 
 /** Parse a unified diff into the set of added/changed new-file line numbers per file. */
 export function changedLines(diff: string): Map<string, Set<number>> {
@@ -184,27 +184,14 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       : {}),
   };
 
-  const diffBlock = diffText
-    ? `\n## Diff (review is bounded to these changed lines)\n\`\`\`diff\n${
-        diffText.length > DIFF_EMBED_CAP
-          ? `${diffText.slice(0, DIFF_EMBED_CAP)}\n... (truncated — run \`${diffCommand}\` for the full diff)`
-          : diffText
-      }\n\`\`\`\n`
-    : "";
-
-  const scopeBlock =
-    `## Diff command\n${diffCommand}\n\n## Changed files\n${scope.files.map((file) => `- ${file}`).join("\n")}\n\n` +
-    `## Summary\n${scope.summary}\n\n## Conventions\n${scope.conventions ?? "(none noted)"}\n` +
-    diffBlock +
-    (target ? `\n## User instructions (verbatim)\n${target}\n` : "");
-
-  // Dedup after all finders complete so verifier agents cannot consume the global cap before full candidate discovery.
-  const seen = new Set<string>();
-  const dedupKey = (candidate: Candidate): string => {
-    const location = primaryLocation(candidate);
-    const lineKey = location.line != null ? Math.round(location.line / 5) * 5 : candidate.summary.slice(0, 40).toLowerCase();
-    return `${normalizePath(location.file)}:${lineKey}`;
-  };
+  const scopeBlock = buildCodeReviewScopeBlock({
+    diffCommand,
+    files: scope.files,
+    summary: scope.summary,
+    conventions: scope.conventions,
+    diffText,
+    target,
+  });
 
   // ─── Find barrier → dedup → Verify ───
   phase("Find");
@@ -244,16 +231,8 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     }),
   );
 
-  const novel = compactResults(perAngle).flatMap(({ angle, candidates }) =>
-    candidates
-      .filter((candidate) => {
-        const key = dedupKey(candidate);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .map((candidate) => ({ angle, candidate })),
-  );
+  // Dedup after all finders complete so verifier agents cannot consume the global cap before full candidate discovery.
+  const novel = dedupeCodeReviewCandidates(compactResults(perAngle));
 
   phase("Verify");
   const verdicts = await parallel(

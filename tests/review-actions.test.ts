@@ -3,7 +3,7 @@ import { test } from "bun:test";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { bindParallel } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
-import { parseAllowedDiffCommand, type ReviewDiffTarget } from "../.pi/extensions/pi-workflow-engine/src/diff-capture.ts";
+import { parseAllowedDiffCommand, type ReviewDiffTarget } from "../.pi/extensions/pi-workflow-engine/src/review-diff-target.ts";
 import type { AgentOptions } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { handleReviewViewerAction, type ReviewActionContext, type ReviewActionPi } from "../.pi/extensions/pi-workflow-engine/src/review/review-actions.ts";
 import {
