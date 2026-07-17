@@ -168,7 +168,6 @@ async function runParallel<T, Result>(
   const limit = normalizeLimit(options.limit, thunks.length);
   return await new Promise<Result[]>((resolve, reject) => {
     let terminal = false;
-    let stopClaiming = false;
     let nextIndex = 0;
     let workersRemaining = limit;
     let fatalFailure: { readonly error: unknown } | undefined;
@@ -187,7 +186,6 @@ async function runParallel<T, Result>(
     const recordFatalFailure = (error: unknown) => {
       if (fatalFailure) return;
       fatalFailure = { error };
-      stopClaiming = true;
       options.abortController?.abort(error);
       const timeoutMs = normalizeDrainTimeout(options.drainTimeoutMs);
       drainTimer = setTimeout(() => settle(true), timeoutMs);
@@ -198,16 +196,16 @@ async function runParallel<T, Result>(
     };
     const onAbort = () => recordFatalFailure(abortReason(options.signal));
     const runWorker = async () => {
-      while (!stopClaiming) {
+      while (!fatalFailure) {
         throwIfAborted(options.signal);
         const index = nextIndex++;
         if (index >= thunks.length) return;
         try {
           const value = await thunks[index]();
-          if (stopClaiming) return;
+          if (fatalFailure) return;
           results[index] = onSuccess(value);
         } catch (error) {
-          if (stopClaiming) return;
+          if (fatalFailure) return;
           if (isFatalWorkflowError(error, options.signal)) {
             recordFatalFailure(error);
             return;

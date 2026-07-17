@@ -4,7 +4,6 @@ import { logicalWorkspacePath, type ReplayWorkspaceRoots } from "./replay-path-i
 import { captureTreeFingerprint } from "./tree-fingerprint.ts";
 import type { ResolvedSkillIdentity } from "./resume-context.ts";
 
-export type AgentSkillOption = readonly string[] | undefined;
 export type AgentSkillRequestSource = "explicit" | "prompt";
 
 export interface AgentSkillRequest {

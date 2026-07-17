@@ -239,7 +239,7 @@ async function validateCachedResult(
         reason: `cached isolated patch does not apply to the current baseline (${(patch.error ?? patch.stderr.trim()) || "unknown error"})`,
       };
     }
-    result = isolated.value;
+    result = isolated.wrapper.result;
   } else {
     result = value;
   }
@@ -261,7 +261,6 @@ async function validateCachedResult(
 function isolatedCachedResult(value: unknown):
   | {
       readonly ok: true;
-      readonly value: unknown;
       readonly wrapper: { readonly result: unknown; readonly patch: string; readonly changed: boolean };
     }
   | { readonly ok: false; readonly reason: string } {
@@ -273,7 +272,7 @@ function isolatedCachedResult(value: unknown):
     return { ok: false, reason: "cached isolated result has an invalid wrapper" };
   }
   const wrapper = { result: candidate.result, patch: candidate.patch, changed: candidate.changed };
-  return { ok: true, value: wrapper.result, wrapper };
+  return { ok: true, wrapper };
 }
 
 async function validateRepositoryAfterCleanup(

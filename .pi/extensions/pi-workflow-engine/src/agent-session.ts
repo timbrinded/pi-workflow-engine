@@ -136,8 +136,8 @@ export async function openAgentSession(input: {
   try {
     throwIfAborted(rc.signal);
     session = (await createSubagentSession(toolSelection.sessionOptions)).session;
-    const activeToolNames = applyDynamicToolHints(session, toolSelection);
-    if (toolSelection.toolHints.length > 0 && !activeToolNames) {
+    const dynamicToolHintsApplied = toolSelection.toolHints.length === 0 || applyDynamicToolHints(session, toolSelection);
+    if (!dynamicToolHintsApplied) {
       rc.progress.log(`${label}: dynamic tool hints unavailable; falling back to concrete tools only`);
       rc.perf.counter("agent.tool_hint_fallback", 1, tags);
       const dynamicSession = session;
@@ -333,17 +333,15 @@ function buildToolList(
   return allow;
 }
 
-function applyDynamicToolHints(session: AgentRunnerSession, selection: ToolSelection): readonly string[] | undefined {
-  if (selection.toolHints.length === 0) return session.getActiveToolNames?.() ?? selection.activeTools;
-  if (!hasDynamicToolApis(session)) return undefined;
+function applyDynamicToolHints(session: AgentRunnerSession, selection: ToolSelection): boolean {
+  if (!hasDynamicToolApis(session)) return false;
 
   const active = new Set(selection.activeTools ?? []);
   for (const tool of session.getAllTools()) {
     if (selection.toolHints.some((hint) => hint === "search" && isSearchLikeTool(tool))) active.add(tool.name);
   }
-  const activeNames = [...active];
-  session.setActiveToolsByName(activeNames);
-  return activeNames;
+  session.setActiveToolsByName([...active]);
+  return true;
 }
 
 function hasDynamicToolApis(session: AgentRunnerSession): session is DynamicToolSession {
