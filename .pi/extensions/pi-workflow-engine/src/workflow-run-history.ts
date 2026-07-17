@@ -94,6 +94,10 @@ export function formatWorkflowRunDetails(
     `Actions: ${availableWorkflowRunActions(record, active).join(", ")}`,
   ];
   if (usage) lines.push(usage);
+  if (record.options.resumeEditedWorkflow) lines.push("Edited-workflow resume: enabled");
+  const cachedAgents = record.progress.counters.find((counter) => counter.key === "resume.cached")?.value ?? 0;
+  const liveAgents = record.progress.counters.find((counter) => counter.key === "resume.live")?.value ?? 0;
+  if (cachedAgents > 0 || liveAgents > 0) lines.push(`Resume calls: ${cachedAgents} cached, ${liveAgents} live`);
   if (record.state === "paused" && record.pause?.kind === "provider_usage_limit") {
     lines.push(
       `Provider limit attempt: ${record.pause.attempt}/${record.pause.maxAttempts}`,

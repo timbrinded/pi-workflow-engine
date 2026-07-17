@@ -31,6 +31,7 @@ export type ResolvedWorkflowRunOptions = Omit<
   | "usageLimitMaxAttempts"
   | "usageLimitMaxDelayMs"
   | "usageLimitAttempt"
+  | "resumeEditedWorkflow"
   | "budget"
 > & {
   readonly perf: boolean;
@@ -43,6 +44,7 @@ export type ResolvedWorkflowRunOptions = Omit<
   readonly usageLimitMaxAttempts: number;
   readonly usageLimitMaxDelayMs: number;
   readonly usageLimitAttempt: number;
+  readonly resumeEditedWorkflow: boolean;
   readonly budget: number | null;
 };
 
@@ -108,8 +110,13 @@ export function resolveWorkflowRunOptions(
       WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX,
       0,
     ),
+    resumeEditedWorkflow: input.resumeEditedWorkflow === true && hasResumeRunId(input.resumeFromRunId),
     budget: budget ?? null,
   };
+}
+
+function hasResumeRunId(value: string | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function optionalClampedInteger(value: number | undefined, min: number, max: number): number | undefined {

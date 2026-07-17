@@ -7,7 +7,7 @@ import type { AgentRetryScheduler } from "./agent-retry.ts";
 import type { ResolvedWorkflowModelProfiles } from "./model-profiles.ts";
 import type { WorkflowJournal } from "./journal.ts";
 import type { PerfSink } from "./perf.ts";
-import type { AgentOptions } from "./types.ts";
+import type { AgentOptions, WorkflowProgressEvent } from "./types.ts";
 import type { WorkflowUsageSink } from "./usage.ts";
 import type { WorktreeBaseline, WorktreeRegistry } from "./worktree.ts";
 import type {
@@ -64,6 +64,7 @@ export interface AgentProgress {
   agentTool(label: string, tool: string, id?: number): void;
   agentDone(label: string, id?: number): void;
   agentFailed(label: string, error: unknown, id?: number): void;
+  event(event: WorkflowProgressEvent): void;
   log(message: string): void;
 }
 
@@ -75,6 +76,7 @@ interface RunContextBase {
   agentTimeoutMs: number;
   agentRetries: number;
   pauseOnProviderUsageLimit?: boolean;
+  resumeEditedWorkflow?: boolean;
   retryScheduler: AgentRetryScheduler;
   modelProfiles: ResolvedWorkflowModelProfiles;
   progress: AgentProgress;

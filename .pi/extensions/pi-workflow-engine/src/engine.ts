@@ -168,6 +168,7 @@ export async function runResolvedWorkflow(
       agentTimeoutMs: resolvedOptions.agentTimeoutMs,
       agentRetries: resolvedOptions.agentRetries,
       pauseOnProviderUsageLimit: resolvedOptions.background !== undefined,
+      resumeEditedWorkflow: resolvedOptions.resumeEditedWorkflow,
       retryScheduler: dependencies.retryScheduler ?? defaultAgentRetryScheduler,
       modelProfiles,
       progress,

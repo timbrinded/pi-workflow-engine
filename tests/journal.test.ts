@@ -233,6 +233,30 @@ test("journal validates execution context and explains cache invalidation", () =
   );
 });
 
+test("edited-workflow lookup waives only source fingerprint mismatch", () => {
+  const journal = createMemoryBackedJournal([{ version: 2, key: "same", result: "cached", identity: RESUME_CONTEXT }]);
+  const edited = {
+    ...RESUME_CONTEXT,
+    workflow: { ...RESUME_CONTEXT.workflow, sourceFingerprint: "source-b" },
+  } satisfies AgentResumeContext;
+  assert.deepEqual(journal.lookup("same", edited), { hit: false, reason: "workflow source changed" });
+  assert.deepEqual(journal.lookup("same", edited, { allowWorkflowSourceMismatch: true }), { hit: true, value: "cached" });
+  assert.deepEqual(
+    journal.lookup("same", {
+      ...edited,
+      repository: { ...edited.repository, head: "head-b" },
+    }, { allowWorkflowSourceMismatch: true }),
+    { hit: false, reason: "repository HEAD changed" },
+  );
+  assert.deepEqual(
+    journal.lookup("same", {
+      ...edited,
+      session: { ...edited.session, model: { provider: "openai", id: "gpt-b" } },
+    }, { allowWorkflowSourceMismatch: true }),
+    { hit: false, reason: "effective model changed" },
+  );
+});
+
 test("context-aware lookup never replays legacy journal entries", () => {
   const journal = createMemoryBackedJournal([
     { key: "legacy", value: "stale" },

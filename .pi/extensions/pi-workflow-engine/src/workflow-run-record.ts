@@ -58,6 +58,8 @@ export interface PersistedWorkflowRunOptions {
   readonly usageLimitMaxAttempts?: number;
   readonly usageLimitMaxDelayMs?: number;
   readonly usageLimitAttempt?: number;
+  /** Explicit edited-source replay opt-in. Omitted on older records. */
+  readonly resumeEditedWorkflow?: boolean;
   readonly budget: number | null;
   /** Whether replay would require redacted invocation arguments. Omitted on legacy records. */
   readonly argumentsPresent?: boolean;
@@ -251,6 +253,7 @@ function persistedWorkflowRunOptions(
     usageLimitMaxAttempts: options.usageLimitMaxAttempts,
     usageLimitMaxDelayMs: options.usageLimitMaxDelayMs,
     usageLimitAttempt: options.usageLimitAttempt,
+    resumeEditedWorkflow: options.resumeEditedWorkflow,
     budget: options.budget,
     argumentsPresent,
     resultViewer: options.resultViewer,
@@ -513,6 +516,7 @@ function isPersistedWorkflowRunOptions(value: unknown): value is PersistedWorkfl
     value.usageLimitAttempt !== undefined
     && !isIntegerInRange(value.usageLimitAttempt, 0, WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX)
   ) return false;
+  if (value.resumeEditedWorkflow !== undefined && typeof value.resumeEditedWorkflow !== "boolean") return false;
   if (value.parallelSubmissionLimit !== null && !isFiniteNumber(value.parallelSubmissionLimit)) return false;
   if (value.budget !== null && !isFiniteNumber(value.budget)) return false;
   if (value.argumentsPresent !== undefined && typeof value.argumentsPresent !== "boolean") return false;

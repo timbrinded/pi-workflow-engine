@@ -116,7 +116,9 @@ export async function lookupReplayResult(input: {
   readonly opts: AgentExecutionOptions;
   readonly workspace: AgentWorkspace;
 }): Promise<{ readonly hit: true; readonly result: unknown } | { readonly hit: false; readonly reason?: string }> {
-  const cached = input.rc.journal.lookup(input.key, input.identity);
+  const cached = input.rc.journal.lookup(input.key, input.identity, {
+    allowWorkflowSourceMismatch: input.rc.resumeEditedWorkflow,
+  });
   if (!cached.hit) return cached;
   const validation = await validateCachedResult(cached.value, input.opts, input.rc, input.workspace);
   return validation.ok
@@ -147,7 +149,9 @@ export async function validateReplayIdentity(input: {
     sessionCwd: input.sessionCwd,
   });
   if (current.kind === "unverifiable") return { ok: false, reason: current.reason };
-  const mismatch = resumeContextMismatchReason(input.identity, current.identity);
+  const mismatch = resumeContextMismatchReason(input.identity, current.identity, {
+    allowWorkflowSourceMismatch: input.rc.resumeEditedWorkflow,
+  });
   return mismatch ? { ok: false, reason: mismatch } : { ok: true };
 }
 
@@ -160,6 +164,7 @@ export async function settleAgentAttempt(input: {
 }): Promise<AgentAttemptSettlement> {
   const { rc, label, replay, outcome } = input;
   if (outcome.kind === "live-unrecordable") {
+    recordAgentResultSource(rc, "live");
     return { kind: "done", result: outcome.result };
   }
   if (!isReplayEnabled(replay)) throw new Error("Replayable agent outcome produced without an enabled replay plan.");
@@ -183,8 +188,21 @@ export async function settleAgentAttempt(input: {
   if (outcome.kind === "cache-hit") {
     rc.progress.log(`${label}: using cached result from workflow journal`);
     rc.perf.counter("agent.cache_hit", 1, input.tags);
+    recordAgentResultSource(rc, "cached");
+  } else {
+    recordAgentResultSource(rc, "live");
   }
   return { kind: "done", result: outcome.result };
+}
+
+function recordAgentResultSource(rc: RunContext, source: "cached" | "live"): void {
+  if (!rc.resumeEditedWorkflow) return;
+  rc.progress.event({
+    type: "counter_delta",
+    key: `resume.${source}`,
+    label: source === "cached" ? "Cached agents" : "Live agents",
+    delta: 1,
+  });
 }
 
 async function captureVerifiedReplayIdentity(input: {

@@ -68,6 +68,8 @@ export interface WorkflowRunOptions {
   background?: WorkflowBackgroundOrigin;
   /** Replay completed agent results from this prior run id when call and execution context still match. */
   resumeFromRunId?: string;
+  /** Explicitly allow resume to ignore only a workflow-source fingerprint mismatch. */
+  resumeEditedWorkflow?: boolean;
   resultViewer?: "open" | "skip";
   /** Additional abort signal to compose with the host context signal. */
   signal?: AbortSignal;

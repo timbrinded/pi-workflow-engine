@@ -36,6 +36,7 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
     usageLimitMaxAttempts: DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS,
     usageLimitMaxDelayMs: DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS,
     usageLimitAttempt: 0,
+    resumeEditedWorkflow: false,
     budget: null,
   });
 
@@ -62,7 +63,7 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
 });
 
 test("parseWorkflowInvocation extracts tuning flags from slash command args", () => {
-  const invocation = parseWorkflowInvocation("code-review --inspect --perf --concurrency=4 --parallel-limit 9 --max-agents 20 --agent-timeout-ms=45000 --agent-retries 2 --budget 50000 --resume old-run review src only");
+  const invocation = parseWorkflowInvocation("code-review --inspect --perf --concurrency=4 --parallel-limit 9 --max-agents 20 --agent-timeout-ms=45000 --agent-retries 2 --budget 50000 --resume old-run --resume-edited review src only");
 
   assert.equal(invocation.name, "code-review");
   assert.equal(invocation.args, "review src only");
@@ -76,6 +77,7 @@ test("parseWorkflowInvocation extracts tuning flags from slash command args", ()
     agentRetries: 2,
     budget: 50000,
     resumeFromRunId: "old-run",
+    resumeEditedWorkflow: true,
   });
 
   const equalsForm = parseWorkflowInvocation("code-review --budget=50000 --resume=old-run review src only");
@@ -155,6 +157,14 @@ test("parseWorkflowInvocation rejects invalid resume flags without consuming pos
     assert.equal(invocation.options.resumeFromRunId, undefined, item.input);
     assert.deepEqual(invocation.optionErrors, ["--resume requires a workflow run id"], item.input);
   }
+});
+
+test("edited-workflow reuse is explicit and requires a resume run", () => {
+  assert.deepEqual(parseWorkflowInvocation("code-review --resume-edited review src").optionErrors, [
+    "--resume-edited requires --resume <run-id>",
+  ]);
+  assert.equal(resolveWorkflowRunOptions({ resumeEditedWorkflow: true }, {}).resumeEditedWorkflow, false);
+  assert.equal(resolveWorkflowRunOptions({ resumeFromRunId: "old-run", resumeEditedWorkflow: true }, {}).resumeEditedWorkflow, true);
 });
 
 test("resolveWorkflowRunOptions resolves budget env values strictly and rejects non-finite explicit budgets", () => {

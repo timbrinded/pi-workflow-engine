@@ -53,6 +53,7 @@ function createProgress(): AgentProgress & { events: string[] } {
     agentFailed(label) {
       events.push(`failed:${label}`);
     },
+    event() {},
     log() {},
   };
 }

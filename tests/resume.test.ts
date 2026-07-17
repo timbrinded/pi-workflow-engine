@@ -38,12 +38,15 @@ import { createGitRepo, runGit } from "./resume-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly logs: string[];
+  readonly events: WorkflowProgressEvent[];
 }
 
 function createProgress(): CaptureProgress {
   const logs: string[] = [];
+  const events: WorkflowProgressEvent[] = [];
   return {
     logs,
+    events,
     agentQueued() {
       return 1;
     },
@@ -52,7 +55,9 @@ function createProgress(): CaptureProgress {
     agentDone() {},
     agentFailed() {},
     phase() {},
-    event(_event: WorkflowProgressEvent) {},
+    event(event: WorkflowProgressEvent) {
+      events.push(event);
+    },
     log(message) {
       logs.push(message);
     },
@@ -207,6 +212,8 @@ async function runWithJournal(input: {
   readonly writeRunId: string;
   readonly createSession: CreateAgentSession;
   readonly resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkflow>;
+  readonly resumeEditedWorkflow?: boolean;
+  readonly onProgress?: (progress: CaptureProgress) => void;
 }): Promise<unknown> {
   const usage = createWorkflowUsageRecorder();
   const progress = createProgress();
@@ -222,6 +229,7 @@ async function runWithJournal(input: {
     agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     agentRetries: 0,
+    resumeEditedWorkflow: input.resumeEditedWorkflow,
     retryScheduler: defaultAgentRetryScheduler,
     modelProfiles: hostWorkflowModelProfiles(undefined),
     progress,
@@ -234,7 +242,9 @@ async function runWithJournal(input: {
     createSession: input.createSession,
   };
 
-  return await runWorkflowWithContext(rc, progress, input.mod, "", contextOpts(input.resolveWorkflow));
+  const result = await runWorkflowWithContext(rc, progress, input.mod, "", contextOpts(input.resolveWorkflow));
+  input.onProgress?.(progress);
+  return result;
 }
 
 function fakeContext(cwd: string, signal?: AbortSignal): ExtensionContext {
@@ -336,6 +346,100 @@ test("changing workflow implementation invalidates all calls from the old source
   assert.deepEqual(result, ["live:a", "live:changed", "live:c"]);
   assert.deepEqual(livePrompts, ["a", "changed", "c"]);
   assert.equal((await loadJournalEntries(workflowJournalPath(cwd, "second-run"))).length, 3);
+});
+
+test("explicit edited-workflow resume reuses only behaviorally unchanged calls", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-edited-"));
+  const original = workflowModule("edited", async (api) => [
+    await api.agent("early", { resume: "read-only", resumeInputs: ["."] }),
+    await api.agent("stable", { resume: "read-only", resumeInputs: ["."] }),
+    await api.agent("late", { resume: "read-only", resumeInputs: ["."] }),
+  ]);
+  const edited = workflowModule("edited", async (api) => [
+    await api.agent("early changed", { resume: "read-only", resumeInputs: ["."] }),
+    await api.agent("stable", { resume: "read-only", resumeInputs: ["."] }),
+    await api.agent("late changed", { resume: "read-only", resumeInputs: ["."] }),
+    await api.agent("new", { resume: "read-only", resumeInputs: ["."] }),
+  ]);
+  try {
+    await runWithJournal({ cwd, mod: original, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+    const livePrompts: string[] = [];
+    let events: WorkflowProgressEvent[] = [];
+    const result = await runWithJournal({
+      cwd,
+      mod: edited,
+      resumeFrom: "first-run",
+      resumeEditedWorkflow: true,
+      writeRunId: "second-run",
+      createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
+      onProgress: (progress) => {
+        events = progress.events;
+      },
+    });
+
+    assert.deepEqual(result, ["live:early changed", "live:stable", "live:late changed", "live:new"]);
+    assert.deepEqual(livePrompts, ["early changed", "late changed", "new"]);
+    assert.equal(events.filter((event) => event.type === "counter_delta" && event.key === "resume.cached").length, 1);
+    assert.equal(events.filter((event) => event.type === "counter_delta" && event.key === "resume.live").length, 3);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("edited-workflow resume keeps duplicate unkeyed calls ambiguous", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-edited-duplicates-"));
+  const original = workflowModule("duplicates", async (api) => await api.parallel([
+    () => api.agent("same", { resume: "read-only", resumeInputs: ["."] }),
+    () => api.agent("same", { resume: "read-only", resumeInputs: ["."] }),
+  ]));
+  const edited = workflowModule("duplicates", async (api) => {
+    api.log("edited wrapper");
+    return await api.parallel([
+      () => api.agent("same", { resume: "read-only", resumeInputs: ["."] }),
+      () => api.agent("same", { resume: "read-only", resumeInputs: ["."] }),
+    ]);
+  });
+  try {
+    await runWithJournal({ cwd, mod: original, writeRunId: "first-run", createSession: createSequencedTextSession(() => {}) });
+    const livePrompts: string[] = [];
+    await runWithJournal({
+      cwd,
+      mod: edited,
+      resumeFrom: "first-run",
+      resumeEditedWorkflow: true,
+      writeRunId: "second-run",
+      createSession: createSequencedTextSession((prompt) => livePrompts.push(prompt)),
+    });
+    assert.deepEqual(livePrompts, ["same", "same"]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("edited-workflow resume still invalidates repository changes", async () => {
+  const cwd = await createGitRepo();
+  const original = workflowModule("edited-repository", async (api) =>
+    await api.agent("same", { resume: "read-only" }));
+  const edited = workflowModule("edited-repository", async (api) => {
+    api.log("edited wrapper");
+    return await api.agent("same", { resume: "read-only" });
+  });
+  try {
+    await runWithJournal({ cwd, mod: original, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+    await writeFile(join(cwd, "tracked.txt"), "changed\n", "utf8");
+    const livePrompts: string[] = [];
+    await runWithJournal({
+      cwd,
+      mod: edited,
+      resumeFrom: "first-run",
+      resumeEditedWorkflow: true,
+      writeRunId: "second-run",
+      createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
+    });
+    assert.deepEqual(livePrompts, ["same"]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 async function assertRepositoryChangeInvalidates(
@@ -611,16 +715,23 @@ export default async function run(api) {
 
 test("parallel resume replays stable keys despite completion-order journal writes", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-parallel-"));
-  const mod = workflowModule("parallel", async (api) =>
+  const original = workflowModule("parallel", async (api) =>
     await api.parallel([
       () => api.agent("slow", { resume: "read-only", resumeInputs: ["."] }),
       () => api.agent("fast", { resume: "read-only", resumeInputs: ["."] }),
     ]),
   );
+  const edited = workflowModule("parallel", async (api) => {
+    api.log("edited wrapper");
+    return await api.parallel([
+      () => api.agent("slow", { resume: "read-only", resumeInputs: ["."] }),
+      () => api.agent("fast", { resume: "read-only", resumeInputs: ["."] }),
+    ]);
+  });
 
   await runWithJournal({
     cwd,
-    mod,
+    mod: original,
     writeRunId: "first-run",
     createSession: createDelayedTextSession({ slow: 20, fast: 0 }, () => {}),
   });
@@ -634,8 +745,9 @@ test("parallel resume replays stable keys despite completion-order journal write
   const livePrompts: string[] = [];
   const result = await runWithJournal({
     cwd,
-    mod,
+    mod: edited,
     resumeFrom: "first-run",
+    resumeEditedWorkflow: true,
     writeRunId: "second-run",
     createSession: createDelayedTextSession({}, (prompt) => livePrompts.push(prompt)),
   });

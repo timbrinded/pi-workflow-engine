@@ -195,7 +195,10 @@ workflows, and registration.
 - **Mutating agents:** disposable worktrees isolate edits and return
   baseline-relative patches.
 - **Resume:** journals bind workspace-aware calls to repository state and all
-  calls to workflow, model, prompt, skill, and tool identity.
+  calls to workflow, model, prompt, skill, and tool identity. Workflow edits
+  invalidate replay by default; explicit edited-workflow resume can reuse only
+  behaviorally unchanged, unambiguous calls while every other identity check
+  remains enforced.
 - **Dependencies:** pi and TypeBox remain host-provided peers; the package ships
   no duplicate runtime stack.
 

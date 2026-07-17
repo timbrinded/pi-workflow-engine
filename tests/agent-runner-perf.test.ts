@@ -57,6 +57,9 @@ function createProgress(): AgentProgress & { readonly events: string[] } {
     agentFailed(label, error) {
       events.push(`failed:${label}:${String(error)}`);
     },
+    event(event) {
+      events.push(`event:${event.type}`);
+    },
     log(message) {
       events.push(`log:${message}`);
     },
