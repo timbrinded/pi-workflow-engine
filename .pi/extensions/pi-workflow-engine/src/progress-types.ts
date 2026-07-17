@@ -1,3 +1,5 @@
+import type { WorkflowUsageSnapshot } from "./usage.ts";
+
 export type AgentRowStatus = "queued" | "running" | "done" | "failed";
 export type WorkflowLaneItemStatus = "pending" | "running" | "success" | "warning" | "error";
 
@@ -43,4 +45,5 @@ export interface WorkflowProgressSnapshot {
   readonly lanes: readonly [string, readonly WorkflowLaneItemSnapshot[]][];
   readonly laneOverflow: readonly [string, number][];
   readonly logs: readonly string[];
+  readonly usage?: WorkflowUsageSnapshot;
 }

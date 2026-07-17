@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_LANE_ITEM_LIMIT, ProgressTracker } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
+import { createWorkflowUsageRecorder, formatWorkflowUsageLine } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import { createTestTheme } from "./fixtures/theme.ts";
 
 function headlessContext(): ExtensionContext {
   return { hasUI: false } as unknown as ExtensionContext;
@@ -58,4 +60,46 @@ test("ProgressTracker snapshots copy retained state", () => {
   assert.notEqual(firstAgent, secondAgent);
   assert.notEqual(first.lanes[0]?.[1][0], second.lanes[0]?.[1][0]);
   assert.equal(DEFAULT_LANE_ITEM_LIMIT, 200);
+});
+
+test("ProgressTracker publishes the shared usage line in compact status", () => {
+  const statuses: string[] = [];
+  const ctx = {
+    hasUI: true,
+    ui: {
+      theme: createTestTheme(),
+      setStatus(_key: string, value: string | undefined) {
+        if (value !== undefined) statuses.push(value);
+      },
+      setWidget() {},
+    },
+  } as unknown as ExtensionContext;
+  const recorder = createWorkflowUsageRecorder();
+  recorder.recordAgentSession({
+    label: "finder",
+    messages: [
+      {
+        role: "assistant",
+        usage: {
+          input: 100,
+          output: 20,
+          cacheRead: 50,
+          cacheWrite: 0,
+          cost: { total: 0.01 },
+        },
+      },
+    ],
+  });
+  const usage = recorder.snapshot();
+  const usageLine = formatWorkflowUsageLine(usage);
+  const tracker = new ProgressTracker(ctx, "status-test");
+
+  try {
+    tracker.updateUsage(usage);
+    assert.equal(tracker.snapshot().usage, usage);
+    assert.ok(usageLine);
+    assert.ok(statuses.at(-1)?.includes(usageLine));
+  } finally {
+    tracker.done();
+  }
 });

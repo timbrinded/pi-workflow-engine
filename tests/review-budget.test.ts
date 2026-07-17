@@ -13,6 +13,7 @@ function usage(output: number): WorkflowUsageSnapshot {
       cacheRead: 0,
       cacheWrite: 0,
       totalTokens: output,
+      coverage: { input: "complete", output: "complete", cacheRead: "complete", cacheWrite: "complete" },
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
   };

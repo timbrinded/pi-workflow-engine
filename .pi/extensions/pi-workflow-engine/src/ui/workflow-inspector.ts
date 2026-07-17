@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
+import { formatWorkflowUsageLine } from "../usage.ts";
 import { agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
 
 type Section = "Overview" | "Agents" | "Findings" | "Logs";
@@ -161,6 +162,8 @@ export class WorkflowInspector {
       { text: `${this.theme.fg("muted", "Phase")} ${this.theme.fg("accent", snapshot.currentPhase)}`, selectable: true, key: "overview:phase" },
       { text: `${this.theme.fg("muted", "Elapsed")} ${elapsed}`, selectable: true, key: "overview:elapsed" },
     ];
+    const usage = formatWorkflowUsageLine(snapshot.usage);
+    if (usage) lines.push({ text: usage, selectable: true, key: "overview:usage" });
     if (snapshot.counters.length > 0) {
       lines.push({ text: this.theme.fg("dim", "Counters") });
       for (const counter of snapshot.counters) {

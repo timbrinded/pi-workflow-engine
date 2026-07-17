@@ -1,5 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
+import { formatWorkflowUsageLine } from "../usage.ts";
 import { agentDetailParts, agentLabelColor, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
 
 const MAX_WIDGET_LINES = 12;
@@ -173,9 +174,10 @@ function agentLine(agent: AgentRowSnapshot, theme: Theme): string {
 }
 
 function footerLine(snapshot: WorkflowProgressSnapshot, theme: Theme): string | undefined {
+  const usage = formatWorkflowUsageLine(snapshot.usage);
   const counters = snapshot.counters.slice(0, 4).map((counter) => `${counter.label} ${formatCount(counter.value)}`);
   const latestLog = snapshot.logs[snapshot.logs.length - 1];
-  const parts = counters.length > 0 ? counters : [];
+  const parts = usage ? [usage, ...counters] : counters;
   if (latestLog) parts.push(latestLog);
   if (parts.length === 0) return undefined;
   return `${theme.fg("dim", "└─")} ${theme.fg("dim", parts.join(" · "))}`;

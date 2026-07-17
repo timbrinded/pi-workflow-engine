@@ -24,6 +24,7 @@ const usageSnapshot: WorkflowUsageSnapshot = {
         cacheRead: 40000,
         cacheWrite: 5000,
         totalTokens: 59145,
+        coverage: { input: "complete", output: "complete", cacheRead: "complete", cacheWrite: "complete" },
         cost: { input: 0.01, output: 0.1, cacheRead: 0.003, cacheWrite: 0.01, total: 0.123 },
       },
     },
@@ -34,6 +35,7 @@ const usageSnapshot: WorkflowUsageSnapshot = {
     cacheRead: 40000,
     cacheWrite: 5000,
     totalTokens: 59145,
+    coverage: { input: "complete", output: "complete", cacheRead: "complete", cacheWrite: "complete" },
     cost: { input: 0.01, output: 0.1, cacheRead: 0.003, cacheWrite: 0.01, total: 0.123 },
   },
   assistantMessages: 1,
@@ -102,6 +104,29 @@ test("workflow inspector renders a completed retained snapshot", () => {
   assert.match(rendered, /code-review/);
   assert.match(rendered, /Stored finding/);
   assert.match(rendered, /src\/app\.ts:10/);
+});
+
+test("workflow inspector and widget share the workflow usage formatter", () => {
+  const now = Date.now();
+  const snapshot: WorkflowProgressSnapshot = {
+    title: "usage-surfaces",
+    startedAt: now - 1_000,
+    currentPhase: "Find",
+    phases: [],
+    counters: [],
+    summary: [],
+    lanes: [],
+    laneOverflow: [],
+    logs: [],
+    usage: usageSnapshot,
+  };
+  const expected = "Usage: fresh 12k · cache read 40k · cache write 5.0k · output 1.8k · cost $0.123 · agents 1";
+  const tui = { requestRender() {}, terminal: { rows: 24, columns: 200 } } as Pick<TUI, "requestRender" | "terminal">;
+  const theme = createTestTheme();
+  const inspector = new WorkflowInspector(() => snapshot, tui, theme, () => {});
+
+  assert.ok(inspector.render(200).join("\n").includes(expected));
+  assert.ok(renderWorkflowWidgetLines(snapshot, 0, 200, theme).join("\n").includes(expected));
 });
 
 test("workflow inspector expands findings as formatted multi-line details", () => {
@@ -218,10 +243,10 @@ test("workflow result text renders usage summaries", () => {
   const theme = createTestTheme();
 
   const generic = renderWorkflowResultText("generic", { summary: "Done" }, false, theme, usageSnapshot);
-  assert.match(generic, /Usage: ↑12k · ↓1.8k · R40k · W5.0k · cost \$0.123 · agents 1/);
+  assert.match(generic, /Usage: fresh 12k · cache read 40k · cache write 5.0k · output 1.8k · cost \$0.123 · agents 1/);
 
   const advisory = renderWorkflowResultText("refactor-scout", validReport, true, theme, usageSnapshot);
-  assert.match(advisory, /Usage: ↑12k · ↓1.8k · R40k · W5.0k · cost \$0.123 · agents 1/);
+  assert.match(advisory, /Usage: fresh 12k · cache read 40k · cache write 5.0k · output 1.8k · cost \$0.123 · agents 1/);
 });
 
 test("workflow result text renders perf detail lines", () => {
