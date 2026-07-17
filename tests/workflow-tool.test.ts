@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Component, KeyId, TUI } from "@earendil-works/pi-tui";
-import workflowEngine, {
+import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { Component, TUI } from "@earendil-works/pi-tui";
+import {
   buildTemporaryWorkflowAuthorPrompt,
   getLastWorkflowInspection,
   inlineCompileErrorResult,
@@ -15,83 +15,18 @@ import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine
 import {
   DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
   DEFAULT_REVIEW_RESULTS_SHORTCUT,
-  type DynamaxShortcuts,
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import {
+  captureWorkflowExtension,
+  captureWorkflowTool,
+} from "./workflow-extension-fixtures.ts";
 
 const WORKFLOW_TOOL_TEST_CWD = mkdtempSync(join(tmpdir(), "pi-workflow-tool-tests-"));
 process.on("exit", () => rmSync(WORKFLOW_TOOL_TEST_CWD, { recursive: true, force: true }));
-
-interface CapturedTool {
-  name: string;
-  readonly promptGuidelines?: readonly string[];
-  execute(
-    toolCallId: string,
-    params: { script?: string; name?: string; args?: string; resumeFromRunId?: string; resumeEditedWorkflow?: boolean; background?: boolean },
-    signal: AbortSignal | undefined,
-    onUpdate: () => void,
-    ctx: ExtensionContext,
-  ): Promise<unknown>;
-}
-
-interface CapturedShortcut {
-  key: KeyId;
-  description?: string;
-  handler(ctx: ExtensionContext): unknown | Promise<unknown>;
-}
-
-interface CapturedCommand {
-  description?: string;
-  handler(args: string, ctx: ExtensionCommandContext): unknown | Promise<unknown>;
-}
-
-interface CapturedWorkflowExtension {
-  tool: CapturedTool;
-  shortcuts: readonly CapturedShortcut[];
-  commands: ReadonlyMap<string, CapturedCommand>;
-  sentMessages: readonly unknown[];
-}
-
-/** Register the extension against a no-op `pi` and hand back its `workflow` tool. */
-function captureWorkflowExtension(
-  shortcuts: DynamaxShortcuts = {
-    inspector: DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
-    results: DEFAULT_REVIEW_RESULTS_SHORTCUT,
-  },
-): CapturedWorkflowExtension {
-  let capturedTool: CapturedTool | undefined;
-  const capturedShortcuts: CapturedShortcut[] = [];
-  const capturedCommands = new Map<string, CapturedCommand>();
-  const sentMessages: unknown[] = [];
-  const fakePi = {
-    on: () => {},
-    registerCommand: (name: string, command: CapturedCommand) => {
-      capturedCommands.set(name, command);
-    },
-    registerShortcut: (key: KeyId, shortcut: Omit<CapturedShortcut, "key">) => {
-      capturedShortcuts.push({ key, ...shortcut });
-    },
-    registerMessageRenderer: () => {},
-    registerTool: (tool: unknown) => {
-      const candidate = tool as CapturedTool;
-      if (candidate.name === "workflow") capturedTool = candidate;
-    },
-    sendMessage: (message: unknown) => {
-      sentMessages.push(message);
-    },
-    sendUserMessage: () => {},
-  } as unknown as ExtensionAPI;
-  workflowEngine(fakePi, shortcuts);
-  if (!capturedTool) throw new Error("workflow tool was not registered");
-  return { tool: capturedTool, shortcuts: capturedShortcuts, commands: capturedCommands, sentMessages };
-}
-
-function captureWorkflowTool(): CapturedTool {
-  return captureWorkflowExtension().tool;
-}
 
 const HEADLESS_CTX = {
   cwd: WORKFLOW_TOOL_TEST_CWD,
