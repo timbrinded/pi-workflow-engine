@@ -43,6 +43,7 @@ export async function startBackgroundWorkflowTool(
     await input.coordinator.start({
       ctx: input.ctx,
       runId,
+      name: input.name,
       run: async (signal, onStarted) => {
         await input.execute(
           { ...input.ctx, signal },

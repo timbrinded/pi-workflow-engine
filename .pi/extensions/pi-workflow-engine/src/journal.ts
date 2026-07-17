@@ -170,6 +170,8 @@ export async function createWorkflowJournal(options: {
   readonly writePath: string;
 }): Promise<WorkflowJournal> {
   const priorEntries = options.resumePath ? await loadJournalEntries(options.resumePath, { required: true }) : [];
+  await mkdir(dirname(options.writePath), { recursive: true });
+  await appendFile(options.writePath, "", "utf8");
   return createMemoryBackedJournal(priorEntries, options.writePath);
 }
 

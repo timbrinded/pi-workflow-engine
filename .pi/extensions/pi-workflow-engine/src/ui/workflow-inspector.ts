@@ -4,7 +4,7 @@ import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapsh
 import { formatWorkflowUsageLine } from "../usage.ts";
 import { agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
 
-type Section = "Overview" | "Agents" | "Findings" | "Logs";
+type Section = "Overview" | "Agents" | "Findings" | "Logs" | "Result";
 
 interface InspectorLine {
   text: string;
@@ -12,11 +12,19 @@ interface InspectorLine {
   key?: string;
 }
 
-const SECTIONS: readonly Section[] = ["Overview", "Agents", "Findings", "Logs"];
+const BASE_SECTIONS: readonly Section[] = ["Overview", "Agents", "Findings", "Logs"];
+const RESULT_SECTIONS: readonly Section[] = [...BASE_SECTIONS, "Result"];
+const MAX_RESULT_SOURCE_LINES = 200;
+const MAX_RESULT_RENDERED_LINES = 400;
+
+export interface WorkflowInspectorOutcome {
+  readonly label: string;
+  readonly text: string;
+}
 
 export class WorkflowInspector {
   private sectionIndex = 0;
-  private readonly selected: Record<Section, number> = { Overview: 0, Agents: 0, Findings: 0, Logs: 0 };
+  private readonly selected: Record<Section, number> = { Overview: 0, Agents: 0, Findings: 0, Logs: 0, Result: 0 };
   private readonly expanded = new Set<string>();
 
   constructor(
@@ -24,6 +32,7 @@ export class WorkflowInspector {
     private readonly tui: Pick<TUI, "requestRender" | "terminal">,
     private readonly theme: Theme,
     private readonly close: () => void,
+    private readonly outcome?: WorkflowInspectorOutcome,
   ) {}
 
   handleInput(data: string): void {
@@ -33,7 +42,7 @@ export class WorkflowInspector {
     }
 
     if (matchesKey(data, "tab")) {
-      this.sectionIndex = (this.sectionIndex + 1) % SECTIONS.length;
+      this.sectionIndex = (this.sectionIndex + 1) % this.sections().length;
       this.requestRender();
       return;
     }
@@ -101,7 +110,11 @@ export class WorkflowInspector {
   invalidate(): void {}
 
   private currentSection(): Section {
-    return SECTIONS[this.sectionIndex] ?? "Overview";
+    return this.sections()[this.sectionIndex] ?? "Overview";
+  }
+
+  private sections(): readonly Section[] {
+    return this.outcome ? RESULT_SECTIONS : BASE_SECTIONS;
   }
 
   private requestRender(): void {
@@ -109,7 +122,7 @@ export class WorkflowInspector {
   }
 
   private tabs(): string {
-    return SECTIONS.map((section, index) => {
+    return this.sections().map((section, index) => {
       return index === this.sectionIndex ? this.theme.fg("accent", this.theme.bold(section)) : this.theme.fg("muted", section);
     }).join(this.theme.fg("dim", "  |  "));
   }
@@ -153,6 +166,8 @@ export class WorkflowInspector {
         return this.findingLines(snapshot, width);
       case "Logs":
         return this.logLines(snapshot);
+      case "Result":
+        return this.resultLines(width);
     }
   }
 
@@ -261,6 +276,28 @@ export class WorkflowInspector {
       const text = selected ? this.theme.bg("selectedBg", log) : log;
       return { text, selectable: true, key };
     });
+  }
+
+  private resultLines(width: number): InspectorLine[] {
+    if (!this.outcome) return [{ text: this.theme.fg("dim", "No retained outcome is available for this run.") }];
+    const source = this.outcome.text.split("\n");
+    const lines: InspectorLine[] = [{ text: this.theme.fg("dim", this.outcome.label) }];
+    const shown = source.slice(0, MAX_RESULT_SOURCE_LINES);
+    for (const sourceLine of shown) {
+      const wrapped = wrapTextWithAnsi(sourceLine || " ", Math.max(10, width - 2));
+      for (const line of wrapped) {
+        if (lines.length >= MAX_RESULT_RENDERED_LINES) break;
+        const index = lines.length;
+        const selected = this.currentSection() === "Result" && this.selected.Result === index - 1;
+        const text = selected ? this.theme.bg("selectedBg", line) : line;
+        lines.push({ text, selectable: true, key: `result:${index}` });
+      }
+      if (lines.length >= MAX_RESULT_RENDERED_LINES) break;
+    }
+    if (shown.length < source.length || lines.length >= MAX_RESULT_RENDERED_LINES) {
+      lines.push({ text: this.theme.fg("dim", "… retained result truncated for display") });
+    }
+    return lines;
   }
 }
 
