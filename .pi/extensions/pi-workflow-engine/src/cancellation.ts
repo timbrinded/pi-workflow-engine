@@ -5,6 +5,14 @@ export class WorkflowAbortError extends Error {
   }
 }
 
+/** Abort reason used when a durable run can be resumed after its host session shuts down. */
+export class WorkflowPauseError extends WorkflowAbortError {
+  constructor(message = "Workflow paused because its host session shut down") {
+    super(message);
+    this.name = "WorkflowPauseError";
+  }
+}
+
 export function abortReason(signal: AbortSignal | undefined): Error {
   const reason = signal?.reason;
   if (safeInstanceOf(reason, Error)) return reason;
@@ -27,6 +35,10 @@ export function isFatalWorkflowError(error: unknown, signal: AbortSignal | undef
     }
   }
   return false;
+}
+
+export function isWorkflowPauseError(error: unknown): error is WorkflowPauseError {
+  return safeInstanceOf(error, WorkflowPauseError);
 }
 
 export function linkAbortSignal(parent: AbortSignal | undefined, controller: AbortController): () => void {

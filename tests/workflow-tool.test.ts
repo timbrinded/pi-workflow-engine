@@ -20,6 +20,7 @@ import {
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
 
 const WORKFLOW_TOOL_TEST_CWD = mkdtempSync(join(tmpdir(), "pi-workflow-tool-tests-"));
 process.on("exit", () => rmSync(WORKFLOW_TOOL_TEST_CWD, { recursive: true, force: true }));
@@ -29,7 +30,7 @@ interface CapturedTool {
   readonly promptGuidelines?: readonly string[];
   execute(
     toolCallId: string,
-    params: { script?: string; name?: string; args?: string; resumeFromRunId?: string },
+    params: { script?: string; name?: string; args?: string; resumeFromRunId?: string; background?: boolean },
     signal: AbortSignal | undefined,
     onUpdate: () => void,
     ctx: ExtensionContext,
@@ -51,6 +52,7 @@ interface CapturedWorkflowExtension {
   tool: CapturedTool;
   shortcuts: readonly CapturedShortcut[];
   commands: ReadonlyMap<string, CapturedCommand>;
+  sentMessages: readonly unknown[];
 }
 
 /** Register the extension against a no-op `pi` and hand back its `workflow` tool. */
@@ -63,6 +65,7 @@ function captureWorkflowExtension(
   let capturedTool: CapturedTool | undefined;
   const capturedShortcuts: CapturedShortcut[] = [];
   const capturedCommands = new Map<string, CapturedCommand>();
+  const sentMessages: unknown[] = [];
   const fakePi = {
     on: () => {},
     registerCommand: (name: string, command: CapturedCommand) => {
@@ -76,12 +79,14 @@ function captureWorkflowExtension(
       const candidate = tool as CapturedTool;
       if (candidate.name === "workflow") capturedTool = candidate;
     },
-    sendMessage: () => {},
+    sendMessage: (message: unknown) => {
+      sentMessages.push(message);
+    },
     sendUserMessage: () => {},
   } as unknown as ExtensionAPI;
   workflowEngine(fakePi, shortcuts);
   if (!capturedTool) throw new Error("workflow tool was not registered");
-  return { tool: capturedTool, shortcuts: capturedShortcuts, commands: capturedCommands };
+  return { tool: capturedTool, shortcuts: capturedShortcuts, commands: capturedCommands, sentMessages };
 }
 
 function captureWorkflowTool(): CapturedTool {
@@ -358,6 +363,64 @@ export default async function run() {
   assert.ok(Array.isArray(content));
   assert.equal(content[0]?.text, "resumeFromRunId must be non-empty.");
   assert.deepEqual(result.details, { error: "invalid_resume_from_run_id" });
+});
+
+test("workflow tool rejects background mode in finite print execution", async () => {
+  const tool = captureWorkflowTool();
+  const ctx = { ...HEADLESS_CTX, mode: "print" } as ExtensionContext;
+  const result = await tool.execute(
+    "call-background-print",
+    { script: "export const meta = { name: 'print', description: 'print' }; export default async function () { return 'no'; }", background: true },
+    undefined,
+    () => {},
+    ctx,
+  );
+
+  assert.ok(isRecord(result));
+  assert.deepEqual(result.details, { error: "background_unavailable", mode: "print" });
+});
+
+test("workflow tool returns a durable background run id and detaches from the initiating tool signal", async () => {
+  const extension = captureWorkflowExtension();
+  const branch: unknown[] = [];
+  const ctx = {
+    ...HEADLESS_CTX,
+    mode: "rpc",
+    isIdle: () => true,
+    sessionManager: {
+      ...createSessionManager("background-tool-session"),
+      getBranch: () => branch,
+      getEntries: () => branch,
+    },
+  } as unknown as ExtensionContext;
+  const initiatingTurn = new AbortController();
+  initiatingTurn.abort(new Error("initiating turn ended"));
+  const script = `
+export const meta = { name: "background-tool", description: "Background tool probe" };
+export default async function run() {
+  return { summary: "Detached background completed." };
+}
+`;
+
+  const result = await extension.tool.execute(
+    "call-background-tool",
+    { script, background: true },
+    initiatingTurn.signal,
+    () => {},
+    ctx,
+  );
+  assert.ok(isRecord(result) && isRecord(result.details));
+  assert.equal(result.details.background, true);
+  assert.equal(result.details.state, "running");
+  const runId = result.details.runId;
+  assert.equal(typeof runId, "string");
+  if (typeof runId !== "string") throw new Error("expected background run id");
+
+  await waitUntil(() => extension.sentMessages.length === 1, "background delivery");
+  const record = await new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD).load(runId);
+  assert.equal(record?.state, "completed");
+  assert.equal(record?.background?.delivery.state, "delivered");
+  assert.match(JSON.stringify(extension.sentMessages[0]), /Detached background completed/);
 });
 
 test("a tool-invoked workflow records an inspector snapshot", async () => {

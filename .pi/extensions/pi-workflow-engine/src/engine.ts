@@ -4,7 +4,7 @@ import { bindParallel, bindPipeline, Semaphore } from "./concurrency.ts";
 import { WorkflowAgentLimiter } from "./agent-limits.ts";
 import { defaultAgentRetryScheduler, type AgentRetryScheduler } from "./agent-retry.ts";
 import { resolveWorkflowModelProfiles, type ResolvedWorkflowModelProfiles } from "./model-profiles.ts";
-import { linkAbortSignal, throwIfAborted } from "./cancellation.ts";
+import { abortReason, isWorkflowPauseError, linkAbortSignal, throwIfAborted } from "./cancellation.ts";
 import { createBudget } from "./budget.ts";
 import { runAgent, type AgentExecutionOptions, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
@@ -131,6 +131,7 @@ export async function runResolvedWorkflow(
 
     const journal = await createWorkflowJournal({ resumePath, writePath: journalPath });
     durableRun.transition({ state: "running", progress: progress.snapshot() });
+    await durableRun.flush().catch(() => undefined);
     await notifyLifecycleObserver(progress, "run metadata callback", () =>
       resolvedOptions.onRunMetadata?.({
         runId,
@@ -207,6 +208,15 @@ export async function runResolvedWorkflow(
   await durableRun.flush().catch(() => undefined);
 
   function persistTerminalWorkflowError(error: unknown): void {
+    const pauseError = backgroundPauseError(error, ctx.signal, resolvedOptions.signal);
+    if (pauseError) {
+      durableRun.transition({
+        state: "paused",
+        progress: progress.snapshot(),
+        message: unknownErrorMessage(pauseError),
+      });
+      return;
+    }
     durableRun.transition({
       state: ctx.signal?.aborted || resolvedOptions.signal?.aborted ? "stopped" : "failed",
       progress: progress.snapshot(),
@@ -221,6 +231,16 @@ export async function runResolvedWorkflow(
   }
   if (finalizationOutcome.ok) throw workflowOutcome.error;
   throw combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error);
+}
+
+function backgroundPauseError(error: unknown, ...signals: Array<AbortSignal | undefined>): unknown {
+  if (isWorkflowPauseError(error)) return error;
+  for (const signal of signals) {
+    if (!signal?.aborted) continue;
+    const reason = abortReason(signal);
+    if (isWorkflowPauseError(reason)) return reason;
+  }
+  return undefined;
 }
 
 async function captureOutcome<T>(operation: () => Promise<T>): Promise<Outcome<T>> {
@@ -393,7 +413,9 @@ export async function runWorkflowWithContext(
   };
 
   throwIfAborted(rc.signal);
-  return await mod.default(api);
+  const result = await mod.default(api);
+  throwIfAborted(rc.signal);
+  return result;
 }
 
 interface WorkflowScope {

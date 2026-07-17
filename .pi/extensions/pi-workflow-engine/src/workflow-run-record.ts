@@ -4,6 +4,11 @@ import type { WorkflowProgressSnapshot } from "./progress-types.ts";
 import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import { isWorkflowUsageSnapshot, type WorkflowUsageSnapshot } from "./usage.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
+import {
+  createPersistedWorkflowBackground,
+  isPersistedWorkflowBackground,
+  type PersistedWorkflowBackground,
+} from "./workflow-run-background.ts";
 
 export const WORKFLOW_RUN_RECORD_VERSION = 1;
 
@@ -63,6 +68,7 @@ interface WorkflowRunRecordBase {
   readonly updatedAt: number;
   readonly progress: WorkflowProgressSnapshot;
   readonly usage?: WorkflowUsageSnapshot;
+  readonly background?: PersistedWorkflowBackground;
 }
 
 export type WorkflowRunRecord = WorkflowRunRecordBase & (
@@ -98,6 +104,7 @@ export function createWorkflowRunRecord(input: {
     createdAt: input.progress.startedAt,
     updatedAt: input.progress.startedAt,
     progress: compactWorkflowProgress(input.progress),
+    background: createPersistedWorkflowBackground(input.options.background),
   };
 }
 
@@ -133,6 +140,7 @@ export function transitionWorkflowRun(record: WorkflowRunRecord, transition: Wor
     updatedAt: at,
     progress,
     usage: progress.usage ?? record.usage,
+    background: record.background,
   };
 
   switch (transition.state) {
@@ -274,7 +282,7 @@ function compactWorkflowUsage(snapshot: WorkflowUsageSnapshot): WorkflowUsageSna
 function isAllowedTransition(from: WorkflowRunState, to: WorkflowRunState): boolean {
   switch (from) {
     case "queued":
-      return to === "running" || to === "failed" || to === "stopped";
+      return to === "running" || to === "failed" || to === "stopped" || to === "paused";
     case "running":
       return to === "completed" || to === "failed" || to === "stopped" || to === "paused";
     case "paused":
@@ -406,6 +414,7 @@ export function isWorkflowRunRecord(value: unknown): value is WorkflowRunRecord 
   if (value.usage !== undefined && !isWorkflowUsageSnapshot(value.usage)) return false;
   if (value.result !== undefined && !isWorkflowRunStoredResult(value.result)) return false;
   if (value.message !== undefined && typeof value.message !== "string") return false;
+  if (value.background !== undefined && !isPersistedWorkflowBackground(value.background)) return false;
   switch (value.state) {
     case "queued":
       return value.endedAt === undefined && value.result === undefined && value.message === undefined;
