@@ -31,6 +31,8 @@ import {
   WorkflowStructuredOutputError,
 } from "./structured-output.ts";
 import { providerErrorFromMessages } from "./agent-retry.ts";
+import { matchesAgentToolHint, WorkflowToolHintUnavailableError } from "./tool-capabilities.ts";
+import type { AgentToolHint } from "./types.ts";
 
 export const FINAL_TOOL = "final_answer";
 
@@ -149,8 +151,11 @@ export async function openAgentSession(input: {
   try {
     throwIfAborted(rc.signal);
     session = (await createSubagentSession(toolSelection.sessionOptions)).session;
-    const dynamicToolHintsApplied = toolSelection.toolHints.length === 0 || applyDynamicToolHints(session, toolSelection);
-    if (!dynamicToolHintsApplied) {
+    const dynamicToolHints = toolSelection.toolHints.length === 0
+      ? { applied: true, matched: new Set<AgentToolHint>() }
+      : applyDynamicToolHints(session, toolSelection);
+    if (!dynamicToolHints.applied) {
+      if (opts.requireToolHints) throw new WorkflowToolHintUnavailableError(toolSelection.toolHints);
       rc.progress.log(`${label}: dynamic tool hints unavailable; falling back to concrete tools only`);
       rc.perf.counter("agent.tool_hint_fallback", 1, tags);
       const dynamicSession = session;
@@ -158,6 +163,10 @@ export async function openAgentSession(input: {
       rc.perf.timeSync("agent.dispose_ms", () => dynamicSession.dispose(), tags);
       throwIfAborted(rc.signal);
       session = (await createSubagentSession(toolSelection.fallbackSessionOptions)).session;
+    }
+    if (opts.requireToolHints) {
+      const missing = toolSelection.toolHints.filter((hint) => !dynamicToolHints.matched.has(hint));
+      if (missing.length > 0) throw new WorkflowToolHintUnavailableError(missing);
     }
     throwIfAborted(rc.signal);
     return {
@@ -330,7 +339,11 @@ interface DynamicToolSession extends AgentRunnerSession {
 
 function buildToolSelection(opts: AgentExecutionOptions, skillsEnabled: boolean): ToolSelection {
   const toolHints = opts.toolHints ?? [];
-  const fallback = toolHints.includes("search") ? DEFAULT_SEARCH_BASE_TOOLS : undefined;
+  const fallback = toolHints.includes("search")
+    ? DEFAULT_SEARCH_BASE_TOOLS
+    : toolHints.includes("external-search")
+      ? ["read"]
+      : undefined;
   const activeTools = buildToolList(opts, skillsEnabled, fallback);
   const strictSessionOptions = { tools: activeTools ? [...activeTools] : undefined };
   if (toolHints.length === 0) {
@@ -359,28 +372,27 @@ function buildToolList(
   return allow;
 }
 
-function applyDynamicToolHints(session: AgentRunnerSession, selection: ToolSelection): boolean {
-  if (!hasDynamicToolApis(session)) return false;
+function applyDynamicToolHints(
+  session: AgentRunnerSession,
+  selection: ToolSelection,
+): { readonly applied: boolean; readonly matched: ReadonlySet<AgentToolHint> } {
+  if (!hasDynamicToolApis(session)) return { applied: false, matched: new Set() };
 
   const active = new Set(selection.activeTools ?? []);
+  const matched = new Set<AgentToolHint>();
   for (const tool of session.getAllTools()) {
-    if (selection.toolHints.some((hint) => hint === "search" && isSearchLikeTool(tool))) active.add(tool.name);
+    for (const hint of selection.toolHints) {
+      if (!matchesAgentToolHint(tool, hint)) continue;
+      matched.add(hint);
+      active.add(tool.name);
+    }
   }
   session.setActiveToolsByName([...active]);
-  return true;
+  return { applied: true, matched };
 }
 
 function hasDynamicToolApis(session: AgentRunnerSession): session is DynamicToolSession {
   return typeof session.getAllTools === "function" && typeof session.setActiveToolsByName === "function";
-}
-
-function isSearchLikeTool(tool: AgentRunnerToolInfo): boolean {
-  if (/(?:^|[-_])(?:edit|write|replace|patch|apply|delete|remove|move|rename|create|commit|push)(?:$|[-_])/.test(tool.name.toLowerCase())) {
-    return false;
-  }
-  const name = tool.name.toLowerCase();
-  if (name.includes("grep") || name.includes("find") || name.includes("search") || name === "rg" || name.includes("ripgrep")) return true;
-  return /\b(?:grep|find|search|ripgrep|rg|structural search|code search)\b/.test(tool.description?.toLowerCase() ?? "");
 }
 
 function shouldCreateSkillResourceLoader(rc: RunContext, prompt: string, opts: AgentExecutionOptions): boolean {

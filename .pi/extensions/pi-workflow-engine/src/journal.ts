@@ -111,6 +111,7 @@ function captureAgentCallHash(
         thinkingLevel: opts.thinkingLevel,
         tools: opts.tools,
         toolHints: opts.toolHints,
+        requireToolHints: opts.requireToolHints === true ? true : undefined,
         skills: opts.skills,
         schema: opts.schema,
         isolation: opts.isolation,

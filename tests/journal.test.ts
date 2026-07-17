@@ -116,6 +116,7 @@ test("hashAgentCall changes when behavioral inputs change", () => {
   assert.notEqual(hashAgentCall("inspect", { thinkingLevel: "medium", tools: ["read"] }), base);
   assert.notEqual(hashAgentCall("inspect", { thinkingLevel: "low", tools: ["read", "grep"] }), base);
   assert.notEqual(hashAgentCall("inspect", { thinkingLevel: "low", tools: ["read"], schema: Type.Object({ ok: Type.Boolean() }) }), base);
+  assert.notEqual(hashAgentCall("inspect", { thinkingLevel: "low", tools: ["read"], requireToolHints: true }), base);
 });
 
 test("agentJournalKey uses optional cache keys without hiding behavior changes", () => {
