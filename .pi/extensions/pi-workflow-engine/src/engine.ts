@@ -94,7 +94,13 @@ export async function runResolvedWorkflow(
           (tui, theme, _keybindings, done) => new WorkflowInspector(() => progress.snapshot(), tui, theme, () => done(undefined)),
           { overlay: true, overlayOptions: { anchor: "right-center", width: "60%", maxHeight: "80%", margin: 1 } },
         )
-        .catch((error: unknown) => progress.log(`inspector failed: ${error instanceof Error ? error.message : String(error)}`));
+        .catch((error: unknown) => {
+          try {
+            progress.log(`inspector failed: ${unknownErrorMessage(error)}`);
+          } catch {
+            // Inspector reporting is detached and must never become another rejection.
+          }
+        });
     }
 
     const journal = await createWorkflowJournal({ resumePath, writePath: journalPath });

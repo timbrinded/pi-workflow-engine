@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat, readdir } from "node:fs/promises";
+import { constants, type BigIntStats } from "node:fs";
+import { lstat, open, readdir, type FileHandle } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { throwIfAborted } from "./cancellation.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
@@ -46,6 +46,16 @@ export type DeclaredInputPathResolution =
   | { readonly kind: "verified"; readonly paths: readonly string[] }
   | { readonly kind: "unverifiable"; readonly reason: string };
 
+export interface FingerprintFileOperations {
+  readonly open: (path: string, flags: number) => Promise<FileHandle>;
+  readonly lstat: (path: string) => Promise<BigIntStats>;
+}
+
+const NODE_FINGERPRINT_FILE_OPERATIONS: FingerprintFileOperations = {
+  open: async (path, flags) => await open(path, flags),
+  lstat: async (path) => await lstat(path, { bigint: true }),
+};
+
 /** A deterministic hash sink that enforces one shared byte budget across file reads. */
 export class BoundedFingerprint {
   readonly #hash = createHash("sha256");
@@ -60,10 +70,10 @@ export class BoundedFingerprint {
     this.#hash.update("\0");
   }
 
-  async addFile(label: string, path: string, signal?: AbortSignal): Promise<void> {
+  async addFileHandle(label: string, handle: FileHandle, signal?: AbortSignal): Promise<void> {
     this.#hash.update(label);
     this.#hash.update("\0");
-    const stream = createReadStream(path, { highWaterMark: 64 << 10, signal });
+    const stream = handle.createReadStream({ autoClose: false, highWaterMark: 64 << 10, signal });
     try {
       for await (const chunk of stream) {
         throwIfAborted(signal);
@@ -84,6 +94,36 @@ export class BoundedFingerprint {
 
   digest(): string {
     return this.#hash.digest("hex");
+  }
+}
+
+/** Open, validate, and use one regular file without reopening its pathname. */
+export async function withValidatedFingerprintFile<T>(
+  path: string,
+  signal: AbortSignal | undefined,
+  use: (handle: FileHandle, info: BigIntStats) => Promise<T>,
+  operations: FingerprintFileOperations = NODE_FINGERPRINT_FILE_OPERATIONS,
+): Promise<T> {
+  throwIfAborted(signal);
+  const flags = process.platform === "win32"
+    ? constants.O_RDONLY
+    : constants.O_RDONLY | constants.O_NOFOLLOW;
+  const handle = await operations.open(path, flags);
+  try {
+    const [openedInfo, pathInfo] = await Promise.all([
+      handle.stat({ bigint: true }),
+      operations.lstat(path),
+    ]);
+    throwIfAborted(signal);
+    if (!openedInfo.isFile()) throw new Error(`content fingerprint opened an unsupported entry: ${path}`);
+    if (pathInfo.isSymbolicLink()) throw new Error(`content fingerprint encountered a symbolic link: ${path}`);
+    if (!pathInfo.isFile()) throw new Error(`content fingerprint encountered an unsupported entry: ${path}`);
+    if (openedInfo.dev !== pathInfo.dev || openedInfo.ino !== pathInfo.ino) {
+      throw new Error(`content fingerprint path changed while it was being opened: ${path}`);
+    }
+    return await use(handle, openedInfo);
+  } finally {
+    await handle.close();
   }
 }
 
@@ -123,9 +163,10 @@ export async function captureTreeFingerprint(options: TreeFingerprintOptions): P
         }
         if (!entry.isFile()) throw new Error(`content fingerprint encountered an unsupported entry: ${path}`);
 
-        const info = await lstat(path);
-        fingerprint.add("mode", String(info.mode));
-        await fingerprint.addFile("file", path, options.signal);
+        await withValidatedFingerprintFile(path, options.signal, async (handle, info) => {
+          fingerprint.add("mode", String(info.mode));
+          await fingerprint.addFileHandle("file", handle, options.signal);
+        });
       }
     }
 
@@ -177,8 +218,10 @@ export async function captureDeclaredInputFingerprint(
 
       if (info.isSymbolicLink()) throw new Error(`declared input contains a symbolic link: ${relativePath}`);
       if (info.isFile()) {
-        recordEntry(relativePath, "file", info.mode);
-        await fingerprint.addFile("file", path, options.signal);
+        await withValidatedFingerprintFile(path, options.signal, async (handle, openedInfo) => {
+          recordEntry(relativePath, "file", Number(openedInfo.mode));
+          await fingerprint.addFileHandle("file", handle, options.signal);
+        });
         return true;
       }
       if (!info.isDirectory()) throw new Error(`declared input contains an unsupported entry: ${relativePath}`);

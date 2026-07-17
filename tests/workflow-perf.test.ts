@@ -31,6 +31,21 @@ function fakeContext(signal?: AbortSignal): ExtensionContext {
   } as unknown as ExtensionContext;
 }
 
+function inspectorRejectingContext(error: unknown): ExtensionContext {
+  return {
+    ...fakeContext(),
+    hasUI: true,
+    ui: {
+      async custom() {
+        throw error;
+      },
+      setStatus() {},
+      setWidget() {},
+      theme: { fg: (_color: string, text: string) => text },
+    },
+  } as unknown as ExtensionContext;
+}
+
 function fakeCommandContext(signal?: AbortSignal): ExtensionCommandContext {
   return fakeContext(signal) as unknown as ExtensionCommandContext;
 }
@@ -146,6 +161,36 @@ test("runWorkflow exposes a completed progress snapshot", async () => {
   assert.equal(snapshot?.lanes[0]?.[0], "Findings");
   assert.equal(snapshot?.lanes[0]?.[1][0]?.details, "expanded details");
   assert.ok(snapshot?.logs.includes("captured log entry"));
+});
+
+test("runWorkflow safely logs hostile inspector rejections", async () => {
+  const hostileError = new Proxy({}, {
+    getPrototypeOf() {
+      throw new Error("prototype trap");
+    },
+    get(_target, property) {
+      if (property === Symbol.toPrimitive) throw new Error("string trap");
+      return undefined;
+    },
+  });
+  let snapshot: WorkflowProgressSnapshot | undefined;
+  const mod: WorkflowModule = {
+    meta: { name: "inspector-rejection-test", description: "inspector rejection" },
+    default: async () => {
+      await Promise.resolve();
+      return "ok";
+    },
+  };
+
+  const result = await runWorkflow(inspectorRejectingContext(hostileError), loadedWorkflow(mod), "", {
+    inspect: true,
+    onProgressSnapshot: (value) => {
+      snapshot = value;
+    },
+  });
+
+  assert.equal(result, "ok");
+  assert.ok(snapshot?.logs.includes("inspector failed: unknown error"));
 });
 
 test("sendWorkflowResult retains failed workflow progress snapshots for later inspection", async () => {

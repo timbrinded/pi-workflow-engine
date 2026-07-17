@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -13,12 +13,74 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import {
+  BoundedFingerprint,
   captureDeclaredInputFingerprint,
   captureTreeFingerprint,
   isPathWithin,
   validateTreeFile,
+  withValidatedFingerprintFile,
+  type FingerprintFileOperations,
 } from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
 import { createGitRepo, runGit } from "./resume-fixtures.ts";
+
+test("fingerprint file validation rejects a pathname replaced after opening", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-workflow-fingerprint-open-race-"));
+  const path = join(root, "input.txt");
+  const replacement = join(root, "replacement.txt");
+  try {
+    await writeFile(path, "original\n", "utf8");
+    await writeFile(replacement, "replacement\n", "utf8");
+    const operations: FingerprintFileOperations = {
+      async open(candidate, flags) {
+        const handle = await open(candidate, flags);
+        await rm(candidate);
+        await symlink(replacement, candidate);
+        return handle;
+      },
+      lstat: async (candidate) => await lstat(candidate, { bigint: true }),
+    };
+
+    await assert.rejects(
+      () => withValidatedFingerprintFile(path, undefined, async () => undefined, operations),
+      /symbolic link|path changed/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fingerprint content stays bound to the validated descriptor", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-workflow-fingerprint-descriptor-"));
+  const path = join(root, "input.txt");
+  const replacement = join(root, "replacement.txt");
+  try {
+    await writeFile(path, "original\n", "utf8");
+    await writeFile(replacement, "replacement\n", "utf8");
+    const operations: FingerprintFileOperations = {
+      open: async (candidate, flags) => await open(candidate, flags),
+      async lstat(candidate) {
+        const info = await lstat(candidate, { bigint: true });
+        await rm(candidate);
+        await symlink(replacement, candidate);
+        return info;
+      },
+    };
+    const actual = new BoundedFingerprint(1024);
+
+    await withValidatedFingerprintFile(
+      path,
+      undefined,
+      async (handle) => await actual.addFileHandle("file", handle),
+      operations,
+    );
+
+    const expected = new BoundedFingerprint(1024);
+    expected.add("file", "original\n");
+    assert.equal(actual.digest(), expected.digest());
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("repository capture is stable for genuine non-git directories but not failed probes", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-non-git-context-"));

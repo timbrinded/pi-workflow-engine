@@ -44,6 +44,22 @@ jobs:
       - name: Test
         run: bun run test
 
+  process-runner-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Test Windows process termination
+        run: bun test tests/process-runner.test.ts
+
   package-dry-run:
     runs-on: ubuntu-latest
 
