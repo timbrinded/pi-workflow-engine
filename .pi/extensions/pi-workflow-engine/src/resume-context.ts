@@ -67,6 +67,10 @@ export interface AgentResumeContext extends VerifiedAgentResumeBaseContext {
   readonly skills: readonly ResolvedSkillIdentity[];
 }
 
+export interface ResumeContextComparisonOptions {
+  readonly allowWorkflowSourceMismatch?: boolean;
+}
+
 type RepositoryRevision =
   | { readonly state: "git"; readonly head: string }
   | { readonly state: "unborn" };
@@ -499,7 +503,11 @@ export function createAgentResumeContext(
   };
 }
 
-export function resumeContextMismatchReason(stored: AgentResumeContext, current: AgentResumeContext): string | undefined {
+export function resumeContextMismatchReason(
+  stored: AgentResumeContext,
+  current: AgentResumeContext,
+  options: ResumeContextComparisonOptions = {},
+): string | undefined {
   if (stored.repository.state !== current.repository.state) return "repository state changed";
   if (
     (stored.repository.state === "git" || stored.repository.state === "isolated") &&
@@ -512,7 +520,10 @@ export function resumeContextMismatchReason(stored: AgentResumeContext, current:
     return "working tree contents changed";
   }
   if (stored.workflow.name !== current.workflow.name) return "workflow name changed";
-  if (stored.workflow.sourceFingerprint !== current.workflow.sourceFingerprint) return "workflow source changed";
+  if (
+    !options.allowWorkflowSourceMismatch
+    && stored.workflow.sourceFingerprint !== current.workflow.sourceFingerprint
+  ) return "workflow source changed";
   if (stored.session.runtimeVersion !== current.session.runtimeVersion) return "coding-agent runtime changed";
   if (stored.session.systemPromptFingerprint !== current.session.systemPromptFingerprint) return "effective system prompt changed";
   if (

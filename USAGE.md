@@ -34,6 +34,7 @@ Useful flags:
 /workflow code-review --agent-retries=2  # retry classified transient provider failures
 /workflow code-review --budget=50000     # output-token ceiling for subagents
 /workflow code-review --resume <run-id>  # replay matching completed agent calls
+/workflow code-review --resume <run-id> --resume-edited # reuse unchanged calls after a workflow edit
 /workflow code-review --refresh          # rediscover newly added workflow files
 /workflow:runs                           # browse recent durable project runs
 /workflow:inspector <run-id>             # inspect one retained run directly
@@ -259,9 +260,16 @@ Every workflow result includes a run id. Resume with:
 
 ```text
 /workflow code-review --resume <run-id> HEAD~3
+/workflow code-review --resume <run-id> --resume-edited HEAD~3
 ```
 
-The `workflow` tool exposes the same feature as `resumeFromRunId`. Replay is explicit for agents that share the workflow directory and automatic for isolated patch-producing agents:
+The `workflow` tool exposes the same features as `resumeFromRunId` and the opt-in `resumeEditedWorkflow: true`. By default, any workflow source change invalidates every prior call. Edited-workflow resume waives only that source-fingerprint mismatch: repository state, runtime, model, system prompt, thinking level, prompt, schema, ordered skills, tools, isolation, and all other replay checks must still match.
+
+With edited-workflow resume enabled, unchanged calls are reused while changed or newly added calls run live. Matching uses a stable behavioral hash, not call or completion order. Repeated identical calls are deliberately ambiguous and run live unless each logical call has a stable, distinct `cacheKey`. The new run record retains the opt-in policy and reports cached and live agent totals. The engine only inspects the prior run's JSON journal; it never loads or executes the prior workflow source.
+
+This option can return a result produced before an orchestration edit when that call's explicit identity did not change. Use it only when the unchanged call is still semantically valid in the edited workflow, and prefer stable `cacheKey` values for repeated logical calls. Omit `--resume-edited` or `resumeEditedWorkflow` for the fail-closed default.
+
+Replay is explicit for agents that share the workflow directory and automatic for isolated patch-producing agents:
 
 | Agent call | Default during resume | Override |
 | --- | --- | --- |

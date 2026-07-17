@@ -9,6 +9,7 @@ import {
   isAgentResumeContext,
   resumeContextMismatchReason,
   type AgentResumeContext,
+  type ResumeContextComparisonOptions,
 } from "./resume-context.ts";
 
 export const WORKFLOW_RUNS_DIR = join(".pi", ".workflow-runs");
@@ -47,7 +48,7 @@ export type AgentJournalKeyCapture =
   | { readonly kind: "unverifiable"; readonly reason: string };
 
 export interface WorkflowJournal {
-  lookup(key: string, identity: AgentResumeContext): JournalLookup;
+  lookup(key: string, identity: AgentResumeContext, options?: ResumeContextComparisonOptions): JournalLookup;
   record(key: string, result: unknown, identity: AgentResumeContext): Promise<JournalRecordResult>;
 }
 
@@ -184,7 +185,7 @@ export function createMemoryBackedJournal(priorEntries: readonly JournalEntry[] 
   }
 
   return {
-    lookup(key, identity) {
+    lookup(key, identity, options) {
       const entries = priorByKey.get(key);
       if (!entries || entries.length === 0) return { hit: false };
 
@@ -199,10 +200,12 @@ export function createMemoryBackedJournal(priorEntries: readonly JournalEntry[] 
             : "journal entry predates replay contract v2",
         };
       }
-      const matches = current.filter((entry) => resumeContextMismatchReason(entry.identity, identity) === undefined);
+      const matches = current.filter(
+        (entry) => resumeContextMismatchReason(entry.identity, identity, options) === undefined,
+      );
       if (matches.length === 1) return { hit: true, value: matches[0]!.result };
       if (matches.length > 1) return { hit: false, reason: "multiple cached entries match this agent call" };
-      return { hit: false, reason: resumeContextMismatchReason(current[0]!.identity, identity) };
+      return { hit: false, reason: resumeContextMismatchReason(current[0]!.identity, identity, options) };
     },
     async record(key, result, identity) {
       const entry: JournalEntryV2 = { version: 2, key, result, identity };

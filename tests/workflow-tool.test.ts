@@ -30,7 +30,7 @@ interface CapturedTool {
   readonly promptGuidelines?: readonly string[];
   execute(
     toolCallId: string,
-    params: { script?: string; name?: string; args?: string; resumeFromRunId?: string; background?: boolean },
+    params: { script?: string; name?: string; args?: string; resumeFromRunId?: string; resumeEditedWorkflow?: boolean; background?: boolean },
     signal: AbortSignal | undefined,
     onUpdate: () => void,
     ctx: ExtensionContext,
@@ -363,6 +363,23 @@ export default async function run() {
   assert.ok(Array.isArray(content));
   assert.equal(content[0]?.text, "resumeFromRunId must be non-empty.");
   assert.deepEqual(result.details, { error: "invalid_resume_from_run_id" });
+});
+
+test("workflow tool requires a prior run for edited-source reuse", async () => {
+  const tool = captureWorkflowTool();
+  const result = await tool.execute(
+    "call-edited-resume",
+    { script: "export const meta = { name: 'edited', description: 'edited' }; export default async function () { return 'no'; }", resumeEditedWorkflow: true },
+    undefined,
+    () => {},
+    HEADLESS_CTX,
+  );
+
+  assert.ok(isRecord(result));
+  const content = result.content;
+  assert.ok(Array.isArray(content));
+  assert.equal(content[0]?.text, "resumeEditedWorkflow requires resumeFromRunId.");
+  assert.deepEqual(result.details, { error: "invalid_edited_workflow_resume" });
 });
 
 test("workflow tool rejects background mode in finite print execution", async () => {

@@ -296,6 +296,7 @@ const INVALID_RESUME_OPTION = "--resume requires a workflow run id";
 const INVALID_MAX_AGENTS_OPTION = "--max-agents requires an integer";
 const INVALID_AGENT_TIMEOUT_OPTION = "--agent-timeout-ms requires an integer";
 const INVALID_AGENT_RETRIES_OPTION = "--agent-retries requires an integer";
+const INVALID_EDITED_RESUME_OPTION = "--resume-edited requires --resume <run-id>";
 
 function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean; optionErrors?: string[] } {
   const tokens = input.split(/\s+/).filter(Boolean);
@@ -315,6 +316,10 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
     }
     if (token === "--perf") {
       options.perf = true;
+      continue;
+    }
+    if (token === "--resume-edited") {
+      options.resumeEditedWorkflow = true;
       continue;
     }
     if (token === "--result-viewer" || token === "--review-viewer") {
@@ -428,6 +433,7 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
     }
     kept.push(token);
   }
+  if (options.resumeEditedWorkflow && !options.resumeFromRunId) optionErrors.push(INVALID_EDITED_RESUME_OPTION);
   return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined, optionErrors: optionErrors.length > 0 ? optionErrors : undefined };
 }
 
@@ -773,6 +779,7 @@ function registerWorkflowTool(
       ADAPTIVE_WORKFLOW_GUIDANCE,
       "Set background: true only when the user explicitly wants the workflow to continue after this tool call; the tool returns a durable run ID and completion is delivered later.",
       "Set autoResumeOnUsageLimit: true only for an explicitly backgrounded workflow when the user wants bounded automatic continuation after a recognized provider usage window.",
+      "Set resumeEditedWorkflow: true only with resumeFromRunId when the user explicitly accepts reusing behaviorally identical calls after workflow source edits.",
       "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
     ],
     parameters: Type.Object({
@@ -822,6 +829,9 @@ function registerWorkflowTool(
       ),
       perf: Type.Optional(Type.Boolean({ description: "Include workflow performance timing aggregates in the result details" })),
       resumeFromRunId: Type.Optional(Type.String({ minLength: 1, description: "Workflow run id to resume from by replaying matching completed agent results" })),
+      resumeEditedWorkflow: Type.Optional(
+        Type.Boolean({ description: "With resumeFromRunId, ignore only workflow-source fingerprint changes while retaining all other replay checks" }),
+      ),
       background: Type.Optional(Type.Boolean({ description: "Return a durable run ID immediately and deliver completion to this conversation later" })),
     }),
     renderCall(args, theme) {
@@ -857,6 +867,12 @@ function registerWorkflowTool(
           details: { error: "invalid_resume_from_run_id" },
         };
       }
+      if (params.resumeEditedWorkflow && !resumeFromRunId) {
+        return {
+          content: [{ type: "text", text: "resumeEditedWorkflow requires resumeFromRunId." }],
+          details: { error: "invalid_edited_workflow_resume" },
+        };
+      }
       if (params.background) {
         const unavailable = backgroundUnavailableResult(ctx.mode);
         if (unavailable) return unavailable;
@@ -875,6 +891,7 @@ function registerWorkflowTool(
         budget: params.budget,
         perf: params.perf,
         resumeFromRunId,
+        resumeEditedWorkflow: params.resumeEditedWorkflow,
         signal,
       });
       const perfRecorder = await createInvocationPerf(runOptions);

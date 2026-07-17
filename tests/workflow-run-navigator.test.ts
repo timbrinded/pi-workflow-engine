@@ -132,6 +132,21 @@ test("headless run history and details expose mixed states, identifiers, phases,
   assert.match(detail, /"summary": "retained"/);
   assert.match(detail, /Actions: inspect, restart/);
   assert.equal(formatWorkflowRunHistory([], new Set(), now), "No durable workflow runs are available for this project.");
+
+  const replayed = {
+    ...records[3]!,
+    options: { ...records[3]!.options, resumeEditedWorkflow: true },
+    progress: {
+      ...records[3]!.progress,
+      counters: [
+        { key: "resume.cached", label: "Cached agents", value: 2 },
+        { key: "resume.live", label: "Live agents", value: 1 },
+      ],
+    },
+  } satisfies WorkflowRunRecord;
+  const replayedDetail = formatWorkflowRunDetails(replayed, false, now);
+  assert.match(replayedDetail, /Edited-workflow resume: enabled/);
+  assert.match(replayedDetail, /Resume calls: 2 cached, 1 live/);
 });
 
 test("workflow run navigator is bounded and renders accessible state labels", () => {
