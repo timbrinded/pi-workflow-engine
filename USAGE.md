@@ -43,7 +43,7 @@ Useful flags:
 | `diagnose` | Investigates a bug, failing command, or regression. |
 | `perf-review` | Reviews a slow path or performance concern. |
 
-`code-review` auto-detects a diff when you do not pass args. If there is an open GitHub PR for the current branch, it uses that PR diff; otherwise it falls back to branch-vs-main/master or `HEAD~1`.
+`code-review` auto-detects a diff when you do not pass args. If there is an open GitHub PR for the current branch, it uses the cumulative PR diff; otherwise it falls back to branch-vs-main/master or `HEAD~1`. Per-commit `gh pr diff --patch` input is rejected because it can surface superseded code. If diff capture fails, the review fails instead of returning an empty report or "no findings."
 
 ## Use Dynamax for custom workflows
 
@@ -144,7 +144,11 @@ These workflow usage totals are separate from `--perf`, which is internal timing
 
 During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow:inspector` if you want to bring the last completed inspector back up afterward.
 
-Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding. The viewer is centred, scales to the terminal, and shows the visible finding/detail ranges while scrolling. `/workflow:results` or `ctrl+shift+r` reopens the most recent validated code-review report in the current pi session without rerunning the workflow; selections reset when it reopens. The Fix action revalidates the exact reviewed PR/ref/index/working-tree snapshot, then runs each selected finding through its own worktree-isolated agent and returns the finding ID, validation summary, patch, and changed status. Failed attempts do not discard successful previews, no patch is applied to your active tree automatically, and a moved or unverifiable review target is rejected rather than patched against the wrong code.
+Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding. The viewer is centred, scales to the terminal, and shows the visible finding/detail ranges while scrolling. `/workflow:results` or `ctrl+shift+r` reopens the most recent validated code-review report in the current pi session without rerunning the workflow; selections reset when it reopens.
+
+The Fix action revalidates the exact reviewed PR/ref/index/working-tree snapshot, then runs each selected finding through its own worktree-isolated agent and returns the finding ID, validation summary, patch, and changed status. Failed attempts do not discard successful previews, no patch is applied to your active tree automatically, and a moved or unverifiable review target is rejected rather than patched against the wrong code. The original review and all Fix previews retained in that pi session share one output-token budget. Reopening the viewer does not reset it, finalized preview usage is always deducted, and only one preview can run at a time.
+
+Inline GitHub comments are available only for findings captured from a verified PR target. Before posting, the engine revalidates the reviewed snapshot and requires the current PR head to match; identical comments on that head are skipped.
 
 ### Resume a run
 
@@ -154,13 +158,24 @@ Every workflow result includes a run id. Resume with:
 /workflow code-review --resume <run-id> HEAD~3
 ```
 
-The `workflow` tool exposes the same feature as `resumeFromRunId`. Resume replays a completed `agent()` result from `.pi/.workflow-runs/<run-id>.jsonl` only when both its prompt/options identity and execution context still match. The execution context includes the repository state and HEAD, staged/unstaged/untracked content, workflow name and source, and the effective resolved provider/model. Each missing or invalidated call runs live while other independently matching calls may still replay, and the resumed run writes a fresh journal under its new run id. Cached results do not add usage or budget spend for the resumed run.
+The `workflow` tool exposes the same feature as `resumeFromRunId`. Replay is explicit for agents that share the workflow directory and automatic for isolated patch-producing agents:
 
-Invalidations appear in progress output with a concise reason. Legacy journals without execution context are accepted as input but their unverifiable entries run live. Git repositories with no commits and non-Git directories remain supported; the journal directory itself is excluded from the dirty-tree fingerprint.
+| Agent call | Default during resume | Override |
+| --- | --- | --- |
+| Shared workspace | Runs live | `resume: "read-only"` opts into repository-wide Git-visible replay; `resumeInputs` adds ignored paths under the workflow cwd |
+| `isolation: "worktree"` | Replays when identity matches | `resume: "off"` forces a live run |
 
-Saved file-backed workflows fingerprint their bounded package source tree so imported helper changes invalidate replay, while inline workflows use the compiler-provided script fingerprint. Programmatic modules without explicit `source` provenance are intentionally non-replayable because captured closures and external helpers cannot be verified safely.
+Use `resume: "read-only"` only when the shared agent is advisory. In Git repositories the engine resolves the repository root and binds replay to HEAD, staged and unstaged tracked changes, index modes, and bounded non-ignored untracked contents across that whole worktree, even when pi starts in a subdirectory. Add ignored or generated files under the workflow cwd with cwd-relative `resumeInputs`; explicitly named ignored paths are fingerprinted directly and cannot escape that cwd. The complete identity is checked before accepting a hit, after execution, and again after cleanup. A changed surface turns a hit into a live run and prevents unsafe recording. Tracked symlinks, submodules, and unsupported index states fail closed. Use `resume: "off"` when the call may inspect undeclared ignored files, external paths, services, environment, or clock state.
 
-Resume only caches completed `agent()` calls. It does not snapshot arbitrary workflow local variables, in-flight tool work, or external service state. Keep prompts and agent options deterministic across reruns if you want cache hits.
+Journals use replay contract v2. A hit requires the same prompt/options and execution identity: repository-wide Git-visible state plus explicitly declared ignored inputs, workflow source provenance, coding-agent runtime version, effective system prompt/provider/model/thinking level, ordered selected skill contents, and ordered executable tool definitions plus source fingerprints. Unverifiable, cyclic, oversized, symlinked, submodule-backed, or mutable identity surfaces fail closed and run live. A tool-free structured agent uses a capability identity instead of hashing a workspace it cannot observe; an isolated agent binds replay to both the commit and tree objects of its exact prepared worktree baseline, including deterministic normalized snapshots for repositories with no commits. Each resumed run writes a fresh journal under its new run id, and cached results do not add usage or budget spend.
+
+Cached values are revalidated before use: text must still be text, structured output must satisfy the current typebox schema, and an isolated patch must have consistent metadata and pass `git apply --check --binary` against its fresh baseline worktree. A malformed or stale value runs live.
+
+Invalidations appear in progress output with a concise reason. Legacy v1 journals and early v2 entries without effective-session identity are parsed for compatibility but always miss. Git repositories with no commits and non-Git directories remain supported. Git control data and engine-owned workflow journals cannot be declared as inputs; if a Git-visible or explicit surface exceeds safety bounds, that call runs live.
+
+Statically loaded built-ins fingerprint and revalidate their bounded extension source tree so imported helper changes invalidate replay, while inline workflows use the compiler-provided script fingerprint. Dynamically discovered and programmatic modules are intentionally non-replayable because their transitive runtime imports or captured closures cannot be bound to an immutable source snapshot.
+
+Resume only caches completed `agent()` calls. It does not snapshot arbitrary workflow local variables, in-flight tool work, environment or clock state, external services, or generated inputs outside the captured repository/workflow/skill/tool surfaces. Use `resume: "off"` for calls that depend on those values, and keep prompts and options deterministic when you want cache hits.
 
 ## Author a saved workflow
 
@@ -186,13 +201,29 @@ export default async function run({ agent, parallel, phase, args }: WorkflowApi)
   phase("Find");
   const findings = compactResults(
     await parallel([
-      () => agent(`Find correctness issues: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
-      () => agent(`Find edge cases: ${args}`, { schema: Finding, tools: SEARCH_TOOLS, toolHints: SEARCH_TOOL_HINTS, thinkingLevel: "low" }),
+      () => agent(`Find correctness issues: ${args}`, {
+        schema: Finding,
+        tools: SEARCH_TOOLS,
+        toolHints: SEARCH_TOOL_HINTS,
+        thinkingLevel: "low",
+        resume: "read-only",
+      }),
+      () => agent(`Find edge cases: ${args}`, {
+        schema: Finding,
+        tools: SEARCH_TOOLS,
+        toolHints: SEARCH_TOOL_HINTS,
+        thinkingLevel: "low",
+        resume: "read-only",
+      }),
     ]),
   );
 
   phase("Synthesize");
-  return agent(`Summarize: ${JSON.stringify(findings)}`, { thinkingLevel: "medium" });
+  return agent(`Summarize: ${JSON.stringify(findings)}`, {
+    thinkingLevel: "medium",
+    tools: [],
+    resume: "read-only",
+  });
 }
 ```
 
@@ -235,7 +266,9 @@ if (edit.changed) {
 return { summary: edit.result };
 ```
 
-Isolated agents require the workflow `cwd` to be inside a git work tree. Outside git, the agent fails fast rather than silently mutating the shared directory. The return value is `{ result, patch, changed }`, where `result` is the normal text or structured `agent()` result and `patch` is a `git diff HEAD` patch. Worktree setup costs disk and git process time, so keep it opt-in for mutating/parallel-edit stages.
+Isolated agents require the workflow `cwd` to be inside a git work tree. Outside git, the agent fails fast rather than silently mutating the shared directory. The return value is `{ result, patch, changed }`, where `result` is the normal text or structured `agent()` result and `patch` is a `git diff HEAD` patch. Worktree results are replayable by default; add `resume: "off"` when their inputs are not fully captured. Worktree setup costs disk and git process time, so keep it opt-in for mutating/parallel-edit stages.
+
+Cleanup is a required finalizer. The engine attempts every registered worktree removal, retains failed paths for another cleanup attempt, and fails the workflow with the aggregated cleanup error if any worktree still cannot be removed. Advisory finalizers such as UI snapshots and journal pruning do not replace an otherwise valid workflow result.
 
 ### Compose workflows
 

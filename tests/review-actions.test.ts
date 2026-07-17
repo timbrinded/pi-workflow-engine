@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import { test } from "bun:test";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { bindParallel } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { parseAllowedDiffCommand, type ReviewDiffTarget } from "../.pi/extensions/pi-workflow-engine/src/diff-capture.ts";
 import type { AgentOptions } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { handleReviewViewerAction, type ReviewActionContext, type ReviewActionPi } from "../.pi/extensions/pi-workflow-engine/src/review/review-actions.ts";
 import {
@@ -11,11 +11,28 @@ import {
   runReviewFixWorkflow,
   type ReviewFixWorkflowApi,
 } from "../.pi/extensions/pi-workflow-engine/src/review/review-fix-workflow.ts";
-import { toReviewIssues, type ReviewContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
+import { toReviewIssues } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
+import type { ReviewContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-report.ts";
+import { ReviewSnapshotUnavailableError } from "../.pi/extensions/pi-workflow-engine/src/review/review-snapshot.ts";
+
+function reviewTarget(command: string): ReviewDiffTarget {
+  const parsed = parseAllowedDiffCommand(command);
+  if ("error" in parsed) assert.fail(parsed.error);
+  return parsed;
+}
+
+function prReviewContext(number = 123): ReviewContext {
+  return {
+    workflowName: "code-review",
+    target: "",
+    diffTarget: reviewTarget(`gh pr diff ${number}`),
+    files: ["src/app.ts"],
+  };
+}
 
 test("fix action returns a programmatic workflow instead of a parent follow-up", async () => {
   const issues = toReviewIssues("code-review", createReport());
-  const context: ReviewContext = { workflowName: "code-review", target: "review src", diffCommand: "gh pr diff 123", files: ["src/app.ts"], summary: "PR 123" };
+  const context: ReviewContext = { workflowName: "code-review", target: "review src", diffTarget: reviewTarget("gh pr diff 123"), files: ["src/app.ts"], summary: "PR 123" };
   const prompt = buildFixAgentPrompt(issues[0]!, context);
 
   assert.match(prompt, /exactly one verified code-review finding/);
@@ -71,9 +88,8 @@ test("fix action returns a programmatic workflow instead of a parent follow-up",
   assert.equal(sent.length, 0);
   assert.equal(request?.meta.name, "code-review-fix-previews");
   assert.deepEqual(request?.source, {
-    kind: "file",
-    path: fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/src/review/review-fix-workflow.ts", import.meta.url)),
-    root: fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/", import.meta.url)),
+    kind: "unverifiable",
+    reason: "ephemeral review-fix workflows capture runtime findings and do not have immutable module provenance",
   });
   assert.deepEqual(request?.isolatedWorktreeBaseline, baseline);
   assert.deepEqual(notifications, [
@@ -125,7 +141,7 @@ test("fix action propagates cancellation raised during snapshot resolution", asy
 
 test("fix workflow keeps finding ids, isolated patches, and per-finding failures", async () => {
   const issues = toReviewIssues("code-review", createReport());
-  const context: ReviewContext = { workflowName: "code-review", target: "review src", diffCommand: "gh pr diff 123", files: ["src/app.ts", "src/lock.ts"] };
+  const context: ReviewContext = { workflowName: "code-review", target: "review src", diffTarget: reviewTarget("gh pr diff 123"), files: ["src/app.ts", "src/lock.ts"] };
   type ReviewFixAgentOptions = AgentOptions & { readonly isolation: "worktree" };
   const calls: Array<{ prompt: string; options: ReviewFixAgentOptions }> = [];
   const phases: string[] = [];
@@ -184,7 +200,7 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
 
 test("comment action falls back to parent agent when gh context is unavailable", async () => {
   const issues = toReviewIssues("code-review", createReport());
-  const context: ReviewContext = { workflowName: "code-review", target: "", diffCommand: "git diff main...HEAD", files: ["src/app.ts"], summary: "No PR context" };
+  const context: ReviewContext = { ...prReviewContext(), summary: "PR context unavailable" };
   const sent: Array<{ content: string; deliverAs: string | undefined }> = [];
   const notifications: string[] = [];
   const pi: ReviewActionPi = {
@@ -241,6 +257,61 @@ test("comment action falls back to parent agent when gh context is unavailable",
   ]);
 });
 
+test("comment action rejects mutable and local git review targets", async () => {
+  const issues = toReviewIssues("code-review", createReport());
+  const notifications: string[] = [];
+  let confirmations = 0;
+  let resolverCalls = 0;
+  const pi: ReviewActionPi = {
+    sendUserMessage() {
+      throw new Error("fallback must not be queued");
+    },
+    async exec() {
+      throw new Error("GitHub must not be called");
+    },
+  };
+  const ctx: ReviewActionContext = {
+    cwd: "/repo",
+    ui: {
+      async confirm() {
+        confirmations++;
+        return true;
+      },
+      notify(message) {
+        notifications.push(message);
+      },
+    },
+  };
+
+  for (const command of ["git diff", "git diff --cached", "git diff main...HEAD"]) {
+    const diffTarget = reviewTarget(command);
+    await handleReviewViewerAction(
+      pi,
+      ctx,
+      { action: "comment", issueIds: ["R001"] },
+      issues,
+      {
+        workflowName: "code-review",
+        target: "",
+        diffTarget,
+        files: ["src/app.ts"],
+      },
+      async () => {
+        resolverCalls++;
+        return { ref: "0123456789012345678901234567890123456789" };
+      },
+    );
+  }
+
+  assert.equal(confirmations, 0);
+  assert.equal(resolverCalls, 0);
+  assert.deepEqual(notifications, [
+    "PR comments are available only for findings captured from a verified pull-request diff.",
+    "PR comments are available only for findings captured from a verified pull-request diff.",
+    "PR comments are available only for findings captured from a verified pull-request diff.",
+  ]);
+});
+
 test("comment fallback does not queue after cancellation during confirmation", async () => {
   const controller = new AbortController();
   const issues = toReviewIssues("code-review", createReport());
@@ -274,7 +345,7 @@ test("comment fallback does not queue after cancellation during confirmation", a
         ctx,
         { action: "comment", issueIds: ["R001"] },
         issues,
-        undefined,
+        prReviewContext(),
         async () => ({ ref: "0123456789012345678901234567890123456789" }),
       ),
     /cancel fallback/,
@@ -313,9 +384,9 @@ test("comment action refuses stale findings after confirmation and before postin
     ctx,
     { action: "comment", issueIds: ["R001"] },
     issues,
-    undefined,
+    prReviewContext(),
     async () => {
-      throw new Error("Patch preview unavailable because the reviewed diff changed after the findings were generated.");
+      throw new ReviewSnapshotUnavailableError("the reviewed diff changed after the findings were generated.");
     },
   );
 
@@ -359,7 +430,7 @@ test("declining comment confirmation cancels without posting or fallback", async
     ctx,
     { action: "comment", issueIds: ["R001"] },
     issues,
-    undefined,
+    prReviewContext(),
     async () => {
       resolverCalls++;
       return { ref: "0123456789012345678901234567890123456789" };
@@ -408,7 +479,7 @@ test("comment action refuses a PR head that differs from the verified snapshot",
     ctx,
     { action: "comment", issueIds: ["R001"] },
     issues,
-    { workflowName: "code-review", target: "", diffCommand: "gh pr diff 123", files: ["src/app.ts"] },
+    prReviewContext(),
     async () => ({ ref: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }),
   );
 
@@ -461,7 +532,7 @@ test("comment action posts only when the resolved PR head matches the verified s
     ctx,
     { action: "comment", issueIds: ["R001"] },
     issues,
-    { workflowName: "code-review", target: "", diffCommand: "gh pr diff 123", files: ["src/app.ts"] },
+    prReviewContext(),
     async () => ({ ref: head }),
   );
 

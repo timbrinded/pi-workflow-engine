@@ -1,14 +1,13 @@
-import { fileURLToPath } from "node:url";
 import type { ParallelSettledError } from "../concurrency.ts";
 import type { LoadedWorkflow, WorkflowApi, WorkflowModule } from "../types.ts";
 import type { WorktreeBaseline } from "../worktree.ts";
 import { loadWorkflow } from "../workflow-module.ts";
-import { serializeReviewIssue, type ReviewContext, type ReviewIssue } from "./review-issues.ts";
+import { serializeReviewIssue, type ReviewIssue } from "./review-issues.ts";
+import type { ReviewContext } from "./review-report.ts";
+import { serializeReviewContext } from "./review-report.ts";
 
 const REVIEW_FIX_PHASE = "Generate patch previews";
 const REVIEW_FIX_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-const REVIEW_FIX_SOURCE_PATH = fileURLToPath(import.meta.url);
-const REVIEW_FIX_SOURCE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 export interface ReviewFixPreview {
   readonly findingId: string;
@@ -47,7 +46,10 @@ export function createReviewFixWorkflow(
   };
   return loadWorkflow(
     module,
-    { kind: "file", path: REVIEW_FIX_SOURCE_PATH, root: REVIEW_FIX_SOURCE_ROOT },
+    {
+      kind: "unverifiable",
+      reason: "ephemeral review-fix workflows capture runtime findings and do not have immutable module provenance",
+    },
     baseline,
   );
 }
@@ -57,7 +59,7 @@ export function buildFixAgentPrompt(issue: ReviewIssue, context: ReviewContext |
 
 Selected finding JSON:
 \`\`\`json
-${JSON.stringify({ context, issue: serializeReviewIssue(issue) })}
+${JSON.stringify({ context: serializeReviewContext(context), issue: serializeReviewIssue(issue) })}
 \`\`\`
 
 Instructions:

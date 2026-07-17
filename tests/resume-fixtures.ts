@@ -4,9 +4,10 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export function runGit(cwd: string, args: readonly string[]): void {
+export function runGit(cwd: string, args: readonly string[]): string {
   const result = spawnSync("git", [...args], { cwd, encoding: "utf8" });
   assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout.trim();
 }
 
 export async function createGitRepo(options: { readonly ignoreJournal?: boolean } = {}): Promise<string> {

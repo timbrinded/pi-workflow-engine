@@ -4,7 +4,6 @@ import * as refactorScout from "../workflows/refactor-scout.ts";
 import * as diagnose from "../workflows/diagnose.ts";
 import * as perfReview from "../workflows/perf-review.ts";
 import type { WorkflowModule } from "./types.ts";
-import { loadWorkflow } from "./workflow-module.ts";
 
 /**
  * Workflows statically imported by the extension. These are loaded through pi's own
@@ -20,21 +19,30 @@ import { loadWorkflow } from "./workflow-module.ts";
  * dynamically imported built-ins. Startup optimizations should happen at the extension
  * entrypoint/discovery boundary first.
  */
-const BUILTIN_SOURCE_ROOT = fileURLToPath(new URL("..", import.meta.url));
+export const BUILTIN_SOURCE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
-const BUILTIN_WORKFLOW_DEFINITIONS = [
-  { module: codeReview, filename: "code-review.ts" },
-  { module: refactorScout, filename: "refactor-scout.ts" },
-  { module: diagnose, filename: "diagnose.ts" },
-  { module: perfReview, filename: "perf-review.ts" },
-] satisfies ReadonlyArray<{ readonly module: WorkflowModule; readonly filename: string }>;
+export interface BuiltinWorkflowDefinition {
+  readonly module: WorkflowModule;
+  readonly filename: string;
+  readonly path: string;
+  readonly root: string;
+}
 
-export const BUILTIN_WORKFLOWS = BUILTIN_WORKFLOW_DEFINITIONS.map(({ module, filename }) =>
-  loadWorkflow(module, {
-    kind: "file",
-    path: fileURLToPath(new URL(`../workflows/${filename}`, import.meta.url)),
-    root: BUILTIN_SOURCE_ROOT,
-  }),
-);
+export const BUILTIN_WORKFLOW_DEFINITIONS: readonly BuiltinWorkflowDefinition[] = [
+  defineBuiltinWorkflow(codeReview, "code-review.ts"),
+  defineBuiltinWorkflow(refactorScout, "refactor-scout.ts"),
+  defineBuiltinWorkflow(diagnose, "diagnose.ts"),
+  defineBuiltinWorkflow(perfReview, "perf-review.ts"),
+];
+export const BUILTIN_WORKFLOWS = BUILTIN_WORKFLOW_DEFINITIONS.map(({ module }) => module);
 export const BUILTIN_WORKFLOW_FILES = new Set(BUILTIN_WORKFLOW_DEFINITIONS.map(({ filename }) => filename));
 export const BUILTIN_WORKFLOW_NAMES = BUILTIN_WORKFLOWS.map((mod) => mod.meta.name);
+
+function defineBuiltinWorkflow(module: WorkflowModule, filename: string): BuiltinWorkflowDefinition {
+  return {
+    module: { meta: module.meta, default: module.default },
+    filename,
+    path: fileURLToPath(new URL(`../workflows/${filename}`, import.meta.url)),
+    root: BUILTIN_SOURCE_ROOT,
+  };
+}

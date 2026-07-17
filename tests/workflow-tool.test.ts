@@ -429,6 +429,28 @@ test("the results command and shortcut reopen the last code-review findings with
   }
 });
 
+test("reopening retained results preserves the review when the viewer rejects", async () => {
+  const extension = captureWorkflowExtension();
+  const command = extension.commands.get("workflow:results");
+  if (!command) throw new Error("expected /workflow:results command");
+  await extension.tool.execute(
+    "call-results-viewer-rejection",
+    { script: codeReviewScript("Rejected viewer probe", RETAINED_REVIEW_RESULT) },
+    undefined,
+    () => {},
+    HEADLESS_CTX,
+  );
+
+  const tui = createTuiContext();
+  tui.ctx.ui.custom = async <T>(): Promise<T> => {
+    throw new Error("viewer failed");
+  };
+
+  await command.handler("", tui.ctx as ExtensionCommandContext);
+
+  assert.equal(tui.notifications().at(-1), "Review completed, but the findings viewer could not be opened.");
+});
+
 test("an empty code review replaces stale retained findings", async () => {
   const extension = captureWorkflowExtension();
   const command = extension.commands.get("workflow:results");
@@ -452,7 +474,7 @@ test("a malformed code-review context clears the retained report instead of reop
   const populatedScript = codeReviewScript("Populated context probe", RETAINED_REVIEW_RESULT);
   const malformedScript = codeReviewScript("Malformed context probe", {
     ...RETAINED_REVIEW_RESULT,
-    reviewContext: { workflowName: "code-review", target: "PR", diffCommand: 123, files: ["src/app.ts"] },
+    reviewContext: { workflowName: "code-review", target: "PR", files: ["src/app.ts"] },
   });
   await extension.tool.execute("call-results-valid-context", { script: populatedScript }, undefined, () => {}, HEADLESS_CTX);
   await extension.tool.execute("call-results-invalid-context", { script: malformedScript }, undefined, () => {}, HEADLESS_CTX);
@@ -488,6 +510,35 @@ test("retained code-review results stay isolated to their originating session", 
   const reopenedA = createTuiContext(undefined, "session-a");
   await command.handler("", reopenedA.ctx as ExtensionCommandContext);
   assert.equal(reopenedA.customCalls(), 1);
+});
+
+test("workflow inspector history stays isolated to its originating session", async () => {
+  const extension = captureWorkflowExtension();
+  const command = extension.commands.get("workflow:inspector");
+  if (!command) throw new Error("expected /workflow:inspector command");
+  const sessionA = {
+    ...HEADLESS_CTX,
+    sessionManager: createSessionManager("inspector-session-a"),
+  } as ExtensionContext;
+  const script = `
+export const meta = { name: "inspector-session-probe", description: "Inspector session probe" };
+export default async function run({ phase }) {
+  phase("Scoped");
+  return { ok: true };
+}
+`;
+
+  await extension.tool.execute("call-inspector-session-a", { script }, undefined, () => {}, sessionA);
+
+  const sessionB = createTuiContext(undefined, "inspector-session-b");
+  await command.handler("", sessionB.ctx as ExtensionCommandContext);
+  assert.equal(sessionB.customCalls(), 0);
+  assert.equal(sessionB.notifications().at(-1), "No workflow inspector is available yet");
+
+  const reopenedA = createTuiContext(undefined, "inspector-session-a");
+  await command.handler("", reopenedA.ctx as ExtensionCommandContext);
+  assert.equal(reopenedA.customCalls(), 1);
+  assert.match(reopenedA.customRenders().at(-1)?.join("\n") ?? "", /inspector-session-probe/);
 });
 
 test("the inspector shortcut opens the active workflow inspector while the workflow tool is running", async () => {

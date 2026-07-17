@@ -5,7 +5,9 @@ import { pathToFileURL } from "node:url";
 import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import type { PerfSink } from "./perf.ts";
 import { loadWorkflow, parseWorkflowModule } from "./workflow-module.ts";
-import { BUILTIN_WORKFLOW_FILES, BUILTIN_WORKFLOWS } from "./workflows.ts";
+import { BUILTIN_SOURCE_ROOT, BUILTIN_WORKFLOW_DEFINITIONS, BUILTIN_WORKFLOW_FILES } from "./workflows.ts";
+import { captureTreeFingerprint } from "./tree-fingerprint.ts";
+import { FINGERPRINT_EXCLUDED_RELATIVE_PATHS } from "./resume-context.ts";
 
 export interface DiscoverWorkflowsOptions {
   readonly refresh?: boolean;
@@ -14,12 +16,12 @@ export interface DiscoverWorkflowsOptions {
 }
 
 const discoveryCache = new Map<string, Map<string, LoadedWorkflow>>();
-
 /** Best-effort dynamic load of every `*.ts` workflow in a directory. */
 async function loadDir(
   dir: string,
   sourceIdentity: (path: string) => WorkflowSourceIdentity,
   excludeFiles: ReadonlySet<string> = new Set(),
+  provenanceRoot?: string,
 ): Promise<LoadedWorkflow[]> {
   let entries: string[];
   try {
@@ -28,15 +30,18 @@ async function loadDir(
     return [];
   }
 
-  const modules: LoadedWorkflow[] = [];
+  const before = provenanceRoot ? await captureDiscoveryFingerprint(provenanceRoot) : undefined;
+  const modules: Array<{ readonly path: string; readonly module: Parameters<typeof loadWorkflow>[0] }> = [];
   for (const name of entries) {
     if (excludeFiles.has(name)) continue;
     if (!name.endsWith(".ts") || name.startsWith("_") || name.startsWith(".")) continue;
     try {
       const path = join(dir, name);
-      const loaded: unknown = await import(pathToFileURL(path).href);
+      const importUrl = pathToFileURL(path);
+      if (before?.kind === "verified") importUrl.searchParams.set("workflowSource", before.fingerprint);
+      const loaded: unknown = await import(importUrl.href);
       const parsed = parseWorkflowModule(loaded);
-      if ("module" in parsed) modules.push(loadWorkflow(parsed.module, sourceIdentity(path)));
+      if ("module" in parsed) modules.push({ path, module: parsed.module });
       else console.error(`[workflow-engine] skipped ${name}: ${parsed.reason}`);
     } catch (error) {
       // Drop-in loading depends on the runtime resolving TS + the bundled typebox.
@@ -44,7 +49,16 @@ async function loadDir(
       console.error(`[workflow-engine] skipped ${name}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return modules;
+  return modules.map(({ path, module }) => loadWorkflow(module, sourceIdentity(path)));
+}
+
+async function captureDiscoveryFingerprint(root: string) {
+  return await captureTreeFingerprint({
+    root,
+    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+    maxBytes: 32 << 20,
+    maxFiles: 4096,
+  });
 }
 
 /**
@@ -62,12 +76,35 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
 
   const byName = await timed(options.perf, "discovery.total_ms", async () => {
     const next = new Map<string, LoadedWorkflow>();
-    for (const mod of BUILTIN_WORKFLOWS) next.set(mod.meta.name, mod);
+    const builtinSource = await captureDiscoveryFingerprint(BUILTIN_SOURCE_ROOT);
+    for (const definition of BUILTIN_WORKFLOW_DEFINITIONS) {
+      const source: WorkflowSourceIdentity =
+        builtinSource.kind === "verified"
+          ? {
+              kind: "file",
+              path: definition.path,
+              root: definition.root,
+              fingerprint: builtinSource.fingerprint,
+            }
+          : {
+              kind: "unverifiable",
+              reason: `built-in workflow source capture failed: ${builtinSource.reason}`,
+            };
+      next.set(definition.module.meta.name, loadWorkflow(definition.module, source));
+    }
 
     const repoWorkflowDir = join(repoDir, "workflows");
     const [repoDynamic, userDynamic] = await Promise.all([
       timed(options.perf, "discovery.repo_dir_ms", () =>
-        loadDir(repoWorkflowDir, (path) => ({ kind: "file", path, root: repoDir }), BUILTIN_WORKFLOW_FILES),
+        loadDir(
+          repoWorkflowDir,
+          () => ({
+            kind: "unverifiable",
+            reason: "dynamic workflow module graphs are not loaded from an immutable source snapshot",
+          }),
+          BUILTIN_WORKFLOW_FILES,
+          repoDir,
+        ),
       ),
       timed(options.perf, "discovery.user_dir_ms", () =>
         loadDir(userWorkflowDir, () => ({

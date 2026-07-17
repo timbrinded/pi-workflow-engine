@@ -102,7 +102,9 @@ function isBaseKey(value: string): boolean {
 function shortcutIdentity(shortcut: KeyId): string {
   const parsed = parseKeyId(shortcut);
   if (!parsed) return shortcut;
-  const base = parsed.base === "esc" ? "escape" : parsed.base === "return" ? "enter" : parsed.base;
+  let base = parsed.base;
+  if (base === "esc") base = "escape";
+  else if (base === "return") base = "enter";
   return `${[...parsed.modifiers].sort().join("+")}+${base}`;
 }
 

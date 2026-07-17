@@ -32,6 +32,13 @@ export interface WorkflowBudget {
   remaining(): number;
 }
 
+/** Refuse a new model turn after the run has consumed its output-token budget. */
+export function assertWorkflowBudgetAvailable(budget: WorkflowBudget): void {
+  if (budget.total !== null && budget.remaining() <= 0) {
+    throw new WorkflowBudgetExceededError(budget.total, budget.spent());
+  }
+}
+
 /**
  * Build a budget backed by the run's usage sink. `spent()` reads
  * `usage.snapshot().totals.output` — the same output-token sum surfaced in the

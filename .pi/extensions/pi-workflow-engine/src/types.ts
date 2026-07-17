@@ -50,15 +50,15 @@ export interface WorkflowRunOptions {
   /** Resolve a sub-workflow reference to a module, enabling `api.workflow()`. When omitted, `api.workflow()` throws. */
   resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkflow>;
   /** Called with the final performance snapshot when perf is enabled. */
-  onPerfSnapshot?: (snapshot: PerfSnapshot) => void;
+  onPerfSnapshot?: (snapshot: PerfSnapshot) => void | Promise<void>;
   /** Called with the final workflow subagent usage snapshot. */
-  onUsageSnapshot?: (snapshot: WorkflowUsageSnapshot) => void;
+  onUsageSnapshot?: (snapshot: WorkflowUsageSnapshot) => void | Promise<void>;
   /** Called once run identity and journal paths are known. */
-  onRunMetadata?: (metadata: WorkflowRunMetadata) => void;
+  onRunMetadata?: (metadata: WorkflowRunMetadata) => void | Promise<void>;
   /** Called with the live progress source while a workflow is running, then undefined when it ends. */
-  onProgressSource?: (source: WorkflowProgressSource | undefined) => void;
+  onProgressSource?: (source: WorkflowProgressSource | undefined) => void | Promise<void>;
   /** Called with the final completed progress snapshot after live workflow UI teardown. */
-  onProgressSnapshot?: (snapshot: WorkflowProgressSnapshot) => void;
+  onProgressSnapshot?: (snapshot: WorkflowProgressSnapshot) => void | Promise<void>;
 }
 
 export interface WorkflowProgressSource {
@@ -69,6 +69,7 @@ export interface WorkflowProgressSource {
 export type WorkflowLaneItemStatus = "pending" | "running" | "success" | "warning" | "error";
 
 export type AgentToolHint = "search";
+export type AgentResumePolicy = "read-only" | "off";
 
 export interface IsolatedAgentResult<T> {
   readonly result: T;
@@ -106,6 +107,20 @@ export interface AgentOptions<S extends TSchema = TSchema> {
    * with identical prompts/options, e.g. `${stage}:${item.id}`.
    */
   cacheKey?: string;
+  /**
+   * Resume policy for this call. Shared-workspace agents run live unless they
+   * explicitly declare themselves read-only. Those calls bind replay to the full
+   * Git-visible workspace; isolated agents bind to their disposable baseline.
+   * Use "off" to disable both journal reads and writes.
+   */
+  resume?: AgentResumePolicy;
+  /**
+   * Additional ignored/generated inputs under the workflow cwd that this
+   * read-only agent may observe. Git-visible files across the repository are
+   * captured automatically; list cwd-relative ignored paths here or use
+   * `resume: "off"` when their bounded contents cannot be captured.
+   */
+  resumeInputs?: readonly string[];
   /** Run this agent in a disposable git worktree and return its patch with the result. */
   isolation?: "worktree";
   /** Allowlist of concrete tool names the agent may use (e.g. ["read", "bash"]). */
@@ -183,7 +198,7 @@ export interface WorkflowApi {
 export type WorkflowRun = (api: WorkflowApi) => Promise<unknown>;
 
 export type WorkflowSourceIdentity =
-  | { readonly kind: "file"; readonly path: string; readonly root: string }
+  | { readonly kind: "file"; readonly path: string; readonly root: string; readonly fingerprint: string }
   | { readonly kind: "fingerprint"; readonly fingerprint: string }
   | { readonly kind: "unverifiable"; readonly reason: string };
 

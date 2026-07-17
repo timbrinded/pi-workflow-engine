@@ -5,7 +5,8 @@ import { createTestTheme } from "./fixtures/theme.ts";
 import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
 import { WorkflowInspector } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
-import { isAdvisoryReport, renderWorkflowResultText } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts";
+import { isAdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
+import { renderWorkflowResultText } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts";
 import { renderWorkflowWidgetLines } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
 import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 
@@ -182,7 +183,13 @@ test("advisory reports are structurally recognized", () => {
   assert.equal(
     isAdvisoryReport({
       ...validReport,
-      reviewContext: { workflowName: "code-review", target: "", diffCommand: "git diff HEAD~1", files: ["src/app.ts"], summary: "Review" },
+      reviewContext: {
+        workflowName: "code-review",
+        target: "",
+        diffTarget: { kind: "git", args: ["diff", "--no-ext-diff", "HEAD~1"] },
+        files: ["src/app.ts"],
+        summary: "Review",
+      },
     }),
     true,
   );

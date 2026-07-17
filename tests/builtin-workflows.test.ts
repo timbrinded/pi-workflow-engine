@@ -14,6 +14,7 @@ interface AgentCall {
   phase: string | undefined;
   tools: string[] | undefined;
   toolHints: readonly string[] | undefined;
+  resume: AgentOptions["resume"];
 }
 
 interface ScriptedApi extends WorkflowApi {
@@ -34,7 +35,14 @@ function createScriptedApi(responses: unknown[], args = ""): ScriptedApi {
   const logs: string[] = [];
   const events: WorkflowProgressEvent[] = [];
   const agent = (async (prompt: string, opts?: AgentOptions) => {
-    calls.push({ prompt, label: opts?.label, phase: opts?.phase, tools: opts?.tools, toolHints: opts?.toolHints });
+    calls.push({
+      prompt,
+      label: opts?.label,
+      phase: opts?.phase,
+      tools: opts?.tools,
+      toolHints: opts?.toolHints,
+      resume: opts?.resume,
+    });
     if (queue.length === 0) throw new Error(`No scripted response for agent ${opts?.label ?? "(unlabelled)"}`);
     return queue.shift();
   }) as WorkflowApi["agent"];
@@ -166,7 +174,7 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
   const surviving = candidate("confirmed bug", "bug");
   const api = createScriptedApi([
     {
-      diffCommand: "not a diff command",
+      diffCommand: "git diff",
       files: ["src/example.ts"],
       summary: "One risky change.",
       conventions: "Prefer direct tests.",
@@ -180,7 +188,13 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
     report("One confirmed bug.", [finding("confirmed bug", "bug")]),
   ]);
 
-  const result = asReportResult(await codeReview(api));
+  const result = asReportResult(await codeReview(api, {
+    captureReviewMaterial: async () => ({
+      ok: true,
+      diff: "diff --git a/src/example.ts b/src/example.ts\n--- a/src/example.ts\n+++ b/src/example.ts\n@@ -11,1 +11,2 @@\n unchanged\n+confirmed bug\n",
+      snapshot: { status: "unavailable", reason: "fixture" },
+    }),
+  }));
   const synthesize = api.calls.find((call) => call.label === "synthesize");
 
   assert.equal(result.summary, "One confirmed bug.");
@@ -189,6 +203,8 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
   assert.equal(result.stats.kept, 1);
   assert.match(synthesize?.prompt ?? "", /src\.example\.ts:12 proves the bug|src\/example\.ts:12 proves the bug/);
   assert.match(synthesize?.prompt ?? "", /confirmed bug impact/);
+  assert.deepEqual(synthesize?.tools, []);
+  assert.equal(synthesize?.resume, "read-only");
 });
 
 test("refactor-scout returns the empty report when no files are scoped", async () => {

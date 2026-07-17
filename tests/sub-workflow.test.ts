@@ -14,16 +14,6 @@ import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef
 import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { WorktreeRegistry, type WorktreeGitCommandOptions } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
-import {
-  createWorkflowSourceFingerprintCache,
-  type RepositoryResumeContext,
-} from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
-
-const REPOSITORY_CONTEXT: RepositoryResumeContext = {
-  kind: "verified",
-  state: "non-git",
-  workingTreeFingerprint: "sub-workflow-test",
-};
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly phases: string[];
@@ -75,8 +65,6 @@ function createRc(
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
     journal: createMemoryBackedJournal(),
     worktrees: new WorktreeRegistry(process.cwd()),
-    repositoryResumeContext: REPOSITORY_CONTEXT,
-    workflowSourceFingerprintCache: createWorkflowSourceFingerprintCache(),
     createSession,
   };
 }
@@ -191,12 +179,15 @@ test("api.workflow() throws when no resolver is configured", async () => {
 
 test("engine execution metadata injects the reviewed baseline into isolated worktree creation", async () => {
   const progress = createProgress();
+  const baselineRef = "0123456789012345678901234567890123456789";
   const gitCalls: WorktreeGitCommandOptions[] = [];
   const worktrees = new WorktreeRegistry(process.cwd(), {
     runner: {
       async runGit(options) {
         gitCalls.push(options);
-        const stdout = options.args[0] === "rev-parse" ? "true\n" : "";
+        let stdout = "";
+        if (options.args.includes("--is-inside-work-tree")) stdout = "true\n";
+        else if (options.args[0] === "rev-parse") stdout = `${baselineRef}\n`;
         return { ok: true, stdout, stderr: "" };
       },
     },
@@ -208,7 +199,7 @@ test("engine execution metadata injects the reviewed baseline into isolated work
     return await NOOP_SESSION(options);
   };
   const baseline = {
-    ref: "0123456789012345678901234567890123456789",
+    ref: baselineRef,
     patch: "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-before\n+reviewed\n",
   };
   const mod: LoadedWorkflow = {

@@ -7,7 +7,8 @@ import {
   resolveGitHubPrContext,
   type ExecLike,
 } from "../.pi/extensions/pi-workflow-engine/src/review/github-pr-comments.ts";
-import { toReviewIssues, type ReviewContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
+import { toReviewIssues } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
+import type { ReviewContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-report.ts";
 
 test("posts inline comments through gh api with path line and head sha", async () => {
   const calls: Array<{ command: string; args: readonly string[]; cwd: string | undefined }> = [];
@@ -32,7 +33,7 @@ test("posts inline comments through gh api with path line and head sha", async (
   const reviewContext: ReviewContext = {
     workflowName: "code-review",
     target: "",
-    diffCommand: "gh pr diff 123",
+    diffTarget: { kind: "pull-request", number: 123 },
     files: ["src/app.ts"],
     summary: "PR 123",
   };
@@ -87,7 +88,7 @@ test("posts forked PR inline comments to the base repository", async () => {
   const reviewContext: ReviewContext = {
     workflowName: "code-review",
     target: "",
-    diffCommand: "gh pr diff 456",
+    diffTarget: { kind: "pull-request", number: 456 },
     files: ["src/app.ts"],
     summary: "PR 456",
   };

@@ -15,6 +15,23 @@ function processOptions(script: string) {
   } as const;
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function assertProcessGone(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH") return;
+      throw error;
+    }
+    await delay(10);
+  }
+  assert.fail(`process ${pid} remained alive`);
+}
+
 test("runBoundedProcess retains structured exit metadata", async () => {
   const result = await runBoundedProcess(processOptions('process.stderr.write("expected failure"); process.exit(7)'));
 
@@ -76,4 +93,44 @@ test("runBoundedProcess waits for a force-killed child to close", async () => {
       "code" in error &&
       error.code === "ESRCH",
   );
+});
+
+test("runBoundedProcess terminates a descendant that retains inherited stdio", async () => {
+  if (process.platform === "win32") return;
+  const result = await runBoundedProcess({
+    ...processOptions(""),
+    file: "sh",
+    args: ["-c", 'sleep 30 & printf "%s\\n" "$!"; exit 0'],
+    timeoutMs: 50,
+    killGraceMs: 20,
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) assert.fail("expected the process to time out");
+  assert.equal(result.failure.kind, "timeout");
+  assert.ok(result.durationMs < 1_000, `process settled after ${result.durationMs}ms`);
+  const descendantPid = Number(result.stdout.trim());
+  assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
+  await assertProcessGone(descendantPid);
+});
+
+test("runBoundedProcess preserves the first terminal failure", async () => {
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => controller.abort(new Error("late abort")), 100);
+  try {
+    const result = await runBoundedProcess({
+      ...processOptions('process.on("SIGTERM", () => {}); process.stdout.write("too much output"); setInterval(() => {}, 1_000)'),
+      signal: controller.signal,
+      timeoutMs: 150,
+      killGraceMs: 200,
+      maxBufferBytes: 3,
+      maxBufferError: "first output failure",
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) assert.fail("expected the process to fail");
+    assert.deepEqual(result.failure, { kind: "max-buffer", message: "first output failure" });
+  } finally {
+    clearTimeout(abortTimer);
+  }
 });

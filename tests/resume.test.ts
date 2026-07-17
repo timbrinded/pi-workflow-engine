@@ -26,8 +26,9 @@ import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/workt
 import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import {
   captureRepositoryResumeContext,
-  createWorkflowSourceFingerprintCache,
+  FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
 } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
+import { captureTreeFingerprint } from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
 import { createGitRepo, runGit } from "./resume-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
@@ -61,6 +62,17 @@ function workflowModule(name: string, run: WorkflowModule["default"]): LoadedWor
   };
 }
 
+async function sourceTreeFingerprint(root: string): Promise<string> {
+  const capture = await captureTreeFingerprint({
+    root,
+    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+    maxBytes: 1 << 20,
+    maxFiles: 128,
+  });
+  if (capture.kind === "unverifiable") throw new Error(capture.reason);
+  return capture.fingerprint;
+}
+
 function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkflow>): WorkflowContextOptions {
   return { abortController: new AbortController(), submissionLimit: 16, resolveWorkflow, depth: 0, progressPrefix: "" };
 }
@@ -71,7 +83,7 @@ function createLiveTextSession(onPrompt: (prompt: string) => void): CreateAgentS
     return {
       session: {
         get state() {
-          return { messages };
+          return { messages, systemPrompt: TEST_SYSTEM_PROMPT, model: TEST_MODEL, thinkingLevel: "low" };
         },
         async prompt(prompt) {
           onPrompt(prompt);
@@ -82,6 +94,15 @@ function createLiveTextSession(onPrompt: (prompt: string) => void): CreateAgentS
         },
         dispose() {},
         async abort() {},
+        getAllTools() {
+          return [TEST_TOOL];
+        },
+        getActiveToolNames() {
+          return [TEST_TOOL.name];
+        },
+        getToolDefinition(name) {
+          return name === TEST_TOOL.name ? TEST_TOOL_DEFINITION : undefined;
+        },
       },
     };
   };
@@ -91,13 +112,31 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const TEST_TOOL = {
+  name: "read",
+  description: "Read a file",
+  parameters: { type: "object", properties: {} },
+  promptGuidelines: [],
+  sourceInfo: { path: "builtin:read", source: "builtin", scope: "temporary", origin: "top-level" },
+} as const;
+const TEST_MODEL = { provider: "test", id: "resume-model" } as const;
+const TEST_SYSTEM_PROMPT = "Stable resume test system prompt";
+const TEST_TOOL_DEFINITION = {
+  name: TEST_TOOL.name,
+  description: TEST_TOOL.description,
+  parameters: TEST_TOOL.parameters,
+  async execute() {
+    return { content: [], details: undefined };
+  },
+} as const;
+
 function createDelayedTextSession(delays: Record<string, number>, onPrompt: (prompt: string) => void): CreateAgentSession {
   return async () => {
     let messages: readonly unknown[] = [];
     return {
       session: {
         get state() {
-          return { messages };
+          return { messages, systemPrompt: TEST_SYSTEM_PROMPT, model: TEST_MODEL, thinkingLevel: "low" };
         },
         async prompt(prompt) {
           onPrompt(prompt);
@@ -109,6 +148,15 @@ function createDelayedTextSession(delays: Record<string, number>, onPrompt: (pro
         },
         dispose() {},
         async abort() {},
+        getAllTools() {
+          return [TEST_TOOL];
+        },
+        getActiveToolNames() {
+          return [TEST_TOOL.name];
+        },
+        getToolDefinition(name) {
+          return name === TEST_TOOL.name ? TEST_TOOL_DEFINITION : undefined;
+        },
       },
     };
   };
@@ -122,7 +170,7 @@ function createSequencedTextSession(onPrompt: (prompt: string) => void): CreateA
     return {
       session: {
         get state() {
-          return { messages };
+          return { messages, systemPrompt: TEST_SYSTEM_PROMPT, model: TEST_MODEL, thinkingLevel: "low" };
         },
         async prompt(prompt) {
           onPrompt(prompt);
@@ -133,6 +181,15 @@ function createSequencedTextSession(onPrompt: (prompt: string) => void): CreateA
         },
         dispose() {},
         async abort() {},
+        getAllTools() {
+          return [TEST_TOOL];
+        },
+        getActiveToolNames() {
+          return [TEST_TOOL.name];
+        },
+        getToolDefinition(name) {
+          return name === TEST_TOOL.name ? TEST_TOOL_DEFINITION : undefined;
+        },
       },
     };
   };
@@ -165,8 +222,6 @@ async function runWithJournal(input: {
     journal,
     worktrees: new WorktreeRegistry(input.cwd),
     createSession: input.createSession,
-    repositoryResumeContext: await captureRepositoryResumeContext(input.cwd),
-    workflowSourceFingerprintCache: createWorkflowSourceFingerprintCache(),
   };
 
   return await runWorkflowWithContext(rc, progress, input.mod, "", contextOpts(input.resolveWorkflow));
@@ -186,8 +241,8 @@ test("resume with the same workflow replays all completed agent results from jou
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-"));
   let livePrompts: string[] = [];
   const mod = workflowModule("linear", async (api) => {
-    const first = await api.agent("first");
-    const second = await api.agent("second");
+      const first = await api.agent("first", { resume: "read-only", resumeInputs: ["."] });
+      const second = await api.agent("second", { resume: "read-only", resumeInputs: ["."] });
     return [first, second];
   });
 
@@ -219,7 +274,7 @@ test("workflows with explicitly unverifiable provenance never replay cached agen
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-unverifiable-source-"));
   const mod: LoadedWorkflow = {
     meta: { name: "programmatic", description: "" },
-    default: async (api) => api.agent("same prompt"),
+    default: async (api) => api.agent("same prompt", { resume: "read-only", resumeInputs: ["."] }),
     source: { kind: "unverifiable", reason: "programmatic test workflow" },
   };
   try {
@@ -229,7 +284,6 @@ test("workflows with explicitly unverifiable provenance never replay cached agen
     await runWithJournal({
       cwd,
       mod,
-      resumeFrom: "first-run",
       writeRunId: "second-run",
       createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
     });
@@ -242,8 +296,16 @@ test("workflows with explicitly unverifiable provenance never replay cached agen
 
 test("changing workflow implementation invalidates all calls from the old source", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-suffix-"));
-  const original = workflowModule("linear", async (api) => [await api.agent("a"), await api.agent("b"), await api.agent("c")]);
-  const changed = workflowModule("linear", async (api) => [await api.agent("a"), await api.agent("changed"), await api.agent("c")]);
+  const original = workflowModule("linear", async (api) => [
+        await api.agent("a", { resume: "read-only", resumeInputs: ["."] }),
+        await api.agent("b", { resume: "read-only", resumeInputs: ["."] }),
+        await api.agent("c", { resume: "read-only", resumeInputs: ["."] }),
+  ]);
+  const changed = workflowModule("linear", async (api) => [
+        await api.agent("a", { resume: "read-only", resumeInputs: ["."] }),
+        await api.agent("changed", { resume: "read-only", resumeInputs: ["."] }),
+        await api.agent("c", { resume: "read-only", resumeInputs: ["."] }),
+  ]);
 
   await runWithJournal({
     cwd,
@@ -271,7 +333,7 @@ async function assertRepositoryChangeInvalidates(
   mutate: () => Promise<void>,
   expectedReason: RegExp,
 ): Promise<void> {
-  const mod = workflowModule("repository-context", async (api) => api.agent("same prompt"));
+  const mod = workflowModule("repository-context", async (api) => api.agent("same prompt", { resume: "read-only" }));
   await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
   await mutate();
 
@@ -295,8 +357,6 @@ async function assertRepositoryChangeInvalidates(
     journal,
     worktrees: new WorktreeRegistry(cwd),
     createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
-    repositoryResumeContext: await captureRepositoryResumeContext(cwd),
-    workflowSourceFingerprintCache: createWorkflowSourceFingerprintCache(),
   };
 
   await runWorkflowWithContext(rc, progress, mod, "", contextOpts());
@@ -307,7 +367,7 @@ async function assertRepositoryChangeInvalidates(
 test("resume keeps cache hits for unchanged git repository context", async () => {
   const cwd = await createGitRepo();
   try {
-    const mod = workflowModule("unchanged-repository", async (api) => api.agent("same prompt"));
+    const mod = workflowModule("unchanged-repository", async (api) => api.agent("same prompt", { resume: "read-only", resumeInputs: ["."] }));
     await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
     const livePrompts: string[] = [];
     const result = await runWithJournal({
@@ -328,7 +388,7 @@ test("resume keeps cache hits for unchanged git repository context", async () =>
 test("resume ignores its own journal files when the repository does not", async () => {
   const cwd = await createGitRepo({ ignoreJournal: false });
   try {
-    const mod = workflowModule("self-journal", async (api) => api.agent("same prompt"));
+    const mod = workflowModule("self-journal", async (api) => api.agent("same prompt", { resume: "read-only", resumeInputs: ["."] }));
     await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
 
     const livePrompts: string[] = [];
@@ -347,16 +407,16 @@ test("resume ignores its own journal files when the repository does not", async 
   }
 });
 
-test("resume fingerprints the whole repository when run from a subdirectory", async () => {
+test("resume fingerprints declared inputs relative to a workflow subdirectory", async () => {
   const root = await createGitRepo({ ignoreJournal: false });
   const cwd = join(root, "nested");
   await mkdir(cwd);
   try {
-    await writeFile(join(root, "outside.txt"), "untracked version one\n", "utf8");
+    await writeFile(join(cwd, "inside.txt"), "untracked version one\n", "utf8");
     await assertRepositoryChangeInvalidates(
       cwd,
       async () => {
-        await writeFile(join(root, "outside.txt"), "untracked version two\n", "utf8");
+        await writeFile(join(cwd, "inside.txt"), "untracked version two\n", "utf8");
       },
       /working tree contents changed/,
     );
@@ -369,7 +429,7 @@ test("resume supports an unchanged unborn repository", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-unborn-"));
   runGit(cwd, ["init"]);
   try {
-    const mod = workflowModule("unborn-repository", async (api) => api.agent("same prompt"));
+    const mod = workflowModule("unborn-repository", async (api) => api.agent("same prompt", { resume: "read-only", resumeInputs: ["."] }));
     await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
 
     const livePrompts: string[] = [];
@@ -430,22 +490,22 @@ for (const state of ["staged", "unstaged", "untracked"] as const) {
 test("resume invalidates cached agents when saved workflow source changes", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-saved-source-"));
   const sourcePath = join(cwd, "saved-workflow.ts");
-  const run = async (api: Parameters<WorkflowModule["default"]>[0]) => api.agent("same prompt");
-  const mod: LoadedWorkflow = {
+  const run = async (api: Parameters<WorkflowModule["default"]>[0]) => api.agent("same prompt", { resume: "read-only", resumeInputs: ["."] });
+  const mod = (fingerprint: string): LoadedWorkflow => ({
     meta: { name: "saved-source", description: "" },
     default: run,
-    source: { kind: "file", path: sourcePath, root: cwd },
-  };
+    source: { kind: "file", path: sourcePath, root: cwd, fingerprint },
+  });
   try {
     await writeFile(join(cwd, "package.json"), '{"name":"saved-source-fixture"}\n', "utf8");
     await writeFile(sourcePath, "// source version one\n", "utf8");
-    await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+    await runWithJournal({ cwd, mod: mod(await sourceTreeFingerprint(cwd)), writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
     await writeFile(sourcePath, "// source version two\n", "utf8");
 
     const livePrompts: string[] = [];
     await runWithJournal({
       cwd,
-      mod,
+      mod: mod(await sourceTreeFingerprint(cwd)),
       resumeFrom: "first-run",
       writeRunId: "second-run",
       createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
@@ -462,24 +522,24 @@ test("resume invalidates file-backed workflows when a runtime helper changes", a
   const sourceDir = join(cwd, "src");
   const sourcePath = join(workflowDir, "saved-workflow.ts");
   const helperPath = join(sourceDir, "helper.ts");
-  const mod: LoadedWorkflow = {
+  const mod = (fingerprint: string): LoadedWorkflow => ({
     meta: { name: "helper-source", description: "" },
-    default: async (api) => api.agent("same prompt"),
-    source: { kind: "file", path: sourcePath, root: cwd },
-  };
+    default: async (api) => api.agent("same prompt", { resume: "read-only", resumeInputs: ["."] }),
+    source: { kind: "file", path: sourcePath, root: cwd, fingerprint },
+  });
   try {
     await mkdir(workflowDir);
     await mkdir(sourceDir);
     await writeFile(join(cwd, "package.json"), '{"name":"resume-helper-fixture"}\n', "utf8");
     await writeFile(sourcePath, 'import "../src/helper.ts";\nexport default async () => "ok";\n', "utf8");
     await writeFile(helperPath, "export const helper = 'one';\n", "utf8");
-    await runWithJournal({ cwd, mod, writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
+    await runWithJournal({ cwd, mod: mod(await sourceTreeFingerprint(cwd)), writeRunId: "first-run", createSession: createLiveTextSession(() => {}) });
     await writeFile(helperPath, "export const helper = 'two';\n", "utf8");
 
     const livePrompts: string[] = [];
     await runWithJournal({
       cwd,
-      mod,
+      mod: mod(await sourceTreeFingerprint(cwd)),
       resumeFrom: "first-run",
       writeRunId: "second-run",
       createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
@@ -500,7 +560,7 @@ test("repository capture and normal workflow startup honor an already-aborted ho
     return "unexpected";
   });
   try {
-    await assert.rejects(() => captureRepositoryResumeContext(cwd, controller.signal), /stop repository capture/);
+    await assert.rejects(() => captureRepositoryResumeContext(cwd, ["."], controller.signal), /stop repository capture/);
     await assert.rejects(() => runWorkflow(fakeContext(cwd, controller.signal), mod, ""), /stop repository capture/);
     assert.equal(workflowExecuted, false);
   } finally {
@@ -514,7 +574,7 @@ test("resume invalidates cached agents when inline workflow source changes", asy
 export const meta = { name: "inline-source", description: "" };
 export default async function run(api) {
   // ${version}
-  return api.agent("same prompt");
+  return api.agent("same prompt", { resume: "read-only", resumeInputs: ["."] });
 }
 `;
   try {
@@ -536,7 +596,12 @@ export default async function run(api) {
 
 test("parallel resume replays stable keys despite completion-order journal writes", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-parallel-"));
-  const mod = workflowModule("parallel", async (api) => await api.parallel([() => api.agent("slow"), () => api.agent("fast")]));
+  const mod = workflowModule("parallel", async (api) =>
+    await api.parallel([
+      () => api.agent("slow", { resume: "read-only", resumeInputs: ["."] }),
+      () => api.agent("fast", { resume: "read-only", resumeInputs: ["."] }),
+    ]),
+  );
 
   await runWithJournal({
     cwd,
@@ -545,7 +610,9 @@ test("parallel resume replays stable keys despite completion-order journal write
     createSession: createDelayedTextSession({ slow: 20, fast: 0 }, () => {}),
   });
   assert.deepEqual(
-    (await loadJournalEntries(workflowJournalPath(cwd, "first-run"))).map((entry) => entry.value),
+    (await loadJournalEntries(workflowJournalPath(cwd, "first-run"))).map((entry) =>
+      entry.version === 2 ? entry.result : entry.value,
+    ),
     ["live:fast", "live:slow"],
   );
 
@@ -567,8 +634,8 @@ test("pipeline resume replays later stages by stable item keys", async () => {
   const mod = workflowModule("pipeline", async (api) =>
     await api.pipeline(
       ["slow", "fast"],
-      async (_acc, item) => await api.agent(`stage1:${item}`),
-      async (acc, item) => `${acc}|${await api.agent(`stage2:${item}`)}`,
+      async (_acc, item) => await api.agent(`stage1:${item}`, { resume: "read-only", resumeInputs: ["."] }),
+      async (acc, item) => `${acc}|${await api.agent(`stage2:${item}`, { resume: "read-only", resumeInputs: ["."] })}`,
     ),
   );
 
@@ -596,8 +663,8 @@ test("cacheKey disambiguates repeated identical agent prompts for resume", async
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-cache-key-"));
   const mod = workflowModule("repeated", async (api) =>
     await api.parallel([
-      () => api.agent("same", { cacheKey: "item:a" }),
-      () => api.agent("same", { cacheKey: "item:b" }),
+      () => api.agent("same", { cacheKey: "item:a", resume: "read-only", resumeInputs: ["."] }),
+      () => api.agent("same", { cacheKey: "item:b", resume: "read-only", resumeInputs: ["."] }),
     ]),
   );
 
@@ -617,15 +684,20 @@ test("cacheKey disambiguates repeated identical agent prompts for resume", async
     createSession: createSequencedTextSession((prompt) => livePrompts.push(prompt)),
   });
 
-  assert.deepEqual(first, ["live-1:same", "live-2:same"]);
+  assert.ok(Array.isArray(first));
+  assert.deepEqual([...first].sort(), ["live-1:same", "live-2:same"]);
   assert.deepEqual(resumed, first);
   assert.deepEqual(livePrompts, []);
 });
 
 test("sub-workflow agents share the same resume journal", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-child-"));
-  const child = workflowModule("child", async (api) => api.agent("child"));
-  const parent = workflowModule("parent", async (api) => [await api.agent("parent-1"), await api.workflow("child"), await api.agent("parent-2")]);
+  const child = workflowModule("child", async (api) => api.agent("child", { resume: "read-only", resumeInputs: ["."] }));
+  const parent = workflowModule("parent", async (api) => [
+    await api.agent("parent-1", { resume: "read-only", resumeInputs: ["."] }),
+    await api.workflow("child"),
+    await api.agent("parent-2", { resume: "read-only", resumeInputs: ["."] }),
+  ]);
   const resolveWorkflow = async (ref: WorkflowRef) => {
     if (ref === "child") return child;
     throw new Error(`unexpected workflow ${ref}`);
@@ -639,7 +711,9 @@ test("sub-workflow agents share the same resume journal", async () => {
     resolveWorkflow,
   });
   assert.deepEqual(
-    (await loadJournalEntries(workflowJournalPath(cwd, "first-run"))).map((entry) => entry.value),
+    (await loadJournalEntries(workflowJournalPath(cwd, "first-run"))).map((entry) =>
+      entry.version === 2 ? entry.result : entry.value,
+    ),
     ["live:parent-1", "live:child", "live:parent-2"],
   );
 

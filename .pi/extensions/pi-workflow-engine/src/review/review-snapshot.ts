@@ -2,14 +2,16 @@ import { createHash } from "node:crypto";
 import { throwIfAborted } from "../cancellation.ts";
 import {
   captureDiffTarget,
-  parseAllowedDiffCommand,
-  type AllowedDiffTarget,
-  type AllowedGitDiffTarget,
-  type AllowedPullRequestDiffTarget,
+  type DiffCaptureFailure,
+  type GitReviewDiffTarget,
+  type PullRequestReviewDiffTarget,
+  type ReviewDiffTarget,
+  reviewGitDiffBaseline,
 } from "../diff-capture.ts";
 import { runBoundedProcess } from "../process-runner.ts";
+import { unknownErrorMessage } from "../unknown-error.ts";
 import type { WorktreeBaseline } from "../worktree.ts";
-import type { ReviewContext, ReviewSnapshotIdentity } from "./review-issues.ts";
+import type { ReviewContext, ReviewSnapshotIdentity } from "./review-report.ts";
 
 const REVIEW_SNAPSHOT_TIMEOUT_MS = 30_000;
 const REVIEW_SNAPSHOT_MAX_BYTES = 16 << 20;
@@ -38,9 +40,14 @@ export interface CapturedReviewMaterial {
 export interface ReviewMaterialCaptureFailure {
   readonly ok: false;
   readonly error: string;
+  readonly failure: DiffCaptureFailure;
 }
 
 export type ReviewMaterialCaptureResult = CapturedReviewMaterial | ReviewMaterialCaptureFailure;
+
+export class ReviewSnapshotUnavailableError extends Error {
+  override readonly name = "ReviewSnapshotUnavailableError";
+}
 
 /**
  * Capture one review diff and, when possible, an atomic identity for its exact
@@ -48,20 +55,17 @@ export type ReviewMaterialCaptureResult = CapturedReviewMaterial | ReviewMateria
  * recaptures a diff that was already captured successfully.
  */
 export async function captureReviewMaterial(
-  diffCommand: string,
+  target: ReviewDiffTarget,
   cwd: string,
   signal?: AbortSignal,
 ): Promise<ReviewMaterialCaptureResult> {
-  const target = parseAllowedDiffCommand(diffCommand);
-  if ("error" in target) return { ok: false, error: target.error };
-
   let latestDiff: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     const before = await captureReviewDiff(target, cwd, signal);
     if (!before.ok) {
       throwIfAborted(signal);
       return latestDiff === undefined
-        ? { ok: false, error: before.error }
+        ? { ok: false, error: before.error, failure: before.failure }
         : capturedWithoutSnapshot(latestDiff, `review diff could not be recaptured: ${before.error}`);
     }
     latestDiff = before.diff;
@@ -71,7 +75,7 @@ export async function captureReviewMaterial(
       baseline = await captureReviewWorktreeBaseline(target, cwd, signal);
     } catch (error) {
       throwIfAborted(signal);
-      return capturedWithoutSnapshot(before.diff, `review baseline could not be captured: ${formatError(error)}`);
+      return capturedWithoutSnapshot(before.diff, `review baseline could not be captured: ${unknownErrorMessage(error)}`);
     }
 
     const after = await captureReviewDiff(target, cwd, signal);
@@ -99,7 +103,8 @@ export async function captureReviewMaterial(
     }
   }
 
-  return capturedWithoutSnapshot(latestDiff ?? "", "review target changed while its snapshot was being captured");
+  if (latestDiff === undefined) throw new Error("review snapshot retry loop completed without a captured diff");
+  return capturedWithoutSnapshot(latestDiff, "review target changed while its snapshot was being captured");
 }
 
 /** Revalidate the reviewed diff and reconstruct its exact post-change snapshot. */
@@ -109,21 +114,21 @@ export async function resolveReviewWorktreeBaseline(
   signal?: AbortSignal,
 ): Promise<WorktreeBaseline> {
   if (!context?.snapshot) {
-    throw new Error("Patch preview unavailable because the review was not captured with a verifiable snapshot identity.");
+    throw new ReviewSnapshotUnavailableError("the review was not captured with a verifiable snapshot identity.");
   }
 
-  const material = await captureReviewMaterial(context.diffCommand, cwd, signal);
+  const material = await captureReviewMaterial(context.diffTarget, cwd, signal);
   if (!material.ok) {
-    throw new Error(`Patch preview unavailable because the review diff could not be captured: ${material.error}`);
+    throw new ReviewSnapshotUnavailableError(`the review diff could not be captured: ${material.error}`);
   }
   if (material.snapshot.status === "unavailable") {
-    throw new Error(`Patch preview unavailable because the reviewed snapshot could not be verified: ${material.snapshot.reason}`);
+    throw new ReviewSnapshotUnavailableError(`the reviewed snapshot could not be verified: ${material.snapshot.reason}`);
   }
   if (material.snapshot.identity.diffFingerprint !== context.snapshot.diffFingerprint) {
-    throw new Error("Patch preview unavailable because the reviewed diff changed after the findings were generated.");
+    throw new ReviewSnapshotUnavailableError("the reviewed diff changed after the findings were generated.");
   }
   if (material.snapshot.identity.baselineFingerprint !== context.snapshot.baselineFingerprint) {
-    throw new Error("Patch preview unavailable because the reviewed snapshot changed after the findings were generated.");
+    throw new ReviewSnapshotUnavailableError("the reviewed snapshot changed after the findings were generated.");
   }
   return material.snapshot.baseline;
 }
@@ -135,10 +140,10 @@ export function fingerprintReviewWorktreeBaseline(baseline: WorktreeBaseline): s
 }
 
 async function captureReviewDiff(
-  target: AllowedDiffTarget,
+  target: ReviewDiffTarget,
   cwd: string,
   signal: AbortSignal | undefined,
-): Promise<{ readonly ok: true; readonly diff: string } | { readonly ok: false; readonly error: string }> {
+): Promise<{ readonly ok: true; readonly diff: string } | { readonly ok: false; readonly error: string; readonly failure: DiffCaptureFailure }> {
   const captured = await captureDiffTarget(target, {
     cwd,
     signal,
@@ -147,11 +152,11 @@ async function captureReviewDiff(
   });
   return captured.ok
     ? { ok: true, diff: captured.stdout }
-    : { ok: false, error: captured.error ?? "unknown error" };
+    : { ok: false, error: captured.error, failure: captured.failure };
 }
 
 async function captureReviewWorktreeBaseline(
-  target: AllowedDiffTarget,
+  target: ReviewDiffTarget,
   cwd: string,
   signal: AbortSignal | undefined,
 ): Promise<WorktreeBaseline> {
@@ -161,11 +166,11 @@ async function captureReviewWorktreeBaseline(
 }
 
 async function resolvePullRequestBaseline(
-  target: AllowedPullRequestDiffTarget,
+  target: PullRequestReviewDiffTarget,
   cwd: string,
   signal: AbortSignal | undefined,
 ): Promise<WorktreeBaseline> {
-  const number = target.pullRequestNumber;
+  const number = String(target.number);
   const viewed = await runReviewCommand("gh", ["pr", "view", number, "--json", "headRefOid,headRefName,headRepository"], cwd, signal);
   const details = viewed.ok ? parsePullRequestHead(viewed.stdout) : undefined;
   if (!details) {
@@ -209,13 +214,14 @@ function parsePullRequestHead(value: string): { readonly head: string; readonly 
 }
 
 async function resolveGitDiffBaseline(
-  target: AllowedGitDiffTarget,
+  target: GitReviewDiffTarget,
   cwd: string,
   signal: AbortSignal | undefined,
 ): Promise<WorktreeBaseline> {
-  switch (target.baseline.kind) {
+  const baseline = reviewGitDiffBaseline(target);
+  switch (baseline.kind) {
     case "range":
-      return { ref: await resolveCommit(target.baseline.ref, cwd, signal) };
+      return { ref: await resolveCommit(baseline.ref, cwd, signal) };
     case "index":
       return await captureMutableGitBaseline(true, cwd, signal);
     case "working-tree":
@@ -236,7 +242,7 @@ async function captureMutableGitBaseline(
     : ["diff", "--no-ext-diff", "--binary", "HEAD"];
   const snapshot = await runReviewCommand("git", args, cwd, signal, REVIEW_SNAPSHOT_MAX_BYTES);
   if (!snapshot.ok) {
-    throw new Error(`the reviewed working state could not be captured: ${snapshot.error ?? "unknown error"}`);
+    throw new Error(`the reviewed working state could not be captured: ${snapshot.error}`);
   }
   return { ref: head, patch: snapshot.stdout };
 }
@@ -286,8 +292,4 @@ function capturedWithoutSnapshot(diff: string, reason: string): CapturedReviewMa
 
 function fingerprintReviewDiff(diff: string): string {
   return createHash("sha256").update(diff).digest("hex");
-}
-
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

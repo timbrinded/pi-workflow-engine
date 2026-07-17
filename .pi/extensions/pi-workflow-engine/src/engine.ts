@@ -6,22 +6,17 @@ import { runAgent, type AgentExecutionOptions, type RunContext } from "./agent-r
 import { ProgressTracker } from "./progress.ts";
 import { createPerfRecorder, type PerfSink, type PerfSnapshot } from "./perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "./usage.ts";
-import { defaultConcurrency, resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "./options.ts";
+import { resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "./options.ts";
 import type { AgentOptions, LoadedWorkflow, WorkflowApi, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
 import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
 import { WorktreeRegistry } from "./worktree.ts";
+import { runFinalizers } from "./finalizers.ts";
+import { unknownErrorMessage } from "./unknown-error.ts";
 import {
-  captureRepositoryResumeContext,
   captureWorkflowResumeContext,
-  createWorkflowSourceFingerprintCache,
   type AgentResumeBaseContext,
-  type RepositoryResumeContext,
-  type WorkflowSourceFingerprintCache,
 } from "./resume-context.ts";
-
-/** Default global cap on concurrent agents per run. */
-const DEFAULT_CONCURRENCY = defaultConcurrency();
 
 /** The workflow-facing slice of the progress tracker (satisfied by `ProgressTracker`). */
 export interface WorkflowProgress {
@@ -30,11 +25,8 @@ export interface WorkflowProgress {
   event(event: WorkflowProgressEvent): void;
 }
 
-/** Engine-only state layered on top of the context needed by an individual agent. */
-export interface WorkflowRunContext extends RunContext {
-  readonly repositoryResumeContext: RepositoryResumeContext;
-  readonly workflowSourceFingerprintCache: WorkflowSourceFingerprintCache;
-}
+/** Engine state shared by the workflow and its individual agent calls. */
+export type WorkflowRunContext = RunContext;
 
 /** Per-context knobs threaded through `runWorkflowWithContext` (and re-derived for each sub-workflow). */
 export interface WorkflowContextOptions {
@@ -56,6 +48,10 @@ type Outcome<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: unknown };
 
+export interface WorkflowEngineDependencies {
+  readonly worktrees?: WorktreeRegistry;
+}
+
 /**
  * Run a workflow module: build the per-run primitives (binding agent/parallel/pipeline
  * to a shared semaphore + progress tracker), invoke the workflow, return its result.
@@ -65,22 +61,33 @@ export async function runWorkflow(
   mod: LoadedWorkflow,
   args: string,
   options: WorkflowRunOptions = {},
+  dependencies: WorkflowEngineDependencies = {},
 ): Promise<unknown> {
-  const resolvedOptions = resolveWorkflowRunOptions(options);
+  return await runResolvedWorkflow(ctx, mod, args, resolveWorkflowRunOptions(options), dependencies);
+}
+
+/** Execute an options-normalized workflow without re-reading environment defaults. */
+export async function runResolvedWorkflow(
+  ctx: ExtensionContext,
+  mod: LoadedWorkflow,
+  args: string,
+  resolvedOptions: ResolvedWorkflowRunOptions,
+  dependencies: WorkflowEngineDependencies = {},
+): Promise<unknown> {
   const progress = new ProgressTracker(ctx, mod.meta.name);
   const progressSource = { snapshot: () => progress.snapshot() };
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
   const usage = createWorkflowUsageRecorder();
-  const budget = createBudget(resolvedOptions.budget ?? null, usage);
+  const budget = createBudget(resolvedOptions.budget, usage);
   const runId = resolvedOptions.runId ?? createWorkflowRunId();
   const journalPath = workflowJournalPath(ctx.cwd, runId);
   const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
-  const worktrees = new WorktreeRegistry(ctx.cwd);
+  const worktrees = dependencies.worktrees ?? new WorktreeRegistry(ctx.cwd);
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
   const unlinkOptionAbortSignal = linkAbortSignal(resolvedOptions.signal, runAbortController);
   const workflowOutcome = await captureOutcome(async () => {
-    resolvedOptions.onProgressSource?.(progressSource);
+    await notifyLifecycleObserver(progress, "progress source callback", () => resolvedOptions.onProgressSource?.(progressSource));
     if (resolvedOptions.inspect && ctx.hasUI) {
       void ctx.ui
         .custom<void>(
@@ -91,14 +98,15 @@ export async function runWorkflow(
     }
 
     const journal = await createWorkflowJournal({ resumePath, writePath: journalPath });
-    const repositoryResumeContext = await captureRepositoryResumeContext(ctx.cwd, runAbortController.signal);
-    resolvedOptions.onRunMetadata?.({ runId, resumedFromRunId: resolvedOptions.resumeFromRunId, journalPath });
+    await notifyLifecycleObserver(progress, "run metadata callback", () =>
+      resolvedOptions.onRunMetadata?.({ runId, resumedFromRunId: resolvedOptions.resumeFromRunId, journalPath }),
+    );
     progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
     const rc: WorkflowRunContext = {
       cwd: ctx.cwd,
       hostModel: ctx.model,
       modelRegistry: ctx.modelRegistry,
-      semaphore: new Semaphore(resolvedOptions.concurrency ?? DEFAULT_CONCURRENCY),
+      semaphore: new Semaphore(resolvedOptions.concurrency),
       progress,
       signal: runAbortController.signal,
       perf,
@@ -106,8 +114,6 @@ export async function runWorkflow(
       budget,
       journal,
       worktrees,
-      repositoryResumeContext,
-      workflowSourceFingerprintCache: createWorkflowSourceFingerprintCache(),
     };
 
     // perf.total_ms wraps the whole tree: sub-workflows run inside this span via api.workflow().
@@ -161,62 +167,62 @@ interface WorkflowFinalizationInput {
 }
 
 async function finalizeWorkflowRun(input: WorkflowFinalizationInput): Promise<void> {
-  await runFinalizers([
-    { name: "usage snapshot callback", run: () => input.options.onUsageSnapshot?.(input.usage.snapshot()) },
-    {
-      name: "performance snapshot callback",
-      run: () => {
-        if (!input.options.perf) return;
-        const snapshot = input.perf.snapshot();
-        input.options.onPerfSnapshot?.(snapshot);
-        input.progress.log(formatPerfSummary(snapshot));
+  await runFinalizers(
+    [
+      {
+        name: "usage snapshot callback",
+        criticality: "best-effort",
+        run: () => input.options.onUsageSnapshot?.(input.usage.snapshot()),
       },
-    },
-    ...input.unlinkSignals.map((run, index) => ({ name: `abort signal unlink ${index + 1}`, run })),
+      {
+        name: "performance snapshot callback",
+        criticality: "best-effort",
+        run: async () => {
+          if (!input.options.perf) return;
+          const snapshot = input.perf.snapshot();
+          await input.options.onPerfSnapshot?.(snapshot);
+          input.progress.log(formatPerfSummary(snapshot));
+        },
+      },
+      ...input.unlinkSignals.map((run, index) => ({
+        name: `abort signal unlink ${index + 1}`,
+        criticality: "required" as const,
+        run,
+      })),
+      {
+        name: "worktree cleanup",
+        criticality: "required",
+        run: () => input.worktrees.removeAll(),
+      },
+      { name: "journal pruning", criticality: "best-effort", run: () => pruneWorkflowJournals(input.cwd) },
+      { name: "progress completion", criticality: "best-effort", run: () => input.progress.done() },
+      {
+        name: "progress snapshot callback",
+        criticality: "best-effort",
+        run: () => input.options.onProgressSnapshot?.(input.progress.snapshot()),
+      },
+      {
+        name: "progress source clear",
+        criticality: "best-effort",
+        run: () => input.options.onProgressSource?.(undefined),
+      },
+    ],
     {
-      name: "worktree cleanup",
-      run: async () => {
-        const cleanupResults = await input.worktrees.removeAll();
-        for (const result of cleanupResults) {
-          if (!result.ok) {
-            input.progress.log(`failed to remove isolated worktree ${result.path} (${result.error ?? (result.stderr.trim() || "unknown error")})`);
-          }
+      onBestEffortFailure: (failure) => {
+        try {
+          input.progress.log(`${failure.name} failed: ${unknownErrorMessage(failure.error)}`);
+        } catch {
+          // Observer failures must never replace the workflow outcome.
         }
       },
     },
-    { name: "journal pruning", run: () => pruneWorkflowJournals(input.cwd) },
-    { name: "progress completion", run: () => input.progress.done() },
-    { name: "progress snapshot callback", run: () => input.options.onProgressSnapshot?.(input.progress.snapshot()) },
-    { name: "progress source clear", run: () => input.options.onProgressSource?.(undefined) },
-  ]);
-}
-
-interface WorkflowFinalizer {
-  readonly name: string;
-  readonly run: () => void | Promise<void>;
-}
-
-async function runFinalizers(finalizers: readonly WorkflowFinalizer[]): Promise<void> {
-  const failures: Array<{ readonly name: string; readonly error: unknown }> = [];
-  for (const finalize of finalizers) {
-    try {
-      await finalize.run();
-    } catch (error) {
-      failures.push({ name: finalize.name, error });
-    }
-  }
-  if (failures.length > 0) {
-    throw new AggregateError(
-      failures.map((failure) => failure.error),
-      `Workflow finalization failed: ${failures.map((failure) => `${failure.name} (${formatError(failure.error)})`).join(", ")}`,
-    );
-  }
+  );
 }
 
 function combinedWorkflowError(workflowError: unknown, finalizationError: unknown): AggregateError {
   return new AggregateError(
     [workflowError, finalizationError],
-    `Workflow failed: ${formatError(workflowError)}; finalization also failed: ${formatError(finalizationError)}`,
+    `Workflow failed: ${unknownErrorMessage(workflowError)}; finalization also failed: ${unknownErrorMessage(finalizationError)}`,
   );
 }
 
@@ -235,8 +241,7 @@ export async function runWorkflowWithContext(
   const depth = opts.depth ?? 0;
   const scope = createWorkflowScope(progress, opts.progressPrefix ?? "", opts.progressNamespace);
   const resumeContext: AgentResumeBaseContext = {
-    repository: rc.repositoryResumeContext,
-    workflow: await captureWorkflowResumeContext(mod, rc.workflowSourceFingerprintCache, rc.signal),
+    workflow: await captureWorkflowResumeContext(mod, rc.signal),
   };
 
   const agent = ((prompt: string, agentOpts?: AgentOptions) => {
@@ -350,6 +355,18 @@ function formatPerfSummary(snapshot: PerfSnapshot): string {
   return parts.length > 0 ? `perf: ${parts.join(", ")}` : "perf: no samples";
 }
 
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+async function notifyLifecycleObserver(
+  progress: ProgressTracker,
+  name: string,
+  notify: () => void | Promise<void>,
+): Promise<void> {
+  try {
+    await notify();
+  } catch (error) {
+    try {
+      progress.log(`${name} failed: ${unknownErrorMessage(error)}`);
+    } catch {
+      // Lifecycle observers are advisory and must not replace the workflow outcome.
+    }
+  }
 }

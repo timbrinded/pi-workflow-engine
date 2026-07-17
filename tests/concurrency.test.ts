@@ -128,6 +128,51 @@ test("parallel settled mode preserves order and distinguishes null values from f
   assert.deepEqual(JSON.parse(JSON.stringify(results)), results);
 });
 
+test("parallel settled mode serializes hostile thrown values without hanging", async () => {
+  const hostileError = new Proxy(
+    {},
+    {
+      get(_target, property) {
+        if (property === "message" || property === Symbol.toPrimitive) throw new Error("serialization trap");
+        return undefined;
+      },
+    },
+  );
+
+  const outcome = await Promise.race([
+    parallel(
+      [
+        async () => {
+          throw hostileError;
+        },
+      ],
+      { settled: true },
+    ),
+    delay(500).then(() => "pending" as const),
+  ]);
+
+  assert.notEqual(outcome, "pending");
+  assert.deepEqual(outcome, [{ ok: false, error: { message: "unknown error" } }]);
+});
+
+test("parallel does not submit queued work after a fatal failure", async () => {
+  const started: number[] = [];
+
+  await assert.rejects(
+    parallel(
+      [0, 1, 2].map((index) => async () => {
+        started.push(index);
+        if (index === 0) throw new WorkflowAbortError("fatal first task");
+        return index;
+      }),
+      { limit: 1 },
+    ),
+    /fatal first task/,
+  );
+
+  assert.deepEqual(started, [0]);
+});
+
 test("parallel still rejects on run abort", async () => {
   const controller = new AbortController();
   const running = parallel(
@@ -147,6 +192,34 @@ test("parallel still rejects on run abort", async () => {
   controller.abort(new WorkflowAbortError("stop"));
 
   await assert.rejects(running, /stop/);
+});
+
+test("parallel settles when an abort reason has hostile prototype traps", async () => {
+  const controller = new AbortController();
+  const hostileReason = new Proxy({}, {
+    getPrototypeOf() {
+      throw new Error("prototype trap");
+    },
+  });
+  const running = parallel(
+    [
+      async () => await new Promise<never>(() => undefined),
+    ],
+    { signal: controller.signal, drainTimeoutMs: 10 },
+  );
+
+  controller.abort(hostileReason);
+  const outcome = await Promise.race([
+    running.then(
+      () => "resolved" as const,
+      (error: unknown) => error,
+    ),
+    delay(500).then(() => "pending" as const),
+  ]);
+
+  assert.notEqual(outcome, "pending");
+  assert.notEqual(outcome, "resolved");
+  assert.ok(outcome instanceof WorkflowAbortError);
 });
 
 test("parallel settled mode still rejects on run abort", async () => {
@@ -196,6 +269,32 @@ test("parallel settled mode aborts siblings when a thunk fails fatally", async (
 
   await assert.rejects(running, /fatal settled thunk/);
   assert.equal(siblingAborted, true);
+});
+
+test("parallel drains cooperative siblings before rejecting a fatal failure", async () => {
+  const controller = new AbortController();
+  let siblingUnwound = false;
+  const running = parallel(
+    [
+      async () => {
+        await delay(1);
+        throw new WorkflowAbortError("fatal with drain");
+      },
+      async () => {
+        try {
+          await delay(20);
+          return "late";
+        } finally {
+          await delay(5);
+          siblingUnwound = true;
+        }
+      },
+    ],
+    { signal: controller.signal, abortController: controller },
+  );
+
+  await assert.rejects(running, /fatal with drain/);
+  assert.equal(siblingUnwound, true);
 });
 
 test("parallel treats budget exhaustion as a null slot", async () => {
@@ -343,7 +442,7 @@ test("pipeline drops a failing item to null and skips its remaining stages", asy
   assert.deepEqual(stage3Items, [1, 3]);
 });
 
-test("pipeline rejects a plain error observed after run abort", async () => {
+test("pipeline preserves the abort reason when a stage throws afterward", async () => {
   const controller = new AbortController();
 
   await assert.rejects(
@@ -357,13 +456,14 @@ test("pipeline rejects a plain error observed after run abort", async () => {
       ],
       { signal: controller.signal, abortController: controller },
     ),
-    /plain after abort/,
+    /stop/,
   );
 });
 
 test("pipeline aborts sibling item chains after a fatal failure", async () => {
   const controller = new AbortController();
   let siblingStage2Ran = false;
+  let siblingUnwound = false;
 
   const running = pipelineWithOptions(
     [1, 2],
@@ -373,8 +473,13 @@ test("pipeline aborts sibling item chains after a fatal failure", async () => {
           await delay(1);
           throw new WorkflowAbortError("fatal");
         }
-        await delay(10);
-        return item;
+        try {
+          await delay(10);
+          return item;
+        } finally {
+          await delay(5);
+          siblingUnwound = true;
+        }
       },
       async (prev) => {
         siblingStage2Ran = true;
@@ -385,9 +490,9 @@ test("pipeline aborts sibling item chains after a fatal failure", async () => {
   );
 
   await assert.rejects(running, /fatal/);
-  await delay(20);
   assert.equal(controller.signal.aborted, true);
   assert.equal(siblingStage2Ran, false);
+  assert.equal(siblingUnwound, true);
 });
 
 test("pipeline propagates a fatal abort", async () => {

@@ -212,7 +212,14 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Produce the shared advisory report shape. Only include confirmed or plausible root causes in findings. " +
       "Use categories such as root-cause, regression, configuration, dependency, or test-fixture. " +
       "Recommendation must be a validation/fix plan, not a patch. nextSteps must be the minimum commands or code inspections needed to confirm the top diagnosis. Structured output only.",
-    { phase: "Synthesize", label: "synthesize", thinkingLevel: "medium", schema: AdvisoryReportSchema },
+    {
+      phase: "Synthesize",
+      label: "synthesize",
+      tools: [],
+      thinkingLevel: "medium",
+      resume: "read-only",
+      schema: AdvisoryReportSchema,
+    },
   );
 
   if (!report) return emptyReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun diagnose with a narrower symptom."], stats);

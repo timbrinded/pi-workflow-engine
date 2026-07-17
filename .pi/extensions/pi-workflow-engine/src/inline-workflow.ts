@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
-import type { LoadedWorkflow, WorkflowApi, WorkflowMeta } from "./types.ts";
+import type { LoadedWorkflow, WorkflowApi } from "./types.ts";
 import { parseWorkflowMeta } from "./workflow-module.ts";
 
 /**

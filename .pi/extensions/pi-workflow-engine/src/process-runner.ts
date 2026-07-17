@@ -51,13 +51,21 @@ export async function runBoundedProcess(options: BoundedProcessOptions): Promise
   const child = spawn(options.file, [...options.args], {
     cwd: options.cwd,
     env: options.env ?? process.env,
+    detached: process.platform !== "win32",
     stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
   });
 
   return await new Promise<BoundedProcessResult>((resolve) => {
     let settled = false;
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+    let hardSettleTimer: ReturnType<typeof setTimeout> | undefined;
     const killGraceMs = Math.max(1, options.killGraceMs ?? 100);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      if (hardSettleTimer) clearTimeout(hardSettleTimer);
+      options.signal?.removeEventListener("abort", onAbort);
+    };
     const finish = (failure?: BoundedProcessFailure) => {
       if (settled) return;
       settled = true;
@@ -65,32 +73,68 @@ export async function runBoundedProcess(options: BoundedProcessOptions): Promise
       const base = { stdout, stderr, durationMs: performance.now() - start, bytes };
       resolve(failure ? { ...base, ok: false, error: failure.message, failure } : { ...base, ok: true });
     };
-    const kill = (failure: BoundedProcessFailure) => {
+    const signalProcess = (signal: NodeJS.Signals) => {
+      if (process.platform === "win32" && child.pid !== undefined) {
+        try {
+          const killer = spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+            detached: false,
+            stdio: "ignore",
+            windowsHide: true,
+          });
+          killer.on("error", () => {
+            try {
+              child.kill(signal);
+            } catch {
+              // The hard-settlement timer remains authoritative.
+            }
+          });
+          killer.unref();
+          return;
+        } catch {
+          // Fall through to direct-child termination when taskkill cannot start.
+        }
+      }
+      let groupSignalled = false;
+      if (process.platform !== "win32" && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, signal);
+          groupSignalled = true;
+        } catch {
+          // The process may have exited before its descendants released stdio.
+          // Fall back to the direct child below.
+        }
+      }
+      if (!groupSignalled) {
+        try {
+          child.kill(signal);
+        } catch {
+          // The hard-settlement timer remains authoritative when signalling fails.
+        }
+      }
+    };
+    const destroyStdio = () => {
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+    const terminate = (failure: BoundedProcessFailure) => {
       pendingFailure ??= failure;
-      child.kill("SIGTERM");
+      if (forceKillTimer) return;
+      signalProcess("SIGTERM");
       forceKillTimer ??= setTimeout(() => {
-        child.kill("SIGKILL");
+        signalProcess("SIGKILL");
+        destroyStdio();
+        if (!settled) hardSettleTimer = setTimeout(() => finish(pendingFailure), killGraceMs);
       }, killGraceMs);
     };
-    const onAbort = () => kill({ kind: "abort", message: options.abortError });
-    const timeout = setTimeout(() => kill({ kind: "timeout", message: options.timeoutError }), options.timeoutMs);
-    const cleanup = () => {
-      clearTimeout(timeout);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
-      options.signal?.removeEventListener("abort", onAbort);
-    };
-
-    if (options.signal?.aborted) {
-      onAbort();
-    } else {
-      options.signal?.addEventListener("abort", onAbort, { once: true });
-    }
+    const onAbort = () => terminate({ kind: "abort", message: options.abortError });
+    const timeout = setTimeout(() => terminate({ kind: "timeout", message: options.timeoutError }), options.timeoutMs);
 
     const captureChunk = (chunk: Buffer, append: (text: string) => void) => {
       if (pendingFailure) return;
       bytes += chunk.length;
       if (options.maxBufferBytes !== undefined && bytes > options.maxBufferBytes) {
-        kill({
+        terminate({
           kind: "max-buffer",
           message: options.maxBufferError ?? `process output exceeded ${options.maxBufferBytes} bytes`,
         });
@@ -100,7 +144,9 @@ export async function runBoundedProcess(options: BoundedProcessOptions): Promise
     };
     child.stdout?.on("data", (chunk: Buffer) => captureChunk(chunk, (text) => (stdout += text)));
     child.stderr?.on("data", (chunk: Buffer) => captureChunk(chunk, (text) => (stderr += text)));
-    child.on("error", (spawnError) => finish(pendingFailure ?? { kind: "spawn", message: spawnError.message }));
+    child.on("error", (spawnError) => {
+      if (!pendingFailure) finish({ kind: "spawn", message: spawnError.message });
+    });
     child.on("close", (code, signal) => {
       if (pendingFailure) {
         finish(pendingFailure);
@@ -113,6 +159,11 @@ export async function runBoundedProcess(options: BoundedProcessOptions): Promise
       const message = options.exitError(stderr, code, signal);
       finish({ kind: "exit", message, code, signal });
     });
+    if (options.signal?.aborted) {
+      onAbort();
+    } else {
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+    }
     if (options.stdin !== undefined) {
       // The child may reject input and exit before consuming it. Its process exit
       // remains the authoritative result; avoid surfacing a secondary EPIPE.

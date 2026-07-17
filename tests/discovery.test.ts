@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { discoverWorkflows } from "../.pi/extensions/pi-workflow-engine/src/discovery.ts";
+import type { WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 
 const extensionDir = fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/", import.meta.url));
 
@@ -22,7 +23,11 @@ test("built-in workflows are discovered", async () => {
   const expectedBuiltins = ["code-review", "refactor-scout", "diagnose", "perf-review"];
 
   for (const name of expectedBuiltins) {
-    assert.ok(workflows.has(name), `expected built-in workflow ${name} to be discovered`);
+    const workflow = workflows.get(name);
+    assert.ok(workflow, `expected built-in workflow ${name} to be discovered`);
+    assert.equal(workflow.source.kind, "file");
+    if (workflow.source.kind !== "file") assert.fail("expected file-backed built-in provenance");
+    assert.match(workflow.source.fingerprint, /^[a-f0-9]{64}$/);
   }
 });
 
@@ -50,9 +55,8 @@ test("dynamic workflows default missing descriptions to an empty string", async 
     assert.ok(descriptionless, "expected dynamic workflow without meta.description to load");
     assert.equal(descriptionless.meta.description, "");
     assert.deepEqual(descriptionless.source, {
-      kind: "file",
-      path: join(workflowDir, "descriptionless.ts"),
-      root: tempRepo,
+      kind: "unverifiable",
+      reason: "dynamic workflow module graphs are not loaded from an immutable source snapshot",
     });
   } finally {
     await rm(tempRepo, { recursive: true, force: true });
@@ -79,6 +83,35 @@ test("refresh discovers newly added dynamic workflows", async () => {
 
     const refreshed = await discoverWorkflows(tempRepo, { refresh: true });
     assert.equal(refreshed.has("late-workflow"), true);
+  } finally {
+    await rm(tempRepo, { recursive: true, force: true });
+  }
+});
+
+test("dynamic workflows stay non-replayable across refreshes", async () => {
+  const tempRepo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-provenance-"));
+  const workflowDir = join(tempRepo, "workflows");
+  const path = join(workflowDir, "mutable.ts");
+  const source = (value: string) =>
+    `export const meta = { name: "mutable", description: "" };\nexport default async function run() { return "${value}"; }\n`;
+  try {
+    await mkdir(workflowDir);
+    await writeFile(path, source("one"));
+    const first = (await discoverWorkflows(tempRepo, { refresh: true })).get("mutable");
+    assert.ok(first);
+
+    await writeFile(path, source("two"));
+    const cached = (await discoverWorkflows(tempRepo)).get("mutable");
+    const refreshed = (await discoverWorkflows(tempRepo, { refresh: true })).get("mutable");
+    assert.ok(cached && refreshed);
+    assert.equal(await first.default({} as WorkflowApi), "one");
+    assert.equal(await cached.default({} as WorkflowApi), "one");
+    const refreshedValue = await refreshed.default({} as WorkflowApi);
+    assert.ok(refreshedValue === "one" || refreshedValue === "two");
+    assert.deepEqual(refreshed.source, {
+      kind: "unverifiable",
+      reason: "dynamic workflow module graphs are not loaded from an immutable source snapshot",
+    });
   } finally {
     await rm(tempRepo, { recursive: true, force: true });
   }

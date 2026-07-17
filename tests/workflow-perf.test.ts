@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
+import { RequiredFinalizerError } from "../.pi/extensions/pi-workflow-engine/src/finalizers.ts";
 import { getLastWorkflowInspection, sendWorkflowResult } from "../.pi/extensions/pi-workflow-engine";
 import type { PerfSnapshot } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
 import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 
 function loadedWorkflow(mod: WorkflowModule): LoadedWorkflow {
   return {
@@ -31,6 +33,46 @@ function fakeContext(signal?: AbortSignal): ExtensionContext {
 
 function fakeCommandContext(signal?: AbortSignal): ExtensionCommandContext {
   return fakeContext(signal) as unknown as ExtensionCommandContext;
+}
+
+function registryWithFailingCleanup(): WorktreeRegistry {
+  const registry = new WorktreeRegistry(process.cwd(), {
+    runner: {
+      async runGit() {
+        return { ok: false, stdout: "", stderr: "cleanup failed", error: "cleanup failed" };
+      },
+    },
+  });
+  registry.register("/tmp/pi-workflow-engine-unremovable-test-worktree");
+  return registry;
+}
+
+function codeReviewWorkflowModule(): WorkflowModule {
+  return {
+    meta: { name: "code-review", description: "review" },
+    default: async () => ({
+      summary: "Review complete.",
+      findings: [
+        {
+          summary: "Off-by-one.",
+          category: "bug",
+          severity: "high",
+          confidence: "high",
+          locations: [{ file: "src/app.ts", line: 10 }],
+          evidence: ["line 10"],
+          impact: "A retry is skipped.",
+          recommendation: "Fix the boundary.",
+        },
+      ],
+      nextSteps: [],
+      reviewContext: {
+        workflowName: "code-review",
+        target: "",
+        diffTarget: { kind: "git", args: ["diff", "--no-ext-diff"] },
+        files: ["src/app.ts"],
+      },
+    }),
+  };
 }
 
 function fakePi(): ExtensionAPI {
@@ -126,7 +168,7 @@ test("sendWorkflowResult retains failed workflow progress snapshots for later in
   assert.equal(inspection?.snapshot.lanes[0]?.[1][0]?.details, "boom details");
 });
 
-test("runWorkflow preserves the workflow error when finalization callbacks also fail", async () => {
+test("runWorkflow preserves the workflow error when best-effort observers also fail", async () => {
   const mod: WorkflowModule = {
     meta: { name: "primary-failure-test", description: "primary failure" },
     default: async () => {
@@ -141,32 +183,66 @@ test("runWorkflow preserves the workflow error when finalization callbacks also 
           throw new Error("finalization callback also failed");
         },
       }),
-    (error: unknown) => {
-      assert.ok(error instanceof AggregateError);
-      assert.match(error.message, /workflow failed first/);
-      assert.match(error.message, /finalization callback also failed/);
-      assert.equal(error.errors.length, 2);
-      assert.match(String(error.errors[0]), /workflow failed first/);
-      assert.ok(error.errors[1] instanceof AggregateError);
-      return true;
-    },
+    /workflow failed first/,
   );
 });
 
-test("runWorkflow reports finalization failures after a successful workflow", async () => {
+test("runWorkflow ignores best-effort observer failures after a successful workflow", async () => {
   const mod: WorkflowModule = {
     meta: { name: "finalization-failure-test", description: "finalization failure" },
     default: async () => "ok",
   };
 
+  const result = await runWorkflow(fakeContext(), loadedWorkflow(mod), "", {
+    onUsageSnapshot() {
+      throw new Error("finalization callback failed");
+    },
+  });
+  assert.equal(result, "ok");
+});
+
+test("runWorkflow fails a successful run when required worktree cleanup fails", async () => {
+  const mod: WorkflowModule = {
+    meta: { name: "cleanup-failure-test", description: "required cleanup failure" },
+    default: async () => "ok",
+  };
+
   await assert.rejects(
-    () =>
-      runWorkflow(fakeContext(), loadedWorkflow(mod), "", {
-        onUsageSnapshot() {
-          throw new Error("finalization callback failed");
-        },
-      }),
-    /finalization callback failed/,
+    () => runWorkflow(fakeContext(), loadedWorkflow(mod), "", {}, { worktrees: registryWithFailingCleanup() }),
+    (error: unknown) => {
+      assert.ok(error instanceof RequiredFinalizerError);
+      assert.match(error.message, /worktree cleanup/);
+      return true;
+    },
+  );
+});
+
+test("runWorkflow preserves hostile workflow and required cleanup failures", async () => {
+  const hostileError = new Proxy({}, {
+    getPrototypeOf() {
+      throw new Error("prototype trap");
+    },
+    get(_target, property) {
+      if (property === Symbol.toPrimitive) throw new Error("string trap");
+      return undefined;
+    },
+  });
+  const mod: WorkflowModule = {
+    meta: { name: "combined-cleanup-failure-test", description: "combined failure" },
+    default: async () => {
+      throw hostileError;
+    },
+  };
+
+  await assert.rejects(
+    () => runWorkflow(fakeContext(), loadedWorkflow(mod), "", {}, { worktrees: registryWithFailingCleanup() }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors[0], hostileError);
+      assert.ok(error.errors[1] instanceof RequiredFinalizerError);
+      assert.match(error.message, /unknown error/);
+      return true;
+    },
   );
 });
 
@@ -188,7 +264,9 @@ test("runWorkflow composes an additional abort signal during repository capture"
     () =>
       runWorkflow(fakeContext(), loadedWorkflow(mod), "", {
         signal: controller.signal,
-        onProgressSource: (source) => progressSources.push(source),
+        onProgressSource: (source) => {
+          progressSources.push(source);
+        },
         onProgressSnapshot: (snapshot) => {
           progressSnapshot = snapshot;
         },
@@ -234,30 +312,42 @@ test("sendWorkflowResult publishes the review before reporting an unavailable fi
       },
     },
   } as unknown as ExtensionCommandContext;
-  const mod: WorkflowModule = {
-    meta: { name: "code-review", description: "review" },
-    default: async () => ({
-      summary: "Review complete.",
-      findings: [
-        {
-          summary: "Off-by-one.",
-          category: "bug",
-          severity: "high",
-          confidence: "high",
-          locations: [{ file: "src/app.ts", line: 10 }],
-          evidence: ["line 10"],
-          impact: "A retry is skipped.",
-          recommendation: "Fix the boundary.",
-        },
-      ],
-      nextSteps: [],
-      reviewContext: { workflowName: "code-review", target: "", diffCommand: "git diff", files: ["src/app.ts"] },
-    }),
-  };
+  const mod = codeReviewWorkflowModule();
 
   await sendWorkflowResult(pi, ctx, "code-review", loadedWorkflow(mod), "", { resultViewer: "open" });
 
   assert.equal(events[0], "message:code-review");
   assert.equal(events[1], "notify:Verifying the reviewed snapshot before generating patch previews");
   assert.match(events[2] ?? "", /^notify:Patch preview unavailable because the review was not captured/);
+});
+
+test("sendWorkflowResult preserves a completed review when the viewer rejects", async () => {
+  let sent = 0;
+  const notifications: string[] = [];
+  const pi = {
+    sendMessage() {
+      sent++;
+    },
+  } as unknown as ExtensionAPI;
+  const ctx = {
+    ...fakeCommandContext(),
+    hasUI: true,
+    mode: "tui",
+    ui: {
+      async custom() {
+        throw new Error("viewer teardown");
+      },
+      notify(message: string) {
+        notifications.push(message);
+      },
+      setStatus() {},
+      setWidget() {},
+      theme: { fg: (_color: string, text: string) => text },
+    },
+  } as unknown as ExtensionCommandContext;
+
+  await sendWorkflowResult(pi, ctx, "code-review", loadedWorkflow(codeReviewWorkflowModule()), "", { resultViewer: "open" });
+
+  assert.equal(sent, 1);
+  assert.deepEqual(notifications, ["Review completed, but the findings viewer could not be opened."]);
 });

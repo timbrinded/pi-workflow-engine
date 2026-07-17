@@ -1,5 +1,6 @@
 import { throwIfAborted } from "../cancellation.ts";
-import { isCommentableIssue, type ReviewContext, type ReviewIssue } from "./review-issues.ts";
+import { isCommentableIssue, type ReviewIssue } from "./review-issues.ts";
+import type { ReviewContext } from "./review-report.ts";
 
 export interface ExecResultLike {
   readonly stdout: string;
@@ -37,7 +38,7 @@ export async function resolveGitHubPrContext(
   reviewContext: ReviewContext | undefined,
   signal?: AbortSignal,
 ): Promise<ResolveGitHubPrContextResult> {
-  const parsedNumber = parsePrNumber(reviewContext?.diffCommand);
+  const parsedNumber = reviewContext?.diffTarget.kind === "pull-request" ? reviewContext.diffTarget.number : undefined;
   const prArgs = parsedNumber
     ? ["pr", "view", String(parsedNumber), "--json", PR_VIEW_JSON_FIELDS]
     : ["pr", "view", "--json", PR_VIEW_JSON_FIELDS];
@@ -136,14 +137,6 @@ export async function postInlineComments(
   return statuses;
 }
 
-function parsePrNumber(diffCommand: string | undefined): number | undefined {
-  if (!diffCommand) return undefined;
-  const match = /(?:^|\s)gh\s+pr\s+diff\s+(\d+)(?:\s|$)/.exec(diffCommand);
-  if (!match) return undefined;
-  const parsed = Number(match[1]);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
 async function loadExistingInlineCommentKeys(
   exec: ExecLike,
   cwd: string,
@@ -205,7 +198,7 @@ function parseExistingInlineCommentKeys(value: unknown): Set<string> | undefined
 }
 
 function inlineCommentKey(issue: ReviewIssue, headSha: string): string | undefined {
-  return isCommentableIssue(issue) ? commentKey(buildInlineCommentBody(issue), issue.file ?? "", issue.line ?? 0, headSha) : undefined;
+  return isCommentableIssue(issue) ? commentKey(buildInlineCommentBody(issue), issue.file, issue.line, headSha) : undefined;
 }
 
 function commentKey(body: string, path: string, line: number, headSha: string): string {

@@ -16,7 +16,6 @@ import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/workt
 import type { AgentResumeBaseContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 
 const RESUME_BASE_CONTEXT: AgentResumeBaseContext = {
-  repository: { kind: "verified", state: "non-git", workingTreeFingerprint: "cancellation-test" },
   workflow: { kind: "verified", name: "cancellation-test", sourceFingerprint: "source-a" },
 };
 

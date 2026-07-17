@@ -1,4 +1,6 @@
-import { serializeReviewIssue, type ReviewContext, type ReviewIssue } from "./review-issues.ts";
+import { serializeReviewIssue, type ReviewIssue } from "./review-issues.ts";
+import type { ReviewContext } from "./review-report.ts";
+import { serializeReviewContext } from "./review-report.ts";
 
 export function buildCommentHandoffPrompt(
   issues: readonly ReviewIssue[],
@@ -30,7 +32,7 @@ Instructions:
 
 function toHandoffPayload(issues: readonly ReviewIssue[], context: ReviewContext | undefined) {
   return {
-    context,
+    context: serializeReviewContext(context),
     issues: issues.map(serializeReviewIssue),
   };
 }

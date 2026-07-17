@@ -5,7 +5,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
-import type { ReviewContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
+import { parseAllowedDiffCommand, type ReviewDiffTarget } from "../.pi/extensions/pi-workflow-engine/src/diff-capture.ts";
+import type { ReviewContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-report.ts";
 import {
   captureReviewMaterial,
   resolveReviewWorktreeBaseline,
@@ -16,6 +17,12 @@ function verifiedSnapshot(material: Awaited<ReturnType<typeof captureReviewMater
   if (!material.ok) assert.fail(material.error);
   if (material.snapshot.status !== "verified") assert.fail(material.snapshot.reason);
   return material.snapshot;
+}
+
+function reviewTarget(command: string): ReviewDiffTarget {
+  const parsed = parseAllowedDiffCommand(command);
+  if ("error" in parsed) assert.fail(parsed.error);
+  return parsed;
 }
 
 test("review fix baseline revalidates and reconstructs a dirty working-tree snapshot", async () => {
@@ -30,12 +37,13 @@ test("review fix baseline revalidates and reconstructs a dirty working-tree snap
     );
     const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
     await writeFile(join(repo, "app.ts"), "export const value = 2;\n");
-    const material = await captureReviewMaterial("git diff", repo);
+    const diffTarget = reviewTarget("git diff");
+    const material = await captureReviewMaterial(diffTarget, repo);
     const snapshot = verifiedSnapshot(material);
     const context: ReviewContext = {
       workflowName: "code-review",
       target: "dirty worktree",
-      diffCommand: "git diff",
+      diffTarget,
       files: ["app.ts"],
       snapshot: snapshot.identity,
     };
@@ -60,10 +68,11 @@ test("review fix baseline rejects a diff that changed after review", async () =>
       0,
     );
     await writeFile(join(repo, "app.ts"), "after\n");
+    const diffTarget = reviewTarget("git diff");
     const context: ReviewContext = {
       workflowName: "code-review",
       target: "dirty worktree",
-      diffCommand: "git diff",
+      diffTarget,
       files: ["app.ts"],
       snapshot: {
         diffFingerprint: createHash("sha256").update("different diff").digest("hex"),
@@ -94,12 +103,13 @@ test("review fix baseline resolves a ref-range target to its immutable commit", 
       0,
     );
     const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
-    const material = await captureReviewMaterial("git diff HEAD~1...HEAD", repo);
+    const diffTarget = reviewTarget("git diff HEAD~1...HEAD");
+    const material = await captureReviewMaterial(diffTarget, repo);
     const snapshot = verifiedSnapshot(material);
     const context: ReviewContext = {
       workflowName: "code-review",
       target: "HEAD~1...HEAD",
-      diffCommand: "git diff HEAD~1...HEAD",
+      diffTarget,
       files: ["app.ts"],
       snapshot: snapshot.identity,
     };
@@ -122,12 +132,13 @@ test("review fix baseline rejects unchanged scoped diff when unrelated reviewed 
       0,
     );
     await writeFile(join(repo, "app.ts"), "reviewed\n");
-    const material = await captureReviewMaterial("git diff -- app.ts", repo);
+    const diffTarget = reviewTarget("git diff -- app.ts");
+    const material = await captureReviewMaterial(diffTarget, repo);
     const snapshot = verifiedSnapshot(material);
     const context: ReviewContext = {
       workflowName: "code-review",
       target: "app.ts",
-      diffCommand: "git diff -- app.ts",
+      diffTarget,
       files: ["app.ts"],
       snapshot: snapshot.identity,
     };
@@ -153,12 +164,13 @@ test("cached review baseline represents the index and excludes later unstaged co
     );
     await writeFile(join(repo, "app.ts"), "reviewed index\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    const material = await captureReviewMaterial("git diff --cached", repo);
+    const diffTarget = reviewTarget("git diff --cached");
+    const material = await captureReviewMaterial(diffTarget, repo);
     const snapshot = verifiedSnapshot(material);
     const context: ReviewContext = {
       workflowName: "code-review",
       target: "index",
-      diffCommand: "git diff --cached",
+      diffTarget,
       files: ["app.ts"],
       snapshot: snapshot.identity,
     };
@@ -188,9 +200,9 @@ test("review baseline requires explicit file operands and rejects ambiguous blob
     await writeFile(join(repo, "README.md"), "reviewed readme\n");
     await writeFile(join(repo, "USAGE.md"), "reviewed usage\n");
 
-    const paths = await captureReviewMaterial("git diff -- README.md USAGE.md", repo);
-    const singlePath = await captureReviewMaterial("git diff -- README.md", repo);
-    const blobPair = await captureReviewMaterial("git diff HEAD:README.md HEAD:USAGE.md", repo);
+    const paths = await captureReviewMaterial(reviewTarget("git diff -- README.md USAGE.md"), repo);
+    const singlePath = await captureReviewMaterial(reviewTarget("git diff -- README.md"), repo);
+    const invalidBlobPair = parseAllowedDiffCommand("git diff HEAD:README.md HEAD:USAGE.md");
     const pathsSnapshot = verifiedSnapshot(paths);
     const singlePathSnapshot = verifiedSnapshot(singlePath);
 
@@ -201,9 +213,8 @@ test("review baseline requires explicit file operands and rejects ambiguous blob
     if (!singlePath.ok) assert.fail(singlePath.error);
     assert.match(singlePath.diff, /reviewed readme/);
     assert.doesNotMatch(singlePath.diff, /reviewed usage/);
-    assert.equal(blobPair.ok, false);
-    if (blobPair.ok) assert.fail("expected ambiguous blob pair to be rejected");
-    assert.match(blobPair.error, /ambiguous git diff operands/);
+    if (!("error" in invalidBlobPair)) assert.fail("expected ambiguous blob pair to be rejected");
+    assert.match(invalidBlobPair.error, /ambiguous git diff operands/);
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
@@ -216,7 +227,7 @@ test("review material preserves its captured diff when baseline verification is 
     await writeFile(join(repo, "app.ts"), "reviewed index\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
 
-    const material = await captureReviewMaterial("git diff --cached", repo);
+    const material = await captureReviewMaterial(reviewTarget("git diff --cached"), repo);
 
     if (!material.ok) assert.fail(material.error);
     assert.match(material.diff, /\+reviewed index/);

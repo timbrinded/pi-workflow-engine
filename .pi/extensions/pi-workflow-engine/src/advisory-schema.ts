@@ -1,4 +1,5 @@
 import { Type, type Static } from "typebox";
+import { Value } from "typebox/value";
 
 export const AdvisorySeveritySchema = Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], {
   description: "Impact level of an advisory finding.",
@@ -53,6 +54,11 @@ export const AdvisoryReportSchema = Type.Object({
   nextSteps: Type.Array(Type.String({ description: "Concrete follow-up commands, inspections, or decisions." })),
 });
 
+export const AdvisoryReportWithStatsSchema = Type.Object({
+  ...AdvisoryReportSchema.properties,
+  stats: Type.Optional(Type.Record(Type.String(), Type.Union([Type.String(), Type.Number()]))),
+});
+
 export type AdvisorySeverity = Static<typeof AdvisorySeveritySchema>;
 export type AdvisoryConfidence = Static<typeof AdvisoryConfidenceSchema>;
 export type AdvisoryVerifierVerdict = Static<typeof AdvisoryVerifierVerdictSchema>;
@@ -62,3 +68,8 @@ export type AdvisoryCandidates = Static<typeof AdvisoryCandidatesSchema>;
 export type AdvisoryVerdict = Static<typeof AdvisoryVerdictSchema>;
 export type AdvisoryFinding = Static<typeof AdvisoryFindingSchema>;
 export type AdvisoryReport = Static<typeof AdvisoryReportSchema>;
+export type AdvisoryReportWithStats = Static<typeof AdvisoryReportWithStatsSchema>;
+
+export function isAdvisoryReport(value: unknown): value is AdvisoryReportWithStats {
+  return Value.Check(AdvisoryReportWithStatsSchema, value);
+}

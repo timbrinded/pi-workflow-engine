@@ -7,7 +7,7 @@ export class WorkflowAbortError extends Error {
 
 export function abortReason(signal: AbortSignal | undefined): Error {
   const reason = signal?.reason;
-  if (reason instanceof Error) return reason;
+  if (safeInstanceOf(reason, Error)) return reason;
   if (typeof reason === "string" && reason.length > 0) return new WorkflowAbortError(reason);
   return new WorkflowAbortError();
 }
@@ -18,8 +18,14 @@ export function throwIfAborted(signal: AbortSignal | undefined): void {
 
 export function isFatalWorkflowError(error: unknown, signal: AbortSignal | undefined): boolean {
   if (signal?.aborted) return true;
-  if (error instanceof WorkflowAbortError) return true;
-  if (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError") return true;
+  if (safeInstanceOf(error, WorkflowAbortError)) return true;
+  if (typeof DOMException !== "undefined" && safeInstanceOf(error, DOMException)) {
+    try {
+      return error.name === "AbortError";
+    } catch {
+      return false;
+    }
+  }
   return false;
 }
 
@@ -32,4 +38,12 @@ export function linkAbortSignal(parent: AbortSignal | undefined, controller: Abo
   const onAbort = () => controller.abort(abortReason(parent));
   parent.addEventListener("abort", onAbort, { once: true });
   return () => parent.removeEventListener("abort", onAbort);
+}
+
+function safeInstanceOf<T>(value: unknown, constructor: abstract new (...args: never[]) => T): value is T {
+  try {
+    return value instanceof constructor;
+  } catch {
+    return false;
+  }
 }

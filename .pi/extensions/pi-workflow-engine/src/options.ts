@@ -4,12 +4,15 @@ import type { WorkflowRunOptions } from "./types.ts";
 export const WORKFLOW_BUDGET_MIN = 1;
 export const WORKFLOW_BUDGET_MAX = 1_000_000_000;
 
-export interface ResolvedWorkflowRunOptions extends WorkflowRunOptions {
+export type ResolvedWorkflowRunOptions = Omit<
+  WorkflowRunOptions,
+  "perf" | "concurrency" | "parallelSubmissionLimit" | "budget"
+> & {
   readonly perf: boolean;
   readonly concurrency: number;
-  readonly parallelSubmissionLimit?: number;
-  readonly budget?: number;
-}
+  readonly parallelSubmissionLimit: number | null;
+  readonly budget: number | null;
+};
 
 export function defaultConcurrency(cpuCount = cpus().length): number {
   return Math.min(8, Math.max(2, cpuCount));
@@ -30,8 +33,8 @@ export function resolveWorkflowRunOptions(
     ...input,
     perf: input.perf ?? env.PI_WORKFLOW_PERF === "1",
     concurrency,
-    parallelSubmissionLimit,
-    budget,
+    parallelSubmissionLimit: parallelSubmissionLimit ?? null,
+    budget: budget ?? null,
   };
 }
 

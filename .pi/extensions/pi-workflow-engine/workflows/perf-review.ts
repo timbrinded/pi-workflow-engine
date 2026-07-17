@@ -168,7 +168,14 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Produce the shared advisory report shape. Categories should be algorithmic, io, concurrency, startup, allocation, or measurement when applicable. " +
       "Severity is expected performance impact for the target workload. Prefer measurement recommendations before optimization recommendations when evidence is weak. " +
       "Recommendations must be safe advisory next actions, not patches. Include risky optimizations to avoid in recommendations or nextSteps when relevant. Structured output only.",
-    { phase: "Synthesize", label: "synthesize", thinkingLevel: "medium", schema: AdvisoryReportSchema },
+    {
+      phase: "Synthesize",
+      label: "synthesize",
+      tools: [],
+      thinkingLevel: "medium",
+      resume: "read-only",
+      schema: AdvisoryReportSchema,
+    },
   );
 
   if (!report) return emptyReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun perf-review with a narrower target."], stats);
@@ -189,4 +196,3 @@ function rank(finding: Verified): number {
   const measurementPenalty = finding.category === "measurement" ? 1 : 0;
   return verdictRank + measurementPenalty;
 }
-

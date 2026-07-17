@@ -7,22 +7,6 @@ export interface ReviewIssueSelection {
   readonly issueIds: readonly string[];
 }
 
-/** Atomic identity of the exact diff and post-change snapshot that were reviewed. */
-export interface ReviewSnapshotIdentity {
-  readonly diffFingerprint: string;
-  readonly baselineFingerprint: string;
-}
-
-export interface ReviewContext {
-  readonly workflowName: string;
-  readonly target: string;
-  readonly diffCommand: string;
-  readonly files: readonly string[];
-  readonly summary?: string;
-  /** Present only when the diff and its reconstructable baseline were captured together. */
-  readonly snapshot?: ReviewSnapshotIdentity;
-}
-
 export interface ReviewIssue {
   readonly id: string;
   readonly index: number;
@@ -49,19 +33,6 @@ export interface SerializedReviewIssue {
   readonly impact: string;
   readonly evidence: readonly string[];
   readonly recommendation: string;
-}
-
-export interface ReviewReportWithContext extends AdvisoryReport {
-  readonly stats?: Record<string, string | number>;
-  readonly reviewContext?: ReviewContext;
-}
-
-export function isReviewContext(value: unknown): value is ReviewContext {
-  if (!isRecord(value)) return false;
-  if (typeof value.workflowName !== "string" || typeof value.target !== "string" || typeof value.diffCommand !== "string") return false;
-  if (!Array.isArray(value.files) || !value.files.every((file) => typeof file === "string")) return false;
-  if (value.summary !== undefined && typeof value.summary !== "string") return false;
-  return value.snapshot === undefined || isReviewSnapshotIdentity(value.snapshot);
 }
 
 export function toReviewIssues(name: string, report: Pick<AdvisoryReport, "findings">): ReviewIssue[] {
@@ -105,23 +76,12 @@ export function serializeReviewIssue(issue: ReviewIssue): SerializedReviewIssue 
   };
 }
 
-export function isCommentableIssue(issue: ReviewIssue): boolean {
+export function isCommentableIssue(
+  issue: ReviewIssue,
+): issue is ReviewIssue & { readonly file: string; readonly line: number } {
   return typeof issue.file === "string" && issue.file.trim().length > 0 && typeof issue.line === "number" && Number.isFinite(issue.line);
 }
 
 function formatIssueId(index: number): string {
   return `R${String(index + 1).padStart(3, "0")}`;
-}
-
-function isReviewSnapshotIdentity(value: unknown): value is ReviewSnapshotIdentity {
-  if (!isRecord(value)) return false;
-  return isFingerprint(value.diffFingerprint) && isFingerprint(value.baselineFingerprint);
-}
-
-function isFingerprint(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { abortReason, isFatalWorkflowError, throwIfAborted } from "./cancellation.ts";
+import { unknownErrorMessage } from "./unknown-error.ts";
 
 /**
  * A counting semaphore: bounds how many async tasks run at once.
@@ -66,6 +67,8 @@ export interface ParallelOptions {
   readonly signal?: AbortSignal;
   readonly abortController?: AbortController;
   readonly limit?: number;
+  /** Maximum time to drain already-started tasks after a fatal failure. */
+  readonly drainTimeoutMs?: number;
 }
 
 export interface ParallelSettledOptions {
@@ -89,7 +92,11 @@ export interface WorkflowParallel {
 export interface PipelineOptions {
   readonly signal?: AbortSignal;
   readonly abortController?: AbortController;
+  /** Maximum time to drain already-started item chains after a fatal failure. */
+  readonly drainTimeoutMs?: number;
 }
+
+const DEFAULT_FATAL_DRAIN_TIMEOUT_MS = 1_000;
 
 export function compactResults<T>(values: ReadonlyArray<T | null | undefined>): T[] {
   return values.filter((value): value is T => value != null);
@@ -127,6 +134,7 @@ export function bindParallel(options: ParallelOptions): WorkflowParallel {
     signal: options.signal,
     abortController: options.abortController,
     limit: options.limit,
+    drainTimeoutMs: options.drainTimeoutMs,
   };
 
   function boundParallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>;
@@ -155,76 +163,95 @@ async function runParallel<T, Result>(
 ): Promise<Result[]> {
   throwIfAborted(options.signal);
   const results = new Array<Result>(thunks.length);
-  let remaining = thunks.length;
-  if (remaining === 0) return results;
+  if (thunks.length === 0) return results;
 
   const limit = normalizeLimit(options.limit, thunks.length);
   return await new Promise<Result[]>((resolve, reject) => {
-    let rejected = false;
-    let active = 0;
-    let next = 0;
-    const cleanup = () => options.signal?.removeEventListener("abort", onAbort);
-    const rejectOnce = (error: unknown) => {
-      if (rejected) return;
-      rejected = true;
-      options.abortController?.abort(error);
+    let terminal = false;
+    let stopClaiming = false;
+    let nextIndex = 0;
+    let workersRemaining = limit;
+    let fatalFailure: { readonly error: unknown } | undefined;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      options.signal?.removeEventListener("abort", onAbort);
+      if (drainTimer) clearTimeout(drainTimer);
+    };
+    const settle = (force = false) => {
+      if (terminal || (!force && workersRemaining > 0)) return;
+      terminal = true;
       cleanup();
-      reject(error);
+      if (fatalFailure) reject(fatalFailure.error);
+      else resolve(results);
     };
-    const settleSlot = (index: number, value: Result) => {
-      if (rejected) return;
-      active--;
-      results[index] = value;
-      remaining--;
-      if (remaining === 0) {
-        cleanup();
-        resolve(results);
-        return;
-      }
-      launchMore();
+    const recordFatalFailure = (error: unknown) => {
+      if (fatalFailure) return;
+      fatalFailure = { error };
+      stopClaiming = true;
+      options.abortController?.abort(error);
+      const timeoutMs = normalizeDrainTimeout(options.drainTimeoutMs);
+      drainTimer = setTimeout(() => settle(true), timeoutMs);
     };
-    const onAbort = () => rejectOnce(abortReason(options.signal));
-    const launchMore = () => {
-      while (!rejected && active < limit && next < thunks.length) {
-        const index = next++;
-        active++;
-        void Promise.resolve()
-          .then(() => {
-            throwIfAborted(options.signal);
-            return thunks[index]();
-          })
-          .then(
-            (value) => settleSlot(index, onSuccess(value)),
-            (error: unknown) => {
-              if (isFatalWorkflowError(error, options.signal)) {
-                rejectOnce(error);
-                return;
-              }
-              settleSlot(index, onFailure(error));
-            },
-          );
+    const completeWorker = () => {
+      workersRemaining--;
+      settle();
+    };
+    const onAbort = () => recordFatalFailure(abortReason(options.signal));
+    const runWorker = async () => {
+      while (!stopClaiming) {
+        throwIfAborted(options.signal);
+        const index = nextIndex++;
+        if (index >= thunks.length) return;
+        try {
+          const value = await thunks[index]();
+          if (stopClaiming) return;
+          results[index] = onSuccess(value);
+        } catch (error) {
+          if (stopClaiming) return;
+          if (isFatalWorkflowError(error, options.signal)) {
+            recordFatalFailure(error);
+            return;
+          }
+          results[index] = onFailure(error);
+        }
       }
     };
 
     options.signal?.addEventListener("abort", onAbort, { once: true });
-    launchMore();
+    if (options.signal?.aborted) onAbort();
+    for (let worker = 0; worker < limit; worker++) {
+      void runWorker().then(completeWorker, (error) => {
+        recordFatalFailure(error);
+        completeWorker();
+      });
+    }
   });
 }
 
 function serializeParallelError(error: unknown): ParallelSettledError {
-  if (error instanceof Error) {
-    return error.name.length > 0 ? { name: error.name, message: error.message } : { message: error.message };
+  const message = readStringProperty(error, "message") ?? unknownErrorMessage(error);
+  const name = readStringProperty(error, "name");
+  return name && name.length > 0 ? { name, message } : { message };
+}
+
+function readStringProperty(value: unknown, property: "message" | "name"): string | undefined {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return undefined;
+  try {
+    const candidate = Reflect.get(value, property);
+    return typeof candidate === "string" ? candidate : undefined;
+  } catch {
+    return undefined;
   }
-  if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") {
-    const name = "name" in error && typeof error.name === "string" && error.name.length > 0 ? error.name : undefined;
-    return name ? { name, message: error.message } : { message: error.message };
-  }
-  return { message: String(error) };
 }
 
 function normalizeLimit(limit: number | undefined, itemCount: number): number {
   if (limit === undefined || !Number.isFinite(limit)) return Math.max(1, itemCount);
   return Math.max(1, Math.min(itemCount, Math.trunc(limit)));
+}
+
+function normalizeDrainTimeout(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) return DEFAULT_FATAL_DRAIN_TIMEOUT_MS;
+  return Math.max(0, Math.trunc(timeoutMs));
 }
 
 /**
@@ -292,24 +319,17 @@ export async function pipelineWithOptions(
   options: PipelineOptions = {},
 ): Promise<Array<unknown | null>> {
   throwIfAborted(options.signal);
-  return Promise.all(
-    items.map(async (item, index) => {
+  return await parallel(
+    items.map((item, index) => async () => {
       throwIfAborted(options.signal);
       let acc: unknown = item;
-      try {
-        for (const stage of stages) {
-          throwIfAborted(options.signal);
-          acc = await stage(acc, item, index);
-        }
-        return acc;
-      } catch (error) {
-        if (isFatalWorkflowError(error, options.signal)) {
-          options.abortController?.abort(error);
-          throw error;
-        }
-        return null;
+      for (const stage of stages) {
+        throwIfAborted(options.signal);
+        acc = await stage(acc, item, index);
       }
+      return acc;
     }),
+    options,
   );
 }
 

@@ -105,11 +105,14 @@ export class ReviewResultsViewer implements Component {
     const warning = this.warning ? this.theme.fg("warning", this.warning) : "";
     const chromeRows = 5;
     const contentHeight = Math.max(1, height - chromeRows);
-    const content = this.issues.length === 0
-      ? fitRows([this.theme.fg("success", "No findings.")], contentHeight)
-      : width >= SPLIT_WIDTH
-        ? this.renderSplit(width, contentHeight)
-        : this.renderStacked(width, contentHeight);
+    let content: string[];
+    if (this.issues.length === 0) {
+      content = fitRows([this.theme.fg("success", "No findings.")], contentHeight);
+    } else if (width >= SPLIT_WIDTH) {
+      content = this.renderSplit(width, contentHeight);
+    } else {
+      content = this.renderStacked(width, contentHeight);
+    }
 
     return [
       this.headerLine(width),

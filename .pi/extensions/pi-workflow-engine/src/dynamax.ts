@@ -156,7 +156,7 @@ export function registerDynamax(
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
-    clearDynamaxSurfaces(ctx, getDynamaxRuntime(runtimes, ctx));
+    clearDynamaxSurfaces(ctx);
   });
 
   pi.on("input", (event, ctx) => {
@@ -277,7 +277,7 @@ export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui"
   ctx.ui.setWidget(DYNAMAX_WIDGET_KEY, undefined);
   ctx.ui.setStatus(DYNAMAX_WIDGET_KEY, undefined);
   if (!isDynamaxActive(runtime.state) && !runtime.runningWorkflow) {
-    clearDynamaxSurfaces(ctx, runtime);
+    clearDynamaxSurfaces(ctx);
     return;
   }
 
@@ -285,7 +285,7 @@ export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui"
   ctx.ui.setStatus(DYNAMAX_STATUS_KEY, status);
 }
 
-export function clearDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">, runtime: DynamaxRuntime): void {
+export function clearDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
   if (!ctx.hasUI) return;
   ctx.ui.setWidget(DYNAMAX_WIDGET_KEY, undefined);
   ctx.ui.setStatus(DYNAMAX_STATUS_KEY, undefined);

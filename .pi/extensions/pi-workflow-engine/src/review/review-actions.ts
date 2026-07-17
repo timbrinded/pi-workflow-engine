@@ -1,12 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { throwIfAborted } from "../cancellation.ts";
 import type { LoadedWorkflow } from "../types.ts";
+import { unknownErrorMessage } from "../unknown-error.ts";
 import type { WorktreeBaseline } from "../worktree.ts";
 import { postInlineComments, resolveGitHubPrContext, type ExecLike, type InlineCommentStatus } from "./github-pr-comments.ts";
 import { createReviewFixWorkflow } from "./review-fix-workflow.ts";
 import { buildCommentHandoffPrompt } from "./review-handoff.ts";
-import { isCommentableIssue, type ReviewContext, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
-import { resolveReviewWorktreeBaseline } from "./review-snapshot.ts";
+import { isCommentableIssue, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
+import type { ReviewContext } from "./review-report.ts";
+import { resolveReviewWorktreeBaseline, ReviewSnapshotUnavailableError } from "./review-snapshot.ts";
 
 export type ReviewActionPi = Pick<ExtensionAPI, "sendUserMessage" | "exec">;
 export interface ReviewActionContext {
@@ -57,7 +59,7 @@ async function handleFixAction(
     baseline = await resolveBaseline(context, ctx.cwd, ctx.signal);
   } catch (error) {
     throwIfAborted(ctx.signal);
-    ctx.ui.notify(formatError(error), "warning");
+    ctx.ui.notify(formatSnapshotError("Patch preview", error), "warning");
     return;
   }
   ctx.ui.notify(`Generating isolated patch previews for ${selected.length} selected finding(s)`, "info");
@@ -74,6 +76,10 @@ async function handleCommentAction(
   const commentable = selected.filter(isCommentableIssue);
   if (commentable.length === 0) {
     ctx.ui.notify("No selected findings have file and line information for inline PR comments", "warning");
+    return;
+  }
+  if (context?.diffTarget.kind !== "pull-request") {
+    ctx.ui.notify("PR comments are available only for findings captured from a verified pull-request diff.", "warning");
     return;
   }
 
@@ -93,7 +99,7 @@ async function handleCommentAction(
     baseline = await resolveBaseline(context, ctx.cwd, ctx.signal);
   } catch (error) {
     throwIfAborted(ctx.signal);
-    ctx.ui.notify(formatCommentError(error), "warning");
+    ctx.ui.notify(formatSnapshotError("PR comments", error), "warning");
     return;
   }
 
@@ -167,10 +173,8 @@ function summarizeStatuses(statuses: readonly InlineCommentStatus[]): { readonly
   return { posted, skipped, failed };
 }
 
-function formatError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function formatCommentError(error: unknown): string {
-  return formatError(error).replace(/^Patch preview unavailable/, "PR comments unavailable");
+function formatSnapshotError(action: "Patch preview" | "PR comments", error: unknown): string {
+  return error instanceof ReviewSnapshotUnavailableError
+    ? `${action} unavailable because ${error.message}`
+    : `${action} unavailable: ${unknownErrorMessage(error)}`;
 }

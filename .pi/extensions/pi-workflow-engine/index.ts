@@ -2,30 +2,28 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { SelectList, Text, truncateToWidth, type Component, type SelectItem, type SelectListTheme, type TUI } from "@earendil-works/pi-tui";
+import { isAdvisoryReport } from "./src/advisory-schema.ts";
 import type { WorkflowProgressSnapshot } from "./src/progress.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
-import type { PerfSink, PerfSnapshot } from "./src/perf.ts";
+import type { PerfSink } from "./src/perf.ts";
 import type { WorkflowUsageSnapshot } from "./src/usage.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE, dynamaxSessionKey, registerDynamax } from "./src/dynamax.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
-import { handleReviewViewerAction } from "./src/review/review-actions.ts";
-import {
-  codeReviewReport,
-  decideReviewResultsPresentation,
-  extensionContextMode,
-  maybeShowReviewResultsViewer,
-} from "./src/review/review-results-flow.ts";
+import { ReviewSessionCoordinator } from "./src/review/review-session-coordinator.ts";
 import {
   formatWorkflowDetailLines,
-  isAdvisoryReport,
   isWorkflowResult,
   renderWorkflowResult,
-  type AdvisoryWorkflowResult,
-  type WorkflowPerfDetails,
-  type WorkflowResultEnvelope,
 } from "./src/ui/workflow-result-renderer.ts";
-import { parseWorkflowBudgetString, WORKFLOW_BUDGET_MAX, WORKFLOW_BUDGET_MIN } from "./src/options.ts";
+import {
+  parseWorkflowBudgetString,
+  resolveWorkflowRunOptions,
+  type ResolvedWorkflowRunOptions,
+  WORKFLOW_BUDGET_MAX,
+  WORKFLOW_BUDGET_MIN,
+} from "./src/options.ts";
+import { executeWorkflowInvocation, type WorkflowExecution, type WorkflowPerfDetails } from "./src/workflow-execution.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -80,21 +78,6 @@ function formatFindingLocation(location: { readonly file: string; readonly line?
   return `${location.file}${line}${symbol}`;
 }
 
-function workflowEnvelope(
-  name: string,
-  result: unknown,
-  usage?: WorkflowUsageSnapshot,
-  perf?: WorkflowPerfDetails,
-  metadata?: WorkflowRunMetadata,
-): WorkflowResultEnvelope {
-  return { name, result, completedAt: Date.now(), usage, perf, runId: metadata?.runId, resumedFromRunId: metadata?.resumedFromRunId };
-}
-
-function compactPerfSnapshot(snapshot: PerfSnapshot | undefined): WorkflowPerfDetails | undefined {
-  if (!snapshot?.enabled) return undefined;
-  return { enabled: true, startedAt: snapshot.startedAt, aggregates: snapshot.aggregates };
-}
-
 type DiscoveryModule = typeof import("./src/discovery.ts");
 type EngineModule = typeof import("./src/engine.ts");
 type InlineWorkflowModule = typeof import("./src/inline-workflow.ts");
@@ -111,9 +94,8 @@ async function loadInlineWorkflow(): Promise<InlineWorkflowModule> {
   return await import("./src/inline-workflow.ts");
 }
 
-async function createInvocationPerf(options: WorkflowRunOptions): Promise<PerfSink | undefined> {
-  const enabled = options.perf ?? process.env.PI_WORKFLOW_PERF === "1";
-  if (!enabled) return undefined;
+async function createInvocationPerf(options: ResolvedWorkflowRunOptions): Promise<PerfSink | undefined> {
+  if (!options.perf) return undefined;
   const { createPerfRecorder } = await import("./src/perf.ts");
   return createPerfRecorder(true);
 }
@@ -222,16 +204,21 @@ export interface ActiveWorkflowInspection {
   readonly snapshot: () => WorkflowProgressSnapshot;
 }
 
-let lastWorkflowInspection: LastWorkflowInspection | undefined;
-let activeWorkflowInspection: ActiveWorkflowInspection | undefined;
-const codeReviewResults = new WeakMap<ExtensionAPI, Map<string, AdvisoryWorkflowResult>>();
+interface SessionWorkflowInspections {
+  last?: LastWorkflowInspection;
+  active?: ActiveWorkflowInspection;
+}
+
+const workflowInspections = new WeakMap<ExtensionAPI, Map<string, SessionWorkflowInspections>>();
+let latestWorkflowInspection: LastWorkflowInspection | undefined;
+let latestActiveWorkflowInspection: ActiveWorkflowInspection | undefined;
 
 export function getLastWorkflowInspection(): LastWorkflowInspection | undefined {
-  return lastWorkflowInspection;
+  return latestWorkflowInspection;
 }
 
 export function getActiveWorkflowInspection(): ActiveWorkflowInspection | undefined {
-  return activeWorkflowInspection;
+  return latestActiveWorkflowInspection;
 }
 
 export async function openWorkflowInspector(ctx: ExtensionContext, inspection: LastWorkflowInspection | ActiveWorkflowInspection): Promise<void> {
@@ -241,60 +228,27 @@ export async function openWorkflowInspector(ctx: ExtensionContext, inspection: L
   );
 }
 
-async function openAvailableWorkflowInspector(ctx: ExtensionContext): Promise<void> {
+function workflowInspectionState(pi: ExtensionAPI, ctx: ExtensionContext): SessionWorkflowInspections {
+  const sessions = workflowInspections.get(pi) ?? new Map<string, SessionWorkflowInspections>();
+  const key = dynamaxSessionKey(ctx);
+  const state = sessions.get(key) ?? {};
+  sessions.set(key, state);
+  workflowInspections.set(pi, sessions);
+  return state;
+}
+
+async function openAvailableWorkflowInspector(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
   if (!ctx.hasUI) {
     ctx.ui.notify("Workflow inspector requires the TUI", "warning");
     return;
   }
-  const inspection = activeWorkflowInspection ?? lastWorkflowInspection;
+  const state = workflowInspectionState(pi, ctx);
+  const inspection = state.active ?? state.last;
   if (!inspection) {
     ctx.ui.notify("No workflow inspector is available yet", "warning");
     return;
   }
   await openWorkflowInspector(ctx, inspection);
-}
-
-function rememberCodeReviewResult(pi: ExtensionAPI, ctx: ExtensionContext, name: string, result: unknown): void {
-  if (name !== "code-review") return;
-  const key = dynamaxSessionKey(ctx);
-  const report = codeReviewReport(name, result);
-  if (!report) {
-    codeReviewResults.get(pi)?.delete(key);
-    return;
-  }
-  const retained = codeReviewResults.get(pi) ?? new Map<string, AdvisoryWorkflowResult>();
-  retained.set(key, report);
-  codeReviewResults.set(pi, retained);
-}
-
-async function openAvailableReviewResults(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  if (!ctx.hasUI || extensionContextMode(ctx) !== "tui") {
-    ctx.ui.notify("Code-review results viewer requires the TUI", "warning");
-    return;
-  }
-  const lastCodeReviewResult = codeReviewResults.get(pi)?.get(dynamaxSessionKey(ctx));
-  if (!lastCodeReviewResult) {
-    ctx.ui.notify("No code-review result is available yet. Run /workflow code-review first.", "warning");
-    return;
-  }
-  if (lastCodeReviewResult.findings.length === 0) {
-    ctx.ui.notify("The last code review had no findings", "info");
-    return;
-  }
-
-  const decision = decideReviewResultsPresentation({
-    workflowName: "code-review",
-    result: lastCodeReviewResult,
-    mode: "tui",
-    hasUI: true,
-    resultViewer: "open",
-    invocationKind: "command",
-  });
-  if (decision.kind !== "open") return;
-
-  const action = await maybeShowReviewResultsViewer(ctx, decision);
-  const followUp = await handleReviewViewerAction(pi, ctx, action, decision.issues, decision.report.reviewContext);
-  if (followUp) await sendWorkflowResult(pi, ctx, followUp.meta.name, followUp, "", { resultViewer: "skip" });
 }
 
 function snapshotGetter(inspection: LastWorkflowInspection | ActiveWorkflowInspection): () => WorkflowProgressSnapshot {
@@ -516,114 +470,118 @@ export async function sendWorkflowResult(
   args: string,
   options: WorkflowRunOptions,
   perfRecorder?: PerfSink,
+  reviewSessions: ReviewSessionCoordinator = createReviewSessionCoordinator(pi),
 ): Promise<void> {
-  let invocation: WorkflowResultInvocation | undefined = { name, mod, args, options, perfRecorder };
-  while (invocation !== undefined) {
-    invocation = await runAndSendWorkflowResult(pi, ctx, invocation);
-  }
+  await sendResolvedWorkflowResult(
+    pi,
+    ctx,
+    name,
+    mod,
+    args,
+    resolveWorkflowRunOptions(options),
+    perfRecorder,
+    reviewSessions,
+  );
 }
 
-interface WorkflowResultInvocation {
-  readonly name: string;
-  readonly mod: LoadedWorkflow;
-  readonly args: string;
-  readonly options: WorkflowRunOptions;
-  readonly perfRecorder?: PerfSink;
-}
-
-async function runAndSendWorkflowResult(
+async function sendResolvedWorkflowResult(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  invocation: WorkflowResultInvocation,
-): Promise<WorkflowResultInvocation | undefined> {
-  const { name, mod, args, options, perfRecorder } = invocation;
-  const { runWorkflow } = await loadEngine();
-  let perfSnapshot: PerfSnapshot | undefined;
-  let usageSnapshot: WorkflowUsageSnapshot | undefined;
-  let runMetadata: WorkflowRunMetadata | undefined;
+  name: string,
+  mod: LoadedWorkflow,
+  args: string,
+  options: ResolvedWorkflowRunOptions,
+  perfRecorder: PerfSink | undefined,
+  reviewSessions: ReviewSessionCoordinator,
+): Promise<void> {
+  const execution = await executeResolvedWorkflow(pi, ctx, name, mod, args, options, perfRecorder);
+  reviewSessions.remember(ctx, execution, options);
+  sendWorkflowExecution(pi, execution);
+  await reviewSessions.present(ctx, execution, options);
+}
+
+async function executeResolvedWorkflow(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  name: string,
+  mod: LoadedWorkflow,
+  args: string,
+  options: ResolvedWorkflowRunOptions,
+  perfRecorder?: PerfSink,
+): Promise<WorkflowExecution> {
+  const { runResolvedWorkflow } = await loadEngine();
   let liveInspection: ActiveWorkflowInspection | undefined;
-  const result = await runWorkflow(ctx, mod, args, {
-    ...options,
-    perf: options.perf ?? perfRecorder !== undefined,
+  const inspections = workflowInspectionState(pi, ctx);
+  return await executeWorkflowInvocation({
+    ctx,
+    name,
+    mod,
+    args,
+    options,
     perfRecorder,
+    runResolvedWorkflow,
     resolveWorkflow: (ref) => resolveWorkflowRef(ref, perfRecorder),
     onProgressSource(source) {
       if (source) {
         liveInspection = bindActiveWorkflowInspection(name, args, source);
-        activeWorkflowInspection = liveInspection;
-      } else if (activeWorkflowInspection === liveInspection) {
-        activeWorkflowInspection = undefined;
+        inspections.active = liveInspection;
+        latestActiveWorkflowInspection = liveInspection;
+      } else if (inspections.active === liveInspection) {
+        inspections.active = undefined;
+        if (latestActiveWorkflowInspection === liveInspection) latestActiveWorkflowInspection = undefined;
         liveInspection = undefined;
       }
-      options.onProgressSource?.(source);
-    },
-    onPerfSnapshot(snapshot) {
-      perfSnapshot = snapshot;
-      options.onPerfSnapshot?.(snapshot);
-    },
-    onUsageSnapshot(snapshot) {
-      usageSnapshot = snapshot;
-      options.onUsageSnapshot?.(snapshot);
-    },
-    onRunMetadata(metadata) {
-      runMetadata = metadata;
-      options.onRunMetadata?.(metadata);
     },
     onProgressSnapshot(snapshot) {
-      lastWorkflowInspection = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
-      options.onProgressSnapshot?.(snapshot);
+      const completed = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
+      inspections.last = completed;
+      latestWorkflowInspection = completed;
     },
   });
-  rememberCodeReviewResult(pi, ctx, name, result);
-  const perf = compactPerfSnapshot(perfSnapshot);
-  const reviewDecision = decideReviewResultsPresentation({
-    workflowName: name,
-    result,
-    mode: extensionContextMode(ctx),
-    hasUI: ctx.hasUI,
-    resultViewer: options.resultViewer,
-    invocationKind: "command",
-  });
-  const reviewAction = await maybeShowReviewResultsViewer(ctx, reviewDecision);
+}
+
+function sendWorkflowExecution(pi: ExtensionAPI, execution: WorkflowExecution): void {
+  const { name } = execution.envelope;
   pi.sendMessage(
     {
       customType: "workflow-result",
-      content: formatMessageContent(name, result, usageSnapshot, perf, runMetadata),
+      content: formatMessageContent(
+        name,
+        execution.envelope.result,
+        execution.envelope.usage,
+        execution.envelope.perf,
+        execution.metadata,
+      ),
       display: true,
-      details: workflowEnvelope(name, result, usageSnapshot, perf, runMetadata),
+      details: execution.envelope,
     },
     { triggerTurn: false },
   );
-  if (reviewDecision.kind === "send") return;
-
-  const followUp = await handleReviewViewerAction(pi, ctx, reviewAction, reviewDecision.issues, reviewDecision.report.reviewContext);
-  if (!followUp) return;
-  return {
-    name: followUp.meta.name,
-    mod: followUp,
-    args: "",
-    options: reviewFollowUpOptions(options),
-  };
 }
 
-function reviewFollowUpOptions(options: WorkflowRunOptions): WorkflowRunOptions {
-  return {
-    concurrency: options.concurrency,
-    parallelSubmissionLimit: options.parallelSubmissionLimit,
-    budget: options.budget,
-    perf: options.perf,
-    resultViewer: "skip",
-    signal: options.signal,
-  };
+function createReviewSessionCoordinator(pi: ExtensionAPI): ReviewSessionCoordinator {
+  return new ReviewSessionCoordinator(pi, {
+    async runFollowUp(ctx, workflow, options) {
+      const perfRecorder = await createInvocationPerf(options);
+      return await executeResolvedWorkflow(pi, ctx, workflow.meta.name, workflow, "", options, perfRecorder);
+    },
+    publish: (execution) => sendWorkflowExecution(pi, execution),
+  });
 }
 
 export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShortcuts = resolveDynamaxShortcuts()): void {
-  registerDynamax(pi, shortcuts, { openInspector: openAvailableWorkflowInspector });
+  const reviewSessions = createReviewSessionCoordinator(pi);
+  registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
+  pi.on("session_shutdown", (_event, ctx) => {
+    const key = dynamaxSessionKey(ctx);
+    workflowInspections.get(pi)?.delete(key);
+    reviewSessions.dispose(ctx);
+  });
   if (shortcuts.results) {
     pi.registerShortcut(shortcuts.results, {
       description: "Open last code-review results",
       handler: async (ctx) => {
-        await openAvailableReviewResults(pi, ctx);
+        await reviewSessions.reopen(ctx);
       },
     });
   }
@@ -647,7 +605,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
         ctx.ui.notify("Usage: /workflow:inspector [last]", "warning");
         return;
       }
-      await openAvailableWorkflowInspector(ctx);
+      await openAvailableWorkflowInspector(pi, ctx);
     },
   });
 
@@ -658,7 +616,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
         ctx.ui.notify("Usage: /workflow:results", "warning");
         return;
       }
-      await openAvailableReviewResults(pi, ctx);
+      await reviewSessions.reopen(ctx);
     },
   });
 
@@ -671,7 +629,8 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
         ctx.ui.notify(`Invalid workflow option: ${direct.optionErrors.join("; ")}`, "warning");
         return;
       }
-      const perfRecorder = await createInvocationPerf(direct.options);
+      const directOptions = resolveWorkflowRunOptions(direct.options);
+      const perfRecorder = await createInvocationPerf(directOptions);
       const { discoverWorkflows } = await loadDiscovery();
       const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: direct.refreshDiscovery, perf: perfRecorder });
       const available = [...workflows.keys()].join(", ") || "(none)";
@@ -693,7 +652,8 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
         return;
       }
 
-      await sendWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, invocation.options, perfRecorder);
+      const effectiveOptions = invocation === direct ? directOptions : resolveWorkflowRunOptions(invocation.options);
+      await sendResolvedWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, effectiveOptions, perfRecorder, reviewSessions);
     },
   });
 
@@ -767,7 +727,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
         };
       }
 
-      const runOptions: WorkflowRunOptions = {
+      const runOptions = resolveWorkflowRunOptions({
         inspect: ctx.hasUI,
         concurrency: params.concurrency,
         parallelSubmissionLimit: params.parallelSubmissionLimit,
@@ -775,7 +735,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
         perf: params.perf,
         resumeFromRunId,
         signal,
-      };
+      });
       const perfRecorder = await createInvocationPerf(runOptions);
       let mod: LoadedWorkflow;
       let resultName: string;
@@ -804,46 +764,21 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
         resultName = mod.meta.name;
       }
 
-      const { runWorkflow } = await loadEngine();
-      let perfSnapshot: PerfSnapshot | undefined;
-      let usageSnapshot: WorkflowUsageSnapshot | undefined;
-      let runMetadata: WorkflowRunMetadata | undefined;
-      let liveInspection: ActiveWorkflowInspection | undefined;
       const resultArgs = params.args ?? "";
-      const result = await runWorkflow(ctx, mod, resultArgs, {
-        ...runOptions,
-        perf: runOptions.perf ?? perfRecorder !== undefined,
-        perfRecorder,
-        resolveWorkflow: (ref) => resolveWorkflowRef(ref, perfRecorder),
-        onProgressSource(source) {
-          if (source) {
-            liveInspection = bindActiveWorkflowInspection(resultName, resultArgs, source);
-            activeWorkflowInspection = liveInspection;
-          } else if (activeWorkflowInspection === liveInspection) {
-            activeWorkflowInspection = undefined;
-            liveInspection = undefined;
-          }
-        },
-        onPerfSnapshot: (snapshot) => {
-          perfSnapshot = snapshot;
-        },
-        onUsageSnapshot: (snapshot) => {
-          usageSnapshot = snapshot;
-        },
-        onRunMetadata: (metadata) => {
-          runMetadata = metadata;
-        },
-        onProgressSnapshot: (snapshot) => {
-          // Record the run so /workflow:inspector can reopen it — tool-invoked (dynamax) runs were
-          // previously uninspectable, unlike the /workflow command path.
-          lastWorkflowInspection = { name: resultName, args: resultArgs, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
-        },
-      });
-      rememberCodeReviewResult(pi, ctx, resultName, result);
-      const perf = compactPerfSnapshot(perfSnapshot);
+      const execution = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
+      reviewSessions.remember(ctx, execution, runOptions);
       return {
-        content: [{ type: "text", text: formatMessageContent(resultName, result, usageSnapshot, perf, runMetadata) }],
-        details: workflowEnvelope(resultName, result, usageSnapshot, perf, runMetadata),
+        content: [{
+          type: "text",
+          text: formatMessageContent(
+            resultName,
+            execution.envelope.result,
+            execution.envelope.usage,
+            execution.envelope.perf,
+            execution.metadata,
+          ),
+        }],
+        details: execution.envelope,
       };
     },
   });

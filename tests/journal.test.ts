@@ -6,6 +6,7 @@ import { test } from "bun:test";
 import { Type } from "typebox";
 import {
   agentJournalKey,
+  captureAgentJournalKey,
   createMemoryBackedJournal,
   createWorkflowJournal,
   hashAgentCall,
@@ -20,12 +21,34 @@ import type { AgentResumeContext } from "../.pi/extensions/pi-workflow-engine/sr
 const RESUME_CONTEXT = {
   repository: { kind: "verified", state: "git", head: "head-a", workingTreeFingerprint: "clean" },
   workflow: { kind: "verified", name: "review", sourceFingerprint: "source-a" },
-  model: { provider: "anthropic", id: "claude-a" },
+  session: {
+    fingerprint: "sha256:session-a",
+    runtimeVersion: "test-runtime",
+    systemPromptFingerprint: "sha256:prompt-a",
+    model: { provider: "anthropic", id: "claude-a" },
+    thinkingLevel: "low",
+    tools: [
+      {
+        name: "read",
+        definitionFingerprint: "sha256:definition-a",
+        implementationFingerprint: "sha256:implementation-a",
+        source: {
+          path: "builtin:read",
+          source: "builtin",
+          scope: "temporary",
+          origin: "top-level",
+          fingerprint: "sha256:source-a",
+        },
+      },
+    ],
+  },
+  skills: [{ name: "review", path: "/skills/review", fingerprint: "skill-a" }],
 } satisfies AgentResumeContext;
 
 test("hashAgentCall is stable for equivalent behavioral options", () => {
   const schemaA = Type.Object({ ok: Type.Boolean(), value: Type.String() });
-  const schemaB = { ...schemaA, properties: { value: schemaA.properties.value, ok: schemaA.properties.ok } };
+  const schemaB = Type.Object({ ok: Type.Boolean(), value: Type.String() });
+  schemaB.properties = { value: schemaB.properties.value, ok: schemaB.properties.ok };
 
   const first = hashAgentCall("inspect", {
     label: "first",
@@ -33,20 +56,57 @@ test("hashAgentCall is stable for equivalent behavioral options", () => {
     schema: schemaA,
     tools: ["grep", "read"],
     toolHints: ["search"],
-    skills: ["beta", "alpha"],
+    skills: ["alpha", "beta"],
     thinkingLevel: "low",
   });
   const second = hashAgentCall("inspect", {
     label: "second",
     phase: "Verify",
     schema: schemaB,
-    tools: ["read", "grep"],
+    tools: ["grep", "read"],
     toolHints: ["search"],
     skills: ["alpha", "beta"],
     thinkingLevel: "low",
   });
 
   assert.equal(first, second);
+});
+
+test("hashAgentCall preserves authored tool and skill ordering", () => {
+  const first = hashAgentCall("inspect", {
+    tools: ["read", "grep"],
+    toolHints: ["search"],
+    skills: ["alpha", "beta"],
+  });
+
+  assert.notEqual(hashAgentCall("inspect", { tools: ["grep", "read"], toolHints: ["search"], skills: ["alpha", "beta"] }), first);
+  assert.notEqual(hashAgentCall("inspect", { tools: ["read", "grep"], toolHints: ["search"], skills: ["beta", "alpha"] }), first);
+});
+
+test("captureAgentJournalKey fails closed for cyclic, accessor, and oversized schemas", () => {
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  assert.deepEqual(captureAgentJournalKey("inspect", { schema: cyclic }), {
+    kind: "unverifiable",
+    reason: "identity contains a cycle",
+  });
+
+  const accessor = Object.defineProperty({}, "type", {
+    enumerable: true,
+    get() {
+      throw new Error("must not execute schema accessors");
+    },
+  });
+  assert.deepEqual(captureAgentJournalKey("inspect", { schema: accessor }), {
+    kind: "unverifiable",
+    reason: "identity property type is an accessor",
+  });
+
+  const oversized = captureAgentJournalKey("inspect", { schema: { description: "x".repeat((1 << 20) + 1) } });
+  assert.equal(oversized.kind, "unverifiable");
+  if (oversized.kind !== "unverifiable") assert.fail("expected oversized identity to be rejected");
+  assert.match(oversized.reason, /identity exceeded/);
+  assert.doesNotThrow(() => agentJournalKey("inspect", { schema: cyclic }));
 });
 
 test("hashAgentCall changes when behavioral inputs change", () => {
@@ -91,9 +151,9 @@ test("agentJournalKey includes the isolated worktree baseline identity", () => {
 
 test("journal lookup matches exact contextual keys without suffix invalidation", async () => {
   const journal = createMemoryBackedJournal([
-    { key: "a", value: "one", context: RESUME_CONTEXT },
-    { key: "b", value: "two", context: RESUME_CONTEXT },
-    { key: "c", value: "three", context: RESUME_CONTEXT },
+    { version: 2, key: "a", result: "one", identity: RESUME_CONTEXT },
+    { version: 2, key: "b", result: "two", identity: RESUME_CONTEXT },
+    { version: 2, key: "c", result: "three", identity: RESUME_CONTEXT },
   ]);
 
   assert.deepEqual(journal.lookup("a", RESUME_CONTEXT), { hit: true, value: "one" });
@@ -103,8 +163,8 @@ test("journal lookup matches exact contextual keys without suffix invalidation",
 
 test("journal lookup treats duplicate keys as ambiguous misses", async () => {
   const journal = createMemoryBackedJournal([
-    { key: "same", value: "one", context: RESUME_CONTEXT },
-    { key: "same", value: "two", context: RESUME_CONTEXT },
+    { version: 2, key: "same", result: "one", identity: RESUME_CONTEXT },
+    { version: 2, key: "same", result: "two", identity: RESUME_CONTEXT },
   ]);
 
   assert.deepEqual(journal.lookup("same", RESUME_CONTEXT), {
@@ -114,7 +174,7 @@ test("journal lookup treats duplicate keys as ambiguous misses", async () => {
 });
 
 test("journal validates execution context and explains cache invalidation", () => {
-  const journal = createMemoryBackedJournal([{ key: "same", value: "cached", context: RESUME_CONTEXT }]);
+  const journal = createMemoryBackedJournal([{ version: 2, key: "same", result: "cached", identity: RESUME_CONTEXT }]);
 
   assert.deepEqual(journal.lookup("same", RESUME_CONTEXT), { hit: true, value: "cached" });
   assert.deepEqual(
@@ -141,25 +201,75 @@ test("journal validates execution context and explains cache invalidation", () =
   assert.deepEqual(
     journal.lookup("same", {
       ...RESUME_CONTEXT,
-      workflow: { kind: "unverifiable", name: "review", reason: "test fixture" },
+      session: {
+        ...RESUME_CONTEXT.session,
+        model: { provider: "openai", id: "gpt-a" },
+      },
     }),
-    { hit: false, reason: "workflow source could not be verified" },
+    { hit: false, reason: "effective model changed" },
   );
   assert.deepEqual(
     journal.lookup("same", {
       ...RESUME_CONTEXT,
-      model: { provider: "openai", id: "gpt-a" },
+      skills: [{ ...RESUME_CONTEXT.skills[0]!, fingerprint: "skill-b" }],
     }),
-    { hit: false, reason: "effective model changed" },
+    { hit: false, reason: "resolved skills changed" },
+  );
+  assert.deepEqual(
+    journal.lookup("same", {
+      ...RESUME_CONTEXT,
+      session: {
+        ...RESUME_CONTEXT.session,
+        fingerprint: "sha256:session-b",
+        tools: [
+          {
+            ...RESUME_CONTEXT.session.tools[0]!,
+            definitionFingerprint: "sha256:definition-b",
+          },
+        ],
+      },
+    }),
+    { hit: false, reason: "effective tools or session state changed" },
   );
 });
 
 test("context-aware lookup never replays legacy journal entries", () => {
-  const journal = createMemoryBackedJournal([{ key: "legacy", value: "stale" }]);
+  const journal = createMemoryBackedJournal([
+    { key: "legacy", value: "stale" },
+    {
+      version: 2,
+      key: "old-v2",
+      result: "stale",
+      identity: {
+        repository: RESUME_CONTEXT.repository,
+        workflow: RESUME_CONTEXT.workflow,
+        model: RESUME_CONTEXT.session.model,
+        skills: [],
+        tools: [],
+      },
+    },
+    {
+      version: 2,
+      key: "unverified-v2",
+      result: "stale",
+      identity: {
+        ...RESUME_CONTEXT,
+        workflow: { kind: "unverifiable", name: "review", reason: "test fixture" },
+      },
+    },
+  ]);
 
   assert.deepEqual(journal.lookup("legacy", RESUME_CONTEXT), {
     hit: false,
-    reason: "legacy journal entry has no execution context",
+    reason: "journal entry predates replay contract v2",
+  });
+  assert.deepEqual(journal.lookup("old-v2", RESUME_CONTEXT), {
+    hit: false,
+    reason: "journal entry predates effective replay identity",
+  });
+  assert.deepEqual(journal.lookup("unverified-v2", RESUME_CONTEXT), {
+    hit: false,
+    reason: "journal entry predates effective replay identity",
   });
 });
 
@@ -172,8 +282,8 @@ test("journal records append JSONL and explicit resume load failures are visible
   assert.deepEqual(await journal.record("key-2", null, RESUME_CONTEXT), { ok: true });
 
   assert.deepEqual(await loadJournalEntries(path), [
-    { key: "key-1", value: { ok: true }, context: RESUME_CONTEXT },
-    { key: "key-2", value: null, context: RESUME_CONTEXT },
+    { version: 2, key: "key-1", result: { ok: true }, identity: RESUME_CONTEXT },
+    { version: 2, key: "key-2", result: null, identity: RESUME_CONTEXT },
   ]);
   assert.deepEqual(await loadJournalEntries(join(dir, "missing.jsonl")), []);
   await assert.rejects(() => createWorkflowJournal({ resumePath: join(dir, "missing.jsonl"), writePath: join(dir, "next.jsonl") }), WorkflowJournalLoadError);

@@ -4,7 +4,7 @@ import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/ad
 import {
   codeReviewReport,
   decideReviewResultsPresentation,
-  maybeShowReviewResultsViewer,
+  showReviewResultsViewer,
   type ReviewResultsViewerContext,
 } from "../.pi/extensions/pi-workflow-engine/src/review/review-results-flow.ts";
 import type { ReviewIssueSelection } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
@@ -31,29 +31,7 @@ test("result viewer options can force open or skip", () => {
   assert.deepEqual(skip, { kind: "send", reason: "disabled" });
 });
 
-test("not-requested and non-TUI result flow never opens custom viewer", async () => {
-  let customCalls = 0;
-  const ctx: ReviewResultsViewerContext = {
-    ui: {
-      async custom<T>() {
-        customCalls++;
-        return { action: "close", issueIds: [] } as T;
-      },
-    },
-  };
-
-  const notRequested = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true });
-  const notOpened = await maybeShowReviewResultsViewer(ctx, notRequested);
-  assert.equal(notOpened, undefined);
-  assert.equal(customCalls, 0);
-
-  const nonTui = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "rpc", hasUI: true, resultViewer: "open" });
-  const skipped = await maybeShowReviewResultsViewer(ctx, nonTui);
-  assert.equal(skipped, undefined);
-  assert.equal(customCalls, 0);
-});
-
-test("forced-open direct code-review flow opens viewer and returns action before result message can be recorded", async () => {
+test("forced-open direct code-review flow opens the viewer and returns its action", async () => {
   let customCalls = 0;
   let customOptions: unknown;
   const custom: ReviewResultsViewerContext["ui"]["custom"] = async <T>(_factory: unknown, options?: unknown): Promise<T> => {
@@ -65,7 +43,9 @@ test("forced-open direct code-review flow opens viewer and returns action before
     ui: { custom },
   };
   const decision = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true, resultViewer: "open" });
-  const action = await maybeShowReviewResultsViewer(ctx, decision);
+  assert.equal(decision.kind, "open");
+  if (decision.kind !== "open") assert.fail("expected viewer decision");
+  const action = await showReviewResultsViewer(ctx, decision.issues);
 
   assert.equal(customCalls, 1);
   assert.deepEqual(customOptions, {
@@ -75,21 +55,22 @@ test("forced-open direct code-review flow opens viewer and returns action before
   assert.deepEqual(action, { action: "close", issueIds: ["R001"] } satisfies ReviewIssueSelection);
 });
 
-test("workflow tool execution path does not prompt or open a viewer", () => {
-  const decision = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true, invocationKind: "tool" });
-  assert.deepEqual(decision, { kind: "send", reason: "tool-invocation" });
-});
-
 test("code-review retention rejects malformed action context", () => {
   const malformedContexts = [
-    { workflowName: "code-review", target: "PR", diffCommand: 42, files: ["src/app.ts"] },
-    { workflowName: "code-review", target: "PR", diffCommand: "gh pr diff 1", files: "src/app.ts" },
+    { workflowName: "code-review", target: "PR", files: ["src/app.ts"] },
+    { workflowName: "code-review", target: "PR", diffTarget: { kind: "pull-request", number: 1 }, files: "src/app.ts" },
     {
       workflowName: "code-review",
       target: "PR",
-      diffCommand: "gh pr diff 1",
+      diffTarget: { kind: "pull-request", number: 1 },
       files: ["src/app.ts"],
       snapshot: { diffFingerprint: "a".repeat(64) },
+    },
+    {
+      workflowName: "code-review",
+      target: "PR",
+      diffTarget: { kind: "git", args: ["diff", "--output=owned"] },
+      files: ["src/app.ts"],
     },
   ];
   for (const reviewContext of malformedContexts) {

@@ -127,6 +127,8 @@ Built-ins:
 - `diagnose`: investigates a bug, failing command, or regression.
 - `perf-review`: reviews a slow path or performance concern.
 
+PR reviews always use the cumulative pull-request diff. Per-commit `gh pr diff --patch` input is rejected, and a failed diff capture fails the review instead of being reported as an empty or clean diff.
+
 Useful flags:
 
 ```text
@@ -140,9 +142,13 @@ Useful flags:
 /workflow code-review --refresh
 ```
 
-Every workflow result includes a run id. If a long run is interrupted, rerun the same workflow with `--resume <run-id>` to replay matching completed `agent()` calls from the journal and run invalidated or missing calls live. A cache hit requires the same prompt/options, repository HEAD and contents, workflow source, and effective model; invalidations are reported in progress output. Keep those inputs stable if you want cache hits.
+Every workflow result includes a run id. If a long run is interrupted, rerun the same workflow with `--resume <run-id>`. Replay contract v2 is fail-closed: shared-workspace agents run live unless their author sets `resume: "read-only"`, worktree-isolated agents are replayable by default, and `resume: "off"` disables replay for either kind.
 
-The code-review workflow can open a centred, terminal-proportional interactive findings viewer. Reopen the latest code-review findings in the current pi session without rerunning it with `/workflow:results` or `ctrl+shift+r`; the shortcut is shown by `/hotkeys`. Its Fix action revalidates the exact reviewed PR/ref/index/working-tree snapshot, runs one focused agent per selected finding from that snapshot in a disposable git worktree, and returns independent patch previews without modifying your active tree. If the reviewed target moved or cannot be verified, patch generation fails closed instead of producing a patch against the wrong code. The GitHub-comment action verifies the same reviewed snapshot and current PR head, and skips identical existing comments, before writing through authenticated `gh`.
+A cache hit requires the same prompt/options, repository-wide Git-visible state, explicitly declared ignored inputs, workflow provenance, coding-agent runtime, effective system prompt/model/thinking level, ordered selected skills, and executable active-tool identity. Cached text, structured output, and isolated patches are validated against the current schema or fresh worktree before use. Repository, skill, and session identity are checked again after execution; the repository is checked once more after cleanup, so a stale hit becomes a live run. Legacy entries without the effective-session identity can be read but always miss. Git-ignored files are captured only when listed in cwd-relative `resumeInputs`; tracked symlinks/submodules and unsafe declared inputs fail closed. Use `resume: "off"` for uncaptured files, external services, environment, or clock-dependent calls.
+
+The code-review workflow can open a centred, terminal-proportional interactive findings viewer. Reopen the latest code-review findings in the current pi session without rerunning it with `/workflow:results` or `ctrl+shift+r`; the shortcut is shown by `/hotkeys`. Its Fix action revalidates the exact reviewed PR/ref/index/working-tree snapshot, runs one focused agent per selected finding from that snapshot in a disposable git worktree, and returns independent patch previews without modifying your active tree. If the reviewed target moved or cannot be verified, patch generation fails closed instead of producing a patch against the wrong code.
+
+The original review and every retained Fix preview share one session-scoped output-token budget; reopening the viewer does not reset it, and only one preview can run at a time. GitHub comments are available only when the review came from a verified PR target; the action revalidates the snapshot and current PR head, then skips identical existing comments before writing through authenticated `gh`.
 
 For the full command guide, see [USAGE.md](USAGE.md).
 
@@ -208,8 +214,8 @@ Inline workflows are passed to the `workflow` tool as a script string. They are 
 - Workflow results aggregate the finalized assistant usage from those subagent sessions before disposal and show token/cost totals separately from pi's host-session footer accounting.
 - Structured output uses a terminating tool whose `parameters` is your schema. pi validates the call; the engine captures the args. There is no JSON scraping.
 - A schema agent that finishes without calling `final_answer` is re-prompted once before returning `null`.
-- Runs write completed `agent()` results and their execution context to `.pi/.workflow-runs/<run-id>.jsonl`; `--resume <run-id>` replays only entries whose call identity, repository state, workflow source, and effective model still match, then writes a fresh journal for the resumed run.
-- `agent(..., { isolation: "worktree" })` runs in a disposable git worktree and returns `{ result, patch, changed }`; the user working tree is not mutated.
+- Runs write replay-safe completed `agent()` results and their v2 execution identity to `.pi/.workflow-runs/<run-id>.jsonl`; a resumed run writes a fresh journal. Shared agents opt in with `resume: "read-only"` and automatically bind Git-visible state from the repository root; `resumeInputs` adds ignored/generated paths under the workflow cwd. Worktree-isolated agents replay from the exact immutable commit and tree prepared for their disposable workspace by default, so same-tree history changes still invalidate. Synthetic unborn and reviewed-snapshot commits use deterministic metadata to keep unchanged identities stable. Tracked symlinks, submodules, and unsafe declared inputs disable replay rather than weakening identity. Built-in synthesis stages opt in with no workspace tools; discovery-loaded workflow module graphs remain live because their transitive runtime code is not immutable.
+- `agent(..., { isolation: "worktree" })` runs in a disposable git worktree and returns `{ result, patch, changed }`; the user working tree is not mutated. If required worktree cleanup still fails after all removals are attempted, the workflow fails and reports the cleanup error.
 - A single run-level semaphore caps concurrent agents, so nested `parallel`, `pipeline`, and `workflow()` calls stay bounded.
 - `parallel()` and `pipeline()` are fail-soft: recoverable branch failures, including budget backstops, become `null` slots while survivors continue. `parallel(thunks, { settled: true })` retains serialisable success/error outcomes instead; a genuine run abort still rejects.
 - Built-in workflows stay statically imported so they share pi's bundled `typebox` identity.
