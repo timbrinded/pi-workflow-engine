@@ -13,6 +13,10 @@ import type { WorkflowJournal } from "../.pi/extensions/pi-workflow-engine/src/j
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import { resumeContextMismatchReason, type AgentResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import {
+  isExternalSearchLikeTool,
+  WorkflowToolHintUnavailableError,
+} from "../.pi/extensions/pi-workflow-engine/src/tool-capabilities.ts";
+import {
   commandNames,
   createFakeWorktreeRegistry,
   createProgress,
@@ -400,6 +404,90 @@ test("runAgent dynamically enables installed search-like tools", async () => {
   assert.equal(observedTools, undefined);
   assert.deepEqual(observedExcludeTools, ["edit", "write"]);
   assert.deepEqual(activatedTools, ["read", "bash", "grep", "find", "ls", "final_answer", "ffgrep", "mgrep", "ast-grep"]);
+});
+
+test("external-search tool hints select web capabilities but exclude local and mutating search tools", async () => {
+  assert.equal(isExternalSearchLikeTool({ name: "web_search", description: "Search the internet and return webpage URLs" }), true);
+  assert.equal(isExternalSearchLikeTool({ name: "web", description: "Tool for accessing the internet" }), true);
+  assert.equal(isExternalSearchLikeTool({ name: "parallel-web-extract", description: "Extract a URL" }), true);
+  assert.equal(isExternalSearchLikeTool({ name: "search_query", description: "Search the internet and return results" }), true);
+  assert.equal(isExternalSearchLikeTool({ name: "grep", description: "Search local files" }), false);
+  assert.equal(isExternalSearchLikeTool({ name: "fffind", description: "Find files in the workspace and report their URLs" }), false);
+  assert.equal(isExternalSearchLikeTool({ name: "slack_search", description: "Search messages and files in Slack" }), false);
+  assert.equal(isExternalSearchLikeTool({ name: "search_replace", description: "Search and replace text on a website" }), false);
+  assert.equal(isExternalSearchLikeTool({ name: "searchReplace", description: "Search and replace text on a website" }), false);
+
+  let activatedTools: readonly string[] = [];
+  const createSession: CreateAgentSession = async (options) => ({
+    session: {
+      state: { messages: [{ role: "assistant", content: [] }] },
+      async prompt() {
+        await executeTestFinalAnswer(options, { ok: true });
+      },
+      subscribe() {
+        return () => {};
+      },
+      dispose() {},
+      async abort() {},
+      getAllTools() {
+        return [
+          { name: "read", description: "Read local files" },
+          { name: "grep", description: "Search local files" },
+          { name: "web_search", description: "Search the internet and return webpage URLs" },
+          { name: "url_fetch", description: "Fetch and extract an HTTP webpage" },
+          { name: "search_replace", description: "Search and replace text on a website" },
+        ];
+      },
+      setActiveToolsByName(toolNames) {
+        activatedTools = toolNames;
+      },
+    },
+  });
+
+  const result = await runAgent(createRunContext({ createSession }), "research", {
+    tools: [],
+    toolHints: ["external-search"],
+    requireToolHints: true,
+    schema: Type.Object({ ok: Type.Boolean() }),
+  });
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(activatedTools, ["final_answer", "web_search", "url_fetch"]);
+});
+
+test("required tool hints fail before prompting when no installed capability matches", async () => {
+  let prompted = false;
+  let disposed = false;
+  const createSession: CreateAgentSession = async () => ({
+    session: {
+      state: { messages: [] },
+      async prompt() {
+        prompted = true;
+      },
+      subscribe() {
+        return () => {};
+      },
+      dispose() {
+        disposed = true;
+      },
+      async abort() {},
+      getAllTools() {
+        return [{ name: "grep", description: "Search local files" }];
+      },
+      setActiveToolsByName() {},
+    },
+  });
+
+  await assert.rejects(
+    () => runAgent(createRunContext({ createSession }), "research", {
+      tools: [],
+      toolHints: ["external-search"],
+      requireToolHints: true,
+    }),
+    WorkflowToolHintUnavailableError,
+  );
+  assert.equal(prompted, false);
+  assert.equal(disposed, true);
 });
 
 test("runAgent falls back to concrete tools when dynamic tool APIs are unavailable", async () => {

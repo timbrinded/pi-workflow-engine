@@ -94,7 +94,7 @@ export interface WorkflowProgressSource {
 }
 
 /** Options for a single `agent()` call. */
-export type AgentToolHint = "search";
+export type AgentToolHint = "search" | "external-search";
 export type AgentResumePolicy = "read-only" | "off";
 
 export interface IsolatedAgentResult<T> {
@@ -155,11 +155,13 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   /** Allowlist of concrete tool names the agent may use (e.g. ["read", "bash"]). */
   tools?: string[];
   /**
-   * Dynamically include installed tools matching semantic categories. Currently
-   * "search" matches grep/find/code-search style tools such as ast-grep,
-   * mgrep, ffgrep, fffind, ripgrep wrappers, and pi's built-in grep/find/ls.
+   * Dynamically include installed tools matching semantic categories. "search"
+   * matches local grep/find/code-search tools; "external-search" matches installed
+   * web search, browsing, and URL extraction tools.
    */
   toolHints?: readonly AgentToolHint[];
+  /** Fail before prompting unless every semantic tool hint matched an installed tool. */
+  requireToolHints?: boolean;
   /**
    * Skill names to expose to this subagent. Subagents receive no skills by default.
    * When omitted, clear prompt text such as `/skill:name`, `include skill name`, or

@@ -16,6 +16,7 @@ From inside a repo:
 /workflow refactor-scout src/
 /workflow diagnose "typecheck fails after the schema change"
 /workflow perf-review "workflow startup latency"
+/workflow research "Compare the current Node.js and Bun test-runner watch modes; prefer official docs"
 ```
 
 The built-in workflows are advisory by default. They inspect, verify, and report; they do **not** edit files. Saved or inline workflows can opt individual agents into disposable git worktrees when they need reviewable patches.
@@ -94,8 +95,26 @@ command instead of selecting another model.
 | `refactor-scout` | Finds small, safe refactor opportunities. |
 | `diagnose` | Investigates a bug, failing command, or regression. |
 | `perf-review` | Reviews a slow path or performance concern. |
+| `research` | Gathers current external evidence, independently verifies claims, and returns a cited synthesis. |
 
 `code-review` auto-detects a diff when you do not pass args. If there is an open GitHub PR for the current branch, it uses the cumulative PR diff; otherwise it falls back to branch-vs-main/master or `HEAD~1`. Per-commit `gh pr diff --patch` input is rejected because it can surface superseded code. If diff capture fails, the review fails instead of returning an empty report or "no findings."
+
+### External research capabilities
+
+`research` requires at least one installed pi tool whose metadata identifies it
+as external web search, browsing, or HTTP(S) page extraction. Local grep/find
+tools do not satisfy this check. The workflow does not bundle a scraper or a
+paid API; install or enable the web capability you prefer, then restart or
+reload pi so subagent sessions can see it.
+
+The workflow bounds decomposition to four lanes and verification to twelve
+claims, while the engine's concurrency, total-agent, timeout, cancellation, and
+token-budget limits still apply. Gatherers retain direct page titles and URLs;
+search-results URLs are rejected, sources are canonicalized and deduplicated,
+and separate verifier agents classify claims as supported, conflicting,
+uncertain, inferred, or rejected before synthesis. External research calls use
+`resume: "off"` because live web evidence, time, and service state are outside
+the journal's deterministic replay surface.
 
 ## Use Dynamax for custom workflows
 
@@ -372,7 +391,7 @@ Set a model `profile` on each stage so users can tune workflow routing centrally
 Use explicit `model` or `thinkingLevel` only when that one call intentionally
 overrides its profile.
 
-`tools` is a strict allowlist. If you set `tools: ["read", "bash"]`, extension tools such as `ast-grep`, `mgrep`, `fffind`, or `ffgrep` are hidden from that subagent. Add `toolHints: ["search"]` to dynamically expose installed grep/find/search-like tools while keeping the concrete base allowlist portable. The built-in advisory workflows use `tools: ["read", "bash", "grep", "find", "ls"]` plus `toolHints: ["search"]`.
+`tools` is a strict allowlist. If you set `tools: ["read", "bash"]`, extension tools such as `ast-grep`, `mgrep`, `fffind`, or `ffgrep` are hidden from that subagent. Add `toolHints: ["search"]` to dynamically expose installed grep/find/search-like tools while keeping the concrete base allowlist portable. Use `toolHints: ["external-search"]` for installed web search, browsing, and URL-extraction tools; `requireToolHints: true` fails before prompting unless each requested capability matched. The built-in advisory workflows use `tools: ["read", "bash", "grep", "find", "ls"]` plus `toolHints: ["search"]`.
 
 Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; if `tools` is also restricted, the engine automatically keeps `read` available so the subagent can load the selected `SKILL.md`. When `skills` is omitted, clear prompt text such as `/skill:name`, `include skill name`, or `use the name skill` is also treated as an opt-in. Pass `skills: []` to suppress that inference.
 

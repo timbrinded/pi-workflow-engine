@@ -82,6 +82,18 @@ bundle a second agent runtime.
 | `refactor-scout` | Small, defensible refactors without broad rewrites |
 | `diagnose` | Competing explanations for bugs or failing commands |
 | `perf-review` | Measured bottlenecks versus performance guesses |
+| `research` | Current external evidence with direct-page citations and independent claim checks |
+
+For example:
+
+```text
+/workflow research "What changed in the latest WebAssembly component-model specification? Use primary sources."
+```
+
+`research` requires an installed pi tool that can search the web, browse pages,
+or extract HTTP(S) URLs. The engine discovers that capability semantically; if
+none is available, the workflow returns an installation/enablement next step
+without prompting a model. It does not bundle a scraper or paid research API.
 
 These are starting points, not a fixed menu. Dynamax can author a one-off
 workflow when the question needs different lenses or an adaptive second pass.

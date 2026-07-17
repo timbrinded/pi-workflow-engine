@@ -3,6 +3,7 @@ import * as codeReview from "../workflows/code-review.ts";
 import * as refactorScout from "../workflows/refactor-scout.ts";
 import * as diagnose from "../workflows/diagnose.ts";
 import * as perfReview from "../workflows/perf-review.ts";
+import * as research from "../workflows/research.ts";
 import type { WorkflowModule } from "./types.ts";
 
 /**
@@ -33,6 +34,7 @@ export const BUILTIN_WORKFLOW_DEFINITIONS: readonly BuiltinWorkflowDefinition[] 
   defineBuiltinWorkflow(refactorScout, "refactor-scout.ts"),
   defineBuiltinWorkflow(diagnose, "diagnose.ts"),
   defineBuiltinWorkflow(perfReview, "perf-review.ts"),
+  defineBuiltinWorkflow(research, "research.ts"),
 ];
 export const BUILTIN_WORKFLOWS = BUILTIN_WORKFLOW_DEFINITIONS.map(({ module }) => module);
 export const BUILTIN_WORKFLOW_FILES = new Set(BUILTIN_WORKFLOW_DEFINITIONS.map(({ filename }) => filename));

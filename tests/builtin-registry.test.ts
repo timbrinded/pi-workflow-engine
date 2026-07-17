@@ -9,8 +9,8 @@ import {
   BUILTIN_WORKFLOWS,
 } from "../.pi/extensions/pi-workflow-engine/src/workflows.ts";
 
-const expectedNames = ["code-review", "refactor-scout", "diagnose", "perf-review"];
-const expectedFiles = ["code-review.ts", "refactor-scout.ts", "diagnose.ts", "perf-review.ts"];
+const expectedNames = ["code-review", "refactor-scout", "diagnose", "perf-review", "research"];
+const expectedFiles = ["code-review.ts", "refactor-scout.ts", "diagnose.ts", "perf-review.ts", "research.ts"];
 const extensionRoot = fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/", import.meta.url));
 
 test("built-in registry names and files stay explicit and duplicate-free", () => {
