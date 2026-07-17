@@ -241,7 +241,23 @@ Core primitives:
 | `progress(event)` | Emits counters, summaries, and lane items. |
 | `workflow(ref, args?)` | Runs another workflow inline as a sub-step and returns its result. |
 
-Use settled mode when the workflow must distinguish a successful `null` from a failed branch. It preserves input order and returns `{ ok: true, value }` or `{ ok: false, error: { name?, message } }` for every thunk. Genuine workflow cancellation still rejects the whole `parallel()` call and cancels siblings.
+Schema agents accept structured output only through the validated, terminating `final_answer` tool. If the first response omits it, the engine makes at most **two repair attempts** (three prompt attempts total). Repair prompts expose only `final_answer` when the active pi session supports tool restriction. Clean exhaustion throws `WorkflowStructuredOutputError` with code `WORKFLOW_STRUCTURED_OUTPUT_NONCOMPLIANCE`; provider failures and host cancellation still propagate unchanged.
+
+Use settled mode when the workflow must distinguish a successful `null` from a failed branch. It preserves input order and returns `{ ok: true, value }` or `{ ok: false, error: { name?, message, code?, details? } }` for every thunk. Default parallel mode still turns recoverable structured-output exhaustion into a `null` slot, while settled mode retains the typed code and attempt details. Genuine workflow cancellation still rejects the whole `parallel()` call and cancels siblings.
+
+Direct schema calls can catch the typed failure instead of receiving an unexplained `null`:
+
+```ts
+try {
+  return await agent("Return the result.", { schema: ResultSchema });
+} catch (error) {
+  if (error instanceof Error && "code" in error && error.code === "WORKFLOW_STRUCTURED_OUTPUT_NONCOMPLIANCE") {
+    log("The agent did not produce compliant structured output.");
+    return undefined;
+  }
+  throw error;
+}
+```
 
 Set `thinkingLevel` on fan-out agents. Otherwise many subagents can inherit an expensive global reasoning level.
 

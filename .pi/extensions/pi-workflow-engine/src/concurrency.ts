@@ -78,6 +78,8 @@ export interface ParallelSettledOptions {
 export interface ParallelSettledError {
   readonly name?: string;
   readonly message: string;
+  readonly code?: string;
+  readonly details?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
 export type ParallelSettledResult<T> =
@@ -229,14 +231,48 @@ async function runParallel<T, Result>(
 function serializeParallelError(error: unknown): ParallelSettledError {
   const message = readStringProperty(error, "message") ?? unknownErrorMessage(error);
   const name = readStringProperty(error, "name");
-  return name && name.length > 0 ? { name, message } : { message };
+  const code = readStringProperty(error, "code");
+  const details = readSerializableDetails(error);
+  return {
+    ...(name && name.length > 0 ? { name } : {}),
+    message,
+    ...(code && code.length > 0 ? { code } : {}),
+    ...(details ? { details } : {}),
+  };
 }
 
-function readStringProperty(value: unknown, property: "message" | "name"): string | undefined {
+function readStringProperty(value: unknown, property: "message" | "name" | "code"): string | undefined {
+  const candidate = readProperty(value, property);
+  return typeof candidate === "string" ? candidate : undefined;
+}
+
+function readSerializableDetails(
+  value: unknown,
+): Readonly<Record<string, string | number | boolean | null>> | undefined {
+  const candidate = readProperty(value, "details");
+  if (typeof candidate !== "object" || candidate === null) return undefined;
+  try {
+    const details: Record<string, string | number | boolean | null> = {};
+    for (const [key, detail] of Object.entries(candidate)) {
+      if (
+        typeof detail === "string" ||
+        typeof detail === "boolean" ||
+        detail === null ||
+        (typeof detail === "number" && Number.isFinite(detail))
+      ) {
+        details[key] = detail;
+      }
+    }
+    return Object.keys(details).length > 0 ? details : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readProperty(value: unknown, property: string): unknown {
   if ((typeof value !== "object" && typeof value !== "function") || value === null) return undefined;
   try {
-    const candidate = Reflect.get(value, property);
-    return typeof candidate === "string" ? candidate : undefined;
+    return Reflect.get(value, property);
   } catch {
     return undefined;
   }

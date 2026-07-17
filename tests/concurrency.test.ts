@@ -3,6 +3,10 @@ import { test } from "bun:test";
 import { WorkflowBudgetExceededError } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { bindParallel, parallel, pipeline, pipelineWithOptions, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import {
+  STRUCTURED_OUTPUT_ERROR_CODE,
+  WorkflowStructuredOutputError,
+} from "../.pi/extensions/pi-workflow-engine/src/structured-output.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -126,6 +130,25 @@ test("parallel settled mode preserves order and distinguishes null values from f
     { ok: false, error: { message: "plain failure" } },
   ]);
   assert.deepEqual(JSON.parse(JSON.stringify(results)), results);
+});
+
+test("parallel keeps structured-output exhaustion fail-soft by default and detailed when settled", async () => {
+  const createFailure = async (): Promise<never> => {
+    throw new WorkflowStructuredOutputError("finder", 2);
+  };
+
+  assert.deepEqual(await parallel([createFailure]), [null]);
+  assert.deepEqual(await parallel([createFailure], { settled: true }), [
+    {
+      ok: false,
+      error: {
+        name: "WorkflowStructuredOutputError",
+        message: 'Schema agent "finder" did not call final_answer after 3 prompt attempts (2 repairs).',
+        code: STRUCTURED_OUTPUT_ERROR_CODE,
+        details: { agentLabel: "finder", promptAttempts: 3, repairAttempts: 2 },
+      },
+    },
+  ]);
 });
 
 test("parallel settled mode serializes hostile thrown values without hanging", async () => {

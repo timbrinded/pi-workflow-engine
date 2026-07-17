@@ -245,9 +245,9 @@ function createWorkflowAgent(
   function agent<S extends TSchema>(
     prompt: string,
     opts: AgentOptions<S> & { schema: S; isolation: "worktree" },
-  ): Promise<IsolatedAgentResult<Static<S> | null>>;
+  ): Promise<IsolatedAgentResult<Static<S>>>;
   function agent(prompt: string, opts: AgentOptions & { isolation: "worktree" }): Promise<IsolatedAgentResult<string>>;
-  function agent<S extends TSchema>(prompt: string, opts: AgentOptions<S> & { schema: S }): Promise<Static<S> | null>;
+  function agent<S extends TSchema>(prompt: string, opts: AgentOptions<S> & { schema: S }): Promise<Static<S>>;
   function agent(prompt: string, opts?: AgentOptions): Promise<string>;
   function agent(prompt: string, agentOpts?: AgentOptions): Promise<unknown> {
     const scopedOptions = scope.agentOptions(agentOpts);

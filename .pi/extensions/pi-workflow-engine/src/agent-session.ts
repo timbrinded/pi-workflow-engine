@@ -26,10 +26,13 @@ import {
   type EffectiveToolInfoLike,
 } from "./agent-session-identity.ts";
 import { raceWithAbort, throwIfAborted } from "./cancellation.ts";
+import {
+  MAX_SCHEMA_REPAIR_ATTEMPTS,
+  WorkflowStructuredOutputError,
+} from "./structured-output.ts";
 
 export const FINAL_TOOL = "final_answer";
 
-const SCHEMA_REPROMPT_ATTEMPTS = 1;
 const SCHEMA_REPROMPT =
   `You ended your turn without calling the ${FINAL_TOOL} tool, so no result was recorded. ` +
   `Call ${FINAL_TOOL} now with your final answer as its arguments. Do not reply with plain text.`;
@@ -50,6 +53,7 @@ export interface ResolvedAgentModel {
 export interface AgentSessionHandle {
   readonly session: AgentRunnerSession;
   readonly selectedSkills: readonly Skill[];
+  hasStructuredResult(): boolean;
   structuredResult(): unknown;
 }
 
@@ -97,7 +101,8 @@ export async function openAgentSession(input: {
     : undefined;
   const selectedSkills = skillSetup?.selectedSkills ?? [];
   const toolSelection = buildToolSelection(opts, selectedSkills.length > 0);
-  let captured: unknown = null;
+  let captured = false;
+  let structuredResult: unknown;
   const customTools: ToolDefinition[] = opts.schema
     ? [
         defineTool({
@@ -107,7 +112,8 @@ export async function openAgentSession(input: {
             "Return your final structured answer. This MUST be your last action — do not write a normal reply after calling it.",
           parameters: opts.schema,
           async execute(_toolCallId, params) {
-            captured = params;
+            captured = true;
+            structuredResult = params;
             return { content: [{ type: "text", text: "Recorded." }], details: params, terminate: true };
           },
         }),
@@ -150,7 +156,12 @@ export async function openAgentSession(input: {
       session = (await createSubagentSession(toolSelection.fallbackSessionOptions)).session;
     }
     throwIfAborted(rc.signal);
-    return { session, selectedSkills, structuredResult: () => captured };
+    return {
+      session,
+      selectedSkills,
+      hasStructuredResult: () => captured,
+      structuredResult: () => structuredResult,
+    };
   } catch (error) {
     if (session) {
       const activeSession = session;
@@ -189,9 +200,10 @@ export async function promptAgentSession(input: {
       try {
         await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(finalPrompt), rc.signal), tags);
         if (opts.schema) {
-          for (let attempt = 0; handle.structuredResult() === null && attempt < SCHEMA_REPROMPT_ATTEMPTS; attempt++) {
+          for (let attempt = 0; !handle.hasStructuredResult() && attempt < MAX_SCHEMA_REPAIR_ATTEMPTS; attempt++) {
             throwIfAborted(rc.signal);
-            rc.progress.log(`${label}: no final answer; re-prompting (${attempt + 1}/${SCHEMA_REPROMPT_ATTEMPTS})`);
+            session.setActiveToolsByName?.([FINAL_TOOL]);
+            rc.progress.log(`${label}: no final answer; re-prompting (${attempt + 1}/${MAX_SCHEMA_REPAIR_ATTEMPTS})`);
             rc.perf.counter("agent.structured_reprompt", 1, tags);
             await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(SCHEMA_REPROMPT), rc.signal), tags);
           }
@@ -202,12 +214,12 @@ export async function promptAgentSession(input: {
           "agent.extract_result_ms",
           () => {
             if (!opts.schema) return lastAssistantText(session.state);
-            const result = handle.structuredResult();
-            if (result === null) {
+            if (!handle.hasStructuredResult()) {
               rc.progress.log(`${label}: no structured answer returned`);
               rc.perf.counter("agent.structured_missing", 1, tags);
+              throw new WorkflowStructuredOutputError(label, MAX_SCHEMA_REPAIR_ATTEMPTS);
             }
-            return result;
+            return handle.structuredResult();
           },
           tags,
         );

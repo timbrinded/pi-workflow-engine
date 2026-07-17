@@ -133,6 +133,27 @@ export function createRunContext(input: {
 
 export const DEFAULT_SESSION_MODEL = testModel("test", "default-session-model");
 
+type FinalTool = NonNullable<Parameters<CreateAgentSession>[0]["customTools"]>[number];
+type ToolExecuteContext = Parameters<FinalTool["execute"]>[4];
+
+const unusedToolContext = new Proxy(
+  {},
+  {
+    get(_target, property) {
+      throw new Error(`unused tool context accessed: ${String(property)}`);
+    },
+  },
+) as ToolExecuteContext;
+
+export async function executeTestFinalAnswer(
+  options: Parameters<CreateAgentSession>[0],
+  params: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  const tool = options.customTools?.find((candidate) => candidate.name === "final_answer");
+  if (!tool) throw new Error("final_answer test tool was not configured");
+  await tool.execute("final-answer", params, undefined, undefined, unusedToolContext);
+}
+
 export function createTextSession(model: Model<Api> | undefined = DEFAULT_SESSION_MODEL): Awaited<ReturnType<CreateAgentSession>> {
   return {
     session: {
