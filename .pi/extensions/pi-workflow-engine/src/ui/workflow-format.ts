@@ -49,10 +49,6 @@ export function statusIcon(status: WorkflowDisplayStatus, theme: Theme): string 
   }
 }
 
-export function badge(label: string, color: WorkflowThemeColor, theme: Theme): string {
-  return theme.fg(color, `[${label}]`);
-}
-
 export function truncateDisplay(text: string, width: number): string {
   if (width <= 0) return "";
   return truncateToWidth(text, width);

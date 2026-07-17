@@ -1,6 +1,6 @@
 import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type AdvisoryFinding, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
 import { compactResults } from "./concurrency.ts";
-import type { AgentOptions, WorkflowApi, WorkflowProgressEvent } from "./types.ts";
+import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "./types.ts";
 
 export interface AdvisoryLens {
   label: string;
@@ -26,6 +26,26 @@ export const DEFAULT_ADVISORY_TOOLS: NonNullable<AgentOptions["tools"]> = ["read
 
 /** Dynamically include installed grep/find/search-like extension tools. */
 export const DEFAULT_ADVISORY_TOOL_HINTS: NonNullable<AgentOptions["toolHints"]> = ["search"];
+
+export function emptyAdvisoryReport<Stats extends WorkflowRunStats>(
+  summary: string,
+  nextSteps: string[],
+  stats: Stats,
+): AdvisoryReport & { stats: Stats } {
+  return { summary, findings: [], nextSteps, stats };
+}
+
+export function publishVerifiedKeptProgress(
+  api: Pick<WorkflowApi, "progress" | "log">,
+  verified: number,
+  kept: number,
+): void {
+  api.progress({ type: "counter", key: "verified", label: "verified", value: verified });
+  api.progress({ type: "counter", key: "kept", label: "kept", value: kept });
+  api.progress({ type: "summary", key: "verified", value: verified });
+  api.progress({ type: "summary", key: "kept", value: kept });
+  api.log(`${verified} verified → ${kept} kept`);
+}
 
 export type AdvisorySchedulingMode = "pipeline" | "finder-barrier";
 

@@ -48,7 +48,11 @@ export interface AgentRunnerSession {
   setActiveToolsByName?(toolNames: readonly string[]): void;
 }
 
-export type CreateAgentSession = (options: CreateAgentSessionOptions) => Promise<{ session: AgentRunnerSession }>;
+type InjectedAgentSessionOptions = Omit<CreateAgentSessionOptions, "modelRegistry"> & {
+  readonly modelRegistry: Pick<ModelRegistry, "find">;
+};
+
+export type CreateAgentSession = (options: InjectedAgentSessionOptions) => Promise<{ session: AgentRunnerSession }>;
 
 export interface AgentProgress {
   agentQueued(phase: string | undefined, label: string): number;
@@ -59,11 +63,9 @@ export interface AgentProgress {
   log(message: string): void;
 }
 
-/** Shared per-run context threaded into every agent() call. */
-export interface RunContext {
+interface RunContextBase {
   cwd: string;
   hostModel: Model<Api> | undefined;
-  modelRegistry: Pick<ModelRegistry, "find">;
   semaphore: Semaphore;
   progress: AgentProgress;
   signal: AbortSignal | undefined;
@@ -72,8 +74,21 @@ export interface RunContext {
   budget: WorkflowBudget;
   journal: WorkflowJournal;
   worktrees: WorktreeRegistry;
-  createSession?: CreateAgentSession;
 }
+
+/** Shared per-run context threaded into every agent() call. */
+export type RunContext = RunContextBase & (
+  | {
+      /** The real session factory requires the complete pi model registry. */
+      modelRegistry: ModelRegistry;
+      createSession?: undefined;
+    }
+  | {
+      /** Tests and other injected factories may deliberately consume only model lookup. */
+      modelRegistry: Pick<ModelRegistry, "find">;
+      createSession: CreateAgentSession;
+    }
+);
 
 /** Runtime-only options. The authored WorkflowApi exposes only AgentOptions. */
 export type AgentExecutionOptions = AgentOptions & {

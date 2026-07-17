@@ -2,13 +2,14 @@ import { Type } from "typebox";
 import {
   AdvisoryReportSchema,
   type AdvisoryCandidate,
-  type AdvisoryReport,
   type AdvisoryVerdict,
 } from "../src/advisory-schema.ts";
 import {
   backfillAdvisoryFindings,
+  emptyAdvisoryReport,
   formatEvidence,
   formatLocation,
+  publishVerifiedKeptProgress,
   runLensVerificationPipeline,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
@@ -83,7 +84,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   );
 
   if (!scope || scope.files.length === 0) {
-    return emptyReport(
+    return emptyAdvisoryReport(
       "No files were identified for refactor scouting.",
       ["Provide a target path, module, or subsystem to scout for refactor opportunities."],
       makeStats(0, 0),
@@ -136,14 +137,10 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   const verified = pipelineResult.verified;
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
-  progress({ type: "counter", key: "verified", label: "verified", value: verified.length });
-  progress({ type: "counter", key: "kept", label: "kept", value: surviving.length });
-  progress({ type: "summary", key: "verified", value: verified.length });
-  progress({ type: "summary", key: "kept", value: surviving.length });
-  log(`${verified.length} verified → ${surviving.length} kept`);
+  publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
 
   if (surviving.length === 0) {
-    return emptyReport("No refactor opportunities survived verification.", ["Leave the scoped code unchanged unless a human reviewer has additional context."], stats);
+    return emptyAdvisoryReport("No refactor opportunities survived verification.", ["Leave the scoped code unchanged unless a human reviewer has additional context."], stats);
   }
 
   phase("Synthesize");
@@ -172,17 +169,13 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     },
   );
 
-  if (!report) return emptyReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun the workflow with a narrower target."], stats);
+  if (!report) return emptyAdvisoryReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun the workflow with a narrower target."], stats);
 
   const findings = backfillAdvisoryFindings(report.findings, ranked, {
     impact: "Impact not restated by synthesis.",
     recommendation: "Choose a small, behavior-preserving refactor first step.",
   });
   return { ...report, findings, stats };
-}
-
-function emptyReport(summary: string, nextSteps: string[], stats: WorkflowRunStats): AdvisoryReport & { stats: WorkflowRunStats } {
-  return { summary, findings: [], nextSteps, stats };
 }
 
 function rank(finding: Verified): number {

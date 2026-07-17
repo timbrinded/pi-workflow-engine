@@ -2,6 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./dynamax-shortcuts.ts";
+import { sessionKey } from "./session-identity.ts";
 
 export interface DynamaxState {
   sticky: boolean;
@@ -57,12 +58,8 @@ export function createDynamaxRuntime(): DynamaxRuntime {
   return { state: createDynamaxState() };
 }
 
-export function dynamaxSessionKey(ctx: Pick<ExtensionContext, "sessionManager">): string {
-  return ctx.sessionManager.getSessionFile() ?? ctx.sessionManager.getSessionId();
-}
-
 export function getDynamaxRuntime(store: DynamaxRuntimeStore, ctx: Pick<ExtensionContext, "sessionManager">): DynamaxRuntime {
-  const key = dynamaxSessionKey(ctx);
+  const key = sessionKey(ctx);
   const existing = store.get(key);
   if (existing) return existing;
   const runtime = createDynamaxRuntime();

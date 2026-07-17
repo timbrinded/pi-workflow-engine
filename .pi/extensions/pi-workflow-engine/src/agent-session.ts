@@ -113,22 +113,25 @@ export async function openAgentSession(input: {
         }),
       ]
     : [];
-  const createSessionForRun = rc.createSession ?? defaultCreateSession;
   const createSubagentSession = (sessionOptions: ToolSessionOptions) =>
     rc.perf.time(
       "agent.create_session_ms",
-      () =>
-        createSessionForRun({
+      () => {
+        const options = {
           cwd,
           model,
-          modelRegistry: rc.modelRegistry as ModelRegistry,
           thinkingLevel: opts.thinkingLevel,
           tools: sessionOptions.tools,
           excludeTools: sessionOptions.excludeTools,
           customTools,
           resourceLoader: skillSetup?.resourceLoader,
           sessionManager: SessionManager.inMemory(cwd),
-        }),
+        };
+        if (rc.createSession) {
+          return rc.createSession({ ...options, modelRegistry: rc.modelRegistry });
+        }
+        return defaultCreateSession({ ...options, modelRegistry: rc.modelRegistry });
+      },
       tags,
     );
 

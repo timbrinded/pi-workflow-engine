@@ -1,6 +1,7 @@
 import { lstat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { throwIfAborted } from "./cancellation.ts";
+import { isMissingPathError } from "./filesystem-error.ts";
 import type {
   EffectiveAgentSessionIdentity,
   EffectiveToolIdentity,
@@ -617,10 +618,6 @@ function isEffectiveToolIdentity(value: unknown): value is EffectiveToolIdentity
     typeof value.source.fingerprint === "string" &&
     (value.source.baseDir === undefined || typeof value.source.baseDir === "string")
   );
-}
-
-function isMissingPathError(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 function parseNullTerminatedRecords(output: string, operation: string): string[] {

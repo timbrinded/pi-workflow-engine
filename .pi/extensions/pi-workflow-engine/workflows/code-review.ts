@@ -12,6 +12,7 @@ import {
   formatLocation,
   normalizePath,
   primaryLocation,
+  publishVerifiedKeptProgress,
   recordVerdictProgress,
   verdictConfidence,
   DEFAULT_ADVISORY_TOOL_HINTS,
@@ -282,11 +283,7 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   const verified = compactResults(verdicts);
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
-  progress({ type: "counter", key: "verified", label: "verified", value: verified.length });
-  progress({ type: "counter", key: "kept", label: "kept", value: surviving.length });
-  progress({ type: "summary", key: "verified", value: verified.length });
-  progress({ type: "summary", key: "kept", value: surviving.length });
-  log(`${verified.length} verified → ${surviving.length} kept`);
+  publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
 
   if (surviving.length === 0) {
     return { summary: "No findings survived verification.", findings: [], nextSteps: ["No code-review action is recommended from this workflow run."], stats, reviewContext };

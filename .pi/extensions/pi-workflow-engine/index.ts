@@ -8,7 +8,8 @@ import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRe
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink } from "./src/perf.ts";
 import type { WorkflowUsageSnapshot } from "./src/usage.ts";
-import { ADAPTIVE_WORKFLOW_GUIDANCE, dynamaxSessionKey, registerDynamax } from "./src/dynamax.ts";
+import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
+import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
 import { ReviewSessionCoordinator } from "./src/review/review-session-coordinator.ts";
 import {
@@ -29,10 +30,12 @@ import { executeWorkflowInvocation, type WorkflowExecution, type WorkflowPerfDet
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 
 function summarize(result: unknown): string {
-  if (result && typeof result === "object" && typeof (result as { summary?: unknown }).summary === "string") {
-    return (result as { summary: string }).summary;
-  }
+  if (isRecord(result) && typeof result.summary === "string") return result.summary;
   return typeof result === "string" ? result : "Workflow finished.";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function formatMessageContent(
@@ -217,10 +220,6 @@ export function getLastWorkflowInspection(): LastWorkflowInspection | undefined 
   return latestWorkflowInspection;
 }
 
-export function getActiveWorkflowInspection(): ActiveWorkflowInspection | undefined {
-  return latestActiveWorkflowInspection;
-}
-
 export async function openWorkflowInspector(ctx: ExtensionContext, inspection: LastWorkflowInspection | ActiveWorkflowInspection): Promise<void> {
   await ctx.ui.custom<void>(
     (tui, theme, _keybindings, done) => new WorkflowInspector(snapshotGetter(inspection), tui, theme, () => done(undefined)),
@@ -230,7 +229,7 @@ export async function openWorkflowInspector(ctx: ExtensionContext, inspection: L
 
 function workflowInspectionState(pi: ExtensionAPI, ctx: ExtensionContext): SessionWorkflowInspections {
   const sessions = workflowInspections.get(pi) ?? new Map<string, SessionWorkflowInspections>();
-  const key = dynamaxSessionKey(ctx);
+  const key = sessionKey(ctx);
   const state = sessions.get(key) ?? {};
   sessions.set(key, state);
   workflowInspections.set(pi, sessions);
@@ -573,7 +572,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   const reviewSessions = createReviewSessionCoordinator(pi);
   registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
   pi.on("session_shutdown", (_event, ctx) => {
-    const key = dynamaxSessionKey(ctx);
+    const key = sessionKey(ctx);
     workflowInspections.get(pi)?.delete(key);
     reviewSessions.dispose(ctx);
   });

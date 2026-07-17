@@ -2,13 +2,14 @@ import { Type } from "typebox";
 import {
   AdvisoryReportSchema,
   type AdvisoryCandidate,
-  type AdvisoryReport,
   type AdvisoryVerdict,
 } from "../src/advisory-schema.ts";
 import {
   backfillAdvisoryFindings,
+  emptyAdvisoryReport,
   formatEvidence,
   formatLocation,
+  publishVerifiedKeptProgress,
   runLensVerificationPipeline,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
@@ -84,7 +85,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   );
 
   if (!scope || scope.files.length === 0) {
-    return emptyReport(
+    return emptyAdvisoryReport(
       "No performance-relevant files were identified.",
       ["Provide a slow command, workload, file path, or user-visible latency concern to review."],
       makeStats(0, 0),
@@ -139,14 +140,10 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   const verified = pipelineResult.verified;
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
-  progress({ type: "counter", key: "verified", label: "verified", value: verified.length });
-  progress({ type: "counter", key: "kept", label: "kept", value: surviving.length });
-  progress({ type: "summary", key: "verified", value: verified.length });
-  progress({ type: "summary", key: "kept", value: surviving.length });
-  log(`${verified.length} verified → ${surviving.length} kept`);
+  publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
 
   if (surviving.length === 0) {
-    return emptyReport(
+    return emptyAdvisoryReport(
       "No performance finding survived verification.",
       ["Add or run a focused measurement for the target workload before optimizing.", "Rerun perf-review with benchmark output or a narrower slow path."],
       stats,
@@ -178,17 +175,13 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     },
   );
 
-  if (!report) return emptyReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun perf-review with a narrower target."], stats);
+  if (!report) return emptyAdvisoryReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun perf-review with a narrower target."], stats);
 
   const findings = backfillAdvisoryFindings(report.findings, ranked, {
     impact: "Performance impact not restated by synthesis.",
     recommendation: "Measure the target workload before changing code.",
   });
   return { ...report, findings, stats };
-}
-
-function emptyReport(summary: string, nextSteps: string[], stats: WorkflowRunStats): AdvisoryReport & { stats: WorkflowRunStats } {
-  return { summary, findings: [], nextSteps, stats };
 }
 
 function rank(finding: Verified): number {

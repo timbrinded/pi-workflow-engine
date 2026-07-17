@@ -3,6 +3,7 @@ import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, readdir, type FileHandle } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { throwIfAborted } from "./cancellation.ts";
+import { isMissingPathError } from "./filesystem-error.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 export type FingerprintCapture =
@@ -397,8 +398,4 @@ function isExcludedAncestor(path: string, excluded: ReadonlySet<string> | undefi
     }
   }
   return false;
-}
-
-function isMissingPathError(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }

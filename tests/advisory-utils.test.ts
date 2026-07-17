@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { AdvisoryFinding } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
-import { backfillAdvisoryFindings, findingLocationKey, sameFinding, type AdvisoryVerified } from "../.pi/extensions/pi-workflow-engine/src/workflow-advisory-utils.ts";
+import {
+  backfillAdvisoryFindings,
+  emptyAdvisoryReport,
+  findingLocationKey,
+  publishVerifiedKeptProgress,
+  sameFinding,
+  type AdvisoryVerified,
+} from "../.pi/extensions/pi-workflow-engine/src/workflow-advisory-utils.ts";
 
 function finding(file: string, line: number, overrides: Partial<AdvisoryFinding> = {}): AdvisoryFinding {
   return {
@@ -28,6 +35,27 @@ function verified(file: string, line: number, evidence: string[], impact: string
     evidence,
   };
 }
+
+test("shared advisory report and verified progress helpers preserve the common contract", () => {
+  const stats = { files: 2, candidates: 4, verified: 3, kept: 2 };
+  assert.deepEqual(emptyAdvisoryReport("Nothing found.", ["Keep investigating."], stats), {
+    summary: "Nothing found.",
+    findings: [],
+    nextSteps: ["Keep investigating."],
+    stats,
+  });
+
+  const events: unknown[] = [];
+  const logs: string[] = [];
+  publishVerifiedKeptProgress({ progress: (event) => events.push(event), log: (message) => logs.push(message) }, 3, 2);
+  assert.deepEqual(events, [
+    { type: "counter", key: "verified", label: "verified", value: 3 },
+    { type: "counter", key: "kept", label: "kept", value: 2 },
+    { type: "summary", key: "verified", value: 3 },
+    { type: "summary", key: "kept", value: 2 },
+  ]);
+  assert.deepEqual(logs, ["3 verified → 2 kept"]);
+});
 
 test("findingLocationKey normalizes diff prefixes", () => {
   assert.equal(findingLocationKey({ locations: [{ file: "a/src/app.ts", line: 10 }] }), "src/app.ts:10");

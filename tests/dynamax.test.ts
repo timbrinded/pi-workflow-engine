@@ -26,7 +26,6 @@ import {
   DYNAMAX_STATUS_KEY,
   DYNAMAX_WIDGET_KEY,
   type DynamaxRuntimeStore,
-  dynamaxSessionKey,
   dynamaxWidgetLine,
   getDynamaxRuntime,
   hasDynamaxToken,
@@ -36,6 +35,7 @@ import {
   setDynamaxSticky,
   updateDynamaxSurfaces,
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
+import { sessionKey } from "../.pi/extensions/pi-workflow-engine/src/session-identity.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -280,7 +280,7 @@ test("dynamax runtime store isolates state by session", () => {
   const secondRuntime = getDynamaxRuntime(store, second.ctx);
   setDynamaxSticky(firstRuntime.state, true);
 
-  assert.equal(dynamaxSessionKey(first.ctx), "session-a");
+  assert.equal(sessionKey(first.ctx), "session-a");
   assert.equal(firstRuntime.state.sticky, true);
   assert.equal(secondRuntime.state.sticky, false);
 });

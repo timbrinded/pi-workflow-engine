@@ -50,7 +50,9 @@ function createProgress(): CaptureProgress {
 function createRc(
   progress: CaptureProgress,
   semaphore: Semaphore,
-  createSession?: CreateAgentSession,
+  createSession: CreateAgentSession = async () => {
+    throw new Error("No session fixture configured");
+  },
   usage: WorkflowUsageSink = createWorkflowUsageRecorder(),
 ): WorkflowRunContext {
   return {

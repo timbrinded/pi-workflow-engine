@@ -8,12 +8,16 @@ import { loadWorkflow, parseWorkflowModule } from "./workflow-module.ts";
 import { BUILTIN_SOURCE_ROOT, BUILTIN_WORKFLOW_DEFINITIONS, BUILTIN_WORKFLOW_FILES } from "./workflows.ts";
 import { captureTreeFingerprint } from "./tree-fingerprint.ts";
 import { FINGERPRINT_EXCLUDED_RELATIVE_PATHS } from "./resume-context.ts";
+import { unknownErrorMessage } from "./unknown-error.ts";
 
 export interface DiscoverWorkflowsOptions {
   readonly refresh?: boolean;
   readonly perf?: PerfSink;
   readonly userWorkflowDir?: string;
 }
+
+const DISCOVERY_FINGERPRINT_MAX_BYTES = 32 << 20;
+const DISCOVERY_FINGERPRINT_MAX_FILES = 4096;
 
 const discoveryCache = new Map<string, Map<string, LoadedWorkflow>>();
 /** Best-effort dynamic load of every `*.ts` workflow in a directory. */
@@ -46,7 +50,7 @@ async function loadDir(
     } catch (error) {
       // Drop-in loading depends on the runtime resolving TS + the bundled typebox.
       // Failures here are non-fatal: the static registry still works.
-      console.error(`[workflow-engine] skipped ${name}: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`[workflow-engine] skipped ${name}: ${unknownErrorMessage(error)}`);
     }
   }
   return modules.map(({ path, module }) => loadWorkflow(module, sourceIdentity(path)));
@@ -56,8 +60,8 @@ async function captureDiscoveryFingerprint(root: string) {
   return await captureTreeFingerprint({
     root,
     excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-    maxBytes: 32 << 20,
-    maxFiles: 4096,
+    maxBytes: DISCOVERY_FINGERPRINT_MAX_BYTES,
+    maxFiles: DISCOVERY_FINGERPRINT_MAX_FILES,
   });
 }
 
