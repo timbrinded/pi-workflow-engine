@@ -58,23 +58,26 @@ export default async function run({ phase, args }) {
 
 test("compileInlineWorkflow injects Type for structured agent schemas", async () => {
   let capturedSchema: unknown;
+  let capturedProfile: AgentOptions["profile"];
   const mod = compileInlineWorkflow(`
 export const meta = { name: "schema-inline", description: "Schema inline" };
 
 export default async ({ agent }) => {
   const Result = Type.Object({ ok: Type.Boolean() });
-  const result = await agent("return ok", { schema: Result, thinkingLevel: "low" });
+  const result = await agent("return ok", { schema: Result, profile: "small" });
   return { summary: result?.ok ? "ok" : "missing" };
 }
 `);
 
   const result = await mod.default(createFakeApi({}, (opts) => {
     capturedSchema = opts?.schema;
+    capturedProfile = opts?.profile;
   }));
 
   assert.deepEqual(result, { summary: "ok" });
   assert.equal(isRecord(capturedSchema) ? capturedSchema.type : undefined, "object");
   assert.equal(isRecord(capturedSchema) ? capturedSchema["~kind"] : undefined, "Object");
+  assert.equal(capturedProfile, "small");
 });
 
 test("compileInlineWorkflow rejects non-literal metadata", () => {

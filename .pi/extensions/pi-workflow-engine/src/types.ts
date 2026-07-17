@@ -6,6 +6,7 @@ import type { PerfSink, PerfSnapshot } from "./perf.ts";
 import type { WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "./progress-types.ts";
 import type { WorkflowUsageSnapshot } from "./usage.ts";
 import type { WorktreeBaseline } from "./worktree.ts";
+import type { WorkflowModelProfileName } from "./model-profiles.ts";
 
 export type { WorkflowLaneItemStatus } from "./progress-types.ts";
 
@@ -102,12 +103,15 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   /** Phase to group this agent under in the progress tree. */
   phase?: string;
   /**
-   * Optional model id. Omit to inherit the host model. Explicit refs are strict:
-   * bare ids resolve as Anthropic shorthand; use "provider/id" for other providers.
+   * Optional model id. Overrides profile routing; when both model and profile are
+   * omitted, inherit the host model. Explicit refs are strict: bare ids resolve as
+   * Anthropic shorthand; use "provider/id" for other providers.
    */
   model?: string;
-  /** Reasoning effort for this agent. */
+  /** Reasoning effort for this agent. Overrides the profile's configured effort. */
   thinkingLevel?: ThinkingLevel;
+  /** Exact configured model route to use when model/thinkingLevel do not override it. */
+  profile?: WorkflowModelProfileName;
   /**
    * Stable identity hint for resume replay. Use this for repeated logical calls
    * with identical prompts/options, e.g. `${stage}:${item.id}`.

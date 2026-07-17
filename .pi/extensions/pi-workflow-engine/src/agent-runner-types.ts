@@ -4,6 +4,7 @@ import type { WorkflowBudget } from "./budget.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { WorkflowAgentLimiter } from "./agent-limits.ts";
 import type { AgentRetryScheduler } from "./agent-retry.ts";
+import type { ResolvedWorkflowModelProfiles } from "./model-profiles.ts";
 import type { WorkflowJournal } from "./journal.ts";
 import type { PerfSink } from "./perf.ts";
 import type { AgentOptions } from "./types.ts";
@@ -74,6 +75,7 @@ interface RunContextBase {
   agentTimeoutMs: number;
   agentRetries: number;
   retryScheduler: AgentRetryScheduler;
+  modelProfiles: ResolvedWorkflowModelProfiles;
   progress: AgentProgress;
   signal: AbortSignal | undefined;
   perf: PerfSink;

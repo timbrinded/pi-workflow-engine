@@ -21,6 +21,10 @@ import {
   defaultAgentRetryScheduler,
   type AgentRetryScheduler,
 } from "../.pi/extensions/pi-workflow-engine/src/agent-retry.ts";
+import {
+  hostWorkflowModelProfiles,
+  type ResolvedWorkflowModelProfiles,
+} from "../.pi/extensions/pi-workflow-engine/src/model-profiles.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createBudget, type WorkflowBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
@@ -119,6 +123,7 @@ export function createRunContext(input: {
   readonly agentTimeoutMs?: number;
   readonly agentRetries?: number;
   readonly retryScheduler?: AgentRetryScheduler;
+  readonly modelProfiles?: ResolvedWorkflowModelProfiles;
   readonly signal?: AbortSignal;
 }): RunContext {
   const usage = input.usage ?? createWorkflowUsageRecorder();
@@ -132,6 +137,7 @@ export function createRunContext(input: {
     agentTimeoutMs: input.agentTimeoutMs ?? DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     agentRetries: input.agentRetries ?? DEFAULT_WORKFLOW_AGENT_RETRIES,
     retryScheduler: input.retryScheduler ?? defaultAgentRetryScheduler,
+    modelProfiles: input.modelProfiles ?? hostWorkflowModelProfiles(input.hostModel),
     progress: input.progress ?? createProgress(),
     signal: input.signal,
     perf: new PerfRecorder(),

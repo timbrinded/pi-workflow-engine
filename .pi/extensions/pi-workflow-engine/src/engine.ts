@@ -3,6 +3,7 @@ import type { Static, TSchema } from "typebox";
 import { bindParallel, bindPipeline, Semaphore } from "./concurrency.ts";
 import { WorkflowAgentLimiter } from "./agent-limits.ts";
 import { defaultAgentRetryScheduler, type AgentRetryScheduler } from "./agent-retry.ts";
+import { resolveWorkflowModelProfiles, type ResolvedWorkflowModelProfiles } from "./model-profiles.ts";
 import { linkAbortSignal, throwIfAborted } from "./cancellation.ts";
 import { createBudget } from "./budget.ts";
 import { runAgent, type AgentExecutionOptions, type RunContext } from "./agent-runner.ts";
@@ -54,6 +55,7 @@ type Outcome<T> =
 export interface WorkflowEngineDependencies {
   readonly worktrees?: WorktreeRegistry;
   readonly retryScheduler?: AgentRetryScheduler;
+  readonly modelProfiles?: ResolvedWorkflowModelProfiles;
 }
 
 /**
@@ -112,6 +114,11 @@ export async function runResolvedWorkflow(
       resolvedOptions.onRunMetadata?.({ runId, resumedFromRunId: resolvedOptions.resumeFromRunId, journalPath }),
     );
     progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
+    const modelProfiles = dependencies.modelProfiles ?? resolveWorkflowModelProfiles({
+      cwd: ctx.cwd,
+      modelRegistry: ctx.modelRegistry,
+      hostModel: ctx.model,
+    });
     const rc: WorkflowRunContext = {
       cwd: ctx.cwd,
       hostModel: ctx.model,
@@ -121,6 +128,7 @@ export async function runResolvedWorkflow(
       agentTimeoutMs: resolvedOptions.agentTimeoutMs,
       agentRetries: resolvedOptions.agentRetries,
       retryScheduler: dependencies.retryScheduler ?? defaultAgentRetryScheduler,
+      modelProfiles,
       progress,
       signal: runAbortController.signal,
       perf,

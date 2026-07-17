@@ -41,7 +41,7 @@ The user has opted into dynamax multi-agent orchestration. The workflow tool is 
 Inline workflow rules:
 - Use the injected Type object for schemas, for example Type.Object({ ok: Type.Boolean() }); do not import typebox.
 - Do not use import statements or dynamic import() in inline workflow scripts.
-- Set thinkingLevel explicitly on each agent() call so fan-out remains bounded.
+- Set profile to "small", "medium", or "big" on each agent() call so routing remains explicit; use model/thinkingLevel only for an intentional override.
 - Subagents receive no skills by default. Add \`skills: ["skill-name"]\` per agent only when that stage should load that skill; grant the smallest useful set.
 - Provide exactly one of workflow.name or workflow.script.
 

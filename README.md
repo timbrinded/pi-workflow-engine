@@ -40,6 +40,7 @@ Saved workflows are available directly:
 /workflow refactor-scout src/
 /workflow diagnose "the schema migration broke typecheck"
 /workflow perf-review "workflow startup latency"
+/workflow:models
 ```
 
 The package uses pi's bundled SDK and core packages; it does not install or
@@ -132,13 +133,13 @@ export default async function run(
     () => agent(`Review correctness: ${args}`, {
       schema: Finding,
       tools: reviewTools,
-      thinkingLevel: "low",
+      profile: "small",
       resume: "read-only",
     }),
     () => agent(`Review edge cases: ${args}`, {
       schema: Finding,
       tools: reviewTools,
-      thinkingLevel: "low",
+      profile: "small",
       resume: "read-only",
     }),
   ]);
@@ -146,14 +147,17 @@ export default async function run(
   phase("Synthesize");
   return agent(`Merge and rank these findings: ${JSON.stringify(findings)}`, {
     tools: [],
-    thinkingLevel: "medium",
+    profile: "medium",
     resume: "read-only",
   });
 }
 ```
 
-Set `thinkingLevel` on fan-out agents so they do not all inherit an expensive
-global setting. The [usage guide](USAGE.md#author-a-saved-workflow) covers
+Use `profile: "small"`, `"medium"`, or `"big"` to keep workflow routing portable.
+Users map those tiers to exact provider/model identities with `/workflow:models`;
+an explicit `model` or `thinkingLevel` remains available as a per-agent override.
+The [usage guide](USAGE.md#workflow-model-profiles) covers configuration and
+precedence, while [workflow authoring](USAGE.md#author-a-saved-workflow) covers
 schemas, tools, skills, pipelines, settled results, worktree isolation, inline
 workflows, and registration.
 
@@ -175,6 +179,9 @@ workflows, and registration.
   transient terminal assistant failures retry with capped exponential backoff.
   Retries keep the same progress row, timeout, budget, agent cap, and abort signal;
   failed-attempt usage still counts.
+- **Model profiles:** `small`, `medium`, and `big` resolve only through exact
+  configured provider/model identities or the host model fallback. No price,
+  name, or assumed-capability ranking is performed.
 - **Mutating agents:** disposable worktrees isolate edits and return
   baseline-relative patches.
 - **Resume:** journals bind workspace-aware calls to repository state and all

@@ -32,6 +32,7 @@ import {
   WORKFLOW_MAX_AGENTS_MIN,
 } from "./src/options.ts";
 import { executeWorkflowInvocation, type WorkflowExecution, type WorkflowPerfDetails } from "./src/workflow-execution.ts";
+import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -448,7 +449,7 @@ ${brief.trim()}
 Use the workflow tool with a script argument, not a saved workflow name.
 The script must start with export const meta = { ... } and default-export an async workflow function.
 Use the injected Type object for schemas. Do not import anything or use dynamic import().
-Set thinkingLevel explicitly on each agent() call.
+Set profile to "small", "medium", or "big" on each agent() call; use explicit model/thinkingLevel only for an intentional override.
 Always pass a plain string as the first api.agent() argument; build prompts with template strings before calling agent().
 If using \`isolation: "worktree"\`, remember api.agent() returns \`{ result, patch, changed }\`; read \`.result\` for the agent answer and \`.patch\` for the diff.
 When the run is budgeted, guard expensive loops with \`while (api.budget.total && api.budget.remaining() > N) { ... }\`; api.agent() throws once the budget is spent.
@@ -625,6 +626,7 @@ function createReviewSessionCoordinator(pi: ExtensionAPI): ReviewSessionCoordina
 export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShortcuts = resolveDynamaxShortcuts()): void {
   const reviewSessions = createReviewSessionCoordinator(pi);
   registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
+  registerWorkflowModelProfileCommand(pi);
   pi.on("session_shutdown", (_event, ctx) => {
     const key = sessionKey(ctx);
     workflowInspections.get(pi)?.delete(key);

@@ -25,7 +25,7 @@ A **pi extension** with canonical entrypoint `.pi/extensions/pi-workflow-engine/
 - a `workflow` tool — lets the host agent run a saved workflow by `name` or a one-off inline workflow by `script` mid-conversation.
 
 A **workflow** (`.pi/extensions/pi-workflow-engine/workflows/*.ts`) exports `meta` + a default `async (api) => result`. The injected `api`:
-- `agent(prompt, { schema?, model?, thinkingLevel?, tools?, label?, phase? })` — runs one subagent; with a typebox `schema` it returns validated structured data, else final text.
+- `agent(prompt, { schema?, profile?, model?, thinkingLevel?, tools?, label?, phase? })` — runs one subagent; with a typebox `schema` it returns validated structured data, else final text.
 - `parallel(thunks)` — concurrent barrier; recoverable failures become `null` slots and survivors continue.
 - `pipeline(items, ...stages)` — each item through all stages independently; recoverable item failures become `null`, with no barrier between stages.
 - `phase(title)` / `log(msg)` — drive the live progress tree.
@@ -51,7 +51,7 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 - **`jiti` is NOT a virtual module.** A dynamically `import()`-ed drop-in workflow may resolve a *different* `typebox` than pi's bundled one, breaking schema validation. **Therefore guaranteed workflows must be statically imported and registered in `.pi/extensions/pi-workflow-engine/src/workflows.ts`** (they ride pi's jiti and share its typebox). Dynamic discovery is best-effort only.
 - **Inline workflow scripts must never use `import`/dynamic `import()`.** They compile in-process via `AsyncFunction` and receive the extension's injected Type value so `agent({ schema })` preserves pi's bundled TypeBox identity. The `export const meta` block must stay a pure literal so metadata can be validated before untrusted code runs.
 - **Inline workflow bodies must execute in the same VM as the extension.** `agent()` closes over live `RunContext` handles (`Semaphore`, `ProgressTracker`, model registry, abort signal); subprocess/stdin execution cannot access those handles without building a second orchestration system.
-- **Set `thinkingLevel` per `agent()` stage.** Otherwise sub-agents inherit the user's global level (often `xhigh`) and a fan-out becomes very slow and expensive.
+- **Set `profile` per `agent()` stage.** Use `small`, `medium`, or `big` so users can centrally configure exact model/effort routes; reserve `model` and `thinkingLevel` for intentional per-call overrides.
 - **`pi install` runs `npm install`** (not bun). `bun.lock` is for local dev only.
 - Never bundle the core packages. Never use `as any` — use typebox `Static<>` and structural narrowing.
 
