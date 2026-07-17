@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { CreateAgentSessionOptions, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { WorkflowBudget } from "./budget.ts";
 import type { Semaphore } from "./concurrency.ts";
+import type { WorkflowAgentLimiter } from "./agent-limits.ts";
 import type { WorkflowJournal } from "./journal.ts";
 import type { PerfSink } from "./perf.ts";
 import type { AgentOptions } from "./types.ts";
@@ -67,6 +68,8 @@ interface RunContextBase {
   cwd: string;
   hostModel: Model<Api> | undefined;
   semaphore: Semaphore;
+  agentLimiter: WorkflowAgentLimiter;
+  agentTimeoutMs: number;
   progress: AgentProgress;
   signal: AbortSignal | undefined;
   perf: PerfSink;

@@ -38,6 +38,10 @@ export interface WorkflowRunOptions {
   perf?: boolean;
   concurrency?: number;
   parallelSubmissionLimit?: number;
+  /** Maximum number of agent calls that may reach a live model session during this run. */
+  maxAgents?: number;
+  /** Maximum live duration of one agent call in milliseconds. */
+  agentTimeoutMs?: number;
   /** Output-token ceiling for the whole run. Omit for no limit (budget.total === null). */
   budget?: number;
   /** Internal/test override for the generated run id. Omit to generate a new id. */

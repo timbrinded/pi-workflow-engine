@@ -1,5 +1,6 @@
 import { assertWorkflowBudgetAvailable } from "./budget.ts";
-import { throwIfAborted } from "./cancellation.ts";
+import { WorkflowAgentTimeoutError } from "./agent-limits.ts";
+import { abortReason, linkAbortSignal, throwIfAborted } from "./cancellation.ts";
 import { executeAgentAttempt } from "./agent-attempt.ts";
 import {
   createAgentReplayPlan,
@@ -58,11 +59,13 @@ export async function runAgent(
     if (!isReplayEnabled(replay)) assertWorkflowBudgetAvailable(rc.budget);
 
     const rowId = rc.progress.agentQueued(opts.phase, label);
+    const liveScope = createAgentLiveScope(rc, label);
     try {
       return await rc.semaphore.run(
         async () => {
-          throwIfAborted(rc.signal);
-          if (!isReplayEnabled(replay)) assertWorkflowBudgetAvailable(rc.budget);
+          const agentRc: RunContext = { ...rc, signal: liveScope.signal };
+          throwIfAborted(agentRc.signal);
+          if (!isReplayEnabled(replay)) assertWorkflowBudgetAvailable(agentRc.budget);
           rc.progress.agentStart(opts.phase, label, rowId);
           if (replay.kind === "disabled") {
             rc.progress.log(`${label}: resume disabled for this call (${replay.reason})`);
@@ -71,7 +74,7 @@ export async function runAgent(
           let attemptPlan: AgentReplayPlan = replay;
           while (true) {
             const outcome = await executeAgentAttempt({
-              rc,
+              rc: agentRc,
               prompt,
               opts,
               resumeBaseContext,
@@ -80,8 +83,9 @@ export async function runAgent(
               label,
               rowId,
               tags,
+              admitLiveAgent: liveScope.admit,
             });
-            const settlement = await settleAgentAttempt({ rc, label, tags, replay: attemptPlan, outcome });
+            const settlement = await settleAgentAttempt({ rc: agentRc, label, tags, replay: attemptPlan, outcome });
             if (settlement.kind === "retry-live") {
               attemptPlan = { kind: "off" };
               continue;
@@ -96,11 +100,40 @@ export async function runAgent(
         },
       );
     } catch (error) {
-      rc.progress.agentFailed(label, error, rowId);
-      rc.progress.log(`${label} failed: ${unknownErrorMessage(error)}`);
-      throw error;
+      let failure = error;
+      if (liveScope.signal.aborted) failure = abortReason(liveScope.signal);
+      if (rc.signal?.aborted) failure = abortReason(rc.signal);
+      rc.progress.agentFailed(label, failure, rowId);
+      rc.progress.log(`${label} failed: ${unknownErrorMessage(failure)}`);
+      throw failure;
+    } finally {
+      liveScope.dispose();
     }
   }, tags);
+}
+
+function createAgentLiveScope(rc: RunContext, label: string) {
+  const controller = new AbortController();
+  const unlink = linkAbortSignal(rc.signal, controller);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let admitted = false;
+
+  return {
+    signal: controller.signal,
+    admit() {
+      if (admitted) return;
+      rc.agentLimiter.admit(rc.signal);
+      admitted = true;
+      timer = setTimeout(
+        () => controller.abort(new WorkflowAgentTimeoutError(label, rc.agentTimeoutMs)),
+        rc.agentTimeoutMs,
+      );
+    },
+    dispose() {
+      if (timer) clearTimeout(timer);
+      unlink();
+    },
+  };
 }
 
 function resolveModel(

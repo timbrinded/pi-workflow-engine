@@ -29,6 +29,8 @@ Useful flags:
 /workflow code-review --review-viewer    # alias for --result-viewer
 /workflow:results                        # reopen the latest code-review findings without rerunning
 /workflow code-review --concurrency=4    # cap concurrent subagents
+/workflow code-review --max-agents=20    # cap total live agent calls in the run
+/workflow code-review --agent-timeout-ms=600000 # abort one live agent after 10 minutes
 /workflow code-review --budget=50000     # output-token ceiling for subagents
 /workflow code-review --resume <run-id>  # replay matching completed agent calls
 /workflow code-review --refresh          # rediscover newly added workflow files
@@ -272,7 +274,7 @@ Cleanup is a required finalizer. The engine attempts every registered worktree r
 
 ### Compose workflows
 
-`workflow(ref, args?)` runs a registered workflow by name as a sub-step, returning its result. The child shares the parent run's concurrency cap, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
+`workflow(ref, args?)` runs a registered workflow by name as a sub-step, returning its result. The child shares the parent run's concurrency cap, total-agent limit, per-agent timeout, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
 
 ```ts
 export default async function run({ workflow }: WorkflowApi) {
@@ -338,9 +340,17 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 | --- | --- |
 | `--concurrency=N` / `PI_WORKFLOW_CONCURRENCY=N` | Cap concurrent subagents. Default is `min(8, max(2, CPU count))`. |
 | `--parallel-limit=N` / `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` | Limit eager `parallel()` submission. |
+| `--max-agents=N` / `PI_WORKFLOW_MAX_AGENTS=N` | Cap live model calls across the complete run, including sub-workflows. Default `64`; values are clamped to `1`–`10000`. Replay hits do not consume the cap. The `workflow` tool field is `maxAgents`. |
+| `--agent-timeout-ms=N` / `PI_WORKFLOW_AGENT_TIMEOUT_MS=N` | Abort one live agent after this duration. Default `1800000` (30 minutes); values are clamped to `1000`–`86400000`. The session is aborted and its isolated worktree is cleaned up. The `workflow` tool field is `agentTimeoutMs`. |
 | `--budget=N` / `PI_WORKFLOW_BUDGET=N` | Set an output-token ceiling for completed subagents. `agent()` throws `WorkflowBudgetExceededError` before starting another agent once the ceiling is reached; agents already running may overshoot because the engine does not reserve per-agent estimates. |
 | `--perf` / `PI_WORKFLOW_PERF=1` | Include internal timing aggregates. Usage/cost totals are reported separately from perf. |
 | `PI_WORKFLOW_LANE_ITEM_LIMIT=N` | Cap retained progress lane items. |
+
+These controls bound different dimensions: concurrency limits how many agents
+are active together, `max-agents` limits how many live model calls the run may
+start in total, `agent-timeout-ms` bounds one active call, and `budget` limits
+recorded output tokens. Host cancellation takes precedence over limit and
+timeout failures.
 
 ## Common fixes
 

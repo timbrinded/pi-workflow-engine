@@ -54,7 +54,7 @@ bundle a second agent runtime.
 - **Live progress.** Phases, agents, findings, and logs are visible in the TUI,
   alongside usage and estimated cost when provider data is available.
 - **Bounded execution.** One semaphore covers nested fan-out, pipelines, and
-  sub-workflows.
+  sub-workflows; every run also caps live model-call starts and each call's duration.
 - **Evidence before action.** Built-in workflows inspect and report by default;
   they do not edit your working tree.
 - **Reviewable mutation.** An author can opt a mutating agent into a disposable
@@ -166,6 +166,9 @@ workflows, and registration.
   work continues.
 - **Fatal failures:** cancellation aborts siblings and drains submitted work
   before rejection.
+- **Run limits:** concurrency bounds simultaneous live agents; the total-agent
+  limit bounds live model-call starts across parent and child workflows and
+  excludes replay hits; the per-agent timeout aborts stalled live sessions.
 - **Mutating agents:** disposable worktrees isolate edits and return
   baseline-relative patches.
 - **Resume:** journals bind workspace-aware calls to repository state and all
