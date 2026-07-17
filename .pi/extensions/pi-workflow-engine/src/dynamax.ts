@@ -148,6 +148,8 @@ export function registerDynamax(
     }
   };
 
+  // The current official pi API exposes whole-editor replacement but no decoration hook.
+  // Keep the stock editor until a visual-only API can preserve its input semantics.
   pi.on("session_start", (_event, ctx) => {
     updateDynamaxSurfaces(ctx, getDynamaxRuntime(runtimes, ctx), shortcuts);
   });

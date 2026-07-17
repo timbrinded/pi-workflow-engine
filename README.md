@@ -33,6 +33,11 @@ dynamax investigate why typecheck started failing on this branch
 or author a temporary one for this task. Use `/workflow:dynamax on` when you
 want that permission to remain active for the session.
 
+The stock pi editor currently renders `dynamax` as ordinary text. Pi 0.80.7 has
+no visual-only token-decoration hook, so this package deliberately avoids a
+custom editor replacement; submission and the Dynamax status line still
+confirm the one-shot trigger. See [the editor API note](USAGE.md#prompt-editor-cue).
+
 Saved workflows are available directly:
 
 ```text
