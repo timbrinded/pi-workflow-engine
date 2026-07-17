@@ -37,8 +37,9 @@ export async function executeAgentAttempt(input: {
   readonly label: string;
   readonly rowId: number;
   readonly tags: AgentRunTags;
+  readonly admitLiveAgent: () => void;
 }): Promise<AgentAttemptResult> {
-  const { rc, prompt, opts, resumeBaseContext, model, replay, label, rowId, tags } = input;
+  const { rc, prompt, opts, resumeBaseContext, model, replay, label, rowId, tags, admitLiveAgent } = input;
   let repositoryBefore: RepositoryResumeContext | undefined;
   let evidence: AgentReplayEvidence | undefined;
   if (isReplayEnabled(replay)) {
@@ -104,6 +105,7 @@ export async function executeAgentAttempt(input: {
     }
 
     assertWorkflowBudgetAvailable(rc.budget);
+    admitLiveAgent();
     const rawResult = await promptAgentSession({
       rc,
       handle,

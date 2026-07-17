@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { bindParallel, bindPipeline, Semaphore } from "./concurrency.ts";
+import { WorkflowAgentLimiter } from "./agent-limits.ts";
 import { linkAbortSignal, throwIfAborted } from "./cancellation.ts";
 import { createBudget } from "./budget.ts";
 import { runAgent, type AgentExecutionOptions, type RunContext } from "./agent-runner.ts";
@@ -114,6 +115,8 @@ export async function runResolvedWorkflow(
       hostModel: ctx.model,
       modelRegistry: ctx.modelRegistry,
       semaphore: new Semaphore(resolvedOptions.concurrency),
+      agentLimiter: new WorkflowAgentLimiter(resolvedOptions.maxAgents),
+      agentTimeoutMs: resolvedOptions.agentTimeoutMs,
       progress,
       signal: runAbortController.signal,
       perf,

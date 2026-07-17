@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { defaultConcurrency, resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
+import {
+  DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
+  DEFAULT_WORKFLOW_MAX_AGENTS,
+  defaultConcurrency,
+  resolveWorkflowRunOptions,
+} from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import type { WorkflowModule } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { buildTemporaryWorkflowAuthorPrompt, parseWorkflowInvocation, pickWorkflow } from "../.pi/extensions/pi-workflow-engine";
 
@@ -21,15 +26,26 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
     perf: true,
     concurrency: 64,
     parallelSubmissionLimit: 1,
+    maxAgents: DEFAULT_WORKFLOW_MAX_AGENTS,
+    agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     budget: null,
   });
 
   assert.equal(resolveWorkflowRunOptions({ concurrency: -5 }, {}).concurrency, 1);
   assert.equal(resolveWorkflowRunOptions({ parallelSubmissionLimit: 20_000 }, {}).parallelSubmissionLimit, 10_000);
+  assert.equal(resolveWorkflowRunOptions({ maxAgents: 20_000 }, {}).maxAgents, 10_000);
+  assert.equal(resolveWorkflowRunOptions({ agentTimeoutMs: 100 }, {}).agentTimeoutMs, 1_000);
+  assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_MAX_AGENTS: "12" }).maxAgents, 12);
+  assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_AGENT_TIMEOUT_MS: "45000" }).agentTimeoutMs, 45_000);
+  assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_MAX_AGENTS: "1.5" }).maxAgents, DEFAULT_WORKFLOW_MAX_AGENTS);
+  assert.equal(
+    resolveWorkflowRunOptions({}, { PI_WORKFLOW_AGENT_TIMEOUT_MS: "1500.75" }).agentTimeoutMs,
+    DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
+  );
 });
 
 test("parseWorkflowInvocation extracts tuning flags from slash command args", () => {
-  const invocation = parseWorkflowInvocation("code-review --inspect --perf --concurrency=4 --parallel-limit 9 --budget 50000 --resume old-run review src only");
+  const invocation = parseWorkflowInvocation("code-review --inspect --perf --concurrency=4 --parallel-limit 9 --max-agents 20 --agent-timeout-ms=45000 --budget 50000 --resume old-run review src only");
 
   assert.equal(invocation.name, "code-review");
   assert.equal(invocation.args, "review src only");
@@ -38,6 +54,8 @@ test("parseWorkflowInvocation extracts tuning flags from slash command args", ()
     perf: true,
     concurrency: 4,
     parallelSubmissionLimit: 9,
+    maxAgents: 20,
+    agentTimeoutMs: 45_000,
     budget: 50000,
     resumeFromRunId: "old-run",
   });
@@ -45,6 +63,25 @@ test("parseWorkflowInvocation extracts tuning flags from slash command args", ()
   const equalsForm = parseWorkflowInvocation("code-review --budget=50000 --resume=old-run review src only");
   assert.equal(equalsForm.args, "review src only");
   assert.deepEqual(equalsForm.options, { budget: 50000, resumeFromRunId: "old-run" });
+});
+
+test("parseWorkflowInvocation rejects non-integer agent limit options", () => {
+  const invocation = parseWorkflowInvocation(
+    "code-review --max-agents=1.5 --agent-timeout-ms nope review src",
+  );
+
+  assert.equal(invocation.args, "nope review src");
+  assert.deepEqual(invocation.options, {});
+  assert.deepEqual(invocation.optionErrors, [
+    "--max-agents requires an integer",
+    "--agent-timeout-ms requires an integer",
+  ]);
+
+  const emptyEquals = parseWorkflowInvocation("code-review --max-agents= --agent-timeout-ms=");
+  assert.deepEqual(emptyEquals.optionErrors, [
+    "--max-agents requires an integer",
+    "--agent-timeout-ms requires an integer",
+  ]);
 });
 
 test("parseWorkflowInvocation preserves concurrency value consumption semantics", () => {

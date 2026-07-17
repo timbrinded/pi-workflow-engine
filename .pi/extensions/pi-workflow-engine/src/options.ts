@@ -3,14 +3,22 @@ import type { WorkflowRunOptions } from "./types.ts";
 
 export const WORKFLOW_BUDGET_MIN = 1;
 export const WORKFLOW_BUDGET_MAX = 1_000_000_000;
+export const WORKFLOW_MAX_AGENTS_MIN = 1;
+export const WORKFLOW_MAX_AGENTS_MAX = 10_000;
+export const DEFAULT_WORKFLOW_MAX_AGENTS = 64;
+export const WORKFLOW_AGENT_TIMEOUT_MIN_MS = 1_000;
+export const WORKFLOW_AGENT_TIMEOUT_MAX_MS = 86_400_000;
+export const DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS = 1_800_000;
 
 export type ResolvedWorkflowRunOptions = Omit<
   WorkflowRunOptions,
-  "perf" | "concurrency" | "parallelSubmissionLimit" | "budget"
+  "perf" | "concurrency" | "parallelSubmissionLimit" | "maxAgents" | "agentTimeoutMs" | "budget"
 > & {
   readonly perf: boolean;
   readonly concurrency: number;
   readonly parallelSubmissionLimit: number | null;
+  readonly maxAgents: number;
+  readonly agentTimeoutMs: number;
   readonly budget: number | null;
 };
 
@@ -28,12 +36,26 @@ export function resolveWorkflowRunOptions(
     1,
     10_000,
   );
+  const maxAgents = clampInteger(
+    input.maxAgents ?? parseWorkflowIntegerString(env.PI_WORKFLOW_MAX_AGENTS),
+    WORKFLOW_MAX_AGENTS_MIN,
+    WORKFLOW_MAX_AGENTS_MAX,
+    DEFAULT_WORKFLOW_MAX_AGENTS,
+  );
+  const agentTimeoutMs = clampInteger(
+    input.agentTimeoutMs ?? parseWorkflowIntegerString(env.PI_WORKFLOW_AGENT_TIMEOUT_MS),
+    WORKFLOW_AGENT_TIMEOUT_MIN_MS,
+    WORKFLOW_AGENT_TIMEOUT_MAX_MS,
+    DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
+  );
   const budget = resolveBudget(input.budget, env.PI_WORKFLOW_BUDGET);
   return {
     ...input,
     perf: input.perf ?? env.PI_WORKFLOW_PERF === "1",
     concurrency,
     parallelSubmissionLimit: parallelSubmissionLimit ?? null,
+    maxAgents,
+    agentTimeoutMs,
     budget: budget ?? null,
   };
 }
@@ -52,6 +74,12 @@ function parseInteger(value: string | undefined): number | undefined {
   if (value === undefined || value.trim() === "") return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
+}
+
+export function parseWorkflowIntegerString(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function resolveBudget(inputBudget: number | undefined, envBudget: string | undefined): number | undefined {

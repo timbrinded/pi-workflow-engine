@@ -9,6 +9,8 @@ import {
 import { WorkflowBudgetExceededError } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { isFatalWorkflowError, WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
+import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
@@ -59,6 +61,8 @@ function createRunContext(createSession: CreateAgentSession, signal: AbortSignal
     hostModel: undefined,
     modelRegistry: { find: () => undefined },
     semaphore,
+    agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
+    agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     progress,
     signal,
     perf: new NoopPerfRecorder(),

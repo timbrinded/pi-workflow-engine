@@ -19,10 +19,15 @@ import {
 } from "./src/ui/workflow-result-renderer.ts";
 import {
   parseWorkflowBudgetString,
+  parseWorkflowIntegerString,
   resolveWorkflowRunOptions,
   type ResolvedWorkflowRunOptions,
+  WORKFLOW_AGENT_TIMEOUT_MAX_MS,
+  WORKFLOW_AGENT_TIMEOUT_MIN_MS,
   WORKFLOW_BUDGET_MAX,
   WORKFLOW_BUDGET_MIN,
+  WORKFLOW_MAX_AGENTS_MAX,
+  WORKFLOW_MAX_AGENTS_MIN,
 } from "./src/options.ts";
 import { executeWorkflowInvocation, type WorkflowExecution, type WorkflowPerfDetails } from "./src/workflow-execution.ts";
 
@@ -278,6 +283,8 @@ export function parseWorkflowInvocation(input: string): WorkflowInvocation {
 
 const INVALID_BUDGET_OPTION = "--budget requires a positive integer output-token count";
 const INVALID_RESUME_OPTION = "--resume requires a workflow run id";
+const INVALID_MAX_AGENTS_OPTION = "--max-agents requires an integer";
+const INVALID_AGENT_TIMEOUT_OPTION = "--agent-timeout-ms requires an integer";
 
 function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean; optionErrors?: string[] } {
   const tokens = input.split(/\s+/).filter(Boolean);
@@ -325,6 +332,38 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
       const next = tokens[i + 1];
       options.parallelSubmissionLimit = parseNumericOption(next);
       if (next !== undefined) i++;
+      continue;
+    }
+    if (token.startsWith("--max-agents=")) {
+      const parsed = parseWorkflowIntegerString(token.slice("--max-agents=".length));
+      if (parsed === undefined) optionErrors.push(INVALID_MAX_AGENTS_OPTION);
+      else options.maxAgents = parsed;
+      continue;
+    }
+    if (token === "--max-agents") {
+      const next = tokens[i + 1];
+      const parsed = parseWorkflowIntegerString(next);
+      if (parsed === undefined) optionErrors.push(INVALID_MAX_AGENTS_OPTION);
+      else {
+        options.maxAgents = parsed;
+        i++;
+      }
+      continue;
+    }
+    if (token.startsWith("--agent-timeout-ms=")) {
+      const parsed = parseWorkflowIntegerString(token.slice("--agent-timeout-ms=".length));
+      if (parsed === undefined) optionErrors.push(INVALID_AGENT_TIMEOUT_OPTION);
+      else options.agentTimeoutMs = parsed;
+      continue;
+    }
+    if (token === "--agent-timeout-ms") {
+      const next = tokens[i + 1];
+      const parsed = parseWorkflowIntegerString(next);
+      if (parsed === undefined) optionErrors.push(INVALID_AGENT_TIMEOUT_OPTION);
+      else {
+        options.agentTimeoutMs = parsed;
+        i++;
+      }
       continue;
     }
     if (token.startsWith("--budget=")) {
@@ -683,6 +722,16 @@ function registerWorkflowTool(pi: ExtensionAPI, reviewSessions: ReviewSessionCoo
       args: Type.Optional(Type.String({ description: "Arguments for the workflow (e.g. target or focus)" })),
       concurrency: Type.Optional(Type.Number({ description: "Optional per-run agent concurrency cap" })),
       parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
+      maxAgents: Type.Optional(
+        Type.Integer({
+          description: `Maximum live model calls started across this run; replay hits are excluded; clamped to ${WORKFLOW_MAX_AGENTS_MIN}-${WORKFLOW_MAX_AGENTS_MAX}`,
+        }),
+      ),
+      agentTimeoutMs: Type.Optional(
+        Type.Integer({
+          description: `Maximum live duration per agent in milliseconds; clamped to ${WORKFLOW_AGENT_TIMEOUT_MIN_MS}-${WORKFLOW_AGENT_TIMEOUT_MAX_MS}`,
+        }),
+      ),
       budget: Type.Optional(
         Type.Integer({
           minimum: WORKFLOW_BUDGET_MIN,
@@ -730,6 +779,8 @@ function registerWorkflowTool(pi: ExtensionAPI, reviewSessions: ReviewSessionCoo
         inspect: ctx.hasUI,
         concurrency: params.concurrency,
         parallelSubmissionLimit: params.parallelSubmissionLimit,
+        maxAgents: params.maxAgents,
+        agentTimeoutMs: params.agentTimeoutMs,
         budget: params.budget,
         perf: params.perf,
         resumeFromRunId,

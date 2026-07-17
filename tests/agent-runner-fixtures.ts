@@ -11,6 +11,8 @@ import {
   type RunContext,
 } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
+import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createBudget, type WorkflowBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
@@ -105,6 +107,9 @@ export function createRunContext(input: {
   readonly usage?: ReturnType<typeof createWorkflowUsageRecorder>;
   readonly journal?: WorkflowJournal;
   readonly worktrees?: WorktreeRegistry;
+  readonly agentLimiter?: WorkflowAgentLimiter;
+  readonly agentTimeoutMs?: number;
+  readonly signal?: AbortSignal;
 }): RunContext {
   const usage = input.usage ?? createWorkflowUsageRecorder();
   const cwd = input.cwd ?? TEST_CWD;
@@ -113,8 +118,10 @@ export function createRunContext(input: {
     hostModel: input.hostModel,
     modelRegistry: input.modelRegistry ?? createRegistry([]),
     semaphore: new Semaphore(1),
+    agentLimiter: input.agentLimiter ?? new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
+    agentTimeoutMs: input.agentTimeoutMs ?? DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     progress: input.progress ?? createProgress(),
-    signal: undefined,
+    signal: input.signal,
     perf: new PerfRecorder(),
     usage,
     budget: input.budget ?? createBudget(null, usage),
