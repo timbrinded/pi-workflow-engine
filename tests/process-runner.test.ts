@@ -94,6 +94,8 @@ test("runBoundedProcess waits for a force-killed child to close", async () => {
   });
 
   assert.equal(result.ok, false);
+  assert.equal(result.termination, undefined);
+  if (process.platform === "win32") return;
   const pid = Number(result.stdout);
   assert.ok(Number.isInteger(pid) && pid > 0);
   assert.throws(
