@@ -1,7 +1,7 @@
-import type {Theme} from "@earendil-works/pi-coding-agent";
-import {matchesKey, type TUI, visibleWidth, wrapTextWithAnsi} from "@earendil-works/pi-tui";
-import type {AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot} from "../progress-types.ts";
-import {agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay} from "./workflow-format.ts";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { matchesKey, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
+import { agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
 
 type Section = "Overview" | "Agents" | "Findings" | "Logs";
 

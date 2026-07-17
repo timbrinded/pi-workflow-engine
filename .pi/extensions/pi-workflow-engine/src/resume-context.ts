@@ -359,38 +359,34 @@ function validateGitVisibleOutputs(outputs: GitVisibleProcessOutputs): Validated
   if (!indexEntries.ok) return { ok: false, reason: processFailureReason("git index entry capture", indexEntries) };
   if (!trackedFlags.ok) return { ok: false, reason: processFailureReason("git tracked flag capture", trackedFlags) };
 
-  try {
-    const unsafeWorktreeMode = rawWorktreeModeFailure(unstagedRaw.stdout);
-    if (unsafeWorktreeMode) return { ok: false, reason: unsafeWorktreeMode };
+  const unsafeWorktreeMode = rawWorktreeModeFailure(unstagedRaw.stdout);
+  if (unsafeWorktreeMode) return { ok: false, reason: unsafeWorktreeMode };
 
-    for (const record of parseNullTerminatedRecords(indexEntries.stdout, "git index entry capture")) {
-      const entry = parseIndexEntry(record);
-      if (entry.stage !== 0) {
-        return { ok: false, reason: "git-visible repository state contains unmerged paths" };
-      }
-      const unsafe = unsafeTrackedModeReason(entry.mode, entry.path);
-      if (unsafe) return { ok: false, reason: unsafe };
+  for (const record of parseNullTerminatedRecords(indexEntries.stdout, "git index entry capture")) {
+    const entry = parseIndexEntry(record);
+    if (entry.stage !== 0) {
+      return { ok: false, reason: "git-visible repository state contains unmerged paths" };
     }
-
-    const unsafeFlag = parseNullTerminatedRecords(trackedFlags.stdout, "git tracked flag capture")
-      .find((record) => record[0] !== "H");
-    if (unsafeFlag) {
-      return {
-        ok: false,
-        reason: `git-visible repository state contains an unsupported tracked-file flag: ${unsafeFlag[0] ?? "unknown"}`,
-      };
-    }
-
-    return {
-      ok: true,
-      unstaged: unstaged.stdout,
-      staged: staged.stdout,
-      indexEntries: indexEntries.stdout,
-      untrackedPaths: parseNullTerminatedRecords(untrackedPaths.stdout, "git untracked path capture"),
-    };
-  } catch (error) {
-    return { ok: false, reason: unknownErrorMessage(error) };
+    const unsafe = unsafeTrackedModeReason(entry.mode, entry.path);
+    if (unsafe) return { ok: false, reason: unsafe };
   }
+
+  const unsafeFlag = parseNullTerminatedRecords(trackedFlags.stdout, "git tracked flag capture")
+    .find((record) => record[0] !== "H");
+  if (unsafeFlag) {
+    return {
+      ok: false,
+      reason: `git-visible repository state contains an unsupported tracked-file flag: ${unsafeFlag[0] ?? "unknown"}`,
+    };
+  }
+
+  return {
+    ok: true,
+    unstaged: unstaged.stdout,
+    staged: staged.stdout,
+    indexEntries: indexEntries.stdout,
+    untrackedPaths: parseNullTerminatedRecords(untrackedPaths.stdout, "git untracked path capture"),
+  };
 }
 
 function combineFingerprints(parts: readonly (readonly [label: string, value: string])[]): string {

@@ -47,7 +47,7 @@ test("parseWorkflowInvocation extracts tuning flags from slash command args", ()
   assert.deepEqual(equalsForm.options, { budget: 50000, resumeFromRunId: "old-run" });
 });
 
-test("parseWorkflowInvocation preserves concurrency value-source consumption semantics", () => {
+test("parseWorkflowInvocation preserves concurrency value consumption semantics", () => {
   const equalsForm = parseWorkflowInvocation("code-review --concurrency=4 review src");
   assert.equal(equalsForm.options.concurrency, 4);
   assert.equal(equalsForm.args, "review src");

@@ -279,14 +279,6 @@ export function parseWorkflowInvocation(input: string): WorkflowInvocation {
 const INVALID_BUDGET_OPTION = "--budget requires a positive integer output-token count";
 const INVALID_RESUME_OPTION = "--resume requires a workflow run id";
 
-type WorkflowOptionValueSource = "equals" | "next-token";
-
-interface WorkflowOptionValue {
-  readonly candidate: string | undefined;
-  readonly source: WorkflowOptionValueSource;
-  readonly consumedTokenCount: 0 | 1;
-}
-
 function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean; optionErrors?: string[] } {
   const tokens = input.split(/\s+/).filter(Boolean);
   const kept: string[] = [];
@@ -315,10 +307,14 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
       options.resultViewer = "skip";
       continue;
     }
-    const concurrencyValue = readWorkflowOptionValue(tokens, i, "--concurrency");
-    if (concurrencyValue) {
-      options.concurrency = parseNumericOption(concurrencyValue.candidate);
-      i += concurrencyValue.consumedTokenCount;
+    if (token.startsWith("--concurrency=")) {
+      options.concurrency = parseNumericOption(token.slice("--concurrency=".length));
+      continue;
+    }
+    if (token === "--concurrency") {
+      const next = tokens[i + 1];
+      options.concurrency = parseNumericOption(next);
+      if (next !== undefined) i++;
       continue;
     }
     if (token.startsWith("--parallel-limit=")) {
@@ -367,17 +363,6 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
     kept.push(token);
   }
   return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined, optionErrors: optionErrors.length > 0 ? optionErrors : undefined };
-}
-
-function readWorkflowOptionValue(tokens: readonly string[], index: number, option: string): WorkflowOptionValue | undefined {
-  const token = tokens[index];
-  const equalsPrefix = `${option}=`;
-  if (token.startsWith(equalsPrefix)) {
-    return { candidate: token.slice(equalsPrefix.length), source: "equals", consumedTokenCount: 0 };
-  }
-  if (token !== option) return undefined;
-  const candidate = tokens[index + 1];
-  return { candidate, source: "next-token", consumedTokenCount: candidate === undefined ? 0 : 1 };
 }
 
 function parseBudgetOption(value: string): number | undefined {
