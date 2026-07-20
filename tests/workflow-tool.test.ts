@@ -18,6 +18,7 @@ import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extens
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
 import {
   captureWorkflowExtension,
   captureWorkflowTool,
@@ -38,10 +39,12 @@ const HEADLESS_CTX = {
 function createTuiContext(customResult?: unknown, sessionId = "test-session"): {
   ctx: ExtensionContext;
   customCalls: () => number;
+  customOptions: () => readonly unknown[];
   customRenders: () => readonly string[][];
   notifications: () => readonly string[];
 } {
   let customCallCount = 0;
+  const customOptionValues: unknown[] = [];
   const customRenderLines: string[][] = [];
   const notificationMessages: string[] = [];
   const theme = {
@@ -70,8 +73,10 @@ function createTuiContext(customResult?: unknown, sessionId = "test-session"): {
           keybindings: never,
           done: (result: T) => void,
         ) => Component | Promise<Component>,
+        options?: unknown,
       ): Promise<T> => {
         customCallCount++;
+        customOptionValues.push(options);
         let completed: T | undefined;
         const component = await factory(tui as TUI, theme, undefined as never, (result) => {
           completed = result;
@@ -89,6 +94,7 @@ function createTuiContext(customResult?: unknown, sessionId = "test-session"): {
   return {
     ctx,
     customCalls: () => customCallCount,
+    customOptions: () => customOptionValues,
     customRenders: () => customRenderLines,
     notifications: () => notificationMessages,
   };
@@ -466,7 +472,7 @@ export default async function run({ phase }) {
 
 test("a TUI tool-invoked workflow opens the live inspector", async () => {
   const tool = captureWorkflowTool();
-  const { ctx, customCalls } = createTuiContext();
+  const { ctx, customCalls, customOptions } = createTuiContext();
   const script = `
 export const meta = { name: "inspect-live-probe", description: "Live inspector probe" };
 export default async function run({ phase }) {
@@ -478,6 +484,7 @@ export default async function run({ phase }) {
   await tool.execute("call-2", { script }, undefined, () => {}, ctx);
 
   assert.equal(customCalls(), 1);
+  assert.deepEqual(customOptions()[0], WORKFLOW_VIEWER_OVERLAY_OPTIONS);
   const inspection = getLastWorkflowInspection();
   assert.equal(inspection?.name, "inspect-live-probe");
 });
@@ -626,12 +633,13 @@ export default async function run({ phase }) {
   const reopenedA = createTuiContext(undefined, "inspector-session-a");
   await command.handler("", reopenedA.ctx as ExtensionCommandContext);
   assert.equal(reopenedA.customCalls(), 1);
+  assert.deepEqual(reopenedA.customOptions()[0], WORKFLOW_VIEWER_OVERLAY_OPTIONS);
   assert.match(reopenedA.customRenders().at(-1)?.join("\n") ?? "", /inspector-session-probe/);
 });
 
 test("the inspector shortcut opens the active workflow inspector while the workflow tool is running", async () => {
   const { tool, shortcuts } = captureWorkflowExtension();
-  const { ctx, customCalls, customRenders } = createTuiContext();
+  const { ctx, customCalls, customOptions, customRenders } = createTuiContext();
   const shortcut = shortcuts.find((candidate) => candidate.description === "Open workflow inspector");
   if (!shortcut) throw new Error("expected Dynamax inspector shortcut");
   const script = `
@@ -649,6 +657,7 @@ export default async function run({ phase }) {
   await shortcut.handler(ctx);
 
   assert.equal(customCalls(), 2);
+  assert.deepEqual(customOptions().at(-1), WORKFLOW_VIEWER_OVERLAY_OPTIONS);
   assert.match(customRenders().at(-1)?.join("\n") ?? "", /inspect-live-shortcut-probe/);
   await running;
 });

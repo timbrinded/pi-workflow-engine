@@ -3,9 +3,8 @@ import { matchesKey, visibleWidth, type Component, type TUI } from "@earendil-wo
 import { renderIssueDetailLines } from "./review-format.ts";
 import { formatIssueLocation, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
 import { truncateDisplay } from "../ui/workflow-format.ts";
+import { workflowViewerHeight } from "../ui/workflow-viewer-layout.ts";
 
-const VIEWPORT_HEIGHT_RATIO = 0.8;
-const VIEWPORT_MARGIN_ROWS = 2;
 const SPLIT_WIDTH = 96;
 const LIST_MIN_WIDTH = 34;
 const LIST_MAX_WIDTH = 48;
@@ -34,7 +33,7 @@ export class ReviewResultsViewer implements Component {
   render(width: number): string[] {
     const outerWidth = Math.max(4, width);
     const contentWidth = Math.max(1, outerWidth - 4);
-    const innerHeight = Math.max(1, this.modalHeight() - 2);
+    const innerHeight = Math.max(1, workflowViewerHeight(this.tui.terminal.rows) - 2);
     const body = fitRows(this.renderBody(contentWidth, innerHeight), innerHeight);
     return [
       this.theme.fg("borderAccent", `╭${"─".repeat(Math.max(0, outerWidth - 2))}╮`),
@@ -92,13 +91,6 @@ export class ReviewResultsViewer implements Component {
     if (data === "q" || matchesKey(data, "escape") || matchesKey(data, "esc")) {
       this.done({ action: "close", issueIds: this.selectedIssueIds() });
     }
-  }
-
-  private modalHeight(): number {
-    const terminalRows = Math.max(1, this.tui.terminal.rows);
-    const availableRows = Math.max(1, terminalRows - VIEWPORT_MARGIN_ROWS);
-    const proportionalRows = Math.floor(terminalRows * VIEWPORT_HEIGHT_RATIO);
-    return Math.min(availableRows, Math.max(3, proportionalRows));
   }
 
   private renderBody(width: number, height: number): string[] {

@@ -6,6 +6,7 @@ import { isAdvisoryReport } from "./src/advisory-schema.ts";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
+import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./src/ui/workflow-viewer-layout.ts";
 import type { PerfSink } from "./src/perf.ts";
 import type { WorkflowUsageSnapshot } from "./src/usage.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
@@ -219,7 +220,7 @@ export async function openWorkflowInspector(ctx: ExtensionContext, inspection: L
   }
   await ctx.ui.custom<void>(
     (tui, theme, _keybindings, done) => new WorkflowInspector(() => workflowInspectionSnapshot(inspection), tui, theme, () => done(undefined)),
-    { overlay: true, overlayOptions: { anchor: "right-center", width: "60%", maxHeight: "80%", margin: 1 } },
+    WORKFLOW_VIEWER_OVERLAY_OPTIONS,
   );
 }
 

@@ -3,6 +3,7 @@ import { matchesKey, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-
 import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
 import { agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
+import { workflowViewerHeight } from "./workflow-viewer-layout.ts";
 
 type Section = "Overview" | "Agents" | "Findings" | "Logs" | "Result";
 
@@ -24,6 +25,7 @@ export interface WorkflowInspectorOutcome {
 
 export class WorkflowInspector {
   private sectionIndex = 0;
+  private contentWidth = 80;
   private readonly selected: Record<Section, number> = { Overview: 0, Agents: 0, Findings: 0, Logs: 0, Result: 0 };
   private readonly expanded = new Set<string>();
 
@@ -70,41 +72,46 @@ export class WorkflowInspector {
   }
 
   render(width: number): string[] {
-    const w = Math.max(24, width);
+    const w = Math.max(4, width);
     const inner = Math.max(1, w - 4);
+    this.contentWidth = inner;
     const th = this.theme;
     const snapshot = this.snapshotProvider();
-    const body = this.sectionLines(this.currentSection(), snapshot, inner);
-    const maxBody = Math.max(6, Math.floor(this.tui.terminal.rows * 0.8) - 6);
+    const section = this.currentSection();
+    let body = this.sectionLines(section, snapshot, inner);
+    const selectableCount = body.filter((line) => line.selectable).length;
+    const clampedSelection = Math.min(Math.max(0, selectableCount - 1), this.selected[section]);
+    if (clampedSelection !== this.selected[section]) {
+      this.selected[section] = clampedSelection;
+      body = this.sectionLines(section, snapshot, inner);
+    }
+    const innerHeight = Math.max(1, workflowViewerHeight(this.tui.terminal.rows) - 2);
+    const maxBody = Math.max(1, innerHeight - 5);
     const selectedLine = this.selectedLineIndex(body);
     const maxStart = Math.max(0, body.length - maxBody);
     const start = Math.min(maxStart, Math.max(0, selectedLine - Math.floor(maxBody / 2)));
     const visible = body.slice(start, start + maxBody);
-    const lines: string[] = [];
-
-    lines.push(th.fg("border", `╭${"─".repeat(w - 2)}╮`));
-    lines.push(this.row(` ${th.fg("accent", th.bold("Workflow Inspector"))} ${th.fg("dim", snapshot.title)}`, inner));
-    lines.push(this.row(` ${this.tabs()}`, inner));
-    lines.push(this.row(th.fg("dim", "─".repeat(inner)), inner));
-
-    for (const line of visible) lines.push(this.row(line.text, inner));
-    while (visible.length < maxBody) {
-      visible.push({ text: "" });
-      lines.push(this.row("", inner));
-    }
-
-    lines.push(this.row(th.fg("dim", "─".repeat(inner)), inner));
-    const pct = body.length <= maxBody ? "100%" : `${Math.round(((start + visible.length) / body.length) * 100)}%`;
-    const selected = this.selected[this.currentSection()] + 1;
-    const count = Math.max(1, this.itemCount(this.currentSection()));
-    lines.push(
-      this.row(
+    const visibleEnd = Math.min(body.length, start + visible.length);
+    const pct = body.length <= maxBody ? "100%" : `${Math.round((visibleEnd / body.length) * 100)}%`;
+    const selected = this.selected[section] + 1;
+    const count = Math.max(1, selectableCount);
+    const content = fitRows(visible.map((line) => line.text), maxBody);
+    const interior = fitRows(
+      [
+        ` ${th.fg("accent", th.bold("Workflow Inspector"))} ${th.fg("dim", snapshot.title)}`,
+        ` ${this.tabs()}`,
+        th.fg("dim", "─".repeat(inner)),
+        ...content,
+        th.fg("dim", "─".repeat(inner)),
         `${th.fg("dim", `${body.length} lines · ${pct} · ${selected}/${count}`)} ${th.fg("dim", "· tab sections · ↑↓ select · enter expand/collapse · q/esc close")}`,
-        inner,
-      ),
+      ],
+      innerHeight,
     );
-    lines.push(th.fg("border", `╰${"─".repeat(w - 2)}╯`));
-    return lines.map((line) => truncateDisplay(line, w));
+    return [
+      th.fg("border", `╭${"─".repeat(Math.max(0, w - 2))}╮`),
+      ...interior.map((line) => this.row(line, inner)),
+      th.fg("border", `╰${"─".repeat(Math.max(0, w - 2))}╯`),
+    ].map((line) => truncateDisplay(line, w));
   }
 
   invalidate(): void {}
@@ -133,12 +140,12 @@ export class WorkflowInspector {
   }
 
   private itemCount(section: Section): number {
-    return this.sectionLines(section, this.snapshotProvider(), 80).filter((line) => line.selectable).length;
+    return this.sectionLines(section, this.snapshotProvider(), this.contentWidth).filter((line) => line.selectable).length;
   }
 
   private selectedKey(section: Section): string | undefined {
     let index = -1;
-    for (const line of this.sectionLines(section, this.snapshotProvider(), 80)) {
+    for (const line of this.sectionLines(section, this.snapshotProvider(), this.contentWidth)) {
       if (!line.selectable) continue;
       index++;
       if (index === this.selected[section]) return line.key;
@@ -304,4 +311,9 @@ export class WorkflowInspector {
 function padRight(text: string, width: number): string {
   const visible = visibleWidth(text);
   return text + " ".repeat(Math.max(0, width - visible));
+}
+
+function fitRows(lines: readonly string[], height: number): string[] {
+  const visible = lines.slice(0, Math.max(0, height));
+  return [...visible, ...Array.from({ length: Math.max(0, height - visible.length) }, () => "")];
 }

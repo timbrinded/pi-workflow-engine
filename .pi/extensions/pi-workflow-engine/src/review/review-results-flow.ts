@@ -3,6 +3,7 @@ import type { WorkflowRunOptions } from "../types.ts";
 import { toReviewIssues, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
 import { isReviewReport, type ReviewReport } from "./review-report.ts";
 import { ReviewResultsViewer } from "./review-results-viewer.ts";
+import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../ui/workflow-viewer-layout.ts";
 
 export type ReviewResultsPresentationDecision =
   | {
@@ -46,6 +47,6 @@ export async function showReviewResultsViewer(
 ): Promise<ReviewIssueSelection> {
   return await ctx.ui.custom<ReviewIssueSelection>(
     (tui, theme, _keybindings, done) => new ReviewResultsViewer(issues, "code-review", tui, theme, done),
-    { overlay: true, overlayOptions: { anchor: "center", width: "80%", minWidth: 40, maxHeight: "80%", margin: 1 } },
+    WORKFLOW_VIEWER_OVERLAY_OPTIONS,
   );
 }

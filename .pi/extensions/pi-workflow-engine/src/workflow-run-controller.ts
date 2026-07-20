@@ -29,6 +29,7 @@ import {
   type WorkflowUsageLimitSchedulerClock,
 } from "./workflow-usage-limit-scheduler.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
+import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./ui/workflow-viewer-layout.ts";
 import { completeCurrentArgument, splitArgumentPrefix } from "./command-completions.ts";
 
 interface WorkflowRunControllerDependencies {
@@ -162,7 +163,7 @@ export class WorkflowRunController {
         () => done(undefined),
         { label: `${record.state.toUpperCase()} outcome`, text: retainedWorkflowRunOutcome(record) },
       ),
-      { overlay: true, overlayOptions: { anchor: "right-center", width: "70%", maxHeight: "80%", margin: 1 } },
+      WORKFLOW_VIEWER_OVERLAY_OPTIONS,
     );
   }
 
