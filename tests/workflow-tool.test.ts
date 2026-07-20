@@ -120,9 +120,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+async function waitUntil(predicate: () => boolean | Promise<boolean>, label: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`Timed out waiting for ${label}`);
@@ -442,8 +442,12 @@ export default async function run() {
   assert.equal(typeof runId, "string");
   if (typeof runId !== "string") throw new Error("expected background run id");
 
-  await waitUntil(() => extension.sentMessages.length === 1, "background delivery");
-  const record = await new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD).load(runId);
+  const store = new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD);
+  await waitUntil(
+    async () => (await store.load(runId))?.background?.delivery.state === "delivered",
+    "durable background delivery",
+  );
+  const record = await store.load(runId);
   assert.equal(record?.state, "completed");
   assert.equal(record?.background?.delivery.state, "delivered");
   assert.match(JSON.stringify(extension.sentMessages[0]), /Detached background completed/);
