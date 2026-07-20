@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
   ModelRegistry,
   ModelRuntime,
@@ -65,9 +66,14 @@ test("production session services load skills, tools, and host runtime providers
     api: "anthropic-messages",
     models: [{ ...modelDefinition, id: "removed-model", name: "Removed model" }],
   };
+  const storedProvider: ProviderConfig = {
+    baseUrl: "https://stored-only.invalid",
+    api: "anthropic-messages",
+    models: [{ ...modelDefinition, id: "stored-only-model", name: "Stored-only model" }],
+  };
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const previousOffline = process.env.PI_OFFLINE;
-  let session: Awaited<ReturnType<typeof openAgentSession>>["session"] | undefined;
+  const sessions: Array<Awaited<ReturnType<typeof openAgentSession>>["session"]> = [];
 
   try {
     await mkdir(skillDir, { recursive: true });
@@ -90,8 +96,16 @@ test("production session services load skills, tools, and host runtime providers
     process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.PI_OFFLINE = "1";
 
+    const credentials = new InMemoryCredentialStore();
+    await credentials.modify("stored-only", async () => ({ type: "api_key", key: "stored-only-key" }));
+    await credentials.modify("openai-codex", async () => ({
+      type: "oauth",
+      refresh: "oauth-refresh",
+      access: "oauth-access",
+      expires: Date.now() + 60 * 60 * 1000,
+    }));
     const hostRuntime = await ModelRuntime.create({
-      authPath: join(agentDir, "missing-auth.json"),
+      credentials,
       modelsPath: null,
       allowModelNetwork: false,
     });
@@ -101,10 +115,17 @@ test("production session services load skills, tools, and host runtime providers
     await hostRuntime.setRuntimeApiKey("runtime-only", "runtime-only-key");
     hostRuntime.registerProvider("removed-provider", removedProvider);
     hostRuntime.unregisterProvider("removed-provider");
+    hostRuntime.registerProvider("stored-only", storedProvider);
     const hostRegistry = new ModelRegistry(hostRuntime);
     assert.equal(hostRegistry.getProviderAuthStatus("runtime-only").source, "runtime");
+    assert.equal(hostRegistry.getProviderAuthStatus("stored-only").source, "stored");
     const model = hostRegistry.find("runtime-only", "runtime-only-model");
+    const storedModel = hostRegistry.find("stored-only", "stored-only-model");
+    const oauthModel = hostRegistry.find("openai-codex", "gpt-5.4");
     assert.ok(model);
+    assert.ok(storedModel);
+    assert.ok(oauthModel);
+    assert.equal(hostRegistry.isUsingOAuth(oauthModel), true);
     const usage = createWorkflowUsageRecorder();
     const rc: RunContext = {
       cwd,
@@ -125,21 +146,24 @@ test("production session services load skills, tools, and host runtime providers
       worktrees: new WorktreeRegistry(cwd),
     };
 
-    const handle = await openAgentSession({
-      rc,
-      prompt: "Use the runtime-fixture skill.",
-      opts: {
-        label: "session-services",
-        skills: ["runtime-fixture"],
-        tools: ["read"],
-        schema: Type.Object({ ok: Type.Boolean() }),
-      },
-      cwd,
-      model,
-      label: "session-services",
-      tags: { label: "session-services", phase: "Test" },
-    });
-    session = handle.session;
+    const openSession = (selectedModel: typeof model, label: string) =>
+      openAgentSession({
+        rc,
+        prompt: "Use the runtime-fixture skill.",
+        opts: {
+          label,
+          skills: ["runtime-fixture"],
+          tools: ["read"],
+          schema: Type.Object({ ok: Type.Boolean() }),
+        },
+        cwd,
+        model: selectedModel,
+        label,
+        tags: { label, phase: "Test" },
+      });
+    const handle = await openSession(model, "session-services");
+    const session = handle.session;
+    sessions.push(session);
 
     assert.deepEqual(handle.selectedSkills.map((skill) => skill.name), ["runtime-fixture"]);
     assert.equal(handle.selectedSkills[0]?.filePath, skillPath);
@@ -158,8 +182,21 @@ test("production session services load skills, tools, and host runtime providers
     assert.equal(session.modelRuntime.getRegisteredProviderConfig("removed-provider"), undefined);
     assert.equal(session.modelRuntime.getProviderAuthStatus("runtime-only").source, "runtime");
     assert.equal((await session.modelRuntime.getAuth(model))?.auth.apiKey, "runtime-only-key");
+
+    const storedHandle = await openSession(storedModel, "stored-session-services");
+    const storedSession = storedHandle.session;
+    sessions.push(storedSession);
+    assert.ok("modelRuntime" in storedSession);
+    assert.ok(storedSession.modelRuntime instanceof ModelRuntime);
+    assert.equal(storedSession.modelRuntime.getProviderAuthStatus("stored-only").source, "runtime");
+    assert.equal((await storedSession.modelRuntime.getAuth(storedModel))?.auth.apiKey, "stored-only-key");
+
+    await assert.rejects(
+      () => openSession(oauthModel, "oauth-session-services"),
+      /cannot inherit OAuth credentials for "openai-codex" from a host-only credential store/,
+    );
   } finally {
-    session?.dispose();
+    for (const session of sessions) session.dispose();
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
     if (previousOffline === undefined) delete process.env.PI_OFFLINE;

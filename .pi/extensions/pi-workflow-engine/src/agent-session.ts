@@ -292,9 +292,18 @@ async function prepareAgentSessionResources(input: {
     services.modelRuntime.registerProvider(providerId, config);
   }
   const selectedProvider = model?.provider;
-  if (selectedProvider && rc.modelRegistry.getProviderAuthStatus(selectedProvider).source === "runtime") {
-    const apiKey = await rc.modelRegistry.getApiKeyForProvider(selectedProvider);
-    if (apiKey !== undefined) await services.modelRuntime.setRuntimeApiKey(selectedProvider, apiKey);
+  if (model && selectedProvider) {
+    const hostAuth = rc.modelRegistry.getProviderAuthStatus(selectedProvider);
+    const childAuth = services.modelRuntime.getProviderAuthStatus(selectedProvider);
+    if (hostAuth.configured && !childAuth.configured && rc.modelRegistry.isUsingOAuth(model)) {
+      throw new Error(
+        `Workflow subagents cannot inherit OAuth credentials for "${selectedProvider}" from a host-only credential store; configure OAuth in Pi's shared agent directory.`,
+      );
+    }
+    if (hostAuth.source === "runtime" || (hostAuth.configured && !childAuth.configured)) {
+      const apiKey = await rc.modelRegistry.getApiKeyForProvider(selectedProvider);
+      if (apiKey !== undefined) await services.modelRuntime.setRuntimeApiKey(selectedProvider, apiKey);
+    }
   }
   for (const diagnostic of services.diagnostics) {
     rc.progress.log(`${label}: session ${diagnostic.type}: ${diagnostic.message}`);
