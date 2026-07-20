@@ -265,12 +265,13 @@ test("/workflow:models exposes native completions without filling the free-form 
   );
   assert.deepEqual(
     workflowModelProfileArgumentCompletions("set m")?.map((item) => item.value),
-    ["set medium"],
+    ["set medium", "set small"],
   );
+  assert.deepEqual(workflowModelProfileArgumentCompletions("sts")?.map((item) => item.value), ["status"]);
   assert.equal(workflowModelProfileArgumentCompletions("set small "), null);
   assert.deepEqual(
     workflowModelProfileArgumentCompletions("set small openai/gpt h")?.map((item) => item.value),
-    ["set small openai/gpt high"],
+    ["set small openai/gpt high", "set small openai/gpt xhigh"],
   );
   assert.deepEqual(
     workflowModelProfileArgumentCompletions("clear big --")?.map((item) => item.value),

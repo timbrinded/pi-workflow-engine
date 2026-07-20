@@ -94,31 +94,26 @@ export async function openAgentSession(input: {
         }),
       ]
     : [];
-  const createSessionResources = (): Promise<AgentSessionResources> => {
-    const prepare = () => prepareAgentSessionResources({ rc, prompt, opts, cwd, model, customTools, label });
-    return rc.createSession
-      ? prepare()
-      : rc.perf.time("agent.session_resources_ms", prepare, tags);
-  };
-  const createSubagentSession = async (
-    resources: AgentSessionResources,
-    sessionOptions: ToolSessionOptions,
-  ) => {
-    const created = await rc.perf.time(
-      "agent.create_session_ms",
-      () => resources.createSession(sessionOptions),
-      tags,
-    );
-    created.session.setAutoRetryEnabled(false);
-    return created;
-  };
-
   let session: AgentRunnerSession | undefined;
   try {
     throwIfAborted(rc.signal);
-    const resources = await createSessionResources();
+    const resourceInput = { rc, prompt, opts, cwd, model, customTools, label };
+    const resources = rc.createSession
+      ? await prepareAgentSessionResources(resourceInput)
+      : await rc.perf.time(
+          "agent.session_resources_ms",
+          () => prepareAgentSessionResources(resourceInput),
+          tags,
+        );
     const toolSelection = buildToolSelection(opts, resources.selectedSkills.length > 0);
-    session = (await createSubagentSession(resources, toolSelection.sessionOptions)).session;
+    session = (
+      await rc.perf.time(
+        "agent.create_session_ms",
+        () => resources.createSession(toolSelection.sessionOptions),
+        tags,
+      )
+    ).session;
+    session.setAutoRetryEnabled(false);
     const matchedToolHints = toolSelection.toolHints.length === 0
       ? new Set<AgentToolHint>()
       : applyDynamicToolHints(session, toolSelection);
@@ -327,9 +322,12 @@ function buildToolSelection(opts: AgentExecutionOptions, skillsEnabled: boolean)
       ? ["read"]
       : undefined;
   const activeTools = buildToolList(opts, skillsEnabled, fallback);
-  const strictSessionOptions = { tools: activeTools ? [...activeTools] : undefined };
   if (toolHints.length === 0) {
-    return { sessionOptions: strictSessionOptions, activeTools, toolHints };
+    return {
+      sessionOptions: { tools: activeTools ? [...activeTools] : undefined },
+      activeTools,
+      toolHints,
+    };
   }
 
   return {

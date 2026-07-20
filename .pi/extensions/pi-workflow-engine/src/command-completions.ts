@@ -1,4 +1,4 @@
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 
 interface ArgumentCompletionCandidate {
   readonly value: string;
@@ -26,9 +26,7 @@ export function completeCurrentArgument(
   candidates: readonly ArgumentCompletionCandidate[],
 ): AutocompleteItem[] | null {
   const { current, base } = splitArgumentPrefix(argumentPrefix);
-  const normalized = current.toLowerCase();
-  const matches = candidates
-    .filter((candidate) => candidate.value.toLowerCase().startsWith(normalized))
+  const matches = fuzzyFilter([...candidates], current, (candidate) => candidate.value)
     .map((candidate) => ({
       value: `${base}${candidate.value}`,
       label: candidate.value,

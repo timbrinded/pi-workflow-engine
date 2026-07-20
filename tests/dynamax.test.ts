@@ -390,18 +390,12 @@ test("Dynamax runs one bounded moving-shine sweep and returns to static highligh
   assert.equal(editor.render(80)[0], "custom:dynamax");
 });
 
-test("Dynamax animation supports static and off preferences without scheduling", () => {
+test("Dynamax static highlighting does not schedule animation", () => {
   const staticScheduler = createFakeAnimationScheduler();
   const staticEditor = createStubEditor("dynamax");
   decorateDynamaxEditor(staticEditor, () => {}, { scheduler: staticScheduler, effect: "static" });
   assert.equal(staticEditor.render(80)[0], highlightDynamaxTokens("custom:dynamax"));
   assert.equal(staticScheduler.pending(), 0);
-
-  const offScheduler = createFakeAnimationScheduler();
-  const offEditor = createStubEditor("dynamax");
-  decorateDynamaxEditor(offEditor, () => {}, { scheduler: offScheduler, effect: "off" });
-  assert.equal(offEditor.render(80)[0], "custom:dynamax");
-  assert.equal(offScheduler.pending(), 0);
 });
 
 test("resolveDynamaxEffect honors explicit preferences and NO_COLOR", () => {

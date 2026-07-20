@@ -12,8 +12,8 @@ export interface DynamaxEditorDecoration {
   dispose(): void;
 }
 
-export interface DynamaxEditorDecorationOptions {
-  effect?: DynamaxEffect;
+interface DynamaxEditorDecorationOptions {
+  effect: Exclude<DynamaxEffect, "off">;
   scheduler?: DynamaxAnimationScheduler;
   isActive?: () => boolean;
 }
@@ -75,11 +75,9 @@ export function highlightDynamaxTokens(line: string, shinePosition?: number): st
 export function decorateDynamaxEditor(
   editor: EditorComponent,
   requestRender: () => void,
-  options: DynamaxEditorDecorationOptions = {},
+  options: DynamaxEditorDecorationOptions,
 ): DynamaxEditorDecoration {
-  const effect = options.effect ?? resolveDynamaxEffect();
-  if (effect === "off") return { editor, dispose() {} };
-
+  const { effect } = options;
   const originalRender = editor.render;
   const scheduler = options.scheduler ?? DEFAULT_DYNAMAX_ANIMATION_SCHEDULER;
   const isActive = options.isActive ?? (() => true);

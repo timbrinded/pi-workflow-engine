@@ -1,4 +1,4 @@
-export const MINIMUM_PI_VERSION = "0.80.10";
+const MINIMUM_PI_VERSION = "0.80.10";
 
 const MINIMUM_PI_CORE = [0, 80, 10] as const;
 

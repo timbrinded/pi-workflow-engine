@@ -93,7 +93,7 @@ export interface WorkflowStatusSource {
   readonly counters: readonly { readonly key: string; readonly label: string; readonly value: number }[];
 }
 
-export interface WorkflowInspectionSource {
+interface WorkflowInspectionSource {
   readonly name: string;
   readonly snapshot: WorkflowProgressSnapshot | (() => WorkflowProgressSnapshot);
 }

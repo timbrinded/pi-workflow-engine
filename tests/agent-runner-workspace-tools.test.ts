@@ -13,7 +13,7 @@ import type { WorkflowJournal } from "../.pi/extensions/pi-workflow-engine/src/j
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import { resumeContextMismatchReason, type AgentResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import {
-  isExternalSearchLikeTool,
+  matchesAgentToolHint,
   WorkflowToolHintUnavailableError,
 } from "../.pi/extensions/pi-workflow-engine/src/tool-capabilities.ts";
 import {
@@ -401,26 +401,38 @@ test("runAgent dynamically enables installed search-like tools", async () => {
 });
 
 test("external-search tool hints select web capabilities but exclude local and mutating search tools", async () => {
-  assert.equal(isExternalSearchLikeTool(createToolInfo("web_search", "Search the internet and return webpage URLs")), true);
-  assert.equal(isExternalSearchLikeTool(createToolInfo("web", "Tool for accessing the internet")), true);
-  assert.equal(isExternalSearchLikeTool(createToolInfo("parallel-web-extract", "Extract a URL")), true);
-  assert.equal(isExternalSearchLikeTool(createToolInfo("search_query", "Search the internet and return results")), true);
-  assert.equal(isExternalSearchLikeTool(createToolInfo("grep", "Search local files")), false);
-  assert.equal(isExternalSearchLikeTool(createToolInfo("fffind", "Find files in the workspace and report their URLs")), false);
-  assert.equal(isExternalSearchLikeTool(createToolInfo("slack_search", "Search messages and files in Slack")), false);
-  assert.equal(isExternalSearchLikeTool(createToolInfo("search_replace", "Search and replace text on a website")), false);
-  assert.equal(isExternalSearchLikeTool(createToolInfo("searchReplace", "Search and replace text on a website")), false);
+  const cases = [
+    ["web_search", "Search the internet and return webpage URLs", true],
+    ["web", "Tool for accessing the internet", true],
+    ["parallel-web-extract", "Extract a URL", true],
+    ["search_query", "Search the internet and return results", true],
+    ["grep", "Search local files", false],
+    ["fffind", "Find files in the workspace and report their URLs", false],
+    ["slack_search", "Search messages and files in Slack", false],
+    ["search_replace", "Search and replace text on a website", false],
+    ["searchReplace", "Search and replace text on a website", false],
+  ] as const;
+  for (const [name, description, expected] of cases) {
+    assert.equal(
+      matchesAgentToolHint(createToolInfo(name, description), "external-search"),
+      expected,
+      name,
+    );
+  }
   assert.equal(
-    isExternalSearchLikeTool(createToolInfo(
-      "web_search",
-      "Search the internet and return webpage URLs",
-      {
-        path: "<builtin:web_search>",
-        source: "builtin",
-        scope: "temporary",
-        origin: "top-level",
-      },
-    )),
+    matchesAgentToolHint(
+      createToolInfo(
+        "web_search",
+        "Search the internet and return webpage URLs",
+        {
+          path: "<builtin:web_search>",
+          source: "builtin",
+          scope: "temporary",
+          origin: "top-level",
+        },
+      ),
+      "external-search",
+    ),
     false,
   );
 

@@ -17,7 +17,7 @@ export function matchesAgentToolHint(tool: ToolInfo, hint: AgentToolHint): boole
   return hint === "search" ? isSearchLikeTool(tool) : isExternalSearchLikeTool(tool);
 }
 
-export function isExternalSearchLikeTool(tool: ToolInfo): boolean {
+function isExternalSearchLikeTool(tool: ToolInfo): boolean {
   if (isMutationLikeToolName(tool.name) || tool.sourceInfo.source === "builtin") return false;
   const name = tool.name.toLowerCase();
   const description = [tool.description, ...(tool.promptGuidelines ?? [])].join(" ").toLowerCase();

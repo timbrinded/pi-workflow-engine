@@ -30,7 +30,7 @@ export function fitWorkflowViewerRows(lines: readonly string[], height: number):
   return [...visible, ...Array.from({ length: Math.max(0, height - visible.length) }, () => "")];
 }
 
-export interface WorkflowViewerViewport<T> {
+interface WorkflowViewerViewport<T> {
   readonly visible: readonly T[];
   readonly percentage: number;
 }

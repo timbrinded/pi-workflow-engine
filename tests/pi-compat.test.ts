@@ -2,13 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "bun:test";
 import { VERSION } from "@earendil-works/pi-coding-agent";
-import {
-  assertSupportedPiVersion,
-  MINIMUM_PI_VERSION,
-} from "../.pi/extensions/pi-workflow-engine/src/pi-compat.ts";
+import { assertSupportedPiVersion } from "../.pi/extensions/pi-workflow-engine/src/pi-compat.ts";
 
 test("extension enforces the Pi SDK version required by its built-ins", () => {
-  assert.equal(MINIMUM_PI_VERSION, "0.80.10");
   assert.doesNotThrow(() => assertSupportedPiVersion(VERSION));
   assert.doesNotThrow(() => assertSupportedPiVersion("0.80.10"));
   assert.doesNotThrow(() => assertSupportedPiVersion("v0.81.0-beta.1"));

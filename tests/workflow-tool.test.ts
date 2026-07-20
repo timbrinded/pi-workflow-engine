@@ -185,9 +185,10 @@ test("/workflow exposes native workflow-name and option completions", async () =
 
   const options = await completions("code-review --re");
   assert.deepEqual(
-    options?.map((item) => item.value),
+    options?.slice(0, 4).map((item) => item.value),
     ["code-review --refresh", "code-review --result-viewer", "code-review --resume-edited", "code-review --resume="],
   );
+  assert.ok(options?.some((item) => item.value === "code-review --agent-retries="));
 });
 
 test("RPC command and inspector surfaces use native selection and text instead of custom components", async () => {
