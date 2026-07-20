@@ -278,10 +278,23 @@ async function prepareAgentSessionResources(input: {
     cwd,
     resourceLoaderOptions: preparedSkills.resourceLoaderOptions,
   });
-  // Cwd services replay startup registrations; overlay the host's current runtime registrations.
-  for (const providerId of rc.modelRegistry.getRegisteredProviderIds()) {
+  const hostProviderIds = new Set(rc.modelRegistry.getRegisteredProviderIds());
+  // Shared-cwd sessions mirror live removals; isolated cwd sessions retain target-only providers.
+  if (cwd === rc.cwd) {
+    for (const providerId of services.modelRuntime.getRegisteredProviderIds()) {
+      if (!hostProviderIds.has(providerId)) services.modelRuntime.unregisterProvider(providerId);
+    }
+  }
+  for (const providerId of hostProviderIds) {
     const config = rc.modelRegistry.getRegisteredProviderConfig(providerId);
-    if (config) services.modelRuntime.registerProvider(providerId, config);
+    if (!config) continue;
+    services.modelRuntime.unregisterProvider(providerId);
+    services.modelRuntime.registerProvider(providerId, config);
+  }
+  const selectedProvider = model?.provider;
+  if (selectedProvider && rc.modelRegistry.getProviderAuthStatus(selectedProvider).source === "runtime") {
+    const apiKey = await rc.modelRegistry.getApiKeyForProvider(selectedProvider);
+    if (apiKey !== undefined) await services.modelRuntime.setRuntimeApiKey(selectedProvider, apiKey);
   }
   for (const diagnostic of services.diagnostics) {
     rc.progress.log(`${label}: session ${diagnostic.type}: ${diagnostic.message}`);

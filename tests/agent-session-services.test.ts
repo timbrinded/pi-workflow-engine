@@ -6,6 +6,7 @@ import { test } from "bun:test";
 import {
   ModelRegistry,
   ModelRuntime,
+  type ProviderConfig,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
@@ -35,16 +36,55 @@ test("production session services load skills, tools, and host runtime providers
   const agentDir = join(root, "agent");
   const skillDir = join(cwd, ".pi", "skills", "runtime-fixture");
   const skillPath = join(skillDir, "SKILL.md");
+  const extensionDir = join(cwd, ".pi", "extensions");
+  const extensionPath = join(extensionDir, "provider-fixture.js");
+  const modelDefinition: NonNullable<ProviderConfig["models"]>[number] = {
+    id: "runtime-only-model",
+    name: "Runtime-only model",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 16384,
+  };
+  const startupProvider: ProviderConfig = {
+    baseUrl: "https://startup.invalid",
+    apiKey: "startup-key",
+    api: "anthropic-messages",
+    headers: { "x-startup": "present" },
+    models: [modelDefinition],
+  };
+  const currentProvider: ProviderConfig = {
+    baseUrl: "https://runtime-only.invalid",
+    api: "anthropic-messages",
+    models: [modelDefinition],
+  };
+  const removedProvider: ProviderConfig = {
+    baseUrl: "https://removed.invalid",
+    apiKey: "removed-key",
+    api: "anthropic-messages",
+    models: [{ ...modelDefinition, id: "removed-model", name: "Removed model" }],
+  };
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   const previousOffline = process.env.PI_OFFLINE;
   let session: Awaited<ReturnType<typeof openAgentSession>>["session"] | undefined;
 
   try {
     await mkdir(skillDir, { recursive: true });
+    await mkdir(extensionDir, { recursive: true });
     await mkdir(agentDir, { recursive: true });
     await writeFile(
       skillPath,
       "---\nname: runtime-fixture\ndescription: Verifies production session service wiring.\n---\n\n# Runtime fixture\n",
+      "utf8",
+    );
+    await writeFile(
+      extensionPath,
+      `export default function (pi) {
+  pi.registerProvider("runtime-only", ${JSON.stringify(startupProvider)});
+  pi.registerProvider("removed-provider", ${JSON.stringify(removedProvider)});
+}
+`,
       "utf8",
     );
     process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -55,23 +95,14 @@ test("production session services load skills, tools, and host runtime providers
       modelsPath: null,
       allowModelNetwork: false,
     });
-    hostRuntime.registerProvider("runtime-only", {
-      baseUrl: "https://runtime-only.invalid",
-      apiKey: "runtime-only-key",
-      api: "anthropic-messages",
-      models: [
-        {
-          id: "runtime-only-model",
-          name: "Runtime-only model",
-          reasoning: false,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 128000,
-          maxTokens: 16384,
-        },
-      ],
-    });
+    hostRuntime.registerProvider("runtime-only", startupProvider);
+    hostRuntime.unregisterProvider("runtime-only");
+    hostRuntime.registerProvider("runtime-only", currentProvider);
+    await hostRuntime.setRuntimeApiKey("runtime-only", "runtime-only-key");
+    hostRuntime.registerProvider("removed-provider", removedProvider);
+    hostRuntime.unregisterProvider("removed-provider");
     const hostRegistry = new ModelRegistry(hostRuntime);
+    assert.equal(hostRegistry.getProviderAuthStatus("runtime-only").source, "runtime");
     const model = hostRegistry.find("runtime-only", "runtime-only-model");
     assert.ok(model);
     const usage = createWorkflowUsageRecorder();
@@ -120,7 +151,12 @@ test("production session services load skills, tools, and host runtime providers
     assert.ok(session.getToolDefinition(FINAL_TOOL));
     assert.ok("modelRuntime" in session);
     assert.ok(session.modelRuntime instanceof ModelRuntime);
-    assert.ok(session.modelRuntime.getRegisteredProviderConfig("runtime-only"));
+    const childProvider = session.modelRuntime.getRegisteredProviderConfig("runtime-only");
+    assert.equal(childProvider?.baseUrl, currentProvider.baseUrl);
+    assert.equal(childProvider?.apiKey, undefined);
+    assert.equal(childProvider?.headers, undefined);
+    assert.equal(session.modelRuntime.getRegisteredProviderConfig("removed-provider"), undefined);
+    assert.equal(session.modelRuntime.getProviderAuthStatus("runtime-only").source, "runtime");
     assert.equal((await session.modelRuntime.getAuth(model))?.auth.apiKey, "runtime-only-key");
   } finally {
     session?.dispose();

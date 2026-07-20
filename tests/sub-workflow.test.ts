@@ -19,7 +19,7 @@ import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef
 import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { WorktreeRegistry, type WorktreeGitCommandOptions } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
-import { assistantTextMessage, createAgentRunnerSession, createRegistry } from "./agent-runner-fixtures.ts";
+import { assistantTextMessage, createAgentRunnerSession } from "./agent-runner-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly phases: string[];
@@ -64,7 +64,7 @@ function createRc(
   return {
     cwd: process.cwd(),
     hostModel: undefined,
-    modelRegistry: createRegistry([]),
+    modelRegistry: { find: () => undefined },
     semaphore,
     agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,

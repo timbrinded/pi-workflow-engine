@@ -27,7 +27,6 @@ import type { AgentResumeBaseContext } from "../.pi/extensions/pi-workflow-engin
 import {
   assistantTextMessage,
   createAgentRunnerSession,
-  createRegistry,
   executeTestFinalAnswer,
 } from "./agent-runner-fixtures.ts";
 
@@ -85,7 +84,7 @@ function createRunContext(
   return {
     cwd: process.cwd(),
     hostModel: undefined,
-    modelRegistry: createRegistry([]),
+    modelRegistry: { find: () => undefined },
     semaphore: new Semaphore(1),
     agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,

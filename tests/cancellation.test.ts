@@ -18,7 +18,7 @@ import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engin
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import type { AgentResumeBaseContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
-import { createAgentRunnerSession, createRegistry } from "./agent-runner-fixtures.ts";
+import { createAgentRunnerSession } from "./agent-runner-fixtures.ts";
 
 const RESUME_BASE_CONTEXT: AgentResumeBaseContext = {
   workflow: { kind: "verified", name: "cancellation-test", sourceFingerprint: "source-a" },
@@ -63,7 +63,7 @@ function createRunContext(createSession: CreateAgentSession, signal: AbortSignal
   return {
     cwd: process.cwd(),
     hostModel: undefined,
-    modelRegistry: createRegistry([]),
+    modelRegistry: { find: () => undefined },
     semaphore,
     agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
