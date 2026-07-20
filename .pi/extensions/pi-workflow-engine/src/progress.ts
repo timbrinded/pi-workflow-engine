@@ -1,11 +1,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
 import type { WorkflowProgressEvent } from "./types.ts";
 import type { AgentRowStatus, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "./progress-types.ts";
 import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./usage.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { statusTextFromCounts, type WorkflowStatusCounts } from "./ui/workflow-format.ts";
-import { createWorkflowWidget, renderWorkflowWidgetLines, type WorkflowWidget } from "./ui/workflow-widget.ts";
+import { renderWorkflowWidgetLines } from "./ui/workflow-widget.ts";
 
 export type {
   AgentRowSnapshot,
@@ -49,6 +48,7 @@ interface WorkflowLaneItem {
 }
 
 const LOG_LIMIT = 24;
+const WIDGET_REFRESH_INTERVAL_MS = 1_000;
 export const DEFAULT_LANE_ITEM_LIMIT = 200;
 
 /**
@@ -69,13 +69,9 @@ export class ProgressTracker {
   private doneAt: number | undefined;
   private currentPhase = "Workflow";
   private nextAgentId = 1;
-  private widget: WorkflowWidget | undefined;
-  private widgetRegistered = false;
-  private tui: Pick<TUI, "requestRender"> | undefined;
-  private widgetInterval: ReturnType<typeof setInterval> | undefined;
   private lastStatusText: string | undefined;
   private usageSnapshot: WorkflowUsageSnapshot | undefined;
-  private renderQueued = false;
+  private widgetRefreshInterval: ReturnType<typeof setInterval> | undefined;
   private readonly surfaceKey: string;
 
   constructor(
@@ -281,32 +277,28 @@ export class ProgressTracker {
   private publish(): void {
     this.publishSnapshot();
     if (!this.ctx.hasUI) return;
-    if (this.ctx.mode !== "tui") {
-      this.publishRpcWidget();
-      this.publishStatus();
-      return;
-    }
-    this.ensureWidget();
-    this.widget?.invalidate();
-    this.requestRenderSoon();
+    this.publishWidget();
+    this.startWidgetRefresh();
     this.publishStatus();
   }
 
-  private publishRpcWidget(): void {
+  private publishWidget(): void {
     this.ctx.ui.setWidget(
       this.surfaceKey,
-      renderWorkflowWidgetLines(this.snapshot(), 0, 120, this.ctx.ui.theme),
+      renderWorkflowWidgetLines(this.snapshot(), 120, this.ctx.ui.theme),
       { placement: "aboveEditor" },
     );
   }
 
-  private requestRenderSoon(): void {
-    if (this.renderQueued) return;
-    this.renderQueued = true;
-    queueMicrotask(() => {
-      this.renderQueued = false;
-      this.tui?.requestRender();
-    });
+  private startWidgetRefresh(): void {
+    if (this.widgetRefreshInterval !== undefined) return;
+    this.widgetRefreshInterval = setInterval(() => this.publishWidget(), WIDGET_REFRESH_INTERVAL_MS);
+  }
+
+  private stopWidgetRefresh(): void {
+    if (this.widgetRefreshInterval === undefined) return;
+    clearInterval(this.widgetRefreshInterval);
+    this.widgetRefreshInterval = undefined;
   }
 
   private publishStatus(): void {
@@ -327,51 +319,15 @@ export class ProgressTracker {
     this.lastStatusText = next;
   }
 
-  private ensureWidget(): void {
-    if (this.widgetRegistered) return;
-    this.widget = createWorkflowWidget(() => this.snapshot());
-    this.ctx.ui.setWidget(
-      this.surfaceKey,
-      (tui, theme) => {
-        this.tui = tui;
-        return {
-          render: (width?: number) => this.widget?.render(width ?? tui.terminal.columns, theme) ?? [],
-          invalidate: () => this.widget?.invalidate(),
-        };
-      },
-      { placement: "aboveEditor" },
-    );
-    this.widgetRegistered = true;
-    this.startWidgetTimer();
-  }
-
-  private startWidgetTimer(): void {
-    if (this.widgetInterval !== undefined) return;
-    this.widgetInterval = setInterval(() => {
-      this.widget?.nextFrame();
-      this.tui?.requestRender();
-    }, 100);
-  }
-
-  private stopWidgetTimer(): void {
-    if (this.widgetInterval === undefined) return;
-    clearInterval(this.widgetInterval);
-    this.widgetInterval = undefined;
-  }
-
   /** Clear this run's live workflow surfaces. Final feedback is delivered by the result surface. */
   done(): void {
     this.doneAt = Date.now();
-    this.stopWidgetTimer();
+    this.stopWidgetRefresh();
     this.publishSnapshot();
     if (!this.ctx.hasUI) return;
     this.ctx.ui.setWidget(this.surfaceKey, undefined);
     this.ctx.ui.setStatus(this.surfaceKey, undefined);
     this.lastStatusText = undefined;
-    this.renderQueued = false;
-    this.widgetRegistered = false;
-    this.widget = undefined;
-    this.tui = undefined;
   }
 
   private publishSnapshot(): void {

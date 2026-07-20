@@ -29,9 +29,7 @@ import { resolveAgentModelProfile } from "./model-profiles.ts";
 export type {
   AgentExecutionOptions,
   AgentProgress,
-  AgentRunnerEvent,
   AgentRunnerSession,
-  AgentRunnerToolInfo,
   CreateAgentSession,
   RunContext,
 } from "./agent-runner-types.ts";

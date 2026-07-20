@@ -35,7 +35,6 @@ import {
   createProviderUsageLimitPauseRecord,
   WorkflowProviderUsageLimitError,
 } from "./provider-usage-limit.ts";
-import { createWorkflowModelRuntimeAccessor } from "./workflow-model-runtime.ts";
 
 /** The workflow-facing slice of the progress tracker (satisfied by `ProgressTracker`). */
 export interface WorkflowProgress {
@@ -96,7 +95,6 @@ export async function runResolvedWorkflow(
   dependencies: WorkflowEngineDependencies = {},
 ): Promise<unknown> {
   const runId = resolvedOptions.runId ?? createWorkflowRunId();
-  const getModelRuntime = createWorkflowModelRuntimeAccessor(ctx.modelRegistry);
   let durableProgress: DurableWorkflowRun | undefined;
   const progress = new ProgressTracker(ctx, mod.meta.name, runId, (snapshot) => durableProgress?.updateProgress(snapshot));
   const progressSource = { snapshot: () => progress.snapshot() };
@@ -165,7 +163,6 @@ export async function runResolvedWorkflow(
       cwd: ctx.cwd,
       hostModel: ctx.model,
       modelRegistry: ctx.modelRegistry,
-      getModelRuntime,
       semaphore: new Semaphore(resolvedOptions.concurrency),
       agentLimiter: new WorkflowAgentLimiter(resolvedOptions.maxAgents),
       agentTimeoutMs: resolvedOptions.agentTimeoutMs,

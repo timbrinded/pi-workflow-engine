@@ -1,5 +1,5 @@
+import type { ToolInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentToolHint } from "./types.ts";
-import type { AgentRunnerToolInfo } from "./agent-runner-types.ts";
 
 /** Raised before prompting when required semantic tool capabilities are unavailable. */
 export class WorkflowToolHintUnavailableError extends Error {
@@ -13,12 +13,12 @@ export class WorkflowToolHintUnavailableError extends Error {
   }
 }
 
-export function matchesAgentToolHint(tool: AgentRunnerToolInfo, hint: AgentToolHint): boolean {
+export function matchesAgentToolHint(tool: ToolInfo, hint: AgentToolHint): boolean {
   return hint === "search" ? isSearchLikeTool(tool) : isExternalSearchLikeTool(tool);
 }
 
-export function isExternalSearchLikeTool(tool: AgentRunnerToolInfo): boolean {
-  if (isMutationLikeToolName(tool.name) || tool.sourceInfo?.source === "builtin") return false;
+export function isExternalSearchLikeTool(tool: ToolInfo): boolean {
+  if (isMutationLikeToolName(tool.name) || tool.sourceInfo.source === "builtin") return false;
   const name = tool.name.toLowerCase();
   const description = [tool.description, ...(tool.promptGuidelines ?? [])].join(" ").toLowerCase();
   const text = `${name} ${description}`;
@@ -32,11 +32,11 @@ export function isExternalSearchLikeTool(tool: AgentRunnerToolInfo): boolean {
   return hasResearchAction && hasExternalMedium;
 }
 
-function isSearchLikeTool(tool: AgentRunnerToolInfo): boolean {
+function isSearchLikeTool(tool: ToolInfo): boolean {
   if (isMutationLikeToolName(tool.name)) return false;
   const name = tool.name.toLowerCase();
   if (name.includes("grep") || name.includes("find") || name.includes("search") || name === "rg" || name.includes("ripgrep")) return true;
-  return /\b(?:grep|find|search|ripgrep|rg|structural search|code search)\b/.test(tool.description?.toLowerCase() ?? "");
+  return /\b(?:grep|find|search|ripgrep|rg|structural search|code search)\b/.test(tool.description.toLowerCase());
 }
 
 function isMutationLikeToolName(name: string): boolean {

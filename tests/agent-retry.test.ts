@@ -77,15 +77,18 @@ function scriptedSessions(scripts: readonly SessionScript[]): ScriptedSessions {
     const script = scripts[sessionsCreated];
     if (!script) throw new Error(`Missing session script ${sessionsCreated + 1}.`);
     sessionsCreated++;
-    let messages: readonly AssistantMessage[] = [];
+    let messages: AssistantMessage[] = [];
     const session: AgentRunnerSession = {
-      get state() {
-        return { messages };
+      get messages() {
+        return messages;
       },
+      systemPrompt: "Agent retry test",
+      model: undefined,
+      thinkingLevel: "low",
       async prompt() {
         promptCalls++;
         script.onPrompt?.();
-        messages = script.messages;
+        messages = [...script.messages];
       },
       getLastAssistantText() {
         const last = messages.at(-1);

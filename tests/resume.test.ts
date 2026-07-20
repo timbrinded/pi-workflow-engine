@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   runWorkflow,
@@ -34,7 +35,13 @@ import {
   FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
 } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import { captureTreeFingerprint } from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
-import { createAgentRunnerSession } from "./agent-runner-fixtures.ts";
+import {
+  TEST_TOOL,
+  TEST_TOOL_DEFINITION,
+  assistantTextMessage,
+  createAgentRunnerSession,
+  testModel,
+} from "./agent-runner-fixtures.ts";
 import { createGitRepo, runGit } from "./resume-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
@@ -90,17 +97,20 @@ function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkf
 
 function createLiveTextSession(onPrompt: (prompt: string) => void): CreateAgentSession {
   return async () => {
-    let messages: readonly unknown[] = [];
+    let messages: AssistantMessage[] = [];
     let lastText: string | undefined;
     return {
       session: createAgentRunnerSession({
-        get state() {
-          return { messages, systemPrompt: TEST_SYSTEM_PROMPT, model: TEST_MODEL, thinkingLevel: "low" };
+        get messages() {
+          return messages;
         },
+        systemPrompt: TEST_SYSTEM_PROMPT,
+        model: TEST_MODEL,
+        thinkingLevel: "low",
         async prompt(prompt) {
           onPrompt(prompt);
           lastText = `live:${prompt}`;
-          messages = [{ role: "assistant", content: [{ type: "text", text: lastText }] }];
+          messages = [assistantTextMessage(lastText)];
         },
         getLastAssistantText: () => lastText,
         subscribe() {
@@ -126,38 +136,26 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const TEST_TOOL = {
-  name: "read",
-  description: "Read a file",
-  parameters: { type: "object", properties: {} },
-  promptGuidelines: [],
-  sourceInfo: { path: "builtin:read", source: "builtin", scope: "temporary", origin: "top-level" },
-} as const;
-const TEST_MODEL = { provider: "test", id: "resume-model" } as const;
+const TEST_MODEL = testModel("test", "resume-model");
 const TEST_SYSTEM_PROMPT = "Stable resume test system prompt";
-const TEST_TOOL_DEFINITION = {
-  name: TEST_TOOL.name,
-  description: TEST_TOOL.description,
-  parameters: TEST_TOOL.parameters,
-  async execute() {
-    return { content: [], details: undefined };
-  },
-} as const;
 
 function createDelayedTextSession(delays: Record<string, number>, onPrompt: (prompt: string) => void): CreateAgentSession {
   return async () => {
-    let messages: readonly unknown[] = [];
+    let messages: AssistantMessage[] = [];
     let lastText: string | undefined;
     return {
       session: createAgentRunnerSession({
-        get state() {
-          return { messages, systemPrompt: TEST_SYSTEM_PROMPT, model: TEST_MODEL, thinkingLevel: "low" };
+        get messages() {
+          return messages;
         },
+        systemPrompt: TEST_SYSTEM_PROMPT,
+        model: TEST_MODEL,
+        thinkingLevel: "low",
         async prompt(prompt) {
           onPrompt(prompt);
           await delay(delays[prompt] ?? 0);
           lastText = `live:${prompt}`;
-          messages = [{ role: "assistant", content: [{ type: "text", text: lastText }] }];
+          messages = [assistantTextMessage(lastText)];
         },
         getLastAssistantText: () => lastText,
         subscribe() {
@@ -183,17 +181,20 @@ function createSequencedTextSession(onPrompt: (prompt: string) => void): CreateA
   let next = 0;
   return async () => {
     const sequence = ++next;
-    let messages: readonly unknown[] = [];
+    let messages: AssistantMessage[] = [];
     let lastText: string | undefined;
     return {
       session: createAgentRunnerSession({
-        get state() {
-          return { messages, systemPrompt: TEST_SYSTEM_PROMPT, model: TEST_MODEL, thinkingLevel: "low" };
+        get messages() {
+          return messages;
         },
+        systemPrompt: TEST_SYSTEM_PROMPT,
+        model: TEST_MODEL,
+        thinkingLevel: "low",
         async prompt(prompt) {
           onPrompt(prompt);
           lastText = `live-${sequence}:${prompt}`;
-          messages = [{ role: "assistant", content: [{ type: "text", text: lastText }] }];
+          messages = [assistantTextMessage(lastText)];
         },
         getLastAssistantText: () => lastText,
         subscribe() {

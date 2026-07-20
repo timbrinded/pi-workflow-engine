@@ -18,14 +18,8 @@ import type {
   AgentExecutionOptions,
   AgentRunTags,
   AgentRunnerSession,
-  AgentRunnerToolInfo,
   RunContext,
 } from "./agent-runner-types.ts";
-import {
-  captureEffectiveAgentSessionIdentity,
-  type EffectiveAgentSessionIdentity,
-  type EffectiveToolInfoLike,
-} from "./agent-session-identity.ts";
 import { raceWithAbort, throwIfAborted } from "./cancellation.ts";
 import {
   MAX_SCHEMA_REPAIR_ATTEMPTS,
@@ -59,10 +53,6 @@ export interface AgentSessionHandle {
   hasStructuredResult(): boolean;
   structuredResult(): unknown;
 }
-
-export type EffectiveSessionCapture =
-  | { readonly kind: "verified"; readonly identity: EffectiveAgentSessionIdentity }
-  | { readonly kind: "unverifiable"; readonly reason: string };
 
 export function resolveAgentModel(
   modelRef: string | undefined,
@@ -184,7 +174,7 @@ export async function promptAgentSession(input: {
       try {
         const promptSession = async (text: string) => {
           await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(text), rc.signal), tags);
-          const failure = providerErrorFromMessages(session.state.messages, {
+          const failure = providerErrorFromMessages(session.messages, {
             pauseOnUsageLimit: rc.pauseOnProviderUsageLimit,
           });
           if (failure) throw failure;
@@ -217,7 +207,7 @@ export async function promptAgentSession(input: {
           tags,
         );
       } finally {
-        rc.usage.recordAgentSession({ label, phase: tags.phase, messages: session.state.messages });
+        rc.usage.recordAgentSession({ label, phase: tags.phase, messages: session.messages });
       }
     } finally {
       unlinkPromptAbort();
@@ -225,35 +215,6 @@ export async function promptAgentSession(input: {
   } finally {
     unsubscribe();
   }
-}
-
-export async function captureEffectiveSession(
-  session: AgentRunnerSession,
-  sessionCwd: string,
-  workspaceRoot: string,
-  signal: AbortSignal | undefined,
-): Promise<EffectiveSessionCapture> {
-  const state = session.state;
-  if (typeof state.systemPrompt !== "string") {
-    return { kind: "unverifiable", reason: "effective system prompt is unavailable" };
-  }
-  if (!state.model) return { kind: "unverifiable", reason: "effective model is unavailable" };
-  if (typeof state.thinkingLevel !== "string") {
-    return { kind: "unverifiable", reason: "effective thinking level is unavailable" };
-  }
-  const toolInfos = effectiveToolInfos(session.getAllTools());
-  if (toolInfos.kind === "unverifiable") return toolInfos;
-  return await captureEffectiveAgentSessionIdentity(
-    {
-      systemPrompt: state.systemPrompt,
-      model: state.model,
-      thinkingLevel: state.thinkingLevel,
-      getActiveToolNames: () => session.getActiveToolNames(),
-      getAllTools: () => toolInfos.tools,
-      getToolDefinition: (name) => session.getToolDefinition(name),
-    },
-    { sessionCwd, workspaceRoot, signal },
-  );
 }
 
 function parseAgentModelRef(modelRef: string): ResolvedAgentModelRequest {
@@ -316,7 +277,6 @@ async function prepareAgentSessionResources(input: {
   const preparedSkills = prepareAgentSkillResources(skillOptions);
   const services = await createAgentSessionServices({
     cwd,
-    modelRuntime: await rc.getModelRuntime(),
     resourceLoaderOptions: preparedSkills.resourceLoaderOptions,
   });
   logSessionServiceDiagnostics(services, (message) => rc.progress.log(`${label}: ${message}`));
@@ -415,23 +375,4 @@ function applyDynamicToolHints(
   }
   session.setActiveToolsByName([...active]);
   return matched;
-}
-
-function effectiveToolInfos(
-  tools: readonly AgentRunnerToolInfo[],
-): { readonly kind: "verified"; readonly tools: readonly EffectiveToolInfoLike[] } | { readonly kind: "unverifiable"; readonly reason: string } {
-  const normalized: EffectiveToolInfoLike[] = [];
-  for (const tool of tools) {
-    if (typeof tool.description !== "string" || tool.parameters === undefined || !tool.sourceInfo) {
-      return { kind: "unverifiable", reason: `active tool metadata is incomplete for ${tool.name}` };
-    }
-    normalized.push({
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-      promptGuidelines: tool.promptGuidelines,
-      sourceInfo: tool.sourceInfo,
-    });
-  }
-  return { kind: "verified", tools: normalized };
 }

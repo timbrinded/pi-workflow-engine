@@ -129,7 +129,7 @@ test("runAgent marks queued row failed when semaphore acquisition aborts", async
   let releaseFirst: (() => void) | undefined;
   const createSession: CreateAgentSession = async () => ({
     session: createAgentRunnerSession({
-      state: { messages: [] },
+      messages: [],
       async prompt() {
         await new Promise<void>((resolve) => {
           releaseFirst = resolve;
@@ -162,7 +162,7 @@ test("runAgent calls session.abort when the run signal aborts", async () => {
   let resolvePrompt: (() => void) | undefined;
   const createSession: CreateAgentSession = async () => ({
     session: createAgentRunnerSession({
-      state: { messages: [] },
+      messages: [],
       async prompt() {
         await new Promise<void>((resolve) => {
           resolvePrompt = resolve;

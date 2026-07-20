@@ -1,8 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import {
+  defineTool,
+  type ModelRegistry,
+  type ToolInfo,
+} from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import {
   runAgent as runAgentWithContext,
   type AgentProgress,
@@ -71,6 +76,26 @@ export function testModel(provider: string, id: string): Model<Api> {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128000,
     maxTokens: 16384,
+  };
+}
+
+export function assistantTextMessage(text: string): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "anthropic-messages",
+    provider: "test",
+    model: "test-model",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: 1,
   };
 }
 
@@ -181,7 +206,10 @@ export function createAgentRunnerSession(
   overrides: Partial<AgentRunnerSession> = {},
 ): AgentRunnerSession {
   return {
-    state: { messages: [] },
+    messages: [],
+    systemPrompt: "Test system prompt",
+    model: undefined,
+    thinkingLevel: "low",
     async prompt() {},
     subscribe: () => () => {},
     dispose() {},
@@ -199,12 +227,10 @@ export function createAgentRunnerSession(
 export function createTextSession(model: Model<Api> | undefined = DEFAULT_SESSION_MODEL): Awaited<ReturnType<CreateAgentSession>> {
   return {
     session: createAgentRunnerSession({
-      state: {
-        messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
-        systemPrompt: "Test system prompt",
-        model,
-        thinkingLevel: "low",
-      },
+      messages: [assistantTextMessage("done")],
+      systemPrompt: "Test system prompt",
+      model,
+      thinkingLevel: "low",
       async prompt() {},
       getLastAssistantText() {
         return "done";
@@ -227,22 +253,44 @@ export function createTextSession(model: Model<Api> | undefined = DEFAULT_SESSIO
   };
 }
 
-export const TEST_TOOL = {
-  name: "read",
-  description: "Read a file",
-  parameters: { type: "object", properties: {} },
-  promptGuidelines: [],
-  sourceInfo: { path: "builtin:read", source: "builtin", scope: "temporary", origin: "top-level" },
-} as const;
+const TEST_TOOL_PARAMETERS = Type.Object({});
 
-export const TEST_TOOL_DEFINITION = {
-  name: TEST_TOOL.name,
-  description: TEST_TOOL.description,
-  parameters: TEST_TOOL.parameters,
+export const TEST_TOOL_DEFINITION = defineTool({
+  name: "read",
+  label: "Read",
+  description: "Read a file",
+  parameters: TEST_TOOL_PARAMETERS,
   async execute() {
     return { content: [], details: undefined };
   },
-} as const;
+});
+
+export const TEST_TOOL: ToolInfo = {
+  name: TEST_TOOL_DEFINITION.name,
+  description: TEST_TOOL_DEFINITION.description,
+  parameters: TEST_TOOL_DEFINITION.parameters,
+  promptGuidelines: [],
+  sourceInfo: { path: "builtin:read", source: "builtin", scope: "temporary", origin: "top-level" },
+};
+
+export function createToolInfo(
+  name: string,
+  description = `${name} tool`,
+  sourceInfo: ToolInfo["sourceInfo"] = {
+    path: `<extension:${name}>`,
+    source: "extension",
+    scope: "temporary",
+    origin: "top-level",
+  },
+): ToolInfo {
+  return {
+    name,
+    description,
+    parameters: TEST_TOOL_PARAMETERS,
+    promptGuidelines: [],
+    sourceInfo,
+  };
+}
 
 export function createFakeWorktreeRegistry(input: {
   readonly repoCwd: string;

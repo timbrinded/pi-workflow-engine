@@ -17,12 +17,14 @@ import {
   WorkflowToolHintUnavailableError,
 } from "../.pi/extensions/pi-workflow-engine/src/tool-capabilities.ts";
 import {
+  assistantTextMessage,
   commandNames,
   createAgentRunnerSession,
   createFakeWorktreeRegistry,
   createProgress,
   createRunContext,
   createTextSession,
+  createToolInfo,
   executeTestFinalAnswer,
   runAgent,
 } from "./agent-runner-fixtures.ts";
@@ -120,7 +122,7 @@ test("runAgent removes an isolated worktree when the agent fails", async () => {
   const { registry, calls } = createFakeWorktreeRegistry({ repoCwd });
   const createSession: CreateAgentSession = async () => ({
     session: createAgentRunnerSession({
-      state: { messages: [] },
+      messages: [],
       async prompt() {
         throw new Error("agent failed");
       },
@@ -321,7 +323,7 @@ test("runAgent re-checks budget after waiting for a concurrency slot", async () 
     createSessionCalls += 1;
     return {
       session: createAgentRunnerSession({
-        state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
+        messages: [assistantTextMessage("done")],
         async prompt() {
           markFirstPromptEntered();
           await firstPromptCanFinish;
@@ -366,7 +368,7 @@ test("runAgent dynamically enables installed search-like tools", async () => {
     observedNoTools = options.noTools;
     return {
       session: createAgentRunnerSession({
-        state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
+        messages: [assistantTextMessage("done")],
         async prompt() {
           await executeTestFinalAnswer(options, { ok: true });
         },
@@ -376,18 +378,9 @@ test("runAgent dynamically enables installed search-like tools", async () => {
         dispose() {},
         async abort() {},
         getAllTools() {
-          return [
-            { name: "read" },
-            { name: "bash" },
-            { name: "grep" },
-            { name: "find" },
-            { name: "ls" },
-            { name: "ffgrep" },
-            { name: "mgrep" },
-            { name: "ast-grep" },
-            { name: "workflow", description: "Run a workflow" },
-            { name: "search_replace" },
-          ];
+          return ["read", "bash", "grep", "find", "ls", "ffgrep", "mgrep", "ast-grep", "search_replace"]
+            .map((name) => createToolInfo(name))
+            .concat(createToolInfo("workflow", "Run a workflow"));
         },
         setActiveToolsByName(toolNames) {
           activatedTools = toolNames;
@@ -411,33 +404,33 @@ test("runAgent dynamically enables installed search-like tools", async () => {
 });
 
 test("external-search tool hints select web capabilities but exclude local and mutating search tools", async () => {
-  assert.equal(isExternalSearchLikeTool({ name: "web_search", description: "Search the internet and return webpage URLs" }), true);
-  assert.equal(isExternalSearchLikeTool({ name: "web", description: "Tool for accessing the internet" }), true);
-  assert.equal(isExternalSearchLikeTool({ name: "parallel-web-extract", description: "Extract a URL" }), true);
-  assert.equal(isExternalSearchLikeTool({ name: "search_query", description: "Search the internet and return results" }), true);
-  assert.equal(isExternalSearchLikeTool({ name: "grep", description: "Search local files" }), false);
-  assert.equal(isExternalSearchLikeTool({ name: "fffind", description: "Find files in the workspace and report their URLs" }), false);
-  assert.equal(isExternalSearchLikeTool({ name: "slack_search", description: "Search messages and files in Slack" }), false);
-  assert.equal(isExternalSearchLikeTool({ name: "search_replace", description: "Search and replace text on a website" }), false);
-  assert.equal(isExternalSearchLikeTool({ name: "searchReplace", description: "Search and replace text on a website" }), false);
+  assert.equal(isExternalSearchLikeTool(createToolInfo("web_search", "Search the internet and return webpage URLs")), true);
+  assert.equal(isExternalSearchLikeTool(createToolInfo("web", "Tool for accessing the internet")), true);
+  assert.equal(isExternalSearchLikeTool(createToolInfo("parallel-web-extract", "Extract a URL")), true);
+  assert.equal(isExternalSearchLikeTool(createToolInfo("search_query", "Search the internet and return results")), true);
+  assert.equal(isExternalSearchLikeTool(createToolInfo("grep", "Search local files")), false);
+  assert.equal(isExternalSearchLikeTool(createToolInfo("fffind", "Find files in the workspace and report their URLs")), false);
+  assert.equal(isExternalSearchLikeTool(createToolInfo("slack_search", "Search messages and files in Slack")), false);
+  assert.equal(isExternalSearchLikeTool(createToolInfo("search_replace", "Search and replace text on a website")), false);
+  assert.equal(isExternalSearchLikeTool(createToolInfo("searchReplace", "Search and replace text on a website")), false);
   assert.equal(
-    isExternalSearchLikeTool({
-      name: "web_search",
-      description: "Search the internet and return webpage URLs",
-      sourceInfo: {
+    isExternalSearchLikeTool(createToolInfo(
+      "web_search",
+      "Search the internet and return webpage URLs",
+      {
         path: "<builtin:web_search>",
         source: "builtin",
-        scope: "builtin",
-        origin: "builtin",
+        scope: "temporary",
+        origin: "top-level",
       },
-    }),
+    )),
     false,
   );
 
   let activatedTools: readonly string[] = [];
   const createSession: CreateAgentSession = async (options) => ({
     session: createAgentRunnerSession({
-      state: { messages: [{ role: "assistant", content: [] }] },
+      messages: [assistantTextMessage("")],
       async prompt() {
         await executeTestFinalAnswer(options, { ok: true });
       },
@@ -448,11 +441,11 @@ test("external-search tool hints select web capabilities but exclude local and m
       async abort() {},
       getAllTools() {
         return [
-          { name: "read", description: "Read local files" },
-          { name: "grep", description: "Search local files" },
-          { name: "web_search", description: "Search the internet and return webpage URLs" },
-          { name: "url_fetch", description: "Fetch and extract an HTTP webpage" },
-          { name: "search_replace", description: "Search and replace text on a website" },
+          createToolInfo("read", "Read local files"),
+          createToolInfo("grep", "Search local files"),
+          createToolInfo("web_search", "Search the internet and return webpage URLs"),
+          createToolInfo("url_fetch", "Fetch and extract an HTTP webpage"),
+          createToolInfo("search_replace", "Search and replace text on a website"),
         ];
       },
       setActiveToolsByName(toolNames) {
@@ -477,7 +470,7 @@ test("required tool hints fail before prompting when no installed capability mat
   let disposed = false;
   const createSession: CreateAgentSession = async () => ({
     session: createAgentRunnerSession({
-      state: { messages: [] },
+      messages: [],
       async prompt() {
         prompted = true;
       },
@@ -489,7 +482,7 @@ test("required tool hints fail before prompting when no installed capability mat
       },
       async abort() {},
       getAllTools() {
-        return [{ name: "grep", description: "Search local files" }];
+        return [createToolInfo("grep", "Search local files")];
       },
       setActiveToolsByName() {},
     }),

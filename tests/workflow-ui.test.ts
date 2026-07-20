@@ -159,7 +159,7 @@ test("workflow inspector and widget share the workflow usage formatter", () => {
   const inspector = new WorkflowInspector(() => snapshot, tui, theme, () => {});
 
   assert.ok(inspector.render(200).join("\n").includes(expected));
-  assert.ok(renderWorkflowWidgetLines(snapshot, 0, 200, theme).join("\n").includes(expected));
+  assert.ok(renderWorkflowWidgetLines(snapshot, 200, theme).join("\n").includes(expected));
 });
 
 test("workflow inspector expands findings as formatted multi-line details", () => {
@@ -233,7 +233,7 @@ test("workflow widget renders bounded rows for large snapshots", () => {
     logs: [],
   };
 
-  const lines = renderWorkflowWidgetLines(snapshot, 0, 100, theme);
+  const lines = renderWorkflowWidgetLines(snapshot, 100, theme);
   assert.ok(lines.length <= 12);
   assert.match(lines.join("\n"), /more/);
 });

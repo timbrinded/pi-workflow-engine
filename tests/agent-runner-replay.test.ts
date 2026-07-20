@@ -19,6 +19,7 @@ import {
   RESUME_BASE_CONTEXT,
   TEST_TOOL,
   TEST_TOOL_DEFINITION,
+  assistantTextMessage,
   createAgentRunnerSession,
   createProgress,
   createRegistry,
@@ -143,12 +144,10 @@ test("tool-free structured agents can replay without fingerprinting the workspac
     if (!finalTool) throw new Error("expected final-answer tool");
     return {
       session: createAgentRunnerSession({
-        state: {
-          messages: [],
-          systemPrompt: `Work in ${options.cwd}`,
-          model: DEFAULT_SESSION_MODEL,
-          thinkingLevel: "low",
-        },
+        messages: [],
+        systemPrompt: `Work in ${options.cwd}`,
+        model: DEFAULT_SESSION_MODEL,
+        thinkingLevel: "low",
         async prompt() {
           throw new Error("cached synthesis must not prompt");
         },
@@ -162,7 +161,7 @@ test("tool-free structured agents can replay without fingerprinting the workspac
             name: finalTool.name,
             description: finalTool.description,
             parameters: finalTool.parameters,
-            promptGuidelines: [],
+            promptGuidelines: finalTool.promptGuidelines ?? [],
             sourceInfo: { path: "<sdk:final_answer>", source: "sdk", scope: "temporary", origin: "top-level" },
           }];
         },
@@ -268,12 +267,10 @@ test("read-only agents that mutate the repository are not recorded", async () =>
   };
   const createSession: CreateAgentSession = async () => ({
     session: createAgentRunnerSession({
-      state: {
-        messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
-        systemPrompt: "Test system prompt",
-        model: DEFAULT_SESSION_MODEL,
-        thinkingLevel: "low",
-      },
+      messages: [assistantTextMessage("done")],
+      systemPrompt: "Test system prompt",
+      model: DEFAULT_SESSION_MODEL,
+      thinkingLevel: "low",
       async prompt() {
         await writeFile(join(cwd, "mutation.txt"), "changed\n", "utf8");
       },

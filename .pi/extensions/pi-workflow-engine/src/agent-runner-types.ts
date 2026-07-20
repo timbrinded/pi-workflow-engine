@@ -1,5 +1,9 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { CreateAgentSessionOptions, ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSession,
+  CreateAgentSessionOptions,
+  ModelRegistry,
+} from "@earendil-works/pi-coding-agent";
 import type { WorkflowBudget } from "./budget.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { WorkflowAgentLimiter } from "./agent-limits.ts";
@@ -10,48 +14,24 @@ import type { PerfSink } from "./perf.ts";
 import type { AgentOptions, WorkflowProgressEvent } from "./types.ts";
 import type { WorkflowUsageSink } from "./usage.ts";
 import type { WorktreeBaseline, WorktreeRegistry } from "./worktree.ts";
-import type {
-  EffectiveAgentModelLike,
-  EffectiveToolDefinitionLike,
-} from "./agent-session-identity.ts";
 
-export interface AgentRunnerEvent {
-  readonly type: string;
-  readonly toolName?: string;
-}
-
-export interface AgentRunnerToolInfo {
-  readonly name: string;
-  readonly description?: string;
-  readonly parameters?: unknown;
-  readonly promptGuidelines?: readonly string[];
-  readonly sourceInfo?: {
-    readonly path: string;
-    readonly source: string;
-    readonly scope: string;
-    readonly origin: string;
-    readonly baseDir?: string;
-  };
-}
-
-export interface AgentRunnerSession {
-  readonly state: {
-    readonly messages: readonly unknown[];
-    readonly systemPrompt?: string;
-    readonly model?: EffectiveAgentModelLike;
-    readonly thinkingLevel?: string;
-  };
-  prompt(text: string): Promise<void>;
-  subscribe(listener: (event: AgentRunnerEvent) => void): () => void;
-  dispose(): void;
-  abort(): Promise<void>;
-  getAllTools(): readonly AgentRunnerToolInfo[];
-  getActiveToolNames(): readonly string[];
-  getToolDefinition(name: string): EffectiveToolDefinitionLike | undefined;
-  setActiveToolsByName(toolNames: readonly string[]): void;
-  setAutoRetryEnabled(enabled: boolean): void;
-  getLastAssistantText(): string | undefined;
-}
+export type AgentRunnerSession = Pick<
+  AgentSession,
+  | "messages"
+  | "systemPrompt"
+  | "model"
+  | "thinkingLevel"
+  | "prompt"
+  | "subscribe"
+  | "dispose"
+  | "abort"
+  | "getAllTools"
+  | "getActiveToolNames"
+  | "getToolDefinition"
+  | "setActiveToolsByName"
+  | "setAutoRetryEnabled"
+  | "getLastAssistantText"
+>;
 
 export type CreateAgentSession = (options: CreateAgentSessionOptions) => Promise<{ session: AgentRunnerSession }>;
 
@@ -88,15 +68,13 @@ interface RunContextBase {
 /** Shared per-run context threaded into every agent() call. */
 export type RunContext = RunContextBase & (
   | {
-      /** Production sessions share one lazily-created model runtime for this workflow run. */
+      /** Production sessions let Pi create cwd-bound services for each agent. */
       modelRegistry: ModelRegistry;
-      getModelRuntime: () => Promise<ModelRuntime>;
       createSession?: undefined;
     }
   | {
       /** Injected test sessions bypass Pi's resource loader and therefore do not resolve skills. */
       modelRegistry: Pick<ModelRegistry, "find">;
-      getModelRuntime?: undefined;
       createSession: CreateAgentSession;
     }
 );
