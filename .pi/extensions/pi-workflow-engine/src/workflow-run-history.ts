@@ -61,17 +61,22 @@ export function formatWorkflowRunHistory(
   if (records.length === 0) return "No durable workflow runs are available for this project.";
   const lines = ["Recent workflow runs:"];
   for (const record of records.slice(0, WORKFLOW_RUN_HISTORY_LIMIT)) {
-    const usage = formatWorkflowUsageLine(record.usage);
-    const active = activeRunIds.has(record.runId);
-    const actions = availableWorkflowRunActions(record, active).filter((action) => action !== "inspect");
-    lines.push(
-      `- ${workflowRunStateLabel(record.state)} ${record.workflow.name} · age ${formatDuration(Math.max(0, now - record.createdAt))} · duration ${formatWorkflowRunDuration(record, now)}${usage ? ` · ${usage}` : ""} · ${record.runId}${actions.length > 0 ? ` · actions ${actions.join(", ")}` : ""}`,
-    );
+    lines.push(`- ${formatWorkflowRunSummary(record, activeRunIds.has(record.runId), now)}`);
   }
   if (records.length > WORKFLOW_RUN_HISTORY_LIMIT) {
     lines.push(`… ${records.length - WORKFLOW_RUN_HISTORY_LIMIT} older runs hidden`);
   }
   return lines.join("\n");
+}
+
+export function formatWorkflowRunSummary(
+  record: WorkflowRunRecord,
+  active: boolean,
+  now = Date.now(),
+): string {
+  const usage = formatWorkflowUsageLine(record.usage);
+  const actions = availableWorkflowRunActions(record, active).filter((action) => action !== "inspect");
+  return `${workflowRunStateLabel(record.state)} ${record.workflow.name} · age ${formatDuration(Math.max(0, now - record.createdAt))} · duration ${formatWorkflowRunDuration(record, now)}${usage ? ` · ${usage}` : ""} · ${record.runId}${actions.length > 0 ? ` · actions ${actions.join(", ")}` : ""}`;
 }
 
 export function formatWorkflowRunDetails(

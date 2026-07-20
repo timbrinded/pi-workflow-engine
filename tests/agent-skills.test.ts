@@ -9,6 +9,7 @@ import {
   captureAgentSkillIdentities,
   extractSkillSelectorsFromText,
   normalizeSkillSelector,
+  prepareAgentSkillResources,
   resolveAgentSkillRequest,
   selectAgentSkills,
 } from "../.pi/extensions/pi-workflow-engine/src/agent-skills.ts";
@@ -38,11 +39,10 @@ test("extractSkillSelectorsFromText handles slash, skill-first, and name-first o
 });
 
 test("resolveAgentSkillRequest keeps subagents skillless unless prompt or options opt in", () => {
-  assert.deepEqual(resolveAgentSkillRequest("ordinary prompt", undefined), { selectors: [], source: "prompt", strict: false });
-  assert.deepEqual(resolveAgentSkillRequest("include skill diagnose", []), { selectors: [], source: "explicit", strict: true });
+  assert.deepEqual(resolveAgentSkillRequest("ordinary prompt", undefined), { selectors: [], strict: false });
+  assert.deepEqual(resolveAgentSkillRequest("include skill diagnose", []), { selectors: [], strict: true });
   assert.deepEqual(resolveAgentSkillRequest("ordinary prompt", ["Diagnose", "diagnose"]), {
     selectors: ["diagnose"],
-    source: "explicit",
     strict: true,
   });
 });
@@ -71,6 +71,34 @@ test("selectAgentSkills matches exact and unique fuzzy selectors and enables exp
   );
   assert.deepEqual(resolved.unmatched, ["missing"]);
   assert.equal(resolved.selected.find((item) => item.name === "diagnose")?.disableModelInvocation, false);
+});
+
+test("prepareAgentSkillResources delegates filtering to pi's resource loader hook", () => {
+  const prepared = prepareAgentSkillResources({ prompt: "ordinary prompt", skills: ["diagnose"] });
+  const override = prepared.resourceLoaderOptions.skillsOverride;
+  assert.ok(override);
+
+  const filtered = override({
+    skills: [skill("diagnose", true), skill("other")],
+    diagnostics: [],
+  });
+
+  assert.deepEqual(filtered.skills.map((item) => item.name), ["diagnose"]);
+  assert.equal(filtered.skills[0]?.disableModelInvocation, false);
+  assert.deepEqual(prepared.resolve({ getSkills: () => filtered }).map((item) => item.name), ["diagnose"]);
+});
+
+test("prepareAgentSkillResources rejects unknown explicit selectors after pi loads skills", () => {
+  const prepared = prepareAgentSkillResources({ prompt: "ordinary prompt", skills: ["missing"] });
+  const override = prepared.resourceLoaderOptions.skillsOverride;
+  assert.ok(override);
+
+  const filtered = override({ skills: [skill("diagnose")], diagnostics: [] });
+
+  assert.throws(
+    () => prepared.resolve({ getSkills: () => filtered }),
+    /Unknown subagent skill: missing\. Available: diagnose/,
+  );
 });
 
 test("appendSkillReminder points the subagent at selected SKILL.md files only", () => {

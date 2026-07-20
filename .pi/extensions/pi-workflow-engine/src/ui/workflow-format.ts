@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { AgentRowSnapshot, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "../progress-types.ts";
+import { formatWorkflowUsageLine } from "../usage.ts";
 
 export type WorkflowDisplayStatus = WorkflowLaneItemStatus | "queued" | "done" | "failed";
 export type WorkflowThemeColor = Parameters<Theme["fg"]>[0];
@@ -90,6 +91,30 @@ export interface WorkflowStatusSource {
   readonly doneAt?: number;
   readonly currentPhase: string;
   readonly counters: readonly { readonly key: string; readonly label: string; readonly value: number }[];
+}
+
+export interface WorkflowInspectionSource {
+  readonly name: string;
+  readonly snapshot: WorkflowProgressSnapshot | (() => WorkflowProgressSnapshot);
+}
+
+export function workflowInspectionSnapshot(inspection: WorkflowInspectionSource): WorkflowProgressSnapshot {
+  return typeof inspection.snapshot === "function" ? inspection.snapshot() : inspection.snapshot;
+}
+
+export function formatWorkflowInspection(inspection: WorkflowInspectionSource): string {
+  const snapshot = workflowInspectionSnapshot(inspection);
+  const counts = countSnapshotAgents(snapshot);
+  const lines = [
+    `Workflow inspector: ${inspection.name}`,
+    `Run: ${snapshot.runId}`,
+    `Phase: ${snapshot.currentPhase}`,
+    `Agents: ${counts.running} running, ${counts.queued} queued, ${counts.done} done, ${counts.failed} failed`,
+  ];
+  const usage = formatWorkflowUsageLine(snapshot.usage);
+  if (usage) lines.push(usage);
+  if (snapshot.logs.length > 0) lines.push("Recent log:", ...snapshot.logs.slice(-8).map((entry) => `- ${entry}`));
+  return lines.join("\n");
 }
 
 export function statusText(snapshot: WorkflowProgressSnapshot, theme: Theme): string | undefined {

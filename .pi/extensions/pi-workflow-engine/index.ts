@@ -1,13 +1,13 @@
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { SelectList, Text, truncateToWidth, type AutocompleteItem, type Component, type SelectItem, type SelectListTheme, type TUI } from "@earendil-works/pi-tui";
+import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { isAdvisoryReport } from "./src/advisory-schema.ts";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink } from "./src/perf.ts";
-import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./src/usage.ts";
+import type { WorkflowUsageSnapshot } from "./src/usage.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
@@ -42,6 +42,7 @@ import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/
 import { registerWorkflowRunCommand, WorkflowRunController } from "./src/workflow-run-controller.ts";
 import { completeCurrentArgument, splitArgumentPrefix } from "./src/command-completions.ts";
 import { assertSupportedPiVersion } from "./src/pi-compat.ts";
+import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/workflow-format.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -133,65 +134,6 @@ export async function resolveWorkflowRef(ref: WorkflowRef, perf?: PerfSink): Pro
 const AUTHOR_TEMP_WORKFLOW_VALUE = "__author-temporary-workflow__";
 const AUTHOR_TEMP_WORKFLOW_LABEL = "Author temporary one-shot workflow";
 const AUTHOR_TEMP_WORKFLOW_DESCRIPTION = "Ask the host agent to author and run an inline workflow.";
-const WORKFLOW_PICKER_MAX_VISIBLE = 8;
-const WORKFLOW_PICKER_LAYOUT = { minPrimaryColumnWidth: 18, maxPrimaryColumnWidth: 22 };
-
-class WorkflowPickerComponent implements Component {
-  private readonly list: SelectList;
-
-  constructor(
-    items: SelectItem[],
-    private readonly tui: TUI,
-    private readonly theme: Theme,
-    done: (value: string | undefined) => void,
-  ) {
-    this.list = new SelectList(items, Math.min(WORKFLOW_PICKER_MAX_VISIBLE, items.length), selectListTheme(theme), WORKFLOW_PICKER_LAYOUT);
-    this.list.onSelect = (item) => done(item.value);
-    this.list.onCancel = () => done(undefined);
-    this.list.onSelectionChange = () => this.tui.requestRender();
-  }
-
-  render(width: number): string[] {
-    const safeWidth = Math.max(20, width);
-    const rule = this.theme.fg("borderMuted", "-".repeat(safeWidth));
-    const lines = [
-      rule,
-      this.theme.fg("accent", this.theme.bold("Run workflow")),
-      "",
-      ...this.list.render(safeWidth),
-      "",
-      this.theme.fg("muted", "up/down navigate  enter select  escape cancel"),
-      rule,
-    ];
-    return lines.map((line) => truncateToWidth(line, safeWidth));
-  }
-
-  handleInput(data: string): void {
-    this.list.handleInput(data);
-    this.tui.requestRender();
-  }
-
-  invalidate(): void {
-    this.list.invalidate();
-  }
-}
-
-function selectListTheme(theme: Theme): SelectListTheme {
-  return {
-    selectedPrefix: (text) => theme.fg("accent", text),
-    selectedText: (text) => theme.fg("accent", text),
-    description: (text) => theme.fg("muted", text),
-    scrollInfo: (text) => theme.fg("muted", text),
-    noMatch: (text) => theme.fg("muted", text),
-  };
-}
-
-function workflowPickerItems(workflows: ReadonlyMap<string, WorkflowModule>): SelectItem[] {
-  return [
-    { value: AUTHOR_TEMP_WORKFLOW_VALUE, label: AUTHOR_TEMP_WORKFLOW_LABEL, description: AUTHOR_TEMP_WORKFLOW_DESCRIPTION },
-    ...[...workflows.values()].map((mod) => ({ value: mod.meta.name, label: mod.meta.name, description: mod.meta.description })),
-  ];
-}
 
 const WORKFLOW_OPTION_COMPLETIONS = [
   { value: "--inspect", description: "Open the live workflow inspector" },
@@ -209,7 +151,7 @@ const WORKFLOW_OPTION_COMPLETIONS = [
   { value: "--resume=", description: "Resume from a retained workflow run ID" },
 ] as const;
 
-export async function workflowArgumentCompletions(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
+async function workflowArgumentCompletions(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
   const parts = splitArgumentPrefix(argumentPrefix);
   if (parts.completed.length === 0) {
     const { discoverWorkflows } = await loadDiscovery();
@@ -226,16 +168,21 @@ export async function workflowArgumentCompletions(argumentPrefix: string): Promi
 }
 
 async function selectWorkflowValue(workflows: ReadonlyMap<string, WorkflowModule>, ctx: ExtensionCommandContext): Promise<string | undefined> {
-  const items = workflowPickerItems(workflows);
-  if (ctx.hasUI && ctx.mode === "tui") {
-    return await ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => new WorkflowPickerComponent(items, tui, theme, done));
-  }
-
-  const choice = await ctx.ui.select(
+  const choices = [
+    {
+      value: AUTHOR_TEMP_WORKFLOW_VALUE,
+      display: `${AUTHOR_TEMP_WORKFLOW_LABEL} — ${AUTHOR_TEMP_WORKFLOW_DESCRIPTION}`,
+    },
+    ...[...workflows.values()].map((workflow) => ({
+      value: workflow.meta.name,
+      display: `${workflow.meta.name} — ${workflow.meta.description}`,
+    })),
+  ];
+  const selected = await ctx.ui.select(
     "Run workflow",
-    items.map((item) => item.label),
+    choices.map((choice) => choice.display),
   );
-  return items.find((item) => item.label === choice)?.value ?? choice;
+  return choices.find((choice) => choice.display === selected)?.value;
 }
 
 export interface LastWorkflowInspection {
@@ -271,7 +218,7 @@ export async function openWorkflowInspector(ctx: ExtensionContext, inspection: L
     return;
   }
   await ctx.ui.custom<void>(
-    (tui, theme, _keybindings, done) => new WorkflowInspector(snapshotGetter(inspection), tui, theme, () => done(undefined)),
+    (tui, theme, _keybindings, done) => new WorkflowInspector(() => workflowInspectionSnapshot(inspection), tui, theme, () => done(undefined)),
     { overlay: true, overlayOptions: { anchor: "right-center", width: "60%", maxHeight: "80%", margin: 1 } },
   );
 }
@@ -293,30 +240,6 @@ async function openAvailableWorkflowInspector(pi: ExtensionAPI, ctx: ExtensionCo
     return;
   }
   await openWorkflowInspector(ctx, inspection);
-}
-
-export function formatWorkflowInspection(inspection: LastWorkflowInspection | ActiveWorkflowInspection): string {
-  const snapshot = snapshotGetter(inspection)();
-  const agents = snapshot.phases.flatMap((phase) => phase.agents);
-  const counts = agents.reduce(
-    (total, agent) => ({ ...total, [agent.status]: total[agent.status] + 1 }),
-    { queued: 0, running: 0, done: 0, failed: 0 },
-  );
-  const lines = [
-    `Workflow inspector: ${inspection.name}`,
-    `Run: ${snapshot.runId}`,
-    `Phase: ${snapshot.currentPhase}`,
-    `Agents: ${counts.running} running, ${counts.queued} queued, ${counts.done} done, ${counts.failed} failed`,
-  ];
-  const usage = formatWorkflowUsageLine(snapshot.usage);
-  if (usage) lines.push(usage);
-  if (snapshot.logs.length > 0) lines.push("Recent log:", ...snapshot.logs.slice(-8).map((entry) => `- ${entry}`));
-  return lines.join("\n");
-}
-
-function snapshotGetter(inspection: LastWorkflowInspection | ActiveWorkflowInspection): () => WorkflowProgressSnapshot {
-  const snapshot = inspection.snapshot;
-  return typeof snapshot === "function" ? snapshot : () => snapshot;
 }
 
 function bindActiveWorkflowInspection(name: string, args: string, source: WorkflowProgressSource): ActiveWorkflowInspection {

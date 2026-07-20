@@ -34,6 +34,7 @@ import {
   FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
 } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import { captureTreeFingerprint } from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
+import { createAgentRunnerSession } from "./agent-runner-fixtures.ts";
 import { createGitRepo, runGit } from "./resume-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
@@ -92,7 +93,7 @@ function createLiveTextSession(onPrompt: (prompt: string) => void): CreateAgentS
     let messages: readonly unknown[] = [];
     let lastText: string | undefined;
     return {
-      session: {
+      session: createAgentRunnerSession({
         get state() {
           return { messages, systemPrompt: TEST_SYSTEM_PROMPT, model: TEST_MODEL, thinkingLevel: "low" };
         },
@@ -116,7 +117,7 @@ function createLiveTextSession(onPrompt: (prompt: string) => void): CreateAgentS
         getToolDefinition(name) {
           return name === TEST_TOOL.name ? TEST_TOOL_DEFINITION : undefined;
         },
-      },
+      }),
     };
   };
 }
@@ -148,7 +149,7 @@ function createDelayedTextSession(delays: Record<string, number>, onPrompt: (pro
     let messages: readonly unknown[] = [];
     let lastText: string | undefined;
     return {
-      session: {
+      session: createAgentRunnerSession({
         get state() {
           return { messages, systemPrompt: TEST_SYSTEM_PROMPT, model: TEST_MODEL, thinkingLevel: "low" };
         },
@@ -173,7 +174,7 @@ function createDelayedTextSession(delays: Record<string, number>, onPrompt: (pro
         getToolDefinition(name) {
           return name === TEST_TOOL.name ? TEST_TOOL_DEFINITION : undefined;
         },
-      },
+      }),
     };
   };
 }
@@ -185,7 +186,7 @@ function createSequencedTextSession(onPrompt: (prompt: string) => void): CreateA
     let messages: readonly unknown[] = [];
     let lastText: string | undefined;
     return {
-      session: {
+      session: createAgentRunnerSession({
         get state() {
           return { messages, systemPrompt: TEST_SYSTEM_PROMPT, model: TEST_MODEL, thinkingLevel: "low" };
         },
@@ -209,7 +210,7 @@ function createSequencedTextSession(onPrompt: (prompt: string) => void): CreateA
         getToolDefinition(name) {
           return name === TEST_TOOL.name ? TEST_TOOL_DEFINITION : undefined;
         },
-      },
+      }),
     };
   };
 }

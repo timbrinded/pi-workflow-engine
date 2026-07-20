@@ -19,6 +19,7 @@ import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/ty
 import { WorkflowRunController } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-controller.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
 import type { WorkflowUsageLimitSchedulerClock } from "../.pi/extensions/pi-workflow-engine/src/workflow-usage-limit-scheduler.ts";
+import { createTestTheme } from "./fixtures/theme.ts";
 
 interface Notification {
   readonly message: string;
@@ -180,34 +181,48 @@ test("workflow run completions expose lifecycle actions and retained IDs", async
       runId: "completion-retained-run",
       background: backgroundOrigin(ctx, 1),
     });
+    await controller.sessionStarted(ctx);
 
     assert.deepEqual(
-      (await controller.argumentCompletions("ins", ctx))?.map((item) => item.value),
+      (await controller.argumentCompletions("ins"))?.map((item) => item.value),
       ["inspect"],
     );
     assert.deepEqual(
-      (await controller.argumentCompletions("inspect completion", ctx))?.map((item) => item.value),
+      (await controller.argumentCompletions("inspect completion"))?.map((item) => item.value),
       ["inspect completion-retained-run"],
     );
     assert.ok(
-      (await controller.inspectorArgumentCompletions("completion", ctx))
+      (await controller.inspectorArgumentCompletions("completion"))
         ?.some((item) => item.value === "completion-retained-run"),
     );
   } finally {
+    controller.sessionShutdown(ctx);
     await rm(cwd, { recursive: true, force: true });
   }
 });
 
-test("workflow run history uses textual RPC output instead of a custom navigator", async () => {
+test("workflow run history uses Pi's native RPC selectors instead of a custom navigator", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-rpc-ui-"));
   const notifications: Notification[] = [];
   const base = context(cwd, notifications, "rpc");
   let customCalls = 0;
+  const selections: Array<{ readonly title: string; readonly options: readonly string[] }> = [];
+  let selectionStep = 0;
   const ctx = {
     ...base,
     hasUI: true,
     ui: {
       ...base.ui,
+      theme: createTestTheme(),
+      setStatus() {},
+      setWidget() {},
+      select: async (title: string, options: string[]) => {
+        selections.push({ title, options });
+        selectionStep++;
+        if (selectionStep === 1) return options.find((option) => option.includes("rpc-selector-run"));
+        if (selectionStep === 2) return "inspect";
+        return undefined;
+      },
       custom: async () => {
         customCalls++;
         throw new Error("RPC must not open custom components");
@@ -220,9 +235,19 @@ test("workflow run history uses textual RPC output instead of a custom navigator
     execute: async () => {},
   });
   try {
+    await runWorkflow(ctx as ExtensionContext, workflow(), "", {
+      runId: "rpc-selector-run",
+      background: backgroundOrigin(ctx, 1),
+    });
     await controller.handleCommand("", ctx);
     assert.equal(customCalls, 0);
-    assert.equal(notifications.at(-1)?.message, "No durable workflow runs are available for this project.");
+    assert.deepEqual(selections.map((selection) => selection.title), [
+      "Workflow Runs",
+      "history-headless · rpc-selector-run",
+      "Workflow Runs",
+    ]);
+    assert.match(notifications.at(-1)?.message ?? "", /Workflow run rpc-selector-run/);
+    assert.match(notifications.at(-1)?.message ?? "", /retained headless result/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

@@ -298,7 +298,6 @@ export class ProgressTracker {
       renderWorkflowWidgetLines(this.snapshot(), 0, 120, this.ctx.ui.theme),
       { placement: "aboveEditor" },
     );
-    this.widgetRegistered = true;
   }
 
   private requestRenderSoon(): void {

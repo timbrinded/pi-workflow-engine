@@ -1,14 +1,16 @@
-import { DefaultResourceLoader, getAgentDir, type ResourceDiagnostic, type Skill } from "@earendil-works/pi-coding-agent";
+import type {
+  CreateAgentSessionServicesOptions,
+  ResourceDiagnostic,
+  ResourceLoader,
+  Skill,
+} from "@earendil-works/pi-coding-agent";
 import { dirname, resolve } from "node:path";
 import { logicalWorkspacePath, type ReplayWorkspaceRoots } from "./replay-path-identity.ts";
 import { captureTreeFingerprint } from "./tree-fingerprint.ts";
 import type { ResolvedSkillIdentity } from "./resume-context.ts";
 
-export type AgentSkillRequestSource = "explicit" | "prompt";
-
 export interface AgentSkillRequest {
   readonly selectors: readonly string[];
-  readonly source: AgentSkillRequestSource;
   readonly strict: boolean;
 }
 
@@ -17,21 +19,14 @@ export interface AgentSkillResolution {
   readonly unmatched: readonly string[];
 }
 
-export interface AgentSkillResourceSetup {
-  readonly resourceLoader: DefaultResourceLoader;
-  readonly selectedSkills: readonly Skill[];
-  readonly unmatchedSelectors: readonly string[];
-  readonly diagnostics: readonly ResourceDiagnostic[];
-}
-
 type AgentSkillResourceLoaderOptions = Pick<
-  ConstructorParameters<typeof DefaultResourceLoader>[0],
+  NonNullable<CreateAgentSessionServicesOptions["resourceLoaderOptions"]>,
   "noSkills" | "skillsOverride"
 >;
 
-export interface PreparedAgentSkillResources {
+interface PreparedAgentSkillResources {
   readonly resourceLoaderOptions: AgentSkillResourceLoaderOptions;
-  resolve(resourceLoader: Pick<DefaultResourceLoader, "getSkills">): Omit<AgentSkillResourceSetup, "resourceLoader">;
+  resolve(resourceLoader: Pick<ResourceLoader, "getSkills">): readonly Skill[];
 }
 
 export type AgentSkillIdentityCapture =
@@ -61,9 +56,9 @@ const PURPOSE_BOUNDARY_PATTERN = /\s+\b(?:for|to|when|while|so|because|in\s+orde
  */
 export function resolveAgentSkillRequest(prompt: string, explicitSkills: unknown): AgentSkillRequest {
   if (explicitSkills !== undefined) {
-    return { selectors: normalizeExplicitSkillSelectors(explicitSkills), source: "explicit", strict: true };
+    return { selectors: normalizeExplicitSkillSelectors(explicitSkills), strict: true };
   }
-  return { selectors: extractSkillSelectorsFromText(prompt), source: "prompt", strict: false };
+  return { selectors: extractSkillSelectorsFromText(prompt), strict: false };
 }
 
 export function extractSkillSelectorsFromText(text: string): string[] {
@@ -106,22 +101,6 @@ export function selectAgentSkills(skills: readonly Skill[], selectors: readonly 
   }
 
   return { selected: [...selected.values()], unmatched };
-}
-
-export async function createAgentSkillResourceLoader(options: {
-  readonly cwd: string;
-  readonly prompt: string;
-  readonly skills: unknown;
-  readonly log?: (message: string) => void;
-}): Promise<AgentSkillResourceSetup> {
-  const prepared = prepareAgentSkillResources(options);
-  const loader = new DefaultResourceLoader({
-    cwd: options.cwd,
-    agentDir: getAgentDir(),
-    ...prepared.resourceLoaderOptions,
-  });
-  await loader.reload();
-  return { resourceLoader: loader, ...prepared.resolve(loader) };
 }
 
 /**
@@ -168,7 +147,7 @@ export function prepareAgentSkillResources(options: {
         options.log?.(`Ignoring unrecognized subagent skill mention${resolution.unmatched.length === 1 ? "" : "s"}: ${resolution.unmatched.join(", ")}`);
       }
 
-      return { selectedSkills: resolution.selected, unmatchedSelectors: resolution.unmatched, diagnostics };
+      return resolution.selected;
     },
   };
 }

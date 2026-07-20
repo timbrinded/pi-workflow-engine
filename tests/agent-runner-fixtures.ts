@@ -1,5 +1,4 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -7,6 +6,7 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
   runAgent as runAgentWithContext,
   type AgentProgress,
+  type AgentRunnerSession,
   type CreateAgentSession,
   type RunContext,
 } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
@@ -177,9 +177,28 @@ export async function executeTestFinalAnswer(
   await tool.execute("final-answer", params, undefined, undefined, unusedToolContext);
 }
 
+export function createAgentRunnerSession(
+  overrides: Partial<AgentRunnerSession> = {},
+): AgentRunnerSession {
+  return {
+    state: { messages: [] },
+    async prompt() {},
+    subscribe: () => () => {},
+    dispose() {},
+    async abort() {},
+    getAllTools: () => [],
+    getActiveToolNames: () => [],
+    getToolDefinition: () => undefined,
+    setActiveToolsByName() {},
+    setAutoRetryEnabled() {},
+    getLastAssistantText: () => undefined,
+    ...overrides,
+  };
+}
+
 export function createTextSession(model: Model<Api> | undefined = DEFAULT_SESSION_MODEL): Awaited<ReturnType<CreateAgentSession>> {
   return {
-    session: {
+    session: createAgentRunnerSession({
       state: {
         messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
         systemPrompt: "Test system prompt",
@@ -204,7 +223,7 @@ export function createTextSession(model: Model<Api> | undefined = DEFAULT_SESSIO
       getToolDefinition(name) {
         return name === TEST_TOOL.name ? TEST_TOOL_DEFINITION : undefined;
       },
-    },
+    }),
   };
 }
 
@@ -259,14 +278,4 @@ export function createFakeWorktreeRegistry(input: {
 
 export function commandNames(calls: readonly WorktreeGitCommandOptions[]): string[] {
   return calls.map((call) => call.args.slice(0, 2).join(" "));
-}
-
-export async function writeProjectSkill(cwd: string, name: string): Promise<void> {
-  const dir = join(cwd, ".pi", "skills", name);
-  await mkdir(dir, { recursive: true });
-  await writeFile(
-    join(dir, "SKILL.md"),
-    `---\nname: ${name}\ndescription: Test skill for workflow subagent skill filtering.\n---\n\n# ${name}\n`,
-    "utf8",
-  );
 }

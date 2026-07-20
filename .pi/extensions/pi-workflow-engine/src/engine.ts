@@ -1,4 +1,4 @@
-import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { bindParallel, bindPipeline, Semaphore } from "./concurrency.ts";
 import { WorkflowAgentLimiter } from "./agent-limits.ts";
@@ -71,7 +71,6 @@ export interface WorkflowEngineDependencies {
   readonly worktrees?: WorktreeRegistry;
   readonly retryScheduler?: AgentRetryScheduler;
   readonly modelProfiles?: ResolvedWorkflowModelProfiles;
-  readonly modelRuntime?: ModelRuntime;
 }
 
 /**
@@ -97,7 +96,7 @@ export async function runResolvedWorkflow(
   dependencies: WorkflowEngineDependencies = {},
 ): Promise<unknown> {
   const runId = resolvedOptions.runId ?? createWorkflowRunId();
-  const getModelRuntime = createWorkflowModelRuntimeAccessor(ctx.modelRegistry, dependencies.modelRuntime);
+  const getModelRuntime = createWorkflowModelRuntimeAccessor(ctx.modelRegistry);
   let durableProgress: DurableWorkflowRun | undefined;
   const progress = new ProgressTracker(ctx, mod.meta.name, runId, (snapshot) => durableProgress?.updateProgress(snapshot));
   const progressSource = { snapshot: () => progress.snapshot() };

@@ -45,13 +45,12 @@ export interface AgentRunnerSession {
   subscribe(listener: (event: AgentRunnerEvent) => void): () => void;
   dispose(): void;
   abort(): Promise<void>;
-  getAllTools?(): readonly AgentRunnerToolInfo[];
-  getActiveToolNames?(): readonly string[];
-  getToolDefinition?(name: string): EffectiveToolDefinitionLike | undefined;
-  setActiveToolsByName?(toolNames: readonly string[]): void;
-  setAutoRetryEnabled?(enabled: boolean): void;
-  /** Optional only so injected failure-path test doubles can omit result extraction. */
-  getLastAssistantText?(): string | undefined;
+  getAllTools(): readonly AgentRunnerToolInfo[];
+  getActiveToolNames(): readonly string[];
+  getToolDefinition(name: string): EffectiveToolDefinitionLike | undefined;
+  setActiveToolsByName(toolNames: readonly string[]): void;
+  setAutoRetryEnabled(enabled: boolean): void;
+  getLastAssistantText(): string | undefined;
 }
 
 export type CreateAgentSession = (options: CreateAgentSessionOptions) => Promise<{ session: AgentRunnerSession }>;
@@ -95,7 +94,7 @@ export type RunContext = RunContextBase & (
       createSession?: undefined;
     }
   | {
-      /** Tests and other injected factories may deliberately consume only model lookup. */
+      /** Injected test sessions bypass Pi's resource loader and therefore do not resolve skills. */
       modelRegistry: Pick<ModelRegistry, "find">;
       getModelRuntime?: undefined;
       createSession: CreateAgentSession;

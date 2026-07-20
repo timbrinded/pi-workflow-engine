@@ -5,7 +5,6 @@ import {
   defineTool,
   SessionManager,
   type AgentSessionServices,
-  type CreateAgentSessionFromServicesOptions,
   type CreateAgentSessionOptions,
   type ModelRegistry,
   type Skill,
@@ -13,8 +12,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   appendSkillReminder,
-  createAgentSkillResourceLoader,
-  extractSkillSelectorsFromText,
   prepareAgentSkillResources,
 } from "./agent-skills.ts";
 import type {
@@ -110,11 +107,11 @@ export async function openAgentSession(input: {
         }),
       ]
     : [];
-  const createSessionResources = async (): Promise<AgentSessionResources> => {
+  const createSessionResources = (): Promise<AgentSessionResources> => {
     const prepare = () => prepareAgentSessionResources({ rc, prompt, opts, cwd, model, customTools, label });
-    return shouldCreateSkillResourceLoader(rc, prompt, opts)
-      ? rc.perf.time("agent.skills_ms", prepare, tags)
-      : prepare();
+    return rc.createSession
+      ? prepare()
+      : rc.perf.time("agent.session_resources_ms", prepare, tags);
   };
   const createSubagentSession = async (
     resources: AgentSessionResources,
@@ -125,42 +122,27 @@ export async function openAgentSession(input: {
       () => resources.createSession(sessionOptions),
       tags,
     );
-    created.session.setAutoRetryEnabled?.(false);
+    created.session.setAutoRetryEnabled(false);
     return created;
   };
 
   let session: AgentRunnerSession | undefined;
-  let selectedSkills: readonly Skill[] = [];
   try {
     throwIfAborted(rc.signal);
-    let resources = await createSessionResources();
-    selectedSkills = resources.selectedSkills;
-    let toolSelection = buildToolSelection(opts, selectedSkills.length > 0);
+    const resources = await createSessionResources();
+    const toolSelection = buildToolSelection(opts, resources.selectedSkills.length > 0);
     session = (await createSubagentSession(resources, toolSelection.sessionOptions)).session;
-    const dynamicToolHints = toolSelection.toolHints.length === 0
-      ? { applied: true, matched: new Set<AgentToolHint>() }
+    const matchedToolHints = toolSelection.toolHints.length === 0
+      ? new Set<AgentToolHint>()
       : applyDynamicToolHints(session, toolSelection);
-    if (!dynamicToolHints.applied) {
-      if (opts.requireToolHints) throw new WorkflowToolHintUnavailableError(toolSelection.toolHints);
-      rc.progress.log(`${label}: dynamic tool hints unavailable; falling back to concrete tools only`);
-      rc.perf.counter("agent.tool_hint_fallback", 1, tags);
-      const dynamicSession = session;
-      session = undefined;
-      rc.perf.timeSync("agent.dispose_ms", () => dynamicSession.dispose(), tags);
-      throwIfAborted(rc.signal);
-      resources = await createSessionResources();
-      selectedSkills = resources.selectedSkills;
-      toolSelection = buildToolSelection(opts, selectedSkills.length > 0);
-      session = (await createSubagentSession(resources, toolSelection.fallbackSessionOptions)).session;
-    }
     if (opts.requireToolHints) {
-      const missing = toolSelection.toolHints.filter((hint) => !dynamicToolHints.matched.has(hint));
+      const missing = toolSelection.toolHints.filter((hint) => !matchedToolHints.has(hint));
       if (missing.length > 0) throw new WorkflowToolHintUnavailableError(missing);
     }
     throwIfAborted(rc.signal);
     return {
       session,
-      selectedSkills,
+      selectedSkills: resources.selectedSkills,
       hasStructuredResult: () => captured,
       structuredResult: () => structuredResult,
     };
@@ -211,7 +193,7 @@ export async function promptAgentSession(input: {
         if (opts.schema) {
           for (let attempt = 0; !handle.hasStructuredResult() && attempt < MAX_SCHEMA_REPAIR_ATTEMPTS; attempt++) {
             throwIfAborted(rc.signal);
-            session.setActiveToolsByName?.([FINAL_TOOL]);
+            session.setActiveToolsByName([FINAL_TOOL]);
             rc.progress.log(`${label}: no final answer; re-prompting (${attempt + 1}/${MAX_SCHEMA_REPAIR_ATTEMPTS})`);
             rc.perf.counter("agent.structured_reprompt", 1, tags);
             await promptSession(SCHEMA_REPROMPT);
@@ -223,9 +205,6 @@ export async function promptAgentSession(input: {
           "agent.extract_result_ms",
           () => {
             if (!opts.schema) {
-              if (!session.getLastAssistantText) {
-                throw new Error("AgentSession.getLastAssistantText() is unavailable in this pi runtime.");
-              }
               return session.getLastAssistantText() ?? "";
             }
             if (!handle.hasStructuredResult()) {
@@ -262,9 +241,6 @@ export async function captureEffectiveSession(
   if (typeof state.thinkingLevel !== "string") {
     return { kind: "unverifiable", reason: "effective thinking level is unavailable" };
   }
-  if (!session.getActiveToolNames || !session.getAllTools || !session.getToolDefinition) {
-    return { kind: "unverifiable", reason: "effective tool APIs are unavailable" };
-  }
   const toolInfos = effectiveToolInfos(session.getAllTools());
   if (toolInfos.kind === "unverifiable") return toolInfos;
   return await captureEffectiveAgentSessionIdentity(
@@ -272,9 +248,9 @@ export async function captureEffectiveSession(
       systemPrompt: state.systemPrompt,
       model: state.model,
       thinkingLevel: state.thinkingLevel,
-      getActiveToolNames: () => session.getActiveToolNames!(),
+      getActiveToolNames: () => session.getActiveToolNames(),
       getAllTools: () => toolInfos.tools,
-      getToolDefinition: (name) => session.getToolDefinition!(name),
+      getToolDefinition: (name) => session.getToolDefinition(name),
     },
     { sessionCwd, workspaceRoot, signal },
   );
@@ -314,20 +290,10 @@ async function prepareAgentSessionResources(input: {
   readonly label: string;
 }): Promise<AgentSessionResources> {
   const { rc, prompt, opts, cwd, model, customTools, label } = input;
-  const skillOptions = {
-    cwd,
-    prompt,
-    skills: opts.skills,
-    log: (message: string) => rc.progress.log(`${label}: ${message}`),
-  };
-
   const createSession = rc.createSession;
   if (createSession) {
-    const skillSetup = shouldCreateSkillResourceLoader(rc, prompt, opts)
-      ? await createAgentSkillResourceLoader(skillOptions)
-      : undefined;
     return {
-      selectedSkills: skillSetup?.selectedSkills ?? [],
+      selectedSkills: [],
       createSession: (sessionOptions) =>
         createSession({
           cwd,
@@ -337,12 +303,16 @@ async function prepareAgentSessionResources(input: {
           tools: sessionOptions.tools,
           excludeTools: sessionOptions.excludeTools,
           customTools,
-          resourceLoader: skillSetup?.resourceLoader,
           sessionManager: SessionManager.inMemory(cwd),
         }),
     };
   }
 
+  const skillOptions = {
+    prompt,
+    skills: opts.skills,
+    log: (message: string) => rc.progress.log(`${label}: ${message}`),
+  };
   const preparedSkills = prepareAgentSkillResources(skillOptions);
   const services = await createAgentSessionServices({
     cwd,
@@ -350,11 +320,11 @@ async function prepareAgentSessionResources(input: {
     resourceLoaderOptions: preparedSkills.resourceLoaderOptions,
   });
   logSessionServiceDiagnostics(services, (message) => rc.progress.log(`${label}: ${message}`));
-  const skillSetup = preparedSkills.resolve(services.resourceLoader);
+  const selectedSkills = preparedSkills.resolve(services.resourceLoader);
   return {
-    selectedSkills: skillSetup.selectedSkills,
+    selectedSkills,
     createSession: (sessionOptions) =>
-      defaultCreateSession({
+      createAgentSessionFromServices({
         services,
         sessionManager: SessionManager.inMemory(cwd),
         model,
@@ -376,11 +346,6 @@ function logSessionServiceDiagnostics(
   }
 }
 
-async function defaultCreateSession(options: CreateAgentSessionFromServicesOptions): Promise<{ session: AgentRunnerSession }> {
-  const { session } = await createAgentSessionFromServices(options);
-  return { session };
-}
-
 function linkSessionAbort(signal: AbortSignal | undefined, session: AgentRunnerSession): () => void {
   if (!signal) return () => {};
   const onAbort = () => {
@@ -398,14 +363,8 @@ type ToolSessionOptions = Pick<CreateAgentSessionOptions, "tools" | "excludeTool
 
 interface ToolSelection {
   readonly sessionOptions: ToolSessionOptions;
-  readonly fallbackSessionOptions: ToolSessionOptions;
   readonly activeTools?: readonly string[];
   readonly toolHints: NonNullable<AgentExecutionOptions["toolHints"]>;
-}
-
-interface DynamicToolSession extends AgentRunnerSession {
-  getAllTools(): readonly AgentRunnerToolInfo[];
-  setActiveToolsByName(toolNames: readonly string[]): void;
 }
 
 function buildToolSelection(opts: AgentExecutionOptions, skillsEnabled: boolean): ToolSelection {
@@ -418,12 +377,11 @@ function buildToolSelection(opts: AgentExecutionOptions, skillsEnabled: boolean)
   const activeTools = buildToolList(opts, skillsEnabled, fallback);
   const strictSessionOptions = { tools: activeTools ? [...activeTools] : undefined };
   if (toolHints.length === 0) {
-    return { sessionOptions: strictSessionOptions, fallbackSessionOptions: strictSessionOptions, activeTools, toolHints };
+    return { sessionOptions: strictSessionOptions, activeTools, toolHints };
   }
 
   return {
     sessionOptions: { noTools: "builtin" },
-    fallbackSessionOptions: { tools: activeTools ? [...activeTools] : [] },
     activeTools,
     toolHints,
   };
@@ -445,9 +403,7 @@ function buildToolList(
 function applyDynamicToolHints(
   session: AgentRunnerSession,
   selection: ToolSelection,
-): { readonly applied: boolean; readonly matched: ReadonlySet<AgentToolHint> } {
-  if (!hasDynamicToolApis(session)) return { applied: false, matched: new Set() };
-
+): ReadonlySet<AgentToolHint> {
   const active = new Set(selection.activeTools ?? []);
   const matched = new Set<AgentToolHint>();
   for (const tool of session.getAllTools()) {
@@ -458,15 +414,7 @@ function applyDynamicToolHints(
     }
   }
   session.setActiveToolsByName([...active]);
-  return { applied: true, matched };
-}
-
-function hasDynamicToolApis(session: AgentRunnerSession): session is DynamicToolSession {
-  return typeof session.getAllTools === "function" && typeof session.setActiveToolsByName === "function";
-}
-
-function shouldCreateSkillResourceLoader(rc: RunContext, prompt: string, opts: AgentExecutionOptions): boolean {
-  return !rc.createSession || opts.skills !== undefined || extractSkillSelectorsFromText(prompt).length > 0;
+  return matched;
 }
 
 function effectiveToolInfos(

@@ -20,21 +20,14 @@ interface InheritedProvider {
  */
 export function createWorkflowModelRuntimeAccessor(
   hostRegistry: RegisteredProviderRegistry,
-  existing?: ModelRuntime,
 ): () => Promise<ModelRuntime> {
   let runtimePromise: Promise<ModelRuntime> | undefined;
-  let serialized: Promise<void> = Promise.resolve();
   const inherited = new Map<string, InheritedProvider>();
 
-  return () => {
-    const request = serialized.then(async () => {
-      runtimePromise ??= existing ? Promise.resolve(existing) : ModelRuntime.create();
-      const runtime = await runtimePromise;
-      synchronizeRegisteredProviders(runtime, hostRegistry, inherited);
-      return runtime;
-    });
-    serialized = request.then(() => undefined, () => undefined);
-    return request;
+  return async () => {
+    const runtime = await (runtimePromise ??= ModelRuntime.create());
+    synchronizeRegisteredProviders(runtime, hostRegistry, inherited);
+    return runtime;
   };
 }
 

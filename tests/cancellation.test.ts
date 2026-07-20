@@ -18,6 +18,7 @@ import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engin
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import type { AgentResumeBaseContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
+import { createAgentRunnerSession } from "./agent-runner-fixtures.ts";
 
 const RESUME_BASE_CONTEXT: AgentResumeBaseContext = {
   workflow: { kind: "verified", name: "cancellation-test", sourceFingerprint: "source-a" },
@@ -127,7 +128,7 @@ test("runAgent marks queued row failed when semaphore acquisition aborts", async
   const queuedController = new AbortController();
   let releaseFirst: (() => void) | undefined;
   const createSession: CreateAgentSession = async () => ({
-    session: {
+    session: createAgentRunnerSession({
       state: { messages: [] },
       async prompt() {
         await new Promise<void>((resolve) => {
@@ -140,7 +141,7 @@ test("runAgent marks queued row failed when semaphore acquisition aborts", async
       },
       dispose() {},
       async abort() {},
-    },
+    }),
   });
 
   const first = runAgent(createRunContext(createSession, firstController.signal, progress, semaphore), "first", { label: "first" });
@@ -160,7 +161,7 @@ test("runAgent calls session.abort when the run signal aborts", async () => {
   let aborts = 0;
   let resolvePrompt: (() => void) | undefined;
   const createSession: CreateAgentSession = async () => ({
-    session: {
+    session: createAgentRunnerSession({
       state: { messages: [] },
       async prompt() {
         await new Promise<void>((resolve) => {
@@ -175,7 +176,7 @@ test("runAgent calls session.abort when the run signal aborts", async () => {
         aborts += 1;
         resolvePrompt?.();
       },
-    },
+    }),
   });
 
   const running = runAgent(createRunContext(createSession, controller.signal), "hello", { label: "abort-me" });

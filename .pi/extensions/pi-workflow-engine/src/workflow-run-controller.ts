@@ -14,6 +14,7 @@ import {
   canRelaunchWorkflowRun,
   formatWorkflowRunDetails,
   formatWorkflowRunHistory,
+  formatWorkflowRunSummary,
   parseWorkflowRunsCommand,
   retainedWorkflowRunOutcome,
   WORKFLOW_RUN_HISTORY_LIMIT,
@@ -28,10 +29,6 @@ import {
   type WorkflowUsageLimitSchedulerClock,
 } from "./workflow-usage-limit-scheduler.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
-import {
-  WorkflowRunNavigator,
-  type WorkflowRunNavigatorSelection,
-} from "./ui/workflow-run-navigator.ts";
 import { completeCurrentArgument, splitArgumentPrefix } from "./command-completions.ts";
 
 interface WorkflowRunControllerDependencies {
@@ -101,12 +98,12 @@ export class WorkflowRunController {
       await this.perform(command.action, command.runId, ctx);
       return;
     }
-    if (!ctx.hasUI || ctx.mode !== "tui") {
+    if (!ctx.hasUI) {
       const records = await this.listRecent(ctx.cwd);
       ctx.ui.notify(formatWorkflowRunHistory(records, this.background.activeRunIds(ctx)), "info");
       return;
     }
-    await this.openNavigator(ctx);
+    await this.openRunSelector(ctx);
   }
 
   async inspectStoredRun(ctx: ExtensionContext, runId: string): Promise<boolean> {
@@ -117,22 +114,35 @@ export class WorkflowRunController {
     return true;
   }
 
-  private async openNavigator(ctx: ExtensionCommandContext): Promise<void> {
+  private async openRunSelector(ctx: ExtensionCommandContext): Promise<void> {
     while (true) {
       const records = await this.listRecent(ctx.cwd);
       const active = this.background.activeRunIds(ctx);
-      const selection = await ctx.ui.custom<WorkflowRunNavigatorSelection | undefined>(
-        (tui, theme, _keybindings, done) => new WorkflowRunNavigator(records, active, tui, theme, done),
-        { overlay: true, overlayOptions: { anchor: "right-center", width: "75%", maxHeight: "80%", margin: 1 } },
+      if (records.length === 0) {
+        ctx.ui.notify(formatWorkflowRunHistory(records, active), "info");
+        return;
+      }
+      const options = records.map((record) =>
+        formatWorkflowRunSummary(record, active.has(record.runId))
       );
-      if (!selection) return;
-      const record = await this.loadRecord(ctx.cwd, selection.runId);
+      const selected = await ctx.ui.select("Workflow Runs", options);
+      if (!selected) return;
+      const selectedIndex = options.indexOf(selected);
+      const selectedRecord = records[selectedIndex];
+      const record = selectedRecord && await this.loadRecord(ctx.cwd, selectedRecord.runId);
       if (!record) {
-        ctx.ui.notify(`Workflow run ${selection.runId} is no longer available.`, "warning");
+        ctx.ui.notify("The selected workflow run is no longer available.", "warning");
         continue;
       }
-      if (selection.action === "inspect") await this.inspect(record, ctx);
-      else await this.perform(selection.action, selection.runId, ctx);
+      const actions = availableWorkflowRunActions(record, active.has(record.runId));
+      const selectedAction = await ctx.ui.select(
+        `${record.workflow.name} · ${record.runId}`,
+        [...actions],
+      );
+      const action = actions.find((candidate) => candidate === selectedAction);
+      if (!action) continue;
+      if (action === "inspect") await this.inspect(record, ctx);
+      else await this.perform(action, record.runId, ctx);
     }
   }
 
@@ -294,10 +304,8 @@ export class WorkflowRunController {
       .slice(0, WORKFLOW_RUN_HISTORY_LIMIT);
   }
 
-  async argumentCompletions(
-    argumentPrefix: string,
-    ctx: ExtensionContext | undefined = this.completionContext,
-  ): Promise<AutocompleteItem[] | null> {
+  async argumentCompletions(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
+    const ctx = this.completionContext;
     const parts = splitArgumentPrefix(argumentPrefix);
     if (parts.completed.length === 0) {
       return completeCurrentArgument(argumentPrefix, [
@@ -324,10 +332,8 @@ export class WorkflowRunController {
     );
   }
 
-  async inspectorArgumentCompletions(
-    argumentPrefix: string,
-    ctx: ExtensionContext | undefined = this.completionContext,
-  ): Promise<AutocompleteItem[] | null> {
+  async inspectorArgumentCompletions(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
+    const ctx = this.completionContext;
     const parts = splitArgumentPrefix(argumentPrefix);
     if (parts.completed.length > 0) return null;
     const records = await this.listRecent(ctx?.cwd ?? process.cwd());

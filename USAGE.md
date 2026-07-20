@@ -150,25 +150,23 @@ When only the literal `dynamax` token is used, the opt-in is one-shot: the next 
 
 ### Prompt editor cue
 
-In TUI mode, every standalone `dynamax` token receives an animated cycling
-colour cue while it is present in the prompt. Longer identifiers such as
+In TUI mode, every standalone `dynamax` token receives a static multi-colour
+cue while it is present in the prompt. Longer identifiers such as
 `notdynamax`, `dynamaxing`, and `dynamax_mode` are deliberately left alone. The
 cue affects rendering only; one-shot and sticky activation semantics are
 unchanged.
 
 The implementation follows pi 0.80.10's [official `CustomEditor`
-pattern](https://pi.dev/docs/latest/extensions#custom-editor): unhandled input is
-delegated to `super.handleInput`, retaining pi's cursor, deletion, paste,
-multiline, undo, completion, IME, and app-keybinding behavior. Animation stops
-as soon as the token disappears and is disposed on session shutdown or reload.
+pattern](https://pi.dev/docs/latest/extensions#custom-editor): it decorates only
+the editor's rendered lines, retaining the wrapped editor's input, cursor,
+deletion, paste, multiline, undo, completion, IME, and app-keybinding behavior.
 
 If an editor extension is already registered, pi-workflow-engine composes its
-factory and adds only the Dynamax render/input hooks. If that editor cannot be
+factory and adds only the Dynamax render hook. If that editor cannot be
 composed, an explicit warning is shown and pi's stock-compatible `CustomEditor`
 is used so highlighting is never silently disabled. Pi editor registration is
-still last-writer-wins; if another extension replaces the editor later, the
-replacement is detected before the next terminal input is handled, composed,
-and reported.
+still last-writer-wins; the previous editor is restored on shutdown only while
+the Dynamax decorator still owns the registration.
 
 When the host agent calls the `workflow` tool from a TUI session, pi opens the live workflow inspector for that run. The compact workflow widget still shows the latest moving status above the editor, but the inspector is the richer view for phases, agents, findings, and logs.
 
@@ -279,9 +277,9 @@ A graceful pi session shutdown aborts active background work and records it as `
 
 ### Recent runs and lifecycle actions
 
-`/workflow:runs` opens a bounded project-history navigator. Each row includes an accessible state label, workflow name, age, duration, usage summary, and full run ID. Use `up`/`down` to select, `enter` to inspect retained phases, agents, findings, logs, and the final result or error, and `q`/`escape` to close. The footer shows only lifecycle keys valid for the selected record: `s` stops an active background run; `r` resumes an eligible paused run or restarts an eligible terminal run. The background activity line is present only while this session owns active background work.
+`/workflow:runs` opens pi's native selection UI with a bounded list of recent project runs. Each option includes an accessible state label, workflow name, age, duration, usage summary, and full run ID. Choose a run, then choose one of the lifecycle actions currently valid for it: inspect, stop, resume, or restart. The background activity line is present only while this session owns active background work.
 
-The same operations are available without the navigator:
+The same operations are available without the selection UI:
 
 ```text
 /workflow:runs inspect <run-id>

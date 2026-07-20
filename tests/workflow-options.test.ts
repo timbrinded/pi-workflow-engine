@@ -240,8 +240,8 @@ test("pickWorkflow does not prompt for inspector by default", async () => {
   assert.deepEqual(invocation, { name: "code-review", args: "review src", options: {} });
 });
 
-test("pickWorkflow uses custom picker values instead of long raw select rows", async () => {
-  let customCalls = 0;
+test("pickWorkflow maps Pi's native selection label back to the workflow name", async () => {
+  let offered: readonly string[] = [];
   const workflows = new Map<string, WorkflowModule>([
     [
       "refactor-scout",
@@ -259,12 +259,9 @@ test("pickWorkflow uses custom picker values instead of long raw select rows", a
     hasUI: true,
     mode: "tui",
     ui: {
-      async custom() {
-        customCalls++;
-        return "refactor-scout";
-      },
-      async select() {
-        throw new Error("raw select should not be used when custom picker is available");
+      async select(_title: string, options: readonly string[]) {
+        offered = options;
+        return options.find((option) => option.startsWith("refactor-scout"));
       },
       async input() {
         return "";
@@ -277,7 +274,7 @@ test("pickWorkflow uses custom picker values instead of long raw select rows", a
 
   const invocation = await pickWorkflow(workflows, ctx);
 
-  assert.equal(customCalls, 1);
+  assert.match(offered.join("\n"), /refactor-scout — Advisory-only refactor scout/);
   assert.deepEqual(invocation, { name: "refactor-scout", args: "", options: {} });
 });
 

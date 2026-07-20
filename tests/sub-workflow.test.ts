@@ -18,6 +18,7 @@ import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef
 import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { WorktreeRegistry, type WorktreeGitCommandOptions } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import { createAgentRunnerSession } from "./agent-runner-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly phases: string[];
@@ -108,14 +109,14 @@ function usageMessage(input: number, output: number): unknown {
 }
 
 const NOOP_SESSION: CreateAgentSession = async () => ({
-  session: {
+  session: createAgentRunnerSession({
     state: { messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
     prompt: async () => {},
     getLastAssistantText: () => "ok",
     subscribe: () => () => {},
     dispose: () => {},
     abort: async () => {},
-  },
+  }),
 });
 
 function eventByKey(events: readonly WorkflowProgressEvent[], key: string): WorkflowProgressEvent | undefined {
@@ -334,14 +335,14 @@ test("child structured progress is namespaced while parent progress is not", asy
 test("parent and sub-workflow agents share the run's usage recorder", async () => {
   const usage = createWorkflowUsageRecorder();
   const createSession: CreateAgentSession = async () => ({
-    session: {
+    session: createAgentRunnerSession({
       state: { messages: [usageMessage(10, 5)] },
       prompt: async () => {},
       getLastAssistantText: () => "ok",
       subscribe: () => () => {},
       dispose: () => {},
       abort: async () => {},
-    },
+    }),
   });
   const progress = createProgress();
   const rc = createRc(progress, new Semaphore(2), createSession, usage);
@@ -369,7 +370,7 @@ test("parent and sub-workflow agents share the run's concurrency cap", async () 
   let active = 0;
   let max = 0;
   const createSession: CreateAgentSession = async () => ({
-    session: {
+    session: createAgentRunnerSession({
       state: { messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
       async prompt() {
         active += 1;
@@ -380,7 +381,7 @@ test("parent and sub-workflow agents share the run's concurrency cap", async () 
       subscribe: () => () => {},
       dispose: () => {},
       abort: async () => {},
-    },
+    }),
   });
 
   const progress = createProgress();

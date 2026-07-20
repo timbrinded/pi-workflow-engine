@@ -19,6 +19,7 @@ import {
   RESUME_BASE_CONTEXT,
   TEST_TOOL,
   TEST_TOOL_DEFINITION,
+  createAgentRunnerSession,
   createProgress,
   createRegistry,
   createRunContext,
@@ -141,7 +142,7 @@ test("tool-free structured agents can replay without fingerprinting the workspac
     const finalTool = options.customTools?.find((tool) => tool.name === "final_answer");
     if (!finalTool) throw new Error("expected final-answer tool");
     return {
-      session: {
+      session: createAgentRunnerSession({
         state: {
           messages: [],
           systemPrompt: `Work in ${options.cwd}`,
@@ -171,7 +172,7 @@ test("tool-free structured agents can replay without fingerprinting the workspac
         getToolDefinition(name) {
           return name === finalTool.name ? finalTool : undefined;
         },
-      },
+      }),
     };
   };
 
@@ -266,7 +267,7 @@ test("read-only agents that mutate the repository are not recorded", async () =>
     },
   };
   const createSession: CreateAgentSession = async () => ({
-    session: {
+    session: createAgentRunnerSession({
       state: {
         messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
         systemPrompt: "Test system prompt",
@@ -291,7 +292,7 @@ test("read-only agents that mutate the repository are not recorded", async () =>
       getToolDefinition(name) {
         return name === TEST_TOOL.name ? TEST_TOOL_DEFINITION : undefined;
       },
-    },
+    }),
   });
   try {
     assert.equal(

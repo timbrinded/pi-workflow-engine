@@ -36,10 +36,10 @@ dynamax investigate why typecheck started failing on this branch
 or author a temporary one for this task. Use `/workflow:dynamax on` when you
 want that permission to remain active for the session.
 
-The standalone `dynamax` token is highlighted with an animated colour cycle as
-you type. The cue extends pi's stock-compatible `CustomEditor`, so cursor,
-paste, undo, completion, and app-keybinding behavior remain pi-owned. See
-[the editor API note](USAGE.md#prompt-editor-cue) for custom-editor composition.
+The standalone `dynamax` token receives a static multi-colour highlight as you
+type. The cue decorates pi's current editor, so cursor, paste, undo, completion,
+and app-keybinding behavior remain editor-owned. See [the editor API
+note](USAGE.md#prompt-editor-cue) for custom-editor composition.
 
 Saved workflows are available directly:
 

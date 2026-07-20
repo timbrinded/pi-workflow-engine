@@ -7,18 +7,13 @@ import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
   buildTemporaryWorkflowAuthorPrompt,
-  formatWorkflowInspection,
   getLastWorkflowInspection,
   inlineCompileErrorResult,
   normalizeWorkflowToolRequest,
   openWorkflowInspector,
-  workflowArgumentCompletions,
 } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
-import {
-  DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
-  DEFAULT_REVIEW_RESULTS_SHORTCUT,
-} from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
+import { DEFAULT_REVIEW_RESULTS_SHORTCUT } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
@@ -177,10 +172,12 @@ test("normalizeWorkflowToolRequest accepts named workflow requests", () => {
 });
 
 test("/workflow exposes native workflow-name and option completions", async () => {
-  const workflows = await workflowArgumentCompletions("code");
+  const completions = captureWorkflowExtension().commands.get("workflow")?.getArgumentCompletions;
+  assert.ok(completions);
+  const workflows = await completions("code");
   assert.ok(workflows?.some((item) => item.value === "code-review" && item.description));
 
-  const options = await workflowArgumentCompletions("code-review --re");
+  const options = await completions("code-review --re");
   assert.deepEqual(
     options?.map((item) => item.value),
     ["code-review --refresh", "code-review --result-viewer", "code-review --resume-edited", "code-review --resume="],
@@ -239,7 +236,6 @@ test("RPC command and inspector surfaces use native selection and text instead o
       logs: ["completed"],
     },
   };
-  assert.match(formatWorkflowInspection(inspection), /rpc-inspection-run/);
   await openWorkflowInspector(ctx, inspection);
   assert.equal(customCalls, 0);
   assert.match(notifications.at(-1) ?? "", /Workflow inspector: rpc-inspection/);

@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
 import {
-  createAgentSessionServices,
   ModelRegistry,
   ModelRuntime,
   VERSION,
@@ -33,8 +32,12 @@ test("installation docs state the minimum host Pi version", async () => {
   assert.match(usage, /requires \*\*pi 0\.80\.10 or newer\*\*/i);
 });
 
-test("late host-only provider registrations reach fresh child session services", async () => {
+test("late host-only provider registrations reach the run-scoped child runtime", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runtime-compat-"));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOffline = process.env.PI_OFFLINE;
+  process.env.PI_CODING_AGENT_DIR = cwd;
+  process.env.PI_OFFLINE = "1";
   const runtimeOptions = {
     authPath: join(cwd, "missing-auth.json"),
     modelsPath: null,
@@ -59,36 +62,18 @@ test("late host-only provider registrations reach fresh child session services",
         },
       ],
     };
-    const childRuntime = await ModelRuntime.create(runtimeOptions);
-    const getModelRuntime = createWorkflowModelRuntimeAccessor(hostRegistry, childRuntime);
-    assert.equal(await getModelRuntime(), childRuntime);
+    const getModelRuntime = createWorkflowModelRuntimeAccessor(hostRegistry);
+    const childRuntime = await getModelRuntime();
     assert.equal(childRuntime.getRegisteredProviderConfig("host-only"), undefined);
 
     hostRegistry.registerProvider("host-only", providerConfig);
     const [inheritedRuntime, concurrentRuntime] = await Promise.all([getModelRuntime(), getModelRuntime()]);
+    assert.equal(inheritedRuntime, childRuntime);
     assert.equal(concurrentRuntime, childRuntime);
     const firstInheritedConfig = childRuntime.getRegisteredProviderConfig("host-only");
     assert.ok(firstInheritedConfig);
     assert.equal(await getModelRuntime(), childRuntime);
     assert.equal(childRuntime.getRegisteredProviderConfig("host-only"), firstInheritedConfig);
-
-    const serviceOptions = {
-      cwd,
-      modelRuntime: inheritedRuntime,
-      resourceLoaderOptions: {
-        noExtensions: true,
-        noSkills: true,
-        noPromptTemplates: true,
-        noThemes: true,
-      },
-    } as const;
-    const first = await createAgentSessionServices(serviceOptions);
-    const second = await createAgentSessionServices(serviceOptions);
-
-    assert.equal(first.modelRuntime, childRuntime);
-    assert.equal(second.modelRuntime, childRuntime);
-    assert.notEqual(first.resourceLoader, second.resourceLoader);
-    assert.notEqual(first.resourceLoader.getExtensions().runtime, second.resourceLoader.getExtensions().runtime);
     assert.deepEqual(childRuntime.getRegisteredProviderConfig("host-only"), providerConfig);
     assert.equal(childRuntime.getModel("host-only", "host-model")?.name, "Host model");
 
@@ -103,6 +88,10 @@ test("late host-only provider registrations reach fresh child session services",
     await getModelRuntime();
     assert.ok(childRuntime.getRegisteredProviderConfig("shared-provider"));
   } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (previousOffline === undefined) delete process.env.PI_OFFLINE;
+    else process.env.PI_OFFLINE = previousOffline;
     await rm(cwd, { recursive: true, force: true });
   }
 });

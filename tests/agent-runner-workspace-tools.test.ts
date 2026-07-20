@@ -18,13 +18,13 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/tool-capabilities.ts";
 import {
   commandNames,
+  createAgentRunnerSession,
   createFakeWorktreeRegistry,
   createProgress,
   createRunContext,
   createTextSession,
   executeTestFinalAnswer,
   runAgent,
-  writeProjectSkill,
 } from "./agent-runner-fixtures.ts";
 import { createGitRepo, runGit } from "./resume-fixtures.ts";
 
@@ -119,7 +119,7 @@ test("runAgent removes an isolated worktree when the agent fails", async () => {
   const repoCwd = "/repo";
   const { registry, calls } = createFakeWorktreeRegistry({ repoCwd });
   const createSession: CreateAgentSession = async () => ({
-    session: {
+    session: createAgentRunnerSession({
       state: { messages: [] },
       async prompt() {
         throw new Error("agent failed");
@@ -129,7 +129,7 @@ test("runAgent removes an isolated worktree when the agent fails", async () => {
       },
       dispose() {},
       async abort() {},
-    },
+    }),
   });
 
   await assert.rejects(
@@ -320,7 +320,7 @@ test("runAgent re-checks budget after waiting for a concurrency slot", async () 
   const createSession: CreateAgentSession = async () => {
     createSessionCalls += 1;
     return {
-      session: {
+      session: createAgentRunnerSession({
         state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
         async prompt() {
           markFirstPromptEntered();
@@ -332,7 +332,7 @@ test("runAgent re-checks budget after waiting for a concurrency slot", async () 
         },
         dispose() {},
         async abort() {},
-      },
+      }),
     };
   };
   const rc = createRunContext({ createSession, budget, progress });
@@ -365,7 +365,7 @@ test("runAgent dynamically enables installed search-like tools", async () => {
     observedExcludeTools = options.excludeTools;
     observedNoTools = options.noTools;
     return {
-      session: {
+      session: createAgentRunnerSession({
         state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
         async prompt() {
           await executeTestFinalAnswer(options, { ok: true });
@@ -392,7 +392,7 @@ test("runAgent dynamically enables installed search-like tools", async () => {
         setActiveToolsByName(toolNames) {
           activatedTools = toolNames;
         },
-      },
+      }),
     };
   };
 
@@ -436,7 +436,7 @@ test("external-search tool hints select web capabilities but exclude local and m
 
   let activatedTools: readonly string[] = [];
   const createSession: CreateAgentSession = async (options) => ({
-    session: {
+    session: createAgentRunnerSession({
       state: { messages: [{ role: "assistant", content: [] }] },
       async prompt() {
         await executeTestFinalAnswer(options, { ok: true });
@@ -458,7 +458,7 @@ test("external-search tool hints select web capabilities but exclude local and m
       setActiveToolsByName(toolNames) {
         activatedTools = toolNames;
       },
-    },
+    }),
   });
 
   const result = await runAgent(createRunContext({ createSession }), "research", {
@@ -476,7 +476,7 @@ test("required tool hints fail before prompting when no installed capability mat
   let prompted = false;
   let disposed = false;
   const createSession: CreateAgentSession = async () => ({
-    session: {
+    session: createAgentRunnerSession({
       state: { messages: [] },
       async prompt() {
         prompted = true;
@@ -492,7 +492,7 @@ test("required tool hints fail before prompting when no installed capability mat
         return [{ name: "grep", description: "Search local files" }];
       },
       setActiveToolsByName() {},
-    },
+    }),
   });
 
   await assert.rejects(
@@ -505,143 +505,4 @@ test("required tool hints fail before prompting when no installed capability mat
   );
   assert.equal(prompted, false);
   assert.equal(disposed, true);
-});
-
-test("runAgent falls back to concrete tools when dynamic tool APIs are unavailable", async () => {
-  const calls: Array<{
-    readonly tools?: readonly string[];
-    readonly excludeTools?: readonly string[];
-    readonly noTools?: "all" | "builtin";
-  }> = [];
-  let firstPrompted = false;
-  let secondPrompted = false;
-  let firstDisposed = false;
-
-  const createSession: CreateAgentSession = async (options) => {
-    calls.push({ tools: options.tools, excludeTools: options.excludeTools, noTools: options.noTools });
-    const isFirstCall = calls.length === 1;
-    return {
-      session: {
-        state: { messages: [{ role: "assistant", content: [{ type: "text", text: isFirstCall ? "wide" : "strict" }] }] },
-        async prompt() {
-          if (isFirstCall) firstPrompted = true;
-          else {
-            secondPrompted = true;
-            await executeTestFinalAnswer(options, { ok: true });
-          }
-        },
-        subscribe() {
-          return () => {};
-        },
-        dispose() {
-          if (isFirstCall) firstDisposed = true;
-        },
-        async abort() {},
-      },
-    };
-  };
-
-  const result = await runAgent(createRunContext({ createSession }), "hello", {
-    label: "dynamic-tools-fallback",
-    tools: ["read", "bash", "grep", "find", "ls"],
-    toolHints: ["search"],
-    schema: Type.Object({ ok: Type.Boolean() }),
-  });
-
-  assert.deepEqual(result, { ok: true });
-  assert.deepEqual(calls, [
-    { tools: undefined, excludeTools: undefined, noTools: "builtin" },
-    { tools: ["read", "bash", "grep", "find", "ls", "final_answer"], excludeTools: undefined, noTools: undefined },
-  ]);
-  assert.equal(firstPrompted, false);
-  assert.equal(secondPrompted, true);
-  assert.equal(firstDisposed, true);
-});
-
-test("dynamic-tool fallback transfers session ownership before disposal", async () => {
-  let createCalls = 0;
-  let disposeCalls = 0;
-  const createSession: CreateAgentSession = async () => {
-    createCalls++;
-    return {
-      session: {
-        state: { messages: [] },
-        async prompt() {},
-        subscribe() {
-          return () => {};
-        },
-        dispose() {
-          disposeCalls++;
-          throw new Error("fallback disposal failed");
-        },
-        async abort() {},
-      },
-    };
-  };
-
-  await assert.rejects(
-    () => runAgent(createRunContext({ createSession }), "hello", {
-      tools: ["read"],
-      toolHints: ["search"],
-    }),
-    /fallback disposal failed/,
-  );
-  assert.equal(createCalls, 1);
-  assert.equal(disposeCalls, 1);
-});
-
-test("runAgent filters explicitly requested skills and auto-adds read when tools are restricted", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-skill-test-"));
-  try {
-    await writeProjectSkill(cwd, "workflow-code-review-actions");
-    let observedTools: readonly string[] | undefined;
-    let observedSkills: readonly string[] = [];
-    let observedPrompt = "";
-    const createSession: CreateAgentSession = async (options) => {
-      observedTools = options.tools;
-      observedSkills = options.resourceLoader?.getSkills().skills.map((skill) => skill.name) ?? [];
-      return {
-        session: {
-          state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
-          async prompt(text) {
-            observedPrompt = text;
-          },
-          getLastAssistantText: () => "done",
-          subscribe() {
-            return () => {};
-          },
-          dispose() {},
-          async abort() {},
-        },
-      };
-    };
-
-    const result = await runAgent(createRunContext({ createSession, cwd }), "hello", {
-      label: "skilled",
-      tools: [],
-      skills: ["workflow-code-review-actions"],
-    });
-
-    assert.equal(result, "done");
-    assert.deepEqual(observedTools, ["read"]);
-    assert.deepEqual(observedSkills, ["workflow-code-review-actions"]);
-    assert.match(observedPrompt, /Workflow subagent skills enabled: workflow-code-review-actions/);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test("runAgent rejects unknown explicit skills before creating a subagent session", async () => {
-  let createSessionCalls = 0;
-  const createSession: CreateAgentSession = async () => {
-    createSessionCalls += 1;
-    return createTextSession();
-  };
-
-  await assert.rejects(
-    () => runAgent(createRunContext({ createSession }), "hello", { label: "missing-skill", skills: ["missing-skill-for-test"] }),
-    /Unknown subagent skill: missing-skill-for-test/,
-  );
-
-  assert.equal(createSessionCalls, 0);
 });

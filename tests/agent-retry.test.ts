@@ -102,6 +102,10 @@ function scriptedSessions(scripts: readonly SessionScript[]): ScriptedSessions {
         disposeCalls++;
       },
       async abort() {},
+      getAllTools: () => [],
+      getActiveToolNames: () => [],
+      getToolDefinition: () => undefined,
+      setActiveToolsByName() {},
       setAutoRetryEnabled(enabled) {
         autoRetrySettings.push(enabled);
       },
