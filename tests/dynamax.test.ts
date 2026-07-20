@@ -17,6 +17,7 @@ import type {
   KeyId,
   TUI,
 } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
 import {
   DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
@@ -29,8 +30,12 @@ import {
   clearDynamax,
   createDynamaxRuntime,
   createDynamaxState,
+  decorateDynamaxEditor,
+  DYNAMAX_ANIMATION_FRAME_MS,
   DYNAMAX_REMINDER,
   DYNAMAX_STATUS_KEY,
+  type DynamaxAnimationScheduler,
+  type DynamaxRegistrationOptions,
   type DynamaxRuntimeStore,
   dynamaxWidgetLine,
   enableDynamaxSticky,
@@ -40,6 +45,7 @@ import {
   isDynamaxActive,
   markDynamaxOneShot,
   registerDynamax,
+  resolveDynamaxEffect,
   updateDynamaxSurfaces,
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
 import { sessionKey } from "../.pi/extensions/pi-workflow-engine/src/session-identity.ts";
@@ -60,6 +66,48 @@ function createStubEditor(initialText = ""): EditorComponent {
     },
     render: () => [`custom:${text}`],
     invalidate: () => {},
+  };
+}
+
+interface FakeScheduledAnimation {
+  dueAt: number;
+  callback: () => void;
+  cancelled: boolean;
+  completed: boolean;
+}
+
+function createFakeAnimationScheduler(): DynamaxAnimationScheduler & {
+  advance(ms: number): void;
+  pending(): number;
+} {
+  let now = 0;
+  const scheduled: FakeScheduledAnimation[] = [];
+  return {
+    now: () => now,
+    schedule(callback, delayMs) {
+      const task: FakeScheduledAnimation = {
+        dueAt: now + delayMs,
+        callback,
+        cancelled: false,
+        completed: false,
+      };
+      scheduled.push(task);
+      return () => {
+        task.cancelled = true;
+      };
+    },
+    advance(ms) {
+      now += ms;
+      while (true) {
+        const due = scheduled
+          .filter((task) => !task.cancelled && !task.completed && task.dueAt <= now)
+          .sort((left, right) => left.dueAt - right.dueAt)[0];
+        if (!due) return;
+        due.completed = true;
+        due.callback();
+      }
+    },
+    pending: () => scheduled.filter((task) => !task.cancelled && !task.completed).length,
   };
 }
 
@@ -86,6 +134,7 @@ interface FakeUiState {
   notifications: Array<{ message: string; type: "info" | "warning" | "error" | undefined }>;
   statuses: Map<string, string | undefined>;
   editorComponentChanges: number;
+  renderRequests: number;
   editorFactory: EditorFactory | undefined;
   editor: EditorComponent | undefined;
   customComponent: Component | undefined;
@@ -97,6 +146,7 @@ type EditorKeybindings = Parameters<EditorFactory>[2];
 function captureDynamax(
   shortcut: KeyId | null = DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
   openInspector?: (ctx: ExtensionContext) => void | Promise<void>,
+  registrationOptions: Omit<DynamaxRegistrationOptions, "openInspector"> = {},
 ): CapturePiResult {
   const commands = new Map<string, CapturedCommand>();
   const shortcuts = new Map<KeyId, CapturedShortcut>();
@@ -136,7 +186,7 @@ function captureDynamax(
     events: { on: () => {}, emit: async () => {} },
   } as unknown as ExtensionAPI;
 
-  registerDynamax(fakePi, { inspector: shortcut, results: null }, { openInspector });
+  registerDynamax(fakePi, { inspector: shortcut, results: null }, { ...registrationOptions, openInspector });
   return { commands, shortcuts, handlers };
 }
 
@@ -149,13 +199,16 @@ function createFakeContext(
     notifications: [],
     statuses: new Map(),
     editorComponentChanges: 0,
+    renderRequests: 0,
     editorFactory: initialEditorFactory,
     editor: undefined,
     customComponent: undefined,
   };
   const tui = {
     terminal: { columns: 80, rows: 24 },
-    requestRender: () => {},
+    requestRender: () => {
+      uiState.renderRequests++;
+    },
   } as Pick<TUI, "requestRender">;
   const theme = {
     fg: (_color: string, text: string) => text,
@@ -252,6 +305,29 @@ test("Dynamax installs pi's stock-compatible highlighted editor", async () => {
   assert.equal(ui.editorComponentChanges, 2);
 });
 
+test("Dynamax cancels a pending shine sweep on session shutdown", async () => {
+  const scheduler = createFakeAnimationScheduler();
+  const captured = captureDynamax(DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT, undefined, {
+    animationScheduler: scheduler,
+    getEffect: () => "shine",
+  });
+  const sessionStart = captured.handlers.get("session_start")?.[0];
+  const sessionShutdown = captured.handlers.get("session_shutdown")?.[0];
+  if (!sessionStart || !sessionShutdown) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx, ui } = createFakeContext("session-a");
+
+  await sessionStart({}, ctx);
+  if (!ui.editor) throw new Error("expected decorated editor");
+  ui.editor.setText("dynamax");
+  ui.editor.render(80);
+  assert.equal(scheduler.pending(), 1);
+
+  await sessionShutdown({}, ctx);
+  assert.equal(scheduler.pending(), 0);
+  scheduler.advance(DYNAMAX_ANIMATION_FRAME_MS);
+  assert.equal(ui.renderRequests, 0);
+});
+
 test("Dynamax highlights only standalone tokens", () => {
   const prompt = "dynamax notdynamax dynamaxing dynamax_mode (DYNAMAX)";
   const highlighted = highlightDynamaxTokens(prompt);
@@ -259,6 +335,7 @@ test("Dynamax highlights only standalone tokens", () => {
 
   assert.equal(colorStarts.length, "dynamaxDYNAMAX".length);
   assert.equal(highlighted.replace(/\x1b\[[0-9;]*m/g, ""), prompt);
+  assert.equal(visibleWidth(highlightDynamaxTokens(prompt, 3)), visibleWidth(prompt));
   assert.equal(highlightDynamaxTokens("notdynamax dynamaxing dynamax_mode"), "notdynamax dynamaxing dynamax_mode");
 
   const cursorInsideToken = "\x1b[31mdyna\x1b_pi:c\x07\x1b[7mm\x1b[0max";
@@ -268,6 +345,78 @@ test("Dynamax highlights only standalone tokens", () => {
   const styledSuffix = highlightDynamaxTokens("\x1b[31mdynamax suffix\x1b[0m");
   assert.match(styledSuffix, /\x1b\[31m suffix/);
   assert.doesNotMatch(styledSuffix, /\x1b\[39m suffix/);
+
+  const compoundSuffix = highlightDynamaxTokens("\x1b[1;31;44m\x1b[49mdynamax suffix\x1b[0m");
+  assert.match(compoundSuffix, /\x1b\[31m suffix/);
+  assert.doesNotMatch(compoundSuffix, /\x1b\[1;31;44m suffix/);
+
+  const indexedSuffix = highlightDynamaxTokens("\x1b[38;5;123;48;5;44m\x1b[49mdynamax suffix\x1b[0m");
+  assert.match(indexedSuffix, /\x1b\[38;5;123m suffix/);
+
+  const rgbSuffix = highlightDynamaxTokens("\x1b[1;38;2;10;20;30;48;2;40;50;60m\x1b[49mdynamax suffix\x1b[0m");
+  assert.match(rgbSuffix, /\x1b\[38;2;10;20;30m suffix/);
+
+  const colonRgbSuffix = highlightDynamaxTokens("\x1b[38:2::70:80:90;48:5:44m\x1b[49mdynamax suffix\x1b[0m");
+  assert.match(colonRgbSuffix, /\x1b\[38;2;70;80;90m suffix/);
+});
+
+test("Dynamax runs one bounded moving-shine sweep and returns to static highlighting", () => {
+  const scheduler = createFakeAnimationScheduler();
+  const editor = createStubEditor("dynamax");
+  let renderRequests = 0;
+  let latest = "";
+  const decoration = decorateDynamaxEditor(
+    editor,
+    () => {
+      renderRequests++;
+      latest = editor.render(80)[0]!;
+    },
+    { scheduler, getEffect: () => "shine" },
+  );
+
+  const initial = editor.render(80)[0]!;
+  assert.equal(initial, highlightDynamaxTokens("custom:dynamax", 0));
+  assert.equal(scheduler.pending(), 1);
+
+  for (let shinePosition = 1; shinePosition < "dynamax".length; shinePosition++) {
+    scheduler.advance(DYNAMAX_ANIMATION_FRAME_MS);
+    assert.equal(latest, highlightDynamaxTokens("custom:dynamax", shinePosition));
+    assert.equal(scheduler.pending(), 1);
+  }
+
+  scheduler.advance(DYNAMAX_ANIMATION_FRAME_MS);
+  assert.equal(latest, highlightDynamaxTokens("custom:dynamax"));
+  assert.equal(renderRequests, "dynamax".length);
+  assert.equal(scheduler.pending(), 0);
+
+  editor.render(80);
+  assert.equal(scheduler.pending(), 0, "ordinary rerenders must not restart a completed sweep");
+  decoration.dispose();
+  assert.equal(editor.render(80)[0], "custom:dynamax");
+});
+
+test("Dynamax animation supports static and off preferences without scheduling", () => {
+  const staticScheduler = createFakeAnimationScheduler();
+  const staticEditor = createStubEditor("dynamax");
+  decorateDynamaxEditor(staticEditor, () => {}, { scheduler: staticScheduler, getEffect: () => "static" });
+  assert.equal(staticEditor.render(80)[0], highlightDynamaxTokens("custom:dynamax"));
+  assert.equal(staticScheduler.pending(), 0);
+
+  const offScheduler = createFakeAnimationScheduler();
+  const offEditor = createStubEditor("dynamax");
+  decorateDynamaxEditor(offEditor, () => {}, { scheduler: offScheduler, getEffect: () => "off" });
+  assert.equal(offEditor.render(80)[0], "custom:dynamax");
+  assert.equal(offScheduler.pending(), 0);
+});
+
+test("resolveDynamaxEffect honors explicit preferences and NO_COLOR", () => {
+  assert.equal(resolveDynamaxEffect({}), "shine");
+  assert.equal(resolveDynamaxEffect({ PI_DYNAMAX_EFFECT: " static " }), "static");
+  assert.equal(resolveDynamaxEffect({ PI_DYNAMAX_EFFECT: "off" }), "off");
+  assert.equal(resolveDynamaxEffect({ NO_COLOR: "1" }), "off");
+  assert.equal(resolveDynamaxEffect({ NO_COLOR: " " }), "off");
+  assert.equal(resolveDynamaxEffect({ NO_COLOR: "" }), "shine");
+  assert.equal(resolveDynamaxEffect({ PI_DYNAMAX_EFFECT: "shine", NO_COLOR: "1" }), "shine");
 });
 
 test("Dynamax composes an existing editor and restores it on shutdown", async () => {
@@ -312,17 +461,29 @@ test("Dynamax warns and falls back when an existing editor cannot be composed", 
   assert.equal(ui.editorFactory, undefined);
 });
 
-test("Dynamax does not overwrite a later editor replacement on shutdown", async () => {
-  const captured = captureDynamax();
+test("Dynamax does not animate or overwrite a later editor replacement", async () => {
+  const scheduler = createFakeAnimationScheduler();
+  const captured = captureDynamax(DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT, undefined, {
+    animationScheduler: scheduler,
+    getEffect: () => "shine",
+  });
   const sessionStart = captured.handlers.get("session_start")?.[0];
   const sessionShutdown = captured.handlers.get("session_shutdown")?.[0];
   if (!sessionStart || !sessionShutdown) throw new Error("expected Dynamax lifecycle handlers");
   const { ctx, ui } = createFakeContext("session-a");
 
   await sessionStart({}, ctx);
+  if (!ui.editor) throw new Error("expected decorated editor");
+  ui.editor.setText("dynamax");
+  ui.editor.render(80);
+  assert.equal(scheduler.pending(), 1);
+
   const lateFactory: EditorFactory = () => createStubEditor();
   ctx.ui.setEditorComponent(lateFactory);
   assert.equal(ui.editorFactory, lateFactory);
+  scheduler.advance(DYNAMAX_ANIMATION_FRAME_MS);
+  assert.equal(ui.renderRequests, 0);
+  assert.equal(scheduler.pending(), 0);
 
   await sessionShutdown({}, ctx);
   assert.equal(ui.editorFactory, lateFactory);

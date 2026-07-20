@@ -150,11 +150,15 @@ When only the literal `dynamax` token is used, the opt-in is one-shot: the next 
 
 ### Prompt editor cue
 
-In TUI mode, every standalone `dynamax` token receives a static multi-colour
-cue while it is present in the prompt. Longer identifiers such as
-`notdynamax`, `dynamaxing`, and `dynamax_mode` are deliberately left alone. The
-cue affects rendering only; one-shot and sticky activation semantics are
-unchanged.
+In TUI mode, every standalone `dynamax` token receives one bounded
+moving-shine sweep, then remains as a static multi-colour cue. Longer identifiers
+such as `notdynamax`, `dynamaxing`, and `dynamax_mode` are deliberately left
+alone. The cue affects rendering only; one-shot and sticky activation semantics
+are unchanged.
+
+The default effect is `shine`. Set `PI_DYNAMAX_EFFECT=static` for a motionless
+cue or `PI_DYNAMAX_EFFECT=off` to disable it. A non-empty `NO_COLOR` also
+disables the default cue; an explicit `PI_DYNAMAX_EFFECT` value takes precedence.
 
 The implementation follows pi 0.80.10's [official `CustomEditor`
 pattern](https://pi.dev/docs/latest/extensions#custom-editor): it decorates only
