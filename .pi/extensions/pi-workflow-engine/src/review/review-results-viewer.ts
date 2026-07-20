@@ -1,11 +1,10 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
 import { renderIssueDetailLines } from "./review-format.ts";
 import { formatIssueLocation, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
 import { truncateDisplay } from "../ui/workflow-format.ts";
+import { fitWorkflowViewerRow, fitWorkflowViewerRows, workflowViewerHeight } from "../ui/workflow-viewer-layout.ts";
 
-const VIEWPORT_HEIGHT_RATIO = 0.8;
-const VIEWPORT_MARGIN_ROWS = 2;
 const SPLIT_WIDTH = 96;
 const LIST_MIN_WIDTH = 34;
 const LIST_MAX_WIDTH = 48;
@@ -34,8 +33,8 @@ export class ReviewResultsViewer implements Component {
   render(width: number): string[] {
     const outerWidth = Math.max(4, width);
     const contentWidth = Math.max(1, outerWidth - 4);
-    const innerHeight = Math.max(1, this.modalHeight() - 2);
-    const body = fitRows(this.renderBody(contentWidth, innerHeight), innerHeight);
+    const innerHeight = Math.max(1, workflowViewerHeight(this.tui.terminal.rows) - 2);
+    const body = fitWorkflowViewerRows(this.renderBody(contentWidth, innerHeight), innerHeight);
     return [
       this.theme.fg("borderAccent", `╭${"─".repeat(Math.max(0, outerWidth - 2))}╮`),
       ...body.map((line) => this.borderedRow(line, contentWidth)),
@@ -94,20 +93,13 @@ export class ReviewResultsViewer implements Component {
     }
   }
 
-  private modalHeight(): number {
-    const terminalRows = Math.max(1, this.tui.terminal.rows);
-    const availableRows = Math.max(1, terminalRows - VIEWPORT_MARGIN_ROWS);
-    const proportionalRows = Math.floor(terminalRows * VIEWPORT_HEIGHT_RATIO);
-    return Math.min(availableRows, Math.max(3, proportionalRows));
-  }
-
   private renderBody(width: number, height: number): string[] {
     const warning = this.warning ? this.theme.fg("warning", this.warning) : "";
     const chromeRows = 5;
     const contentHeight = Math.max(1, height - chromeRows);
     let content: string[];
     if (this.issues.length === 0) {
-      content = fitRows([this.theme.fg("success", "No findings.")], contentHeight);
+      content = fitWorkflowViewerRows([this.theme.fg("success", "No findings.")], contentHeight);
     } else if (width >= SPLIT_WIDTH) {
       content = this.renderSplit(width, contentHeight);
     } else {
@@ -118,7 +110,7 @@ export class ReviewResultsViewer implements Component {
       this.headerLine(width),
       warning,
       this.theme.fg("borderMuted", "─".repeat(width)),
-      ...fitRows(content, contentHeight),
+      ...fitWorkflowViewerRows(content, contentHeight),
       this.theme.fg("borderMuted", "─".repeat(width)),
       this.helpLine(width),
     ];
@@ -131,7 +123,7 @@ export class ReviewResultsViewer implements Component {
     const details = this.renderDetailPane(detailWidth, height);
     const divider = this.theme.fg("borderMuted", "│");
     return Array.from({ length: height }, (_value, index) =>
-      `${padAnsi(list[index] ?? "", listWidth)} ${divider} ${padAnsi(details[index] ?? "", detailWidth)}`,
+      `${fitWorkflowViewerRow(list[index] ?? "", listWidth)} ${divider} ${fitWorkflowViewerRow(details[index] ?? "", detailWidth)}`,
     );
   }
 
@@ -171,7 +163,7 @@ export class ReviewResultsViewer implements Component {
       width,
     );
     const indicator = truncateDisplay(this.theme.fg("dim", `${range}${arrows ? ` ${arrows}` : ""}`), width);
-    return [heading, ...fitRows(visible, itemRows), indicator].slice(0, height);
+    return [heading, ...fitWorkflowViewerRows(visible, itemRows), indicator].slice(0, height);
   }
 
   private renderIssueRow(issue: ReviewIssue, index: number, width: number): string {
@@ -185,7 +177,7 @@ export class ReviewResultsViewer implements Component {
   private renderDetailPane(width: number, height: number): string[] {
     if (height <= 0) return [];
     const issue = this.issues[this.cursor];
-    if (!issue) return fitRows([this.theme.fg("dim", "No finding selected.")], height);
+    if (!issue) return fitWorkflowViewerRows([this.theme.fg("dim", "No finding selected.")], height);
 
     const bodyHeight = Math.max(0, height - 2);
     const heading = truncateDisplay(
@@ -206,7 +198,7 @@ export class ReviewResultsViewer implements Component {
       this.theme.fg("dim", `${this.detailsExpanded ? "Lines" : "Collapsed"} ${range}${arrows ? ` ${arrows}` : ""}`),
       width,
     );
-    return [heading, ...fitRows(visible, bodyHeight), indicator].slice(0, height);
+    return [heading, ...fitWorkflowViewerRows(visible, bodyHeight), indicator].slice(0, height);
   }
 
   private headerLine(width: number): string {
@@ -229,7 +221,7 @@ export class ReviewResultsViewer implements Component {
   }
 
   private borderedRow(content: string, width: number): string {
-    return `${this.theme.fg("border", "│")} ${padAnsi(content, width)} ${this.theme.fg("border", "│")}`;
+    return `${this.theme.fg("border", "│")} ${fitWorkflowViewerRow(content, width)} ${this.theme.fg("border", "│")}`;
   }
 
   private requestRender(): void {
@@ -298,17 +290,6 @@ export class ReviewResultsViewer implements Component {
   private selectedIssueIds(): string[] {
     return this.issues.filter((issue) => this.selected.has(issue.id)).map((issue) => issue.id);
   }
-}
-
-function fitRows(lines: readonly string[], height: number): string[] {
-  const visible = lines.slice(0, Math.max(0, height));
-  return [...visible, ...Array.from({ length: Math.max(0, height - visible.length) }, () => "")];
-}
-
-function padAnsi(text: string, width: number): string {
-  const truncated = truncateDisplay(text, width);
-  const padding = Math.max(0, width - visibleWidth(truncated));
-  return `${truncated}${" ".repeat(padding)}`;
 }
 
 function scrollArrows(hasAbove: boolean, hasBelow: boolean): string {

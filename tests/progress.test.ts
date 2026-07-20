@@ -103,3 +103,91 @@ test("ProgressTracker publishes the shared usage line in compact status", () => 
     tracker.done();
   }
 });
+
+test("concurrent progress trackers use string widgets and clear their run-scoped surfaces in every UI mode", () => {
+  for (const mode of ["tui", "rpc"] as const) {
+    const statuses = new Map<string, string>();
+    const widgets = new Map<string, string[]>();
+    const ctx = {
+      hasUI: true,
+      mode,
+      ui: {
+        theme: createTestTheme(),
+        setStatus(key: string, value: string | undefined) {
+          if (value === undefined) statuses.delete(key);
+          else statuses.set(key, value);
+        },
+        setWidget(key: string, value: string[] | undefined) {
+          if (value === undefined) widgets.delete(key);
+          else {
+            assert.ok(Array.isArray(value), `${mode} widgets must use Pi's string[] surface`);
+            widgets.set(key, value);
+          }
+        },
+      },
+    } as unknown as ExtensionContext;
+    const first = new ProgressTracker(ctx, "first", "run-first");
+    const second = new ProgressTracker(ctx, "second", "run-second");
+
+    first.phase("Find");
+    second.phase("Verify");
+    assert.deepEqual([...statuses.keys()].sort(), ["workflow:run-first", "workflow:run-second"]);
+    assert.deepEqual([...widgets.keys()].sort(), ["workflow:run-first", "workflow:run-second"]);
+
+    first.done();
+    assert.deepEqual([...statuses.keys()], ["workflow:run-second"]);
+    assert.deepEqual([...widgets.keys()], ["workflow:run-second"]);
+    second.done();
+    assert.equal(statuses.size, 0);
+    assert.equal(widgets.size, 0);
+  }
+});
+
+test("ProgressTracker refreshes native widget lines for elapsed time and stops refreshing when done", () => {
+  let now = Date.parse("2026-01-01T00:00:00Z");
+  const originalDateNow = Date.now;
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  const fakeInterval = 1 as unknown as ReturnType<typeof setInterval>;
+  let tick: (() => void) | undefined;
+  let intervalCleared = false;
+  Date.now = () => now;
+  globalThis.setInterval = ((callback: () => void) => {
+    tick = callback;
+    return fakeInterval;
+  }) as typeof setInterval;
+  globalThis.clearInterval = ((interval: ReturnType<typeof setInterval>) => {
+    if (interval === fakeInterval) intervalCleared = true;
+  }) as typeof clearInterval;
+  const widgets: string[][] = [];
+  const ctx = {
+    hasUI: true,
+    mode: "tui",
+    ui: {
+      theme: createTestTheme(),
+      setStatus() {},
+      setWidget(_key: string, value: string[] | undefined) {
+        if (value !== undefined) widgets.push(value);
+      },
+    },
+  } as unknown as ExtensionContext;
+  const tracker = new ProgressTracker(ctx, "timer-test", "timer-test-run");
+
+  try {
+    tracker.phase("Long-running");
+    assert.ok(tick);
+    assert.match(widgets.at(-1)?.[0] ?? "", /0s/);
+
+    now += 1_000;
+    tick();
+    assert.match(widgets.at(-1)?.[0] ?? "", /1s/);
+
+    tracker.done();
+    assert.equal(intervalCleared, true);
+  } finally {
+    tracker.done();
+    Date.now = originalDateNow;
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+  }
+});

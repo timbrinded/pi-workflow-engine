@@ -9,7 +9,6 @@ import {
 import { updateWorkflowRunDelivery } from "./workflow-run-background.ts";
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
-import { truncateDisplay } from "./ui/workflow-format.ts";
 import { emptyWorkflowUsageTotals } from "./usage.ts";
 
 const BACKGROUND_DELIVERY_CUSTOM_TYPE = "workflow-result";
@@ -305,12 +304,7 @@ export class BackgroundWorkflowCoordinator {
     }
     ctx.ui.setWidget(
       BACKGROUND_WIDGET_KEY,
-      (tui, theme) => ({
-        render: (width?: number) => [
-          truncateDisplay(formatBackgroundActivity(runs, theme), width ?? tui.terminal.columns),
-        ],
-        invalidate() {},
-      }),
+      [formatBackgroundActivity(runs, ctx.ui.theme)],
       { placement: "aboveEditor" },
     );
   }

@@ -18,14 +18,11 @@ const snapshot = createSnapshot({ agents, laneItems, phases });
 const statusTextMs = await runBenchmark("ui.status_text", iterations, () => {
   statusText(snapshot, theme);
 });
-const widget80Ms = await runBenchmark("ui.widget_80", iterations, () => {
-  renderWorkflowWidgetLines(snapshot, 0, 80, theme);
+const widgetRenderMs = await runBenchmark("ui.widget_render", iterations, () => {
+  renderWorkflowWidgetLines(snapshot, theme);
 });
-const widget120Ms = await runBenchmark("ui.widget_120", iterations, () => {
-  renderWorkflowWidgetLines(snapshot, 0, 120, theme);
-});
-const invalidateMs = await runBenchmark("ui.widget_invalidate", iterations, () => {
-  for (let i = 0; i < 100; i++) renderWorkflowWidgetLines(snapshot, i, 100, theme);
+const repeatRenderMs = await runBenchmark("ui.widget_repeat", iterations, () => {
+  for (let i = 0; i < 100; i++) renderWorkflowWidgetLines(snapshot, theme);
 });
 const progressEventMs = await runBenchmark("ui.progress_events", iterations, () => {
   simulateProgressEvents(Math.min(agents, 1_000), Math.min(laneItems, 1_000));
@@ -39,8 +36,8 @@ const result = {
   laneItems,
   phases,
   statusTextMs,
-  widgetRenderMs: { width80: widget80Ms, width120: widget120Ms },
-  invalidateMs,
+  widgetRenderMs,
+  repeatRenderMs,
   progressEventMs,
 };
 

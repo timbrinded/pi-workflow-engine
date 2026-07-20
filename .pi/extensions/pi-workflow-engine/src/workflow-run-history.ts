@@ -6,7 +6,18 @@ export const WORKFLOW_RUN_HISTORY_LIMIT = 50;
 export const WORKFLOW_RUN_DETAIL_AGENT_LIMIT = 100;
 export const WORKFLOW_RUN_OUTCOME_TEXT_LIMIT = 16_000;
 
-export type WorkflowRunLifecycleAction = "inspect" | "stop" | "resume" | "restart";
+export const WORKFLOW_RUN_ACTIONS = [
+  { value: "inspect", description: "Show a retained workflow run" },
+  { value: "stop", description: "Stop an active or paused workflow run" },
+  { value: "resume", description: "Resume a paused workflow run" },
+  { value: "restart", description: "Restart a terminal workflow run" },
+] as const;
+
+export type WorkflowRunLifecycleAction = typeof WORKFLOW_RUN_ACTIONS[number]["value"];
+
+const WORKFLOW_RUN_ACTION_VALUES: ReadonlySet<string> = new Set(
+  WORKFLOW_RUN_ACTIONS.map((action) => action.value),
+);
 
 export type WorkflowRunsCommand =
   | { readonly kind: "list" }
@@ -17,15 +28,19 @@ export function parseWorkflowRunsCommand(input: string): WorkflowRunsCommand {
   const parts = input.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return { kind: "list" };
   const action = parts[0];
-  if (action !== "inspect" && action !== "stop" && action !== "resume" && action !== "restart") {
+  if (!action || !isWorkflowRunLifecycleAction(action)) {
     return { kind: "error", message: workflowRunsUsage() };
   }
   if (parts.length !== 2 || !parts[1]) return { kind: "error", message: workflowRunsUsage() };
   return { kind: "action", action, runId: parts[1] };
 }
 
+export function isWorkflowRunLifecycleAction(value: string): value is WorkflowRunLifecycleAction {
+  return WORKFLOW_RUN_ACTION_VALUES.has(value);
+}
+
 export function workflowRunsUsage(): string {
-  return "Usage: /workflow:runs [inspect|stop|resume|restart <run-id>]";
+  return `Usage: /workflow:runs [${WORKFLOW_RUN_ACTIONS.map((action) => action.value).join("|")} <run-id>]`;
 }
 
 export function availableWorkflowRunActions(
@@ -61,17 +76,22 @@ export function formatWorkflowRunHistory(
   if (records.length === 0) return "No durable workflow runs are available for this project.";
   const lines = ["Recent workflow runs:"];
   for (const record of records.slice(0, WORKFLOW_RUN_HISTORY_LIMIT)) {
-    const usage = formatWorkflowUsageLine(record.usage);
-    const active = activeRunIds.has(record.runId);
-    const actions = availableWorkflowRunActions(record, active).filter((action) => action !== "inspect");
-    lines.push(
-      `- ${workflowRunStateLabel(record.state)} ${record.workflow.name} · age ${formatDuration(Math.max(0, now - record.createdAt))} · duration ${formatWorkflowRunDuration(record, now)}${usage ? ` · ${usage}` : ""} · ${record.runId}${actions.length > 0 ? ` · actions ${actions.join(", ")}` : ""}`,
-    );
+    lines.push(`- ${formatWorkflowRunSummary(record, activeRunIds.has(record.runId), now)}`);
   }
   if (records.length > WORKFLOW_RUN_HISTORY_LIMIT) {
     lines.push(`… ${records.length - WORKFLOW_RUN_HISTORY_LIMIT} older runs hidden`);
   }
   return lines.join("\n");
+}
+
+export function formatWorkflowRunSummary(
+  record: WorkflowRunRecord,
+  active: boolean,
+  now = Date.now(),
+): string {
+  const usage = formatWorkflowUsageLine(record.usage);
+  const actions = availableWorkflowRunActions(record, active).filter((action) => action !== "inspect");
+  return `${workflowRunStateLabel(record.state)} ${record.workflow.name} · age ${formatDuration(Math.max(0, now - record.createdAt))} · duration ${formatWorkflowRunDuration(record, now)}${usage ? ` · ${usage}` : ""} · ${record.runId}${actions.length > 0 ? ` · actions ${actions.join(", ")}` : ""}`;
 }
 
 export function formatWorkflowRunDetails(

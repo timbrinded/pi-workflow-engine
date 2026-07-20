@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { createSyntheticSourceInfo, type Skill } from "@earendil-works/pi-coding-agent";
 import {
-  appendSkillReminder,
   captureAgentSkillIdentities,
   extractSkillSelectorsFromText,
   normalizeSkillSelector,
+  prepareAgentSkillResources,
   resolveAgentSkillRequest,
   selectAgentSkills,
 } from "../.pi/extensions/pi-workflow-engine/src/agent-skills.ts";
@@ -38,19 +38,20 @@ test("extractSkillSelectorsFromText handles slash, skill-first, and name-first o
 });
 
 test("resolveAgentSkillRequest keeps subagents skillless unless prompt or options opt in", () => {
-  assert.deepEqual(resolveAgentSkillRequest("ordinary prompt", undefined), { selectors: [], source: "prompt", strict: false });
-  assert.deepEqual(resolveAgentSkillRequest("include skill diagnose", []), { selectors: [], source: "explicit", strict: true });
+  assert.deepEqual(resolveAgentSkillRequest("ordinary prompt", undefined), { selectors: [], strict: false });
+  assert.deepEqual(resolveAgentSkillRequest("include skill diagnose", []), { selectors: [], strict: true });
   assert.deepEqual(resolveAgentSkillRequest("ordinary prompt", ["Diagnose", "diagnose"]), {
     selectors: ["diagnose"],
-    source: "explicit",
     strict: true,
   });
 });
 
-test("resolveAgentSkillRequest validates explicit skill options at runtime", () => {
-  assert.throws(() => resolveAgentSkillRequest("ordinary prompt", "diagnose"), /expected an array/);
-  assert.throws(() => resolveAgentSkillRequest("ordinary prompt", ["diagnose", 42]), /every skill name must be a string/);
-  assert.throws(() => resolveAgentSkillRequest("ordinary prompt", ["   "]), /not a valid skill name/);
+test("prepareAgentSkillResources validates explicit skill options at the production boundary", () => {
+  const prepare = (skills: unknown) => prepareAgentSkillResources({ prompt: "ordinary prompt", skills });
+
+  assert.throws(() => prepare("diagnose"), /expected an array/);
+  assert.throws(() => prepare(["diagnose", 42]), /every skill name must be a string/);
+  assert.throws(() => prepare(["   "]), /not a valid skill name/);
 });
 
 test("normalizeSkillSelector canonicalizes natural skill names", () => {
@@ -73,12 +74,32 @@ test("selectAgentSkills matches exact and unique fuzzy selectors and enables exp
   assert.equal(resolved.selected.find((item) => item.name === "diagnose")?.disableModelInvocation, false);
 });
 
-test("appendSkillReminder points the subagent at selected SKILL.md files only", () => {
-  const prompt = appendSkillReminder("do work", [skill("diagnose")]);
+test("prepareAgentSkillResources delegates filtering to pi's resource loader hook", () => {
+  const prepared = prepareAgentSkillResources({ prompt: "ordinary prompt", skills: ["diagnose"] });
+  const override = prepared.resourceLoaderOptions.skillsOverride;
+  assert.ok(override);
 
-  assert.match(prompt, /Workflow subagent skills enabled: diagnose/);
-  assert.match(prompt, /\/skills\/diagnose\/SKILL.md/);
-  assert.match(prompt, /No other skills are available/);
+  const filtered = override({
+    skills: [skill("diagnose", true), skill("other")],
+    diagnostics: [],
+  });
+
+  assert.deepEqual(filtered.skills.map((item) => item.name), ["diagnose"]);
+  assert.equal(filtered.skills[0]?.disableModelInvocation, false);
+  assert.deepEqual(prepared.resolve({ getSkills: () => filtered }).map((item) => item.name), ["diagnose"]);
+});
+
+test("prepareAgentSkillResources rejects unknown explicit selectors after pi loads skills", () => {
+  const prepared = prepareAgentSkillResources({ prompt: "ordinary prompt", skills: ["missing"] });
+  const override = prepared.resourceLoaderOptions.skillsOverride;
+  assert.ok(override);
+
+  const filtered = override({ skills: [skill("diagnose")], diagnostics: [] });
+
+  assert.throws(
+    () => prepared.resolve({ getSkills: () => filtered }),
+    /Unknown subagent skill: missing\. Available: diagnose/,
+  );
 });
 
 test("skill identity uses the stable workspace namespace", async () => {

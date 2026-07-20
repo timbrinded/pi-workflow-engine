@@ -2,7 +2,8 @@ import type { Skill } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import { captureAgentSkillIdentities, extractSkillSelectorsFromText } from "./agent-skills.ts";
 import type { AgentExecutionOptions, AgentRunnerSession, AgentRunTags, RunContext } from "./agent-runner-types.ts";
-import { captureEffectiveSession, FINAL_TOOL } from "./agent-session.ts";
+import { captureEffectiveAgentSessionIdentity } from "./agent-session-identity.ts";
+import { FINAL_TOOL } from "./agent-session.ts";
 import type { AgentWorkspace, IsolatedAgentWorkspace } from "./agent-workspace.ts";
 import { captureAgentJournalKey } from "./journal.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
@@ -219,7 +220,11 @@ async function captureVerifiedReplayIdentity(input: {
       workspaceRoot: input.rc.cwd,
       signal: input.rc.signal,
     }),
-    captureEffectiveSession(input.session, input.sessionCwd, input.rc.cwd, input.rc.signal),
+    captureEffectiveAgentSessionIdentity(input.session, {
+      sessionCwd: input.sessionCwd,
+      workspaceRoot: input.rc.cwd,
+      signal: input.rc.signal,
+    }),
   ]);
   if (skills.kind === "unverifiable") return skills;
   if (effectiveSession.kind === "unverifiable") return effectiveSession;

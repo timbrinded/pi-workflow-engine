@@ -1,32 +1,18 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
-import { agentDetailParts, agentLabelColor, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
+import { agentDetailParts, agentLabelColor, formatCount, formatDuration, statusIcon } from "./workflow-format.ts";
 
-const MAX_WIDGET_LINES = 12;
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-export interface WorkflowWidget {
-  nextFrame(): void;
-  render(width: number, theme: Theme): string[];
-  invalidate(): void;
-}
-
-export function createWorkflowWidget(snapshotProvider: () => WorkflowProgressSnapshot): WorkflowWidget {
-  return new LiveWorkflowWidget(snapshotProvider);
-}
+const MAX_WIDGET_LINES = 10;
 
 export function renderWorkflowWidgetLines(
   snapshot: WorkflowProgressSnapshot,
-  frame: number,
-  width: number,
   theme: Theme,
 ): string[] {
-  const safeWidth = Math.max(1, width);
   const counts = countAgents(snapshot.phases);
   const active = counts.running + counts.queued;
   const elapsed = formatDuration((snapshot.doneAt ?? Date.now()) - snapshot.startedAt);
-  const spinner = active > 0 ? theme.fg("accent", SPINNER[frame % SPINNER.length]) : theme.fg("success", "✓");
+  const activity = active > 0 ? theme.fg("accent", "●") : theme.fg("success", "✓");
 
   const headingParts = [`${counts.done}/${counts.total} done`, elapsed];
   if (counts.running > 0) headingParts.unshift(`${counts.running} running`);
@@ -34,10 +20,7 @@ export function renderWorkflowWidgetLines(
   if (counts.failed > 0) headingParts.unshift(theme.fg("error", `${counts.failed} failed`));
 
   const lines: string[] = [
-    truncateDisplay(
-      `${spinner} ${theme.bold(snapshot.title)} ${theme.fg("dim", "·")} ${theme.fg("muted", snapshot.currentPhase)} ${theme.fg("dim", "·")} ${headingParts.join(` ${theme.fg("dim", "·")} `)}`,
-      safeWidth,
-    ),
+    `${activity} ${theme.bold(snapshot.title)} ${theme.fg("dim", "·")} ${theme.fg("muted", snapshot.currentPhase)} ${theme.fg("dim", "·")} ${headingParts.join(` ${theme.fg("dim", "·")} `)}`,
   ];
 
   const footer = footerLine(snapshot, theme);
@@ -47,53 +30,13 @@ export function renderWorkflowWidgetLines(
   const visibleBodyLinesToRender = reserveHiddenLine ? body.lines.slice(0, Math.max(0, bodyBudget - 1)) : body.lines;
   const hidden = body.hidden + (body.lines.length - visibleBodyLinesToRender.length);
 
-  for (const line of visibleBodyLinesToRender) lines.push(truncateDisplay(line, safeWidth));
+  lines.push(...visibleBodyLinesToRender);
   if (hidden > 0 && lines.length < MAX_WIDGET_LINES) {
-    lines.push(truncateDisplay(`${theme.fg("dim", "└─")} ${theme.fg("dim", `+${hidden} more`)}`, safeWidth));
+    lines.push(`${theme.fg("dim", "└─")} ${theme.fg("dim", `+${hidden} more`)}`);
   }
-  if (footer && lines.length < MAX_WIDGET_LINES) lines.push(truncateDisplay(footer, safeWidth));
+  if (footer && lines.length < MAX_WIDGET_LINES) lines.push(footer);
 
-  return lines.slice(0, MAX_WIDGET_LINES).map((line) => truncateDisplay(line, safeWidth));
-}
-
-class LiveWorkflowWidget implements WorkflowWidget {
-  private frame = 0;
-  private cachedWidth: number | undefined;
-  private cachedFrame: number | undefined;
-  private cachedDoneAt: number | undefined;
-  private cachedLines: string[] | undefined;
-
-  constructor(private readonly snapshotProvider: () => WorkflowProgressSnapshot) {}
-
-  nextFrame(): void {
-    this.frame = (this.frame + 1) % SPINNER.length;
-    this.invalidate();
-  }
-
-  render(width: number, theme: Theme): string[] {
-    const snapshot = this.snapshotProvider();
-    if (
-      this.cachedLines &&
-      this.cachedWidth === width &&
-      this.cachedFrame === this.frame &&
-      this.cachedDoneAt === snapshot.doneAt
-    ) {
-      return this.cachedLines;
-    }
-
-    this.cachedLines = renderWorkflowWidgetLines(snapshot, this.frame, width, theme);
-    this.cachedWidth = width;
-    this.cachedFrame = this.frame;
-    this.cachedDoneAt = snapshot.doneAt;
-    return this.cachedLines;
-  }
-
-  invalidate(): void {
-    this.cachedWidth = undefined;
-    this.cachedFrame = undefined;
-    this.cachedDoneAt = undefined;
-    this.cachedLines = undefined;
-  }
+  return lines.slice(0, MAX_WIDGET_LINES);
 }
 
 interface AgentCounts {

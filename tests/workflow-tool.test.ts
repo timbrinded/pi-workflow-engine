@@ -10,16 +10,15 @@ import {
   getLastWorkflowInspection,
   inlineCompileErrorResult,
   normalizeWorkflowToolRequest,
+  openWorkflowInspector,
 } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
-import {
-  DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
-  DEFAULT_REVIEW_RESULTS_SHORTCUT,
-} from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
+import { DEFAULT_REVIEW_RESULTS_SHORTCUT } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
 import {
   captureWorkflowExtension,
   captureWorkflowTool,
@@ -40,10 +39,12 @@ const HEADLESS_CTX = {
 function createTuiContext(customResult?: unknown, sessionId = "test-session"): {
   ctx: ExtensionContext;
   customCalls: () => number;
+  customOptions: () => readonly unknown[];
   customRenders: () => readonly string[][];
   notifications: () => readonly string[];
 } {
   let customCallCount = 0;
+  const customOptionValues: unknown[] = [];
   const customRenderLines: string[][] = [];
   const notificationMessages: string[] = [];
   const theme = {
@@ -72,8 +73,10 @@ function createTuiContext(customResult?: unknown, sessionId = "test-session"): {
           keybindings: never,
           done: (result: T) => void,
         ) => Component | Promise<Component>,
+        options?: unknown,
       ): Promise<T> => {
         customCallCount++;
+        customOptionValues.push(options);
         let completed: T | undefined;
         const component = await factory(tui as TUI, theme, undefined as never, (result) => {
           completed = result;
@@ -91,6 +94,7 @@ function createTuiContext(customResult?: unknown, sessionId = "test-session"): {
   return {
     ctx,
     customCalls: () => customCallCount,
+    customOptions: () => customOptionValues,
     customRenders: () => customRenderLines,
     notifications: () => notificationMessages,
   };
@@ -116,9 +120,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+async function waitUntil(predicate: () => boolean | Promise<boolean>, label: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`Timed out waiting for ${label}`);
@@ -171,6 +175,77 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
 
 test("normalizeWorkflowToolRequest accepts named workflow requests", () => {
   assert.deepEqual(normalizeWorkflowToolRequest({ name: " code-review " }), { kind: "named", name: "code-review" });
+});
+
+test("/workflow exposes native workflow-name and option completions", async () => {
+  const completions = captureWorkflowExtension().commands.get("workflow")?.getArgumentCompletions;
+  assert.ok(completions);
+  const workflows = await completions("code");
+  assert.ok(workflows?.some((item) => item.value === "code-review" && item.description));
+
+  const options = await completions("code-review --re");
+  assert.deepEqual(
+    options?.slice(0, 4).map((item) => item.value),
+    ["code-review --refresh", "code-review --result-viewer", "code-review --resume-edited", "code-review --resume="],
+  );
+  assert.ok(options?.some((item) => item.value === "code-review --agent-retries="));
+});
+
+test("RPC command and inspector surfaces use native selection and text instead of custom components", async () => {
+  const extension = captureWorkflowExtension();
+  const command = extension.commands.get("workflow");
+  assert.ok(command);
+  const notifications: string[] = [];
+  let selectCalls = 0;
+  let customCalls = 0;
+  const ctx = {
+    cwd: WORKFLOW_TOOL_TEST_CWD,
+    mode: "rpc",
+    hasUI: true,
+    model: undefined,
+    modelRegistry: { find: () => undefined },
+    sessionManager: createSessionManager("rpc-ui-routing"),
+    signal: undefined,
+    ui: {
+      theme: createTuiContext().ctx.ui.theme,
+      select: async () => {
+        selectCalls++;
+        return undefined;
+      },
+      custom: async () => {
+        customCalls++;
+        throw new Error("RPC must not open custom components");
+      },
+      notify: (message: string) => notifications.push(message),
+    },
+  } as unknown as ExtensionCommandContext;
+
+  await command.handler("", ctx);
+  assert.equal(selectCalls, 1);
+  assert.equal(customCalls, 0);
+  assert.match(notifications.at(-1) ?? "", /Usage: \/workflow/);
+
+  const inspection = {
+    name: "rpc-inspection",
+    args: "",
+    completedAt: Date.now(),
+    snapshot: {
+      runId: "rpc-inspection-run",
+      title: "rpc-inspection",
+      startedAt: Date.now() - 10,
+      doneAt: Date.now(),
+      currentPhase: "Complete",
+      phases: [],
+      counters: [],
+      summary: [],
+      lanes: [],
+      laneOverflow: [],
+      logs: ["completed"],
+    },
+  };
+  await openWorkflowInspector(ctx, inspection);
+  assert.equal(customCalls, 0);
+  assert.match(notifications.at(-1) ?? "", /Workflow inspector: rpc-inspection/);
 });
 
 test("temporary authoring, tool, and documentation guidance teach adaptive follow-up", () => {
@@ -368,8 +443,12 @@ export default async function run() {
   assert.equal(typeof runId, "string");
   if (typeof runId !== "string") throw new Error("expected background run id");
 
-  await waitUntil(() => extension.sentMessages.length === 1, "background delivery");
-  const record = await new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD).load(runId);
+  const store = new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD);
+  await waitUntil(
+    async () => (await store.load(runId))?.background?.delivery.state === "delivered",
+    "durable background delivery",
+  );
+  const record = await store.load(runId);
   assert.equal(record?.state, "completed");
   assert.equal(record?.background?.delivery.state, "delivered");
   assert.match(JSON.stringify(extension.sentMessages[0]), /Detached background completed/);
@@ -398,7 +477,7 @@ export default async function run({ phase }) {
 
 test("a TUI tool-invoked workflow opens the live inspector", async () => {
   const tool = captureWorkflowTool();
-  const { ctx, customCalls } = createTuiContext();
+  const { ctx, customCalls, customOptions } = createTuiContext();
   const script = `
 export const meta = { name: "inspect-live-probe", description: "Live inspector probe" };
 export default async function run({ phase }) {
@@ -410,6 +489,7 @@ export default async function run({ phase }) {
   await tool.execute("call-2", { script }, undefined, () => {}, ctx);
 
   assert.equal(customCalls(), 1);
+  assert.deepEqual(customOptions()[0], WORKFLOW_VIEWER_OVERLAY_OPTIONS);
   const inspection = getLastWorkflowInspection();
   assert.equal(inspection?.name, "inspect-live-probe");
 });
@@ -558,12 +638,13 @@ export default async function run({ phase }) {
   const reopenedA = createTuiContext(undefined, "inspector-session-a");
   await command.handler("", reopenedA.ctx as ExtensionCommandContext);
   assert.equal(reopenedA.customCalls(), 1);
+  assert.deepEqual(reopenedA.customOptions()[0], WORKFLOW_VIEWER_OVERLAY_OPTIONS);
   assert.match(reopenedA.customRenders().at(-1)?.join("\n") ?? "", /inspector-session-probe/);
 });
 
 test("the inspector shortcut opens the active workflow inspector while the workflow tool is running", async () => {
   const { tool, shortcuts } = captureWorkflowExtension();
-  const { ctx, customCalls, customRenders } = createTuiContext();
+  const { ctx, customCalls, customOptions, customRenders } = createTuiContext();
   const shortcut = shortcuts.find((candidate) => candidate.description === "Open workflow inspector");
   if (!shortcut) throw new Error("expected Dynamax inspector shortcut");
   const script = `
@@ -581,6 +662,7 @@ export default async function run({ phase }) {
   await shortcut.handler(ctx);
 
   assert.equal(customCalls(), 2);
+  assert.deepEqual(customOptions().at(-1), WORKFLOW_VIEWER_OVERLAY_OPTIONS);
   assert.match(customRenders().at(-1)?.join("\n") ?? "", /inspect-live-shortcut-probe/);
   await running;
 });

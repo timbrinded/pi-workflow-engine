@@ -3,6 +3,7 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { BackgroundWorkflowCoordinator } from "./background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./background-workflow-tool.ts";
 import { validateWorkflowRunId } from "./journal.ts";
@@ -13,8 +14,11 @@ import {
   canRelaunchWorkflowRun,
   formatWorkflowRunDetails,
   formatWorkflowRunHistory,
+  formatWorkflowRunSummary,
+  isWorkflowRunLifecycleAction,
   parseWorkflowRunsCommand,
   retainedWorkflowRunOutcome,
+  WORKFLOW_RUN_ACTIONS,
   WORKFLOW_RUN_HISTORY_LIMIT,
   type WorkflowRunLifecycleAction,
 } from "./workflow-run-history.ts";
@@ -27,10 +31,10 @@ import {
   type WorkflowUsageLimitSchedulerClock,
 } from "./workflow-usage-limit-scheduler.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
-import {
-  WorkflowRunNavigator,
-  type WorkflowRunNavigatorSelection,
-} from "./ui/workflow-run-navigator.ts";
+import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./ui/workflow-viewer-layout.ts";
+import { completeCurrentArgument, splitArgumentPrefix } from "./command-completions.ts";
+
+type WorkflowRunCompletionContext = Pick<ExtensionContext, "cwd" | "sessionManager">;
 
 interface WorkflowRunControllerDependencies {
   readonly resolveWorkflow: (name: string) => Promise<LoadedWorkflow | undefined>;
@@ -49,6 +53,7 @@ export class WorkflowRunController {
   private readonly storeForCwd: (cwd: string) => WorkflowRunStore;
   private readonly usageLimitScheduler: WorkflowUsageLimitScheduler;
   private readonly log: (message: string) => void;
+  private completionContext: WorkflowRunCompletionContext | undefined;
 
   constructor(
     private readonly background: BackgroundWorkflowCoordinator,
@@ -69,6 +74,7 @@ export class WorkflowRunController {
   }
 
   async sessionStarted(ctx: ExtensionContext): Promise<void> {
+    this.completionContext = { cwd: ctx.cwd, sessionManager: ctx.sessionManager };
     this.usageLimitScheduler.activateSession(ctx);
     try {
       for (const record of await this.storeForCwd(ctx.cwd).list()) {
@@ -81,6 +87,7 @@ export class WorkflowRunController {
 
   sessionShutdown(ctx: Pick<ExtensionContext, "sessionManager">): void {
     this.usageLimitScheduler.cancelSession(ctx);
+    this.completionContext = undefined;
   }
 
   async handleCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -98,7 +105,7 @@ export class WorkflowRunController {
       ctx.ui.notify(formatWorkflowRunHistory(records, this.background.activeRunIds(ctx)), "info");
       return;
     }
-    await this.openNavigator(ctx);
+    await this.openRunSelector(ctx);
   }
 
   async inspectStoredRun(ctx: ExtensionContext, runId: string): Promise<boolean> {
@@ -108,27 +115,40 @@ export class WorkflowRunController {
     return true;
   }
 
-  private async openNavigator(ctx: ExtensionCommandContext): Promise<void> {
+  private async openRunSelector(ctx: ExtensionCommandContext): Promise<void> {
     while (true) {
       const records = await this.listRecent(ctx.cwd);
       const active = this.background.activeRunIds(ctx);
-      const selection = await ctx.ui.custom<WorkflowRunNavigatorSelection | undefined>(
-        (tui, theme, _keybindings, done) => new WorkflowRunNavigator(records, active, tui, theme, done),
-        { overlay: true, overlayOptions: { anchor: "right-center", width: "75%", maxHeight: "80%", margin: 1 } },
+      if (records.length === 0) {
+        ctx.ui.notify(formatWorkflowRunHistory(records, active), "info");
+        return;
+      }
+      const options = records.map((record) =>
+        formatWorkflowRunSummary(record, active.has(record.runId))
       );
-      if (!selection) return;
-      const record = await this.loadRecord(ctx.cwd, selection.runId);
+      const selected = await ctx.ui.select("Workflow Runs", options);
+      if (!selected) return;
+      const selectedIndex = options.indexOf(selected);
+      const selectedRecord = records[selectedIndex];
+      const record = selectedRecord && await this.loadRecord(ctx.cwd, selectedRecord.runId);
       if (!record) {
-        ctx.ui.notify(`Workflow run ${selection.runId} is no longer available.`, "warning");
+        ctx.ui.notify("The selected workflow run is no longer available.", "warning");
         continue;
       }
-      if (selection.action === "inspect") await this.inspect(record, ctx);
-      else await this.perform(selection.action, selection.runId, ctx);
+      const actions = availableWorkflowRunActions(record, active.has(record.runId));
+      const selectedAction = await ctx.ui.select(
+        `${record.workflow.name} · ${record.runId}`,
+        [...actions],
+      );
+      const action = actions.find((candidate) => candidate === selectedAction);
+      if (!action) continue;
+      if (action === "inspect") await this.inspect(record, ctx);
+      else await this.perform(action, record.runId, ctx);
     }
   }
 
   private async inspect(record: WorkflowRunRecord, ctx: ExtensionContext): Promise<void> {
-    if (!ctx.hasUI) {
+    if (!ctx.hasUI || ctx.mode !== "tui") {
       ctx.ui.notify(
         formatWorkflowRunDetails(record, this.background.activeRunIds(ctx).has(record.runId)),
         "info",
@@ -143,7 +163,7 @@ export class WorkflowRunController {
         () => done(undefined),
         { label: `${record.state.toUpperCase()} outcome`, text: retainedWorkflowRunOutcome(record) },
       ),
-      { overlay: true, overlayOptions: { anchor: "right-center", width: "70%", maxHeight: "80%", margin: 1 } },
+      WORKFLOW_VIEWER_OVERLAY_OPTIONS,
     );
   }
 
@@ -284,6 +304,42 @@ export class WorkflowRunController {
       .sort((left, right) => right.createdAt - left.createdAt)
       .slice(0, WORKFLOW_RUN_HISTORY_LIMIT);
   }
+
+  async argumentCompletions(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
+    const ctx = this.completionContext;
+    const parts = splitArgumentPrefix(argumentPrefix);
+    if (parts.completed.length === 0) {
+      return completeCurrentArgument(argumentPrefix, WORKFLOW_RUN_ACTIONS);
+    }
+    if (parts.completed.length !== 1 || !ctx) return null;
+    const action = parts.completed[0];
+    if (!action || !isWorkflowRunLifecycleAction(action)) return null;
+    const records = await this.listRecent(ctx.cwd);
+    const active = this.background.activeRunIds(ctx);
+    return completeCurrentArgument(
+      argumentPrefix,
+      records
+        .filter((record) => availableWorkflowRunActions(record, active.has(record.runId)).includes(action))
+        .map((record) => ({
+          value: record.runId,
+          description: `${record.state} · ${record.workflow.name}`,
+        })),
+    );
+  }
+
+  async inspectorArgumentCompletions(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
+    const ctx = this.completionContext;
+    const parts = splitArgumentPrefix(argumentPrefix);
+    if (parts.completed.length > 0) return null;
+    const records = ctx ? await this.listRecent(ctx.cwd) : [];
+    return completeCurrentArgument(argumentPrefix, [
+      { value: "last", description: "Inspect the current or most recent in-session workflow" },
+      ...records.map((record) => ({
+        value: record.runId,
+        description: `${record.state} · ${record.workflow.name}`,
+      })),
+    ]);
+  }
 }
 
 export function registerWorkflowRunCommand(
@@ -292,6 +348,7 @@ export function registerWorkflowRunCommand(
 ): void {
   pi.registerCommand("workflow:runs", {
     description: "List, inspect, stop, resume, or restart durable workflow runs",
+    getArgumentCompletions: (argumentPrefix) => controller.argumentCompletions(argumentPrefix),
     handler: (args, ctx) => controller.handleCommand(args, ctx),
   });
 }

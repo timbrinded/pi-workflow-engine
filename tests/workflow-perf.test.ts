@@ -12,6 +12,7 @@ import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-eng
 import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import { createTestTheme } from "./fixtures/theme.ts";
 
 const WORKFLOW_TEST_CWD = mkdtempSync(join(tmpdir(), "pi-workflow-engine-tests-"));
 process.on("exit", () => rmSync(WORKFLOW_TEST_CWD, { recursive: true, force: true }));
@@ -41,13 +42,14 @@ function inspectorRejectingContext(error: unknown): ExtensionContext {
   return {
     ...fakeContext(),
     hasUI: true,
+    mode: "tui",
     ui: {
       async custom() {
         throw error;
       },
       setStatus() {},
       setWidget() {},
-      theme: { fg: (_color: string, text: string) => text },
+      theme: createTestTheme(),
     },
   } as unknown as ExtensionContext;
 }
@@ -356,11 +358,7 @@ test("sendWorkflowResult publishes the review before reporting an unavailable fi
       },
       setStatus() {},
       setWidget() {},
-      theme: {
-        fg(_color: string, text: string) {
-          return text;
-        },
-      },
+      theme: createTestTheme(),
     },
   } as unknown as ExtensionCommandContext;
   const mod = codeReviewWorkflowModule();
@@ -393,7 +391,7 @@ test("sendWorkflowResult preserves a completed review when the viewer rejects", 
       },
       setStatus() {},
       setWidget() {},
-      theme: { fg: (_color: string, text: string) => text },
+      theme: createTestTheme(),
     },
   } as unknown as ExtensionCommandContext;
 

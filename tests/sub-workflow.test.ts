@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   runWorkflowWithContext,
   type WorkflowContextOptions,
@@ -18,6 +19,7 @@ import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef
 import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { WorktreeRegistry, type WorktreeGitCommandOptions } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import { assistantTextMessage, createAgentRunnerSession } from "./agent-runner-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly phases: string[];
@@ -92,9 +94,12 @@ function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkf
   return { abortController: new AbortController(), submissionLimit: 16, resolveWorkflow, depth: 0, progressPrefix: "" };
 }
 
-function usageMessage(input: number, output: number): unknown {
+function usageMessage(input: number, output: number): AssistantMessage {
   return {
     role: "assistant",
+    api: "anthropic-messages",
+    provider: "test",
+    model: "test-model",
     content: [{ type: "text", text: "ok" }],
     usage: {
       input,
@@ -104,17 +109,20 @@ function usageMessage(input: number, output: number): unknown {
       totalTokens: input + output,
       cost: { input: input / 1000000, output: output / 1000000, cacheRead: 0, cacheWrite: 0, total: (input + output) / 1000000 },
     },
+    stopReason: "stop",
+    timestamp: 1,
   };
 }
 
 const NOOP_SESSION: CreateAgentSession = async () => ({
-  session: {
-    state: { messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
+  session: createAgentRunnerSession({
+    messages: [assistantTextMessage("ok")],
     prompt: async () => {},
+    getLastAssistantText: () => "ok",
     subscribe: () => () => {},
     dispose: () => {},
     abort: async () => {},
-  },
+  }),
 });
 
 function eventByKey(events: readonly WorkflowProgressEvent[], key: string): WorkflowProgressEvent | undefined {
@@ -333,13 +341,14 @@ test("child structured progress is namespaced while parent progress is not", asy
 test("parent and sub-workflow agents share the run's usage recorder", async () => {
   const usage = createWorkflowUsageRecorder();
   const createSession: CreateAgentSession = async () => ({
-    session: {
-      state: { messages: [usageMessage(10, 5)] },
+    session: createAgentRunnerSession({
+      messages: [usageMessage(10, 5)],
       prompt: async () => {},
+      getLastAssistantText: () => "ok",
       subscribe: () => () => {},
       dispose: () => {},
       abort: async () => {},
-    },
+    }),
   });
   const progress = createProgress();
   const rc = createRc(progress, new Semaphore(2), createSession, usage);
@@ -367,8 +376,8 @@ test("parent and sub-workflow agents share the run's concurrency cap", async () 
   let active = 0;
   let max = 0;
   const createSession: CreateAgentSession = async () => ({
-    session: {
-      state: { messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
+    session: createAgentRunnerSession({
+      messages: [assistantTextMessage("ok")],
       async prompt() {
         active += 1;
         max = Math.max(max, active);
@@ -378,7 +387,7 @@ test("parent and sub-workflow agents share the run's concurrency cap", async () 
       subscribe: () => () => {},
       dispose: () => {},
       abort: async () => {},
-    },
+    }),
   });
 
   const progress = createProgress();

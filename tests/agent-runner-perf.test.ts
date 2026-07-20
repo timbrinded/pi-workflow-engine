@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
   runAgent as runAgentWithContext,
@@ -23,7 +24,11 @@ import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/exte
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import type { AgentResumeBaseContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
-import { executeTestFinalAnswer } from "./agent-runner-fixtures.ts";
+import {
+  assistantTextMessage,
+  createAgentRunnerSession,
+  executeTestFinalAnswer,
+} from "./agent-runner-fixtures.ts";
 
 const RESUME_BASE_CONTEXT: AgentResumeBaseContext = {
   workflow: { kind: "verified", name: "agent-perf-test", sourceFingerprint: "source-a" },
@@ -97,9 +102,10 @@ function createRunContext(
   };
 }
 
-function usageAssistant(input: number, output: number, costTotal: number): unknown {
+function usageAssistant(input: number, output: number, costTotal: number): AssistantMessage {
   return {
     role: "assistant",
+    api: "anthropic-messages",
     provider: "anthropic",
     model: "claude-test",
     content: [{ type: "text", text: "done" }],
@@ -111,6 +117,8 @@ function usageAssistant(input: number, output: number, costTotal: number): unkno
       totalTokens: input + output,
       cost: { input: costTotal / 2, output: costTotal / 2, cacheRead: 0, cacheWrite: 0, total: costTotal },
     },
+    stopReason: "stop",
+    timestamp: 1,
   };
 }
 
@@ -118,9 +126,10 @@ test("runAgent records lifecycle timing samples without LLM calls", async () => 
   const perf = new PerfRecorder();
   let disposed = 0;
   const createSession: CreateAgentSession = async () => ({
-    session: {
-      state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
+    session: createAgentRunnerSession({
+      messages: [assistantTextMessage("done")],
       async prompt() {},
+      getLastAssistantText: () => "done",
       subscribe() {
         return () => {};
       },
@@ -128,7 +137,7 @@ test("runAgent records lifecycle timing samples without LLM calls", async () => 
         disposed += 1;
       },
       async abort() {},
-    },
+    }),
   });
 
   const result = await runAgent(createRunContext(createSession, perf), "hello", { label: "timed", phase: "Test" });
@@ -150,13 +159,14 @@ test("runAgent records lifecycle timing samples without LLM calls", async () => 
 test("runAgent records usage before disposing a successful subagent session", async () => {
   const perf = new PerfRecorder();
   const usage = createWorkflowUsageRecorder();
-  let messages: readonly unknown[] = [usageAssistant(100, 25, 0.0125)];
+  let messages: AssistantMessage[] = [usageAssistant(100, 25, 0.0125)];
   const createSession: CreateAgentSession = async () => ({
-    session: {
-      get state() {
-        return { messages };
+    session: createAgentRunnerSession({
+      get messages() {
+        return messages;
       },
       async prompt() {},
+      getLastAssistantText: () => "done",
       subscribe() {
         return () => {};
       },
@@ -164,7 +174,7 @@ test("runAgent records usage before disposing a successful subagent session", as
         messages = [];
       },
       async abort() {},
-    },
+    }),
   });
 
   const result = await runAgent(createRunContext(createSession, perf, usage), "hello", { label: "usage", phase: "Find" });
@@ -182,11 +192,11 @@ test("runAgent records usage before disposing a successful subagent session", as
 test("runAgent records usage before disposing a failed subagent session", async () => {
   const perf = new PerfRecorder();
   const usage = createWorkflowUsageRecorder();
-  let messages: readonly unknown[] = [usageAssistant(40, 10, 0.005)];
+  let messages: AssistantMessage[] = [usageAssistant(40, 10, 0.005)];
   const createSession: CreateAgentSession = async () => ({
-    session: {
-      get state() {
-        return { messages };
+    session: createAgentRunnerSession({
+      get messages() {
+        return messages;
       },
       async prompt() {
         throw new Error("prompt failed");
@@ -198,7 +208,7 @@ test("runAgent records usage before disposing a failed subagent session", async 
         messages = [];
       },
       async abort() {},
-    },
+    }),
   });
 
   await assert.rejects(() => runAgent(createRunContext(createSession, perf, usage), "hello", { label: "failed", phase: "Verify" }), /prompt failed/);
@@ -217,8 +227,8 @@ test("runAgent accepts an immediate final_answer without repair", async () => {
   let promptCalls = 0;
   const createSession: CreateAgentSession = async (options) => {
     return {
-      session: {
-        state: { messages: [] },
+      session: createAgentRunnerSession({
+        messages: [],
         async prompt() {
           promptCalls += 1;
           await executeTestFinalAnswer(options, { ok: true });
@@ -228,7 +238,7 @@ test("runAgent accepts an immediate final_answer without repair", async () => {
         },
         dispose() {},
         async abort() {},
-      },
+      }),
     };
   };
 
@@ -248,11 +258,11 @@ test("runAgent re-prompts a schema agent that skips final_answer once", async ()
   const usage = createWorkflowUsageRecorder();
   let promptCalls = 0;
   const restrictedTools: string[][] = [];
-  const messages: unknown[] = [];
+  const messages: AssistantMessage[] = [];
   const createSession: CreateAgentSession = async (options) => {
     return {
-      session: {
-        state: { messages },
+      session: createAgentRunnerSession({
+        messages,
         async prompt() {
           promptCalls += 1;
           messages.push(usageAssistant(promptCalls * 10, promptCalls * 2, promptCalls / 100));
@@ -266,7 +276,7 @@ test("runAgent re-prompts a schema agent that skips final_answer once", async ()
         },
         dispose() {},
         async abort() {},
-      },
+      }),
     };
   };
 
@@ -291,10 +301,10 @@ test("runAgent throws a serialisable typed error after bounded schema repair exh
   const usage = createWorkflowUsageRecorder();
   let promptCalls = 0;
   const restrictedTools: string[][] = [];
-  const messages: unknown[] = [];
+  const messages: AssistantMessage[] = [];
   const createSession: CreateAgentSession = async () => ({
-    session: {
-      state: { messages },
+    session: createAgentRunnerSession({
+      messages,
       async prompt() {
         promptCalls += 1;
         messages.push(usageAssistant(promptCalls * 5, promptCalls, promptCalls / 100));
@@ -307,7 +317,7 @@ test("runAgent throws a serialisable typed error after bounded schema repair exh
       },
       dispose() {},
       async abort() {},
-    },
+    }),
   });
 
   const error = await runAgent(createRunContext(createSession, perf, usage), "hello", {
@@ -346,8 +356,8 @@ test("runAgent preserves provider failures raised during schema repair", async (
   const providerError = Object.assign(new Error("provider rate limit"), { code: "PROVIDER_RATE_LIMIT" });
   let promptCalls = 0;
   const createSession: CreateAgentSession = async () => ({
-    session: {
-      state: { messages: [] },
+    session: createAgentRunnerSession({
+      messages: [],
       async prompt() {
         promptCalls += 1;
         if (promptCalls === 2) throw providerError;
@@ -357,7 +367,7 @@ test("runAgent preserves provider failures raised during schema repair", async (
       },
       dispose() {},
       async abort() {},
-    },
+    }),
   });
 
   await assert.rejects(
@@ -377,17 +387,18 @@ test("runAgent does not re-prompt non-schema agents", async () => {
   const perf = new PerfRecorder();
   let promptCalls = 0;
   const createSession: CreateAgentSession = async () => ({
-    session: {
-      state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
+    session: createAgentRunnerSession({
+      messages: [assistantTextMessage("done")],
       async prompt() {
         promptCalls += 1;
       },
+      getLastAssistantText: () => "done",
       subscribe() {
         return () => {};
       },
       dispose() {},
       async abort() {},
-    },
+    }),
   });
 
   const result = await runAgent(createRunContext(createSession, perf), "hello");
@@ -402,8 +413,8 @@ test("runAgent preserves host cancellation raised during schema repair", async (
   const controller = new AbortController();
   let promptCalls = 0;
   const createSession: CreateAgentSession = async () => ({
-    session: {
-      state: { messages: [usageAssistant(10, 2, 0.01)] },
+    session: createAgentRunnerSession({
+      messages: [usageAssistant(10, 2, 0.01)],
       async prompt() {
         promptCalls += 1;
         if (promptCalls === 2) controller.abort(new WorkflowAbortError("stop"));
@@ -413,7 +424,7 @@ test("runAgent preserves host cancellation raised during schema repair", async (
       },
       dispose() {},
       async abort() {},
-    },
+    }),
   });
 
   await assert.rejects(

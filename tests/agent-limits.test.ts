@@ -10,6 +10,8 @@ import type { WorkflowJournal } from "../.pi/extensions/pi-workflow-engine/src/j
 import type { AgentResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import type { CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import {
+  DEFAULT_SESSION_MODEL,
+  assistantTextMessage,
   commandNames,
   createFakeWorktreeRegistry,
   createRunContext,
@@ -23,19 +25,20 @@ function textSession(input: {
 } = {}): Awaited<ReturnType<CreateAgentSession>> {
   return {
     session: {
-      state: {
-        messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
-        systemPrompt: "Agent limits test",
-        model: { provider: "test", id: "agent-limits" },
-        thinkingLevel: "low",
-      },
+      messages: [assistantTextMessage("done")],
+      systemPrompt: "Agent limits test",
+      model: DEFAULT_SESSION_MODEL,
+      thinkingLevel: "low",
       prompt: input.prompt ?? (async () => {}),
+      getLastAssistantText: () => "done",
       subscribe: () => () => {},
       dispose: input.dispose ?? (() => {}),
       abort: input.abort ?? (async () => {}),
       getAllTools: () => [],
       getActiveToolNames: () => [],
       getToolDefinition: () => undefined,
+      setActiveToolsByName() {},
+      setAutoRetryEnabled() {},
     },
   };
 }

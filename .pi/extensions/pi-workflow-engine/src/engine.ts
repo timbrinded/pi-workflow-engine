@@ -16,6 +16,7 @@ import {
 } from "./options.ts";
 import type { AgentOptions, IsolatedAgentResult, LoadedWorkflow, WorkflowApi, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
+import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./ui/workflow-viewer-layout.ts";
 import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
 import { WorktreeRegistry } from "./worktree.ts";
 import { runFinalizers } from "./finalizers.ts";
@@ -127,11 +128,11 @@ export async function runResolvedWorkflow(
   const unlinkOptionAbortSignal = linkAbortSignal(resolvedOptions.signal, runAbortController);
   const workflowOutcome = await captureOutcome(async () => {
     await notifyLifecycleObserver(progress, "progress source callback", () => resolvedOptions.onProgressSource?.(progressSource));
-    if (resolvedOptions.inspect && ctx.hasUI) {
+    if (resolvedOptions.inspect && ctx.hasUI && ctx.mode === "tui") {
       void ctx.ui
         .custom<void>(
           (tui, theme, _keybindings, done) => new WorkflowInspector(() => progress.snapshot(), tui, theme, () => done(undefined)),
-          { overlay: true, overlayOptions: { anchor: "right-center", width: "60%", maxHeight: "80%", margin: 1 } },
+          WORKFLOW_VIEWER_OVERLAY_OPTIONS,
         )
         .catch((error: unknown) => {
           try {

@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
   clearWorkflowModelProfile,
   isWorkflowModelProfileName,
@@ -7,11 +8,13 @@ import {
   setWorkflowModelProfile,
   workflowModelProfilePaths,
   WORKFLOW_MODEL_PROFILE_NAMES,
+  WORKFLOW_THINKING_LEVELS,
   type ResolvedWorkflowModelProfiles,
   type WorkflowModelProfilePaths,
   type WorkflowModelProfileName,
 } from "./model-profiles.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
+import { completeCurrentArgument, splitArgumentPrefix } from "./command-completions.ts";
 
 type ConfigScope = "user" | "project";
 
@@ -29,10 +32,20 @@ type WorkflowModelsCommand =
 
 const USAGE =
   "Usage: /workflow:models [status | set <small|medium|big> <provider/model> [thinkingLevel] [--user|--project] | clear <small|medium|big> [--user|--project]]";
+const MODEL_COMMAND_ACTIONS = [
+  { value: "status", description: "Show resolved workflow model profiles" },
+  { value: "set", description: "Configure an exact model for a profile" },
+  { value: "clear", description: "Remove a configured profile" },
+] as const;
+const MODEL_COMMAND_SCOPES = [
+  { value: "--user", description: "Write the user-level workflow model config" },
+  { value: "--project", description: "Write the project-level workflow model config" },
+] as const;
 
 export function registerWorkflowModelProfileCommand(pi: ExtensionAPI): void {
   pi.registerCommand("workflow:models", {
     description: "Inspect or configure exact small, medium, and big workflow model profiles",
+    getArgumentCompletions: workflowModelProfileArgumentCompletions,
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const command = parseWorkflowModelsCommand(args);
       if (command.kind === "error") {
@@ -71,6 +84,39 @@ export function registerWorkflowModelProfileCommand(pi: ExtensionAPI): void {
       }
     },
   });
+}
+
+export function workflowModelProfileArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+  const parts = splitArgumentPrefix(argumentPrefix);
+  const completedWithoutScopes = parts.completed.filter((token) => token !== "--user" && token !== "--project");
+  const action = completedWithoutScopes[0];
+  const scopes = parts.completed.some((token) => token === "--user" || token === "--project")
+    ? []
+    : MODEL_COMMAND_SCOPES;
+
+  if (completedWithoutScopes.length === 0) {
+    return completeCurrentArgument(argumentPrefix, MODEL_COMMAND_ACTIONS);
+  }
+  if (action === "status") return null;
+  if (completedWithoutScopes.length === 1) {
+    return completeCurrentArgument(
+      argumentPrefix,
+      WORKFLOW_MODEL_PROFILE_NAMES.map((value) => ({ value, description: `${value} workflow model profile` })),
+    );
+  }
+  if (action === "clear") return completeCurrentArgument(argumentPrefix, scopes);
+  if (action !== "set") return null;
+
+  if (completedWithoutScopes.length === 2) {
+    return null;
+  }
+  if (completedWithoutScopes.length === 3) {
+    return completeCurrentArgument(argumentPrefix, [
+      ...WORKFLOW_THINKING_LEVELS.map((value) => ({ value, description: "Thinking level" })),
+      ...scopes,
+    ]);
+  }
+  return completeCurrentArgument(argumentPrefix, scopes);
 }
 
 export function parseWorkflowModelsCommand(args: string): WorkflowModelsCommand {

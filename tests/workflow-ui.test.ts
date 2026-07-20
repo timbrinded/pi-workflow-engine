@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { test } from "bun:test";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { createTestTheme } from "./fixtures/theme.ts";
 import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import { WorkflowInspector } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
+import {
+  centerWorkflowViewerViewport,
+  fitWorkflowViewerRow,
+} from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
 import { isAdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import { renderWorkflowResultText } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts";
 import { renderWorkflowWidgetLines } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
@@ -63,6 +68,12 @@ test("workflow formatting helpers format durations, counts, agents, and truncati
 
   const wide = truncateDisplay("漢字かな", 4);
   assert.ok(visibleWidth(wide) <= 4);
+
+  const fitted = fitWorkflowViewerRow("\x1b[31mwide 漢字\x1b[0m", 8);
+  assert.equal(visibleWidth(fitted), 8);
+
+  const viewport = centerWorkflowViewerViewport([0, 1, 2, 3, 4, 5], 3, 4);
+  assert.deepEqual(viewport, { visible: [3, 4, 5], percentage: 100 });
 });
 
 test("workflow inspector renders a completed retained snapshot", () => {
@@ -105,6 +116,117 @@ test("workflow inspector renders a completed retained snapshot", () => {
   assert.match(rendered, /code-review/);
   assert.match(rendered, /Stored finding/);
   assert.match(rendered, /src\/app\.ts:10/);
+});
+
+test("workflow inspector fills the centred viewport without clipped chrome", () => {
+  const snapshot: WorkflowProgressSnapshot = {
+    runId: "viewport-test",
+    title: "viewport",
+    startedAt: Date.now() - 1_000,
+    currentPhase: "Inspect",
+    phases: [],
+    counters: [],
+    summary: [],
+    lanes: [],
+    laneOverflow: [],
+    logs: [],
+  };
+  const terminal = { rows: 40, columns: 160 };
+  const tui = { requestRender() {}, terminal } as Pick<TUI, "requestRender" | "terminal">;
+  const inspector = new WorkflowInspector(() => snapshot, tui, createTestTheme(), () => {});
+
+  let rendered = inspector.render(120);
+  let plain = rendered.map(stripVTControlCharacters);
+  assert.equal(rendered.length, 32);
+  assert.ok(plain[0]?.startsWith("╭"));
+  assert.ok(plain[0]?.endsWith("╮"));
+  assert.ok(plain.at(-1)?.startsWith("╰"));
+  assert.ok(plain.at(-1)?.endsWith("╯"));
+  assert.ok(rendered.every((line) => visibleWidth(line) === 120));
+
+  terminal.rows = 20;
+  rendered = inspector.render(72);
+  assert.equal(rendered.length, 16);
+  assert.ok(rendered.every((line) => visibleWidth(line) === 72));
+  assert.match(stripVTControlCharacters(rendered.at(-1) ?? ""), /^╰─+╯$/);
+
+  for (let rows = 11; rows <= 18; rows++) {
+    terminal.rows = rows;
+    const compact = inspector.render(72);
+    const text = stripVTControlCharacters(compact.join("\n"));
+    assert.equal(compact.length, Math.floor(rows * 0.8), `rows=${rows}`);
+    assert.match(text, /Workflow Inspector/, `rows=${rows}`);
+    assert.match(text, /Phase.*Inspect/, `rows=${rows}`);
+    assert.match(text, /╰─+╯$/, `rows=${rows}`);
+  }
+
+  terminal.rows = 20;
+  const narrow = inspector.render(18);
+  assert.ok(narrow.every((line) => visibleWidth(line) === 18));
+  assert.match(stripVTControlCharacters(narrow.at(-1) ?? ""), /^╰─+╯$/);
+});
+
+test("workflow inspector keeps the selected row visible while scrolling", () => {
+  const snapshot: WorkflowProgressSnapshot = {
+    runId: "scroll-test",
+    title: "scrolling",
+    startedAt: Date.now() - 1_000,
+    currentPhase: "Inspect",
+    phases: [],
+    counters: [],
+    summary: [],
+    lanes: [],
+    laneOverflow: [],
+    logs: Array.from({ length: 40 }, (_value, index) => `log-${index + 1}`),
+  };
+  const tui = { requestRender() {}, terminal: { rows: 20, columns: 100 } } as Pick<TUI, "requestRender" | "terminal">;
+  const inspector = new WorkflowInspector(() => snapshot, tui, createTestTheme(), () => {});
+
+  inspector.handleInput("\t");
+  inspector.handleInput("\t");
+  inspector.handleInput("\t");
+  for (let index = 0; index < 25; index++) inspector.handleInput("\u001b[B");
+  const rendered = stripVTControlCharacters(inspector.render(72).join("\n"));
+
+  assert.match(rendered, /log-26/);
+  assert.match(rendered, /\d+ lines · \d+% · 26\/40/);
+  assert.match(rendered, /╰─+╯$/);
+});
+
+test("workflow inspector keeps result selection aligned with wrapping after resize", () => {
+  const snapshot: WorkflowProgressSnapshot = {
+    runId: "result-resize-test",
+    title: "result-resize",
+    startedAt: Date.now() - 1_000,
+    doneAt: Date.now(),
+    currentPhase: "Complete",
+    phases: [],
+    counters: [],
+    summary: [],
+    lanes: [],
+    laneOverflow: [],
+    logs: [],
+  };
+  const outcome = {
+    label: "COMPLETED outcome",
+    text: Array.from({ length: 5 }, (_value, index) => `result-${index + 1} ${"detail ".repeat(30)}`).join("\n"),
+  };
+  const tui = { requestRender() {}, terminal: { rows: 20, columns: 160 } } as Pick<TUI, "requestRender" | "terminal">;
+  const theme = createTestTheme();
+  const renderBackground = theme.bg.bind(theme);
+  theme.bg = (color, text) => color === "selectedBg" ? `[SELECTED]${text}` : renderBackground(color, text);
+  const inspector = new WorkflowInspector(() => snapshot, tui, theme, () => {}, outcome);
+
+  inspector.render(80);
+  for (let index = 0; index < 4; index++) inspector.handleInput("\t");
+  for (let index = 0; index < 14; index++) inspector.handleInput("\u001b[B");
+
+  const rendered = stripVTControlCharacters(inspector.render(128).join("\n"));
+  assert.match(rendered, /result-5/);
+  assert.doesNotMatch(rendered, /result-1/);
+  assert.equal(rendered.match(/\[SELECTED\]/g)?.length, 1);
+  assert.match(rendered, /\d+ lines · 100% · 10\/10/);
+  assert.match(rendered, /╰─+╯$/);
 });
 
 test("workflow inspector exposes a bounded retained result section", () => {
@@ -159,7 +281,7 @@ test("workflow inspector and widget share the workflow usage formatter", () => {
   const inspector = new WorkflowInspector(() => snapshot, tui, theme, () => {});
 
   assert.ok(inspector.render(200).join("\n").includes(expected));
-  assert.ok(renderWorkflowWidgetLines(snapshot, 0, 200, theme).join("\n").includes(expected));
+  assert.ok(renderWorkflowWidgetLines(snapshot, theme).join("\n").includes(expected));
 });
 
 test("workflow inspector expands findings as formatted multi-line details", () => {
@@ -230,12 +352,13 @@ test("workflow widget renders bounded rows for large snapshots", () => {
     summary: [],
     lanes: [],
     laneOverflow: [],
-    logs: [],
+    logs: ["latest update"],
   };
 
-  const lines = renderWorkflowWidgetLines(snapshot, 0, 100, theme);
-  assert.ok(lines.length <= 12);
-  assert.match(lines.join("\n"), /more/);
+  const lines = renderWorkflowWidgetLines(snapshot, theme);
+  assert.ok(lines.length <= 10);
+  assert.match(lines.join("\n"), /\+\d+ more/);
+  assert.match(lines.at(-1) ?? "", /latest update/);
 });
 
 test("advisory reports are structurally recognized", () => {

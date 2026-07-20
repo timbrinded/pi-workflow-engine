@@ -1,14 +1,16 @@
-import { DefaultResourceLoader, getAgentDir, type ResourceDiagnostic, type Skill } from "@earendil-works/pi-coding-agent";
+import type {
+  CreateAgentSessionServicesOptions,
+  ResourceDiagnostic,
+  ResourceLoader,
+  Skill,
+} from "@earendil-works/pi-coding-agent";
 import { dirname, resolve } from "node:path";
 import { logicalWorkspacePath, type ReplayWorkspaceRoots } from "./replay-path-identity.ts";
 import { captureTreeFingerprint } from "./tree-fingerprint.ts";
 import type { ResolvedSkillIdentity } from "./resume-context.ts";
 
-export type AgentSkillRequestSource = "explicit" | "prompt";
-
-export interface AgentSkillRequest {
+interface AgentSkillRequest {
   readonly selectors: readonly string[];
-  readonly source: AgentSkillRequestSource;
   readonly strict: boolean;
 }
 
@@ -17,11 +19,14 @@ export interface AgentSkillResolution {
   readonly unmatched: readonly string[];
 }
 
-export interface AgentSkillResourceSetup {
-  readonly resourceLoader: DefaultResourceLoader;
-  readonly selectedSkills: readonly Skill[];
-  readonly unmatchedSelectors: readonly string[];
-  readonly diagnostics: readonly ResourceDiagnostic[];
+type AgentSkillResourceLoaderOptions = Pick<
+  NonNullable<CreateAgentSessionServicesOptions["resourceLoaderOptions"]>,
+  "noSkills" | "skillsOverride"
+>;
+
+interface PreparedAgentSkillResources {
+  readonly resourceLoaderOptions: AgentSkillResourceLoaderOptions;
+  resolve(resourceLoader: Pick<ResourceLoader, "getSkills">): readonly Skill[];
 }
 
 export type AgentSkillIdentityCapture =
@@ -51,9 +56,9 @@ const PURPOSE_BOUNDARY_PATTERN = /\s+\b(?:for|to|when|while|so|because|in\s+orde
  */
 export function resolveAgentSkillRequest(prompt: string, explicitSkills: unknown): AgentSkillRequest {
   if (explicitSkills !== undefined) {
-    return { selectors: normalizeExplicitSkillSelectors(explicitSkills), source: "explicit", strict: true };
+    return { selectors: normalizeExplicitSkillSelectors(explicitSkills), strict: true };
   }
-  return { selectors: extractSkillSelectorsFromText(prompt), source: "prompt", strict: false };
+  return { selectors: extractSkillSelectorsFromText(prompt), strict: false };
 }
 
 export function extractSkillSelectorsFromText(text: string): string[] {
@@ -98,19 +103,21 @@ export function selectAgentSkills(skills: readonly Skill[], selectors: readonly 
   return { selected: [...selected.values()], unmatched };
 }
 
-export async function createAgentSkillResourceLoader(options: {
-  readonly cwd: string;
+/**
+ * Prepare the skill-selection hooks consumed by pi's session-service factory.
+ * The returned resolver is scoped to one resource loader and must not be reused
+ * across concurrently-created session services.
+ */
+export function prepareAgentSkillResources(options: {
   readonly prompt: string;
   readonly skills: unknown;
   readonly log?: (message: string) => void;
-}): Promise<AgentSkillResourceSetup> {
+}): PreparedAgentSkillResources {
   const request = resolveAgentSkillRequest(options.prompt, options.skills);
   let resolution: AgentSkillResolution = { selected: [], unmatched: [] };
   let availableSkillNames: readonly string[] = [];
 
-  const loader = new DefaultResourceLoader({
-    cwd: options.cwd,
-    agentDir: getAgentDir(),
+  const resourceLoaderOptions: AgentSkillResourceLoaderOptions = {
     noSkills: request.selectors.length === 0,
     skillsOverride:
       request.selectors.length === 0
@@ -120,30 +127,29 @@ export async function createAgentSkillResourceLoader(options: {
             resolution = selectAgentSkills(current.skills, request.selectors);
             return { skills: [...resolution.selected], diagnostics: current.diagnostics };
           },
-  });
-  await loader.reload();
-  const { diagnostics } = loader.getSkills();
-  logSkillDiagnostics(options.log, diagnostics, request.selectors.length > 0);
+  };
 
-  if (request.strict && resolution.unmatched.length > 0) {
-    throw new Error(
-      `Unknown subagent skill${resolution.unmatched.length === 1 ? "" : "s"}: ${resolution.unmatched.join(", ")}. Available: ${
-        availableSkillNames.join(", ") || "(none)"
-      }.`,
-    );
-  }
+  return {
+    resourceLoaderOptions,
+    resolve(resourceLoader) {
+      const { diagnostics } = resourceLoader.getSkills();
+      logSkillDiagnostics(options.log, diagnostics, request.selectors.length > 0);
 
-  if (!request.strict && resolution.unmatched.length > 0) {
-    options.log?.(`Ignoring unrecognized subagent skill mention${resolution.unmatched.length === 1 ? "" : "s"}: ${resolution.unmatched.join(", ")}`);
-  }
+      if (request.strict && resolution.unmatched.length > 0) {
+        throw new Error(
+          `Unknown subagent skill${resolution.unmatched.length === 1 ? "" : "s"}: ${resolution.unmatched.join(", ")}. Available: ${
+            availableSkillNames.join(", ") || "(none)"
+          }.`,
+        );
+      }
 
-  return { resourceLoader: loader, selectedSkills: resolution.selected, unmatchedSelectors: resolution.unmatched, diagnostics };
-}
+      if (!request.strict && resolution.unmatched.length > 0) {
+        options.log?.(`Ignoring unrecognized subagent skill mention${resolution.unmatched.length === 1 ? "" : "s"}: ${resolution.unmatched.join(", ")}`);
+      }
 
-export function appendSkillReminder(prompt: string, skills: readonly Pick<Skill, "name" | "filePath">[]): string {
-  if (skills.length === 0) return prompt;
-  const skillList = skills.map((skill) => `${skill.name} (${skill.filePath})`).join(", ");
-  return `${prompt}\n\nWorkflow subagent skills enabled: ${skillList}. If you rely on an enabled skill, first read its SKILL.md with the read tool and follow its instructions. No other skills are available in this subagent.`;
+      return resolution.selected;
+    },
+  };
 }
 
 /** Capture the exact selected skill directories before journal lookup. */

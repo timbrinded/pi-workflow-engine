@@ -19,6 +19,7 @@ import {
   type WorkflowRunRecord,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-record.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { createTestTheme } from "./fixtures/theme.ts";
 
 interface SessionHarness {
   readonly branch: unknown[];
@@ -148,6 +149,49 @@ test("background start returns after durable metadata and delivers success once 
     assert.match(sent[0]?.content ?? "", /Background success/);
     assert.equal(record?.background?.delivery.state, "delivered");
   } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("RPC background activity uses Pi's string widget surface", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-rpc-widget-"));
+  const harness: SessionHarness = { branch: [], idle: false };
+  const widgets = new Map<string, string[]>();
+  const base = context(cwd, "session-rpc-widget", harness);
+  const ctx = {
+    ...base,
+    mode: "rpc",
+    hasUI: true,
+    ui: {
+      theme: createTestTheme(),
+      setStatus() {},
+      setWidget(key: string, content: string[] | undefined) {
+        if (content === undefined) widgets.delete(key);
+        else {
+          assert.ok(Array.isArray(content));
+          widgets.set(key, content);
+        }
+      },
+    },
+  } as unknown as ExtensionContext;
+  const coordinator = new BackgroundWorkflowCoordinator(fakePi(harness, []));
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    await startRun(coordinator, ctx, workflow("background-rpc-widget", async () => {
+      await gate;
+      return { summary: "done" };
+    }), "background-rpc-widget-run");
+
+    assert.match(widgets.get("workflow-background")?.join("\n") ?? "", /background-rpc-widget/);
+    release?.();
+    await waitFor(async () => (await new ProjectWorkflowRunStore(cwd).load("background-rpc-widget-run"))?.state === "completed");
+    assert.equal(widgets.has("workflow-background"), false);
+  } finally {
+    release?.();
+    await coordinator.sessionShutdown(ctx);
     await rm(cwd, { recursive: true, force: true });
   }
 });
