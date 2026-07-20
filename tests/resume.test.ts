@@ -40,6 +40,7 @@ import {
   TEST_TOOL_DEFINITION,
   assistantTextMessage,
   createAgentRunnerSession,
+  createRegistry,
   testModel,
 } from "./agent-runner-fixtures.ts";
 import { createGitRepo, runGit } from "./resume-fixtures.ts";
@@ -235,7 +236,7 @@ async function runWithJournal(input: {
   const rc: WorkflowRunContext = {
     cwd: input.cwd,
     hostModel: undefined,
-    modelRegistry: { find: () => undefined },
+    modelRegistry: createRegistry([]),
     semaphore: new Semaphore(4),
     agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
@@ -263,7 +264,7 @@ function fakeContext(cwd: string, signal?: AbortSignal): ExtensionContext {
     hasUI: false,
     cwd,
     model: undefined,
-    modelRegistry: { find: () => undefined },
+    modelRegistry: createRegistry([]),
     signal,
   } as unknown as ExtensionContext;
 }
@@ -472,7 +473,7 @@ async function assertRepositoryChangeInvalidates(
   const rc: WorkflowRunContext = {
     cwd,
     hostModel: undefined,
-    modelRegistry: { find: () => undefined },
+    modelRegistry: createRegistry([]),
     semaphore: new Semaphore(4),
     agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,

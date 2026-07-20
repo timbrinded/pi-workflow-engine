@@ -4,7 +4,6 @@ import { join } from "node:path";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
   defineTool,
-  type ModelRegistry,
   type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -99,12 +98,14 @@ export function assistantTextMessage(text: string): AssistantMessage {
   };
 }
 
-export function createRegistry(models: readonly Model<Api>[], calls: FindCall[] = []): Pick<ModelRegistry, "find"> {
+export function createRegistry(models: readonly Model<Api>[], calls: FindCall[] = []): RunContext["modelRegistry"] {
   return {
     find(provider, modelId) {
       calls.push({ provider, modelId });
       return models.find((model) => model.provider === provider && model.id === modelId);
     },
+    getRegisteredProviderConfig: () => undefined,
+    getRegisteredProviderIds: () => [],
   };
 }
 
@@ -140,7 +141,7 @@ export function createProgress(): AgentProgress & { readonly events: string[] } 
 export function createRunContext(input: {
   readonly createSession: CreateAgentSession;
   readonly hostModel?: Model<Api>;
-  readonly modelRegistry?: Pick<ModelRegistry, "find">;
+  readonly modelRegistry?: RunContext["modelRegistry"];
   readonly progress?: AgentProgress;
   readonly cwd?: string;
   readonly budget?: WorkflowBudget;

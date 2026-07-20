@@ -27,12 +27,9 @@ import {
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
-import {
-  createProgress,
-  testModel,
-} from "./agent-runner-fixtures.ts";
+import { createProgress } from "./agent-runner-fixtures.ts";
 
-test("production session services load selected skills and wire built-in and custom tools", async () => {
+test("production session services load skills, tools, and host runtime providers", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-workflow-session-services-"));
   const cwd = join(root, "project");
   const agentDir = join(root, "agent");
@@ -58,12 +55,30 @@ test("production session services load selected skills and wire built-in and cus
       modelsPath: null,
       allowModelNetwork: false,
     });
+    hostRuntime.registerProvider("runtime-only", {
+      baseUrl: "https://runtime-only.invalid",
+      apiKey: "runtime-only-key",
+      api: "anthropic-messages",
+      models: [
+        {
+          id: "runtime-only-model",
+          name: "Runtime-only model",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128000,
+          maxTokens: 16384,
+        },
+      ],
+    });
+    const hostRegistry = new ModelRegistry(hostRuntime);
+    const model = hostRegistry.find("runtime-only", "runtime-only-model");
+    assert.ok(model);
     const usage = createWorkflowUsageRecorder();
-    const model = testModel("test", "offline-session-services");
     const rc: RunContext = {
       cwd,
       hostModel: model,
-      modelRegistry: new ModelRegistry(hostRuntime),
+      modelRegistry: hostRegistry,
       semaphore: new Semaphore(1),
       agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
       agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
@@ -103,6 +118,10 @@ test("production session services load selected skills and wire built-in and cus
     assert.ok(session.getActiveToolNames().includes(FINAL_TOOL));
     assert.ok(session.getToolDefinition("read"));
     assert.ok(session.getToolDefinition(FINAL_TOOL));
+    assert.ok("modelRuntime" in session);
+    assert.ok(session.modelRuntime instanceof ModelRuntime);
+    assert.ok(session.modelRuntime.getRegisteredProviderConfig("runtime-only"));
+    assert.equal((await session.modelRuntime.getAuth(model))?.auth.apiKey, "runtime-only-key");
   } finally {
     session?.dispose();
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

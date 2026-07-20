@@ -45,9 +45,9 @@ const DYNAMAX_COLORS = [
 const RESET_FOREGROUND = "\x1b[39m";
 
 const DYNAMAX_ACTION_COMPLETIONS = [
-  { value: "on", label: "on", description: "Keep Dynamax enabled for this session" },
-  { value: "off", label: "off", description: "Disable sticky and pending Dynamax modes" },
-  { value: "status", label: "status", description: "Show the current Dynamax state" },
+  { value: "on", description: "Keep Dynamax enabled for this session" },
+  { value: "off", description: "Disable sticky and pending Dynamax modes" },
+  { value: "status", description: "Show the current Dynamax state" },
 ] as const;
 
 export function highlightDynamaxTokens(line: string): string {

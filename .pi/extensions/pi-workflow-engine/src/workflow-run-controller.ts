@@ -326,7 +326,6 @@ export class WorkflowRunController {
         .filter((record) => availableWorkflowRunActions(record, active.has(record.runId)).includes(action))
         .map((record) => ({
           value: record.runId,
-          label: record.runId,
           description: `${record.state} · ${record.workflow.name}`,
         })),
     );
@@ -341,7 +340,6 @@ export class WorkflowRunController {
       { value: "last", description: "Inspect the current or most recent in-session workflow" },
       ...records.map((record) => ({
         value: record.runId,
-        label: record.runId,
         description: `${record.state} · ${record.workflow.name}`,
       })),
     ]);

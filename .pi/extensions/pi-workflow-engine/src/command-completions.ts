@@ -2,7 +2,6 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
 export interface ArgumentCompletionCandidate {
   readonly value: string;
-  readonly label?: string;
   readonly description?: string;
 }
 
@@ -32,7 +31,7 @@ export function completeCurrentArgument(
     .filter((candidate) => candidate.value.toLowerCase().startsWith(normalized))
     .map((candidate) => ({
       value: `${base}${candidate.value}`,
-      label: candidate.label ?? candidate.value,
+      label: candidate.value,
       ...(candidate.description === undefined ? {} : { description: candidate.description }),
     }));
   return matches.length > 0 ? matches : null;

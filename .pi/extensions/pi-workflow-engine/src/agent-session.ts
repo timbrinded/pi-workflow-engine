@@ -4,7 +4,6 @@ import {
   createAgentSessionServices,
   defineTool,
   SessionManager,
-  type AgentSessionServices,
   type CreateAgentSessionOptions,
   type ModelRegistry,
   type Skill,
@@ -279,7 +278,14 @@ async function prepareAgentSessionResources(input: {
     cwd,
     resourceLoaderOptions: preparedSkills.resourceLoaderOptions,
   });
-  logSessionServiceDiagnostics(services, (message) => rc.progress.log(`${label}: ${message}`));
+  // Cwd services replay startup registrations; overlay the host's current runtime registrations.
+  for (const providerId of rc.modelRegistry.getRegisteredProviderIds()) {
+    const config = rc.modelRegistry.getRegisteredProviderConfig(providerId);
+    if (config) services.modelRuntime.registerProvider(providerId, config);
+  }
+  for (const diagnostic of services.diagnostics) {
+    rc.progress.log(`${label}: session ${diagnostic.type}: ${diagnostic.message}`);
+  }
   const selectedSkills = preparedSkills.resolve(services.resourceLoader);
   return {
     selectedSkills,
@@ -295,15 +301,6 @@ async function prepareAgentSessionResources(input: {
         customTools,
       }),
   };
-}
-
-function logSessionServiceDiagnostics(
-  services: Pick<AgentSessionServices, "diagnostics">,
-  log: (message: string) => void,
-): void {
-  for (const diagnostic of services.diagnostics) {
-    log(`session ${diagnostic.type}: ${diagnostic.message}`);
-  }
 }
 
 function linkSessionAbort(signal: AbortSignal | undefined, session: AgentRunnerSession): () => void {

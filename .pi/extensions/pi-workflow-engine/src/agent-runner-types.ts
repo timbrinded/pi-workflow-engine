@@ -45,9 +45,14 @@ export interface AgentProgress {
   log(message: string): void;
 }
 
-interface RunContextBase {
+/** Shared per-run context threaded into every agent() call. */
+export interface RunContext {
   cwd: string;
   hostModel: Model<Api> | undefined;
+  modelRegistry: Pick<
+    ModelRegistry,
+    "find" | "getRegisteredProviderConfig" | "getRegisteredProviderIds"
+  >;
   semaphore: Semaphore;
   agentLimiter: WorkflowAgentLimiter;
   agentTimeoutMs: number;
@@ -63,21 +68,9 @@ interface RunContextBase {
   budget: WorkflowBudget;
   journal: WorkflowJournal;
   worktrees: WorktreeRegistry;
+  /** Injected test sessions bypass Pi's resource loader and therefore do not resolve skills. */
+  createSession?: CreateAgentSession;
 }
-
-/** Shared per-run context threaded into every agent() call. */
-export type RunContext = RunContextBase & (
-  | {
-      /** Production sessions let Pi create cwd-bound services for each agent. */
-      modelRegistry: ModelRegistry;
-      createSession?: undefined;
-    }
-  | {
-      /** Injected test sessions bypass Pi's resource loader and therefore do not resolve skills. */
-      modelRegistry: Pick<ModelRegistry, "find">;
-      createSession: CreateAgentSession;
-    }
-);
 
 /** Runtime-only options. The authored WorkflowApi exposes only AgentOptions. */
 export type AgentExecutionOptions = AgentOptions & {
