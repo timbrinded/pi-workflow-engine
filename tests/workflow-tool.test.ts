@@ -7,9 +7,12 @@ import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
   buildTemporaryWorkflowAuthorPrompt,
+  formatWorkflowInspection,
   getLastWorkflowInspection,
   inlineCompileErrorResult,
   normalizeWorkflowToolRequest,
+  openWorkflowInspector,
+  workflowArgumentCompletions,
 } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
 import {
@@ -171,6 +174,75 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
 
 test("normalizeWorkflowToolRequest accepts named workflow requests", () => {
   assert.deepEqual(normalizeWorkflowToolRequest({ name: " code-review " }), { kind: "named", name: "code-review" });
+});
+
+test("/workflow exposes native workflow-name and option completions", async () => {
+  const workflows = await workflowArgumentCompletions("code");
+  assert.ok(workflows?.some((item) => item.value === "code-review" && item.description));
+
+  const options = await workflowArgumentCompletions("code-review --re");
+  assert.deepEqual(
+    options?.map((item) => item.value),
+    ["code-review --refresh", "code-review --result-viewer", "code-review --resume-edited", "code-review --resume="],
+  );
+});
+
+test("RPC command and inspector surfaces use native selection and text instead of custom components", async () => {
+  const extension = captureWorkflowExtension();
+  const command = extension.commands.get("workflow");
+  assert.ok(command);
+  const notifications: string[] = [];
+  let selectCalls = 0;
+  let customCalls = 0;
+  const ctx = {
+    cwd: WORKFLOW_TOOL_TEST_CWD,
+    mode: "rpc",
+    hasUI: true,
+    model: undefined,
+    modelRegistry: { find: () => undefined },
+    sessionManager: createSessionManager("rpc-ui-routing"),
+    signal: undefined,
+    ui: {
+      theme: createTuiContext().ctx.ui.theme,
+      select: async () => {
+        selectCalls++;
+        return undefined;
+      },
+      custom: async () => {
+        customCalls++;
+        throw new Error("RPC must not open custom components");
+      },
+      notify: (message: string) => notifications.push(message),
+    },
+  } as unknown as ExtensionCommandContext;
+
+  await command.handler("", ctx);
+  assert.equal(selectCalls, 1);
+  assert.equal(customCalls, 0);
+  assert.match(notifications.at(-1) ?? "", /Usage: \/workflow/);
+
+  const inspection = {
+    name: "rpc-inspection",
+    args: "",
+    completedAt: Date.now(),
+    snapshot: {
+      runId: "rpc-inspection-run",
+      title: "rpc-inspection",
+      startedAt: Date.now() - 10,
+      doneAt: Date.now(),
+      currentPhase: "Complete",
+      phases: [],
+      counters: [],
+      summary: [],
+      lanes: [],
+      laneOverflow: [],
+      logs: ["completed"],
+    },
+  };
+  assert.match(formatWorkflowInspection(inspection), /rpc-inspection-run/);
+  await openWorkflowInspector(ctx, inspection);
+  assert.equal(customCalls, 0);
+  assert.match(notifications.at(-1) ?? "", /Workflow inspector: rpc-inspection/);
 });
 
 test("temporary authoring, tool, and documentation guidance teach adaptive follow-up", () => {

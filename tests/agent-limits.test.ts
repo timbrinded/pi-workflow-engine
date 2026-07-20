@@ -30,6 +30,7 @@ function textSession(input: {
         thinkingLevel: "low",
       },
       prompt: input.prompt ?? (async () => {}),
+      getLastAssistantText: () => "done",
       subscribe: () => () => {},
       dispose: input.dispose ?? (() => {}),
       abort: input.abort ?? (async () => {}),

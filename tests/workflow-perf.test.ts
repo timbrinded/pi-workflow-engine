@@ -41,6 +41,7 @@ function inspectorRejectingContext(error: unknown): ExtensionContext {
   return {
     ...fakeContext(),
     hasUI: true,
+    mode: "tui",
     ui: {
       async custom() {
         throw error;

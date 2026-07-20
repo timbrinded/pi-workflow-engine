@@ -134,6 +134,7 @@ test("runAgent marks queued row failed when semaphore acquisition aborts", async
           releaseFirst = resolve;
         });
       },
+      getLastAssistantText: () => "done",
       subscribe() {
         return () => {};
       },

@@ -1,8 +1,6 @@
 import type { AgentToolHint } from "./types.ts";
 import type { AgentRunnerToolInfo } from "./agent-runner-types.ts";
 
-const BUILTIN_TOOL_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
-
 /** Raised before prompting when required semantic tool capabilities are unavailable. */
 export class WorkflowToolHintUnavailableError extends Error {
   readonly code = "WORKFLOW_TOOL_HINT_UNAVAILABLE";
@@ -20,7 +18,7 @@ export function matchesAgentToolHint(tool: AgentRunnerToolInfo, hint: AgentToolH
 }
 
 export function isExternalSearchLikeTool(tool: AgentRunnerToolInfo): boolean {
-  if (isMutationLikeToolName(tool.name) || BUILTIN_TOOL_NAMES.has(tool.name)) return false;
+  if (isMutationLikeToolName(tool.name) || tool.sourceInfo?.source === "builtin") return false;
   const name = tool.name.toLowerCase();
   const description = [tool.description, ...(tool.promptGuidelines ?? [])].join(" ").toLowerCase();
   const text = `${name} ${description}`;

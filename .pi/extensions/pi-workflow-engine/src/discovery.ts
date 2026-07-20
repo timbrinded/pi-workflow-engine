@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import type { PerfSink } from "./perf.ts";
 import { loadWorkflow, parseWorkflowModule } from "./workflow-module.ts";
@@ -70,7 +70,7 @@ async function captureDiscoveryFingerprint(root: string) {
  * bundled example is always the verified one even if a same-named file is dropped in.
  */
 export async function discoverWorkflows(repoDir: string, options: DiscoverWorkflowsOptions = {}): Promise<Map<string, LoadedWorkflow>> {
-  const userWorkflowDir = options.userWorkflowDir ?? join(homedir(), ".pi", "agent", "workflows");
+  const userWorkflowDir = options.userWorkflowDir ?? join(getAgentDir(), "workflows");
   const cacheKey = `${repoDir}\0${userWorkflowDir}`;
   const cached = discoveryCache.get(cacheKey);
   if (cached && !options.refresh) {

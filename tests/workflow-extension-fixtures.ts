@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { AutocompleteItem, KeyId } from "@earendil-works/pi-tui";
 import workflowEngine from "../.pi/extensions/pi-workflow-engine/index.ts";
 import {
   DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
@@ -27,6 +27,7 @@ export interface CapturedShortcut {
 
 export interface CapturedCommand {
   readonly description?: string;
+  getArgumentCompletions?(argumentPrefix: string): AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
   handler(args: string, ctx: ExtensionCommandContext): unknown | Promise<unknown>;
 }
 

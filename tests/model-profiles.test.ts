@@ -15,7 +15,10 @@ import {
   type ResolvedWorkflowModelProfiles,
   type WorkflowModelProfilePaths,
 } from "../.pi/extensions/pi-workflow-engine/src/model-profiles.ts";
-import { parseWorkflowModelsCommand } from "../.pi/extensions/pi-workflow-engine/src/model-profile-command.ts";
+import {
+  parseWorkflowModelsCommand,
+  workflowModelProfileArgumentCompletions,
+} from "../.pi/extensions/pi-workflow-engine/src/model-profile-command.ts";
 import type { CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import {
   createRegistry,
@@ -253,4 +256,25 @@ test("/workflow:models parser keeps scope and profile configuration explicit", (
   assert.equal(parseWorkflowModelsCommand("set huge openai/gpt").kind, "error");
   assert.equal(parseWorkflowModelsCommand("set small openai/gpt enormous").kind, "error");
   assert.equal(parseWorkflowModelsCommand("clear small extra").kind, "error");
+});
+
+test("/workflow:models exposes native completions without filling the free-form model slot", () => {
+  assert.deepEqual(
+    workflowModelProfileArgumentCompletions("s")?.map((item) => item.value),
+    ["status", "set"],
+  );
+  assert.deepEqual(
+    workflowModelProfileArgumentCompletions("set m")?.map((item) => item.value),
+    ["set medium"],
+  );
+  assert.equal(workflowModelProfileArgumentCompletions("set small "), null);
+  assert.deepEqual(
+    workflowModelProfileArgumentCompletions("set small openai/gpt h")?.map((item) => item.value),
+    ["set small openai/gpt high"],
+  );
+  assert.deepEqual(
+    workflowModelProfileArgumentCompletions("clear big --")?.map((item) => item.value),
+    ["clear big --user", "clear big --project"],
+  );
+  assert.equal(workflowModelProfileArgumentCompletions("clear big --user "), null);
 });

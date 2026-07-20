@@ -326,6 +326,7 @@ test("runAgent re-checks budget after waiting for a concurrency slot", async () 
           markFirstPromptEntered();
           await firstPromptCanFinish;
         },
+        getLastAssistantText: () => "done",
         subscribe() {
           return () => {};
         },
@@ -357,10 +358,12 @@ test("runAgent re-checks budget after waiting for a concurrency slot", async () 
 test("runAgent dynamically enables installed search-like tools", async () => {
   let observedTools: readonly string[] | undefined;
   let observedExcludeTools: readonly string[] | undefined;
+  let observedNoTools: "all" | "builtin" | undefined;
   let activatedTools: readonly string[] = [];
   const createSession: CreateAgentSession = async (options) => {
     observedTools = options.tools;
     observedExcludeTools = options.excludeTools;
+    observedNoTools = options.noTools;
     return {
       session: {
         state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
@@ -402,7 +405,8 @@ test("runAgent dynamically enables installed search-like tools", async () => {
 
   assert.deepEqual(result, { ok: true });
   assert.equal(observedTools, undefined);
-  assert.deepEqual(observedExcludeTools, ["edit", "write"]);
+  assert.equal(observedExcludeTools, undefined);
+  assert.equal(observedNoTools, "builtin");
   assert.deepEqual(activatedTools, ["read", "bash", "grep", "find", "ls", "final_answer", "ffgrep", "mgrep", "ast-grep"]);
 });
 
@@ -416,6 +420,19 @@ test("external-search tool hints select web capabilities but exclude local and m
   assert.equal(isExternalSearchLikeTool({ name: "slack_search", description: "Search messages and files in Slack" }), false);
   assert.equal(isExternalSearchLikeTool({ name: "search_replace", description: "Search and replace text on a website" }), false);
   assert.equal(isExternalSearchLikeTool({ name: "searchReplace", description: "Search and replace text on a website" }), false);
+  assert.equal(
+    isExternalSearchLikeTool({
+      name: "web_search",
+      description: "Search the internet and return webpage URLs",
+      sourceInfo: {
+        path: "<builtin:web_search>",
+        source: "builtin",
+        scope: "builtin",
+        origin: "builtin",
+      },
+    }),
+    false,
+  );
 
   let activatedTools: readonly string[] = [];
   const createSession: CreateAgentSession = async (options) => ({
@@ -491,13 +508,17 @@ test("required tool hints fail before prompting when no installed capability mat
 });
 
 test("runAgent falls back to concrete tools when dynamic tool APIs are unavailable", async () => {
-  const calls: Array<{ readonly tools?: readonly string[]; readonly excludeTools?: readonly string[] }> = [];
+  const calls: Array<{
+    readonly tools?: readonly string[];
+    readonly excludeTools?: readonly string[];
+    readonly noTools?: "all" | "builtin";
+  }> = [];
   let firstPrompted = false;
   let secondPrompted = false;
   let firstDisposed = false;
 
   const createSession: CreateAgentSession = async (options) => {
-    calls.push({ tools: options.tools, excludeTools: options.excludeTools });
+    calls.push({ tools: options.tools, excludeTools: options.excludeTools, noTools: options.noTools });
     const isFirstCall = calls.length === 1;
     return {
       session: {
@@ -529,8 +550,8 @@ test("runAgent falls back to concrete tools when dynamic tool APIs are unavailab
 
   assert.deepEqual(result, { ok: true });
   assert.deepEqual(calls, [
-    { tools: undefined, excludeTools: ["edit", "write"] },
-    { tools: ["read", "bash", "grep", "find", "ls", "final_answer"], excludeTools: undefined },
+    { tools: undefined, excludeTools: undefined, noTools: "builtin" },
+    { tools: ["read", "bash", "grep", "find", "ls", "final_answer"], excludeTools: undefined, noTools: undefined },
   ]);
   assert.equal(firstPrompted, false);
   assert.equal(secondPrompted, true);
@@ -585,6 +606,7 @@ test("runAgent filters explicitly requested skills and auto-adds read when tools
           async prompt(text) {
             observedPrompt = text;
           },
+          getLastAssistantText: () => "done",
           subscribe() {
             return () => {};
           },

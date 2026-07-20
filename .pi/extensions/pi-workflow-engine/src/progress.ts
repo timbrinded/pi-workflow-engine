@@ -5,7 +5,7 @@ import type { AgentRowStatus, WorkflowLaneItemStatus, WorkflowProgressSnapshot }
 import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./usage.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { statusTextFromCounts, type WorkflowStatusCounts } from "./ui/workflow-format.ts";
-import { createWorkflowWidget, type WorkflowWidget } from "./ui/workflow-widget.ts";
+import { createWorkflowWidget, renderWorkflowWidgetLines, type WorkflowWidget } from "./ui/workflow-widget.ts";
 
 export type {
   AgentRowSnapshot,
@@ -76,6 +76,7 @@ export class ProgressTracker {
   private lastStatusText: string | undefined;
   private usageSnapshot: WorkflowUsageSnapshot | undefined;
   private renderQueued = false;
+  private readonly surfaceKey: string;
 
   constructor(
     private readonly ctx: ExtensionContext,
@@ -83,6 +84,7 @@ export class ProgressTracker {
     private readonly runId: string,
     private readonly onSnapshot?: (snapshot: WorkflowProgressSnapshot) => void,
   ) {
+    this.surfaceKey = `workflow:${runId}`;
     this.ensurePhase(this.currentPhase);
   }
 
@@ -279,10 +281,24 @@ export class ProgressTracker {
   private publish(): void {
     this.publishSnapshot();
     if (!this.ctx.hasUI) return;
+    if (this.ctx.mode !== "tui") {
+      this.publishRpcWidget();
+      this.publishStatus();
+      return;
+    }
     this.ensureWidget();
     this.widget?.invalidate();
     this.requestRenderSoon();
     this.publishStatus();
+  }
+
+  private publishRpcWidget(): void {
+    this.ctx.ui.setWidget(
+      this.surfaceKey,
+      renderWorkflowWidgetLines(this.snapshot(), 0, 120, this.ctx.ui.theme),
+      { placement: "aboveEditor" },
+    );
+    this.widgetRegistered = true;
   }
 
   private requestRenderSoon(): void {
@@ -308,7 +324,7 @@ export class ProgressTracker {
     const usage = formatWorkflowUsageLine(this.usageSnapshot);
     const next = usage ? `${status} · ${usage}` : status;
     if (next === this.lastStatusText) return;
-    this.ctx.ui.setStatus("workflow", next);
+    this.ctx.ui.setStatus(this.surfaceKey, next);
     this.lastStatusText = next;
   }
 
@@ -316,7 +332,7 @@ export class ProgressTracker {
     if (this.widgetRegistered) return;
     this.widget = createWorkflowWidget(() => this.snapshot());
     this.ctx.ui.setWidget(
-      "workflow",
+      this.surfaceKey,
       (tui, theme) => {
         this.tui = tui;
         return {
@@ -344,15 +360,15 @@ export class ProgressTracker {
     this.widgetInterval = undefined;
   }
 
-  /** Clear live workflow surfaces; optionally leave a one-line final status. */
-  done(status?: string): void {
+  /** Clear this run's live workflow surfaces. Final feedback is delivered by the result surface. */
+  done(): void {
     this.doneAt = Date.now();
     this.stopWidgetTimer();
     this.publishSnapshot();
     if (!this.ctx.hasUI) return;
-    this.ctx.ui.setWidget("workflow", undefined);
-    this.ctx.ui.setStatus("workflow", status);
-    this.lastStatusText = status;
+    this.ctx.ui.setWidget(this.surfaceKey, undefined);
+    this.ctx.ui.setStatus(this.surfaceKey, undefined);
+    this.lastStatusText = undefined;
     this.renderQueued = false;
     this.widgetRegistered = false;
     this.widget = undefined;

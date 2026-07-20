@@ -303,6 +303,14 @@ export class BackgroundWorkflowCoordinator {
       ctx.ui.setWidget(BACKGROUND_WIDGET_KEY, undefined);
       return;
     }
+    if (ctx.mode !== "tui") {
+      ctx.ui.setWidget(
+        BACKGROUND_WIDGET_KEY,
+        [formatBackgroundActivity(runs, ctx.ui.theme)],
+        { placement: "aboveEditor" },
+      );
+      return;
+    }
     ctx.ui.setWidget(
       BACKGROUND_WIDGET_KEY,
       (tui, theme) => ({

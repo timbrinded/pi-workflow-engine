@@ -276,6 +276,7 @@ test("read-only agents that mutate the repository are not recorded", async () =>
       async prompt() {
         await writeFile(join(cwd, "mutation.txt"), "changed\n", "utf8");
       },
+      getLastAssistantText: () => "done",
       subscribe() {
         return () => {};
       },

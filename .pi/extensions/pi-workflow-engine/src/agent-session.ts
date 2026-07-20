@@ -1,8 +1,11 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import {
-  createAgentSession,
+  createAgentSessionFromServices,
+  createAgentSessionServices,
   defineTool,
   SessionManager,
+  type AgentSessionServices,
+  type CreateAgentSessionFromServicesOptions,
   type CreateAgentSessionOptions,
   type ModelRegistry,
   type Skill,
@@ -12,6 +15,7 @@ import {
   appendSkillReminder,
   createAgentSkillResourceLoader,
   extractSkillSelectorsFromText,
+  prepareAgentSkillResources,
 } from "./agent-skills.ts";
 import type {
   AgentExecutionOptions,
@@ -39,7 +43,6 @@ export const FINAL_TOOL = "final_answer";
 const SCHEMA_REPROMPT =
   `You ended your turn without calling the ${FINAL_TOOL} tool, so no result was recorded. ` +
   `Call ${FINAL_TOOL} now with your final answer as its arguments. Do not reply with plain text.`;
-const BUILTIN_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 const DEFAULT_SEARCH_BASE_TOOLS = ["read", "bash", "grep", "find", "ls"];
 
 export interface ResolvedAgentModelRequest {
@@ -89,21 +92,6 @@ export async function openAgentSession(input: {
   readonly tags: AgentRunTags;
 }): Promise<AgentSessionHandle> {
   const { rc, prompt, opts, cwd, model, label, tags } = input;
-  const skillSetup = shouldCreateSkillResourceLoader(rc, prompt, opts)
-    ? await rc.perf.time(
-        "agent.skills_ms",
-        () =>
-          createAgentSkillResourceLoader({
-            cwd,
-            prompt,
-            skills: opts.skills,
-            log: (message) => rc.progress.log(`${label}: ${message}`),
-          }),
-        tags,
-      )
-    : undefined;
-  const selectedSkills = skillSetup?.selectedSkills ?? [];
-  const toolSelection = buildToolSelection(opts, selectedSkills.length > 0);
   let captured = false;
   let structuredResult: unknown;
   const customTools: ToolDefinition[] = opts.schema
@@ -122,25 +110,19 @@ export async function openAgentSession(input: {
         }),
       ]
     : [];
-  const createSubagentSession = async (sessionOptions: ToolSessionOptions) => {
+  const createSessionResources = async (): Promise<AgentSessionResources> => {
+    const prepare = () => prepareAgentSessionResources({ rc, prompt, opts, cwd, model, customTools, label });
+    return shouldCreateSkillResourceLoader(rc, prompt, opts)
+      ? rc.perf.time("agent.skills_ms", prepare, tags)
+      : prepare();
+  };
+  const createSubagentSession = async (
+    resources: AgentSessionResources,
+    sessionOptions: ToolSessionOptions,
+  ) => {
     const created = await rc.perf.time(
       "agent.create_session_ms",
-      () => {
-        const options = {
-          cwd,
-          model,
-          thinkingLevel: opts.thinkingLevel,
-          tools: sessionOptions.tools,
-          excludeTools: sessionOptions.excludeTools,
-          customTools,
-          resourceLoader: skillSetup?.resourceLoader,
-          sessionManager: SessionManager.inMemory(cwd),
-        };
-        if (rc.createSession) {
-          return rc.createSession({ ...options, modelRegistry: rc.modelRegistry });
-        }
-        return defaultCreateSession({ ...options, modelRegistry: rc.modelRegistry });
-      },
+      () => resources.createSession(sessionOptions),
       tags,
     );
     created.session.setAutoRetryEnabled?.(false);
@@ -148,9 +130,13 @@ export async function openAgentSession(input: {
   };
 
   let session: AgentRunnerSession | undefined;
+  let selectedSkills: readonly Skill[] = [];
   try {
     throwIfAborted(rc.signal);
-    session = (await createSubagentSession(toolSelection.sessionOptions)).session;
+    let resources = await createSessionResources();
+    selectedSkills = resources.selectedSkills;
+    let toolSelection = buildToolSelection(opts, selectedSkills.length > 0);
+    session = (await createSubagentSession(resources, toolSelection.sessionOptions)).session;
     const dynamicToolHints = toolSelection.toolHints.length === 0
       ? { applied: true, matched: new Set<AgentToolHint>() }
       : applyDynamicToolHints(session, toolSelection);
@@ -162,7 +148,10 @@ export async function openAgentSession(input: {
       session = undefined;
       rc.perf.timeSync("agent.dispose_ms", () => dynamicSession.dispose(), tags);
       throwIfAborted(rc.signal);
-      session = (await createSubagentSession(toolSelection.fallbackSessionOptions)).session;
+      resources = await createSessionResources();
+      selectedSkills = resources.selectedSkills;
+      toolSelection = buildToolSelection(opts, selectedSkills.length > 0);
+      session = (await createSubagentSession(resources, toolSelection.fallbackSessionOptions)).session;
     }
     if (opts.requireToolHints) {
       const missing = toolSelection.toolHints.filter((hint) => !dynamicToolHints.matched.has(hint));
@@ -233,7 +222,12 @@ export async function promptAgentSession(input: {
         return rc.perf.timeSync(
           "agent.extract_result_ms",
           () => {
-            if (!opts.schema) return lastAssistantText(session.state);
+            if (!opts.schema) {
+              if (!session.getLastAssistantText) {
+                throw new Error("AgentSession.getLastAssistantText() is unavailable in this pi runtime.");
+              }
+              return session.getLastAssistantText() ?? "";
+            }
             if (!handle.hasStructuredResult()) {
               rc.progress.log(`${label}: no structured answer returned`);
               rc.perf.counter("agent.structured_missing", 1, tags);
@@ -305,8 +299,85 @@ function parseAgentModelRef(modelRef: string): ResolvedAgentModelRequest {
   return { ref: modelRef, provider, id };
 }
 
-async function defaultCreateSession(options: CreateAgentSessionOptions): Promise<{ session: AgentRunnerSession }> {
-  const { session } = await createAgentSession(options);
+interface AgentSessionResources {
+  readonly selectedSkills: readonly Skill[];
+  createSession(sessionOptions: ToolSessionOptions): Promise<{ session: AgentRunnerSession }>;
+}
+
+async function prepareAgentSessionResources(input: {
+  readonly rc: RunContext;
+  readonly prompt: string;
+  readonly opts: AgentExecutionOptions;
+  readonly cwd: string;
+  readonly model: Model<Api> | undefined;
+  readonly customTools: ToolDefinition[];
+  readonly label: string;
+}): Promise<AgentSessionResources> {
+  const { rc, prompt, opts, cwd, model, customTools, label } = input;
+  const skillOptions = {
+    cwd,
+    prompt,
+    skills: opts.skills,
+    log: (message: string) => rc.progress.log(`${label}: ${message}`),
+  };
+
+  const createSession = rc.createSession;
+  if (createSession) {
+    const skillSetup = shouldCreateSkillResourceLoader(rc, prompt, opts)
+      ? await createAgentSkillResourceLoader(skillOptions)
+      : undefined;
+    return {
+      selectedSkills: skillSetup?.selectedSkills ?? [],
+      createSession: (sessionOptions) =>
+        createSession({
+          cwd,
+          model,
+          thinkingLevel: opts.thinkingLevel,
+          noTools: sessionOptions.noTools,
+          tools: sessionOptions.tools,
+          excludeTools: sessionOptions.excludeTools,
+          customTools,
+          resourceLoader: skillSetup?.resourceLoader,
+          sessionManager: SessionManager.inMemory(cwd),
+        }),
+    };
+  }
+
+  const preparedSkills = prepareAgentSkillResources(skillOptions);
+  const services = await createAgentSessionServices({
+    cwd,
+    modelRuntime: await rc.getModelRuntime(),
+    resourceLoaderOptions: preparedSkills.resourceLoaderOptions,
+  });
+  logSessionServiceDiagnostics(services, (message) => rc.progress.log(`${label}: ${message}`));
+  const skillSetup = preparedSkills.resolve(services.resourceLoader);
+  return {
+    selectedSkills: skillSetup.selectedSkills,
+    createSession: (sessionOptions) =>
+      defaultCreateSession({
+        services,
+        sessionManager: SessionManager.inMemory(cwd),
+        model,
+        thinkingLevel: opts.thinkingLevel,
+        noTools: sessionOptions.noTools,
+        tools: sessionOptions.tools,
+        excludeTools: sessionOptions.excludeTools,
+        customTools,
+      }),
+  };
+}
+
+function logSessionServiceDiagnostics(
+  services: Pick<AgentSessionServices, "diagnostics">,
+  log: (message: string) => void,
+): void {
+  for (const diagnostic of services.diagnostics) {
+    log(`session ${diagnostic.type}: ${diagnostic.message}`);
+  }
+}
+
+async function defaultCreateSession(options: CreateAgentSessionFromServicesOptions): Promise<{ session: AgentRunnerSession }> {
+  const { session } = await createAgentSessionFromServices(options);
   return { session };
 }
 
@@ -323,7 +394,7 @@ function linkSessionAbort(signal: AbortSignal | undefined, session: AgentRunnerS
   return () => signal.removeEventListener("abort", onAbort);
 }
 
-type ToolSessionOptions = Pick<CreateAgentSessionOptions, "tools" | "excludeTools">;
+type ToolSessionOptions = Pick<CreateAgentSessionOptions, "tools" | "excludeTools" | "noTools">;
 
 interface ToolSelection {
   readonly sessionOptions: ToolSessionOptions;
@@ -350,9 +421,8 @@ function buildToolSelection(opts: AgentExecutionOptions, skillsEnabled: boolean)
     return { sessionOptions: strictSessionOptions, fallbackSessionOptions: strictSessionOptions, activeTools, toolHints };
   }
 
-  const explicitlyActive = new Set(activeTools ?? []);
   return {
-    sessionOptions: { excludeTools: BUILTIN_TOOL_NAMES.filter((name) => !explicitlyActive.has(name)) },
+    sessionOptions: { noTools: "builtin" },
     fallbackSessionOptions: { tools: activeTools ? [...activeTools] : [] },
     activeTools,
     toolHints,
@@ -416,36 +486,4 @@ function effectiveToolInfos(
     });
   }
   return { kind: "verified", tools: normalized };
-}
-
-function lastAssistantText(state: { readonly messages: readonly unknown[] }): string {
-  for (let index = state.messages.length - 1; index >= 0; index--) {
-    const message = state.messages[index];
-    if (hasRole(message, "assistant")) return messageTextContent(message).trim();
-  }
-  return "";
-}
-
-function hasRole(value: unknown, role: string): value is { role: string } {
-  return typeof value === "object" && value !== null && "role" in value && value.role === role;
-}
-
-function messageTextContent(message: unknown): string {
-  if (!hasContentArray(message)) return "";
-  return message.content.filter(isTextPart).map((part) => part.text).join("");
-}
-
-function hasContentArray(value: unknown): value is { content: unknown[] } {
-  return typeof value === "object" && value !== null && "content" in value && Array.isArray(value.content);
-}
-
-function isTextPart(value: unknown): value is { type: "text"; text: string } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    value.type === "text" &&
-    "text" in value &&
-    typeof value.text === "string"
-  );
 }

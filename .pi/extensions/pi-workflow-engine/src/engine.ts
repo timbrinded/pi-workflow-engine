@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { bindParallel, bindPipeline, Semaphore } from "./concurrency.ts";
 import { WorkflowAgentLimiter } from "./agent-limits.ts";
@@ -35,6 +35,7 @@ import {
   createProviderUsageLimitPauseRecord,
   WorkflowProviderUsageLimitError,
 } from "./provider-usage-limit.ts";
+import { createWorkflowModelRuntimeAccessor } from "./workflow-model-runtime.ts";
 
 /** The workflow-facing slice of the progress tracker (satisfied by `ProgressTracker`). */
 export interface WorkflowProgress {
@@ -70,6 +71,7 @@ export interface WorkflowEngineDependencies {
   readonly worktrees?: WorktreeRegistry;
   readonly retryScheduler?: AgentRetryScheduler;
   readonly modelProfiles?: ResolvedWorkflowModelProfiles;
+  readonly modelRuntime?: ModelRuntime;
 }
 
 /**
@@ -95,6 +97,7 @@ export async function runResolvedWorkflow(
   dependencies: WorkflowEngineDependencies = {},
 ): Promise<unknown> {
   const runId = resolvedOptions.runId ?? createWorkflowRunId();
+  const getModelRuntime = createWorkflowModelRuntimeAccessor(ctx.modelRegistry, dependencies.modelRuntime);
   let durableProgress: DurableWorkflowRun | undefined;
   const progress = new ProgressTracker(ctx, mod.meta.name, runId, (snapshot) => durableProgress?.updateProgress(snapshot));
   const progressSource = { snapshot: () => progress.snapshot() };
@@ -127,7 +130,7 @@ export async function runResolvedWorkflow(
   const unlinkOptionAbortSignal = linkAbortSignal(resolvedOptions.signal, runAbortController);
   const workflowOutcome = await captureOutcome(async () => {
     await notifyLifecycleObserver(progress, "progress source callback", () => resolvedOptions.onProgressSource?.(progressSource));
-    if (resolvedOptions.inspect && ctx.hasUI) {
+    if (resolvedOptions.inspect && ctx.hasUI && ctx.mode === "tui") {
       void ctx.ui
         .custom<void>(
           (tui, theme, _keybindings, done) => new WorkflowInspector(() => progress.snapshot(), tui, theme, () => done(undefined)),
@@ -163,6 +166,7 @@ export async function runResolvedWorkflow(
       cwd: ctx.cwd,
       hostModel: ctx.model,
       modelRegistry: ctx.modelRegistry,
+      getModelRuntime,
       semaphore: new Semaphore(resolvedOptions.concurrency),
       agentLimiter: new WorkflowAgentLimiter(resolvedOptions.maxAgents),
       agentTimeoutMs: resolvedOptions.agentTimeoutMs,

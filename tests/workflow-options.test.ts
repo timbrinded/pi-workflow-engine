@@ -216,6 +216,7 @@ test("pickWorkflow does not prompt for inspector by default", async () => {
   ]);
   const ctx = {
     hasUI: true,
+    mode: "rpc",
     ui: {
       async select() {
         return "code-review — Review code";
@@ -256,6 +257,7 @@ test("pickWorkflow uses custom picker values instead of long raw select rows", a
   ]);
   const ctx = {
     hasUI: true,
+    mode: "tui",
     ui: {
       async custom() {
         customCalls++;

@@ -2,6 +2,10 @@
 
 `pi-workflow-engine` adds zero-dependency Dynamax workflows to pi: opt into live, parallel subagents for the tasks that need a custom investigation instead of one long prompt. Most users only need these surfaces:
 
+This release requires **pi 0.80.10 or newer**. pi remains host-provided rather
+than bundled by this package, and the extension rejects older runtimes at load
+time with an update message.
+
 - `/workflow <name> [args]` to run a saved workflow directly.
 - `/workflow:*` commands for related actions such as inspector reopening and Dynamax control.
 - `dynamax` as a literal one-shot opt-in token when you want the host agent to author a one-off inline workflow for investigation/review.
@@ -146,22 +150,25 @@ When only the literal `dynamax` token is used, the opt-in is one-shot: the next 
 
 ### Prompt editor cue
 
-The intended static multicolour `dynamax` cue is blocked on a safe pi editor
-decoration API. As of pi 0.80.7, the [official extension
-API](https://pi.dev/docs/latest/extensions#custom-editor) exposes
-`setEditorComponent`, which replaces the whole editor, but no hook that styles
-a token while preserving the stock editor. Replacing `CustomEditor` would make
-this package responsible for cursor movement, selection, deletion, paste,
-multiline input, undo/redo, completion, IME handling, and composition with every
-other editor extension. A current [launch-time compatibility
-failure](https://github.com/QuintinShaw/pi-dynamic-workflows/issues/72) in the
-reference rainbow editor demonstrates that risk.
+In TUI mode, every standalone `dynamax` token receives an animated cycling
+colour cue while it is present in the prompt. Longer identifiers such as
+`notdynamax`, `dynamaxing`, and `dynamax_mode` are deliberately left alone. The
+cue affects rendering only; one-shot and sticky activation semantics are
+unchanged.
 
-Until pi exposes a visual-only decoration/render hook, pi-workflow-engine does
-not call `setEditorComponent`: `dynamax` remains ordinary prompt text, unsupported
-or off environments emit no warning, and one-shot/sticky activation semantics
-remain unchanged. A future implementation should add a static decoration first;
-animation remains optional and must not drive continuous full-editor rerenders.
+The implementation follows pi 0.80.10's [official `CustomEditor`
+pattern](https://pi.dev/docs/latest/extensions#custom-editor): unhandled input is
+delegated to `super.handleInput`, retaining pi's cursor, deletion, paste,
+multiline, undo, completion, IME, and app-keybinding behavior. Animation stops
+as soon as the token disappears and is disposed on session shutdown or reload.
+
+If an editor extension is already registered, pi-workflow-engine composes its
+factory and adds only the Dynamax render/input hooks. If that editor cannot be
+composed, an explicit warning is shown and pi's stock-compatible `CustomEditor`
+is used so highlighting is never silently disabled. Pi editor registration is
+still last-writer-wins; if another extension replaces the editor later, the
+replacement is detected before the next terminal input is handled, composed,
+and reported.
 
 When the host agent calls the `workflow` tool from a TUI session, pi opens the live workflow inspector for that run. The compact workflow widget still shows the latest moving status above the editor, but the inspector is the richer view for phases, agents, findings, and logs.
 

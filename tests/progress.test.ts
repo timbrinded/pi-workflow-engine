@@ -103,3 +103,40 @@ test("ProgressTracker publishes the shared usage line in compact status", () => 
     tracker.done();
   }
 });
+
+test("concurrent RPC progress trackers use string widgets and clear their run-scoped surfaces", () => {
+  const statuses = new Map<string, string>();
+  const widgets = new Map<string, string[]>();
+  const ctx = {
+    hasUI: true,
+    mode: "rpc",
+    ui: {
+      theme: createTestTheme(),
+      setStatus(key: string, value: string | undefined) {
+        if (value === undefined) statuses.delete(key);
+        else statuses.set(key, value);
+      },
+      setWidget(key: string, value: string[] | undefined) {
+        if (value === undefined) widgets.delete(key);
+        else {
+          assert.ok(Array.isArray(value), "RPC widgets must use Pi's string[] surface");
+          widgets.set(key, value);
+        }
+      },
+    },
+  } as unknown as ExtensionContext;
+  const first = new ProgressTracker(ctx, "first", "run-first");
+  const second = new ProgressTracker(ctx, "second", "run-second");
+
+  first.phase("Find");
+  second.phase("Verify");
+  assert.deepEqual([...statuses.keys()].sort(), ["workflow:run-first", "workflow:run-second"]);
+  assert.deepEqual([...widgets.keys()].sort(), ["workflow:run-first", "workflow:run-second"]);
+
+  first.done();
+  assert.deepEqual([...statuses.keys()], ["workflow:run-second"]);
+  assert.deepEqual([...widgets.keys()], ["workflow:run-second"]);
+  second.done();
+  assert.equal(statuses.size, 0);
+  assert.equal(widgets.size, 0);
+});

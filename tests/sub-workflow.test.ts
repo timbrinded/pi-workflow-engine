@@ -111,6 +111,7 @@ const NOOP_SESSION: CreateAgentSession = async () => ({
   session: {
     state: { messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
     prompt: async () => {},
+    getLastAssistantText: () => "ok",
     subscribe: () => () => {},
     dispose: () => {},
     abort: async () => {},
@@ -336,6 +337,7 @@ test("parent and sub-workflow agents share the run's usage recorder", async () =
     session: {
       state: { messages: [usageMessage(10, 5)] },
       prompt: async () => {},
+      getLastAssistantText: () => "ok",
       subscribe: () => () => {},
       dispose: () => {},
       abort: async () => {},

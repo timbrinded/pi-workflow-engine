@@ -90,6 +90,7 @@ function contextOpts(resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkf
 function createLiveTextSession(onPrompt: (prompt: string) => void): CreateAgentSession {
   return async () => {
     let messages: readonly unknown[] = [];
+    let lastText: string | undefined;
     return {
       session: {
         get state() {
@@ -97,8 +98,10 @@ function createLiveTextSession(onPrompt: (prompt: string) => void): CreateAgentS
         },
         async prompt(prompt) {
           onPrompt(prompt);
-          messages = [{ role: "assistant", content: [{ type: "text", text: `live:${prompt}` }] }];
+          lastText = `live:${prompt}`;
+          messages = [{ role: "assistant", content: [{ type: "text", text: lastText }] }];
         },
+        getLastAssistantText: () => lastText,
         subscribe() {
           return () => {};
         },
@@ -143,6 +146,7 @@ const TEST_TOOL_DEFINITION = {
 function createDelayedTextSession(delays: Record<string, number>, onPrompt: (prompt: string) => void): CreateAgentSession {
   return async () => {
     let messages: readonly unknown[] = [];
+    let lastText: string | undefined;
     return {
       session: {
         get state() {
@@ -151,8 +155,10 @@ function createDelayedTextSession(delays: Record<string, number>, onPrompt: (pro
         async prompt(prompt) {
           onPrompt(prompt);
           await delay(delays[prompt] ?? 0);
-          messages = [{ role: "assistant", content: [{ type: "text", text: `live:${prompt}` }] }];
+          lastText = `live:${prompt}`;
+          messages = [{ role: "assistant", content: [{ type: "text", text: lastText }] }];
         },
+        getLastAssistantText: () => lastText,
         subscribe() {
           return () => {};
         },
@@ -177,6 +183,7 @@ function createSequencedTextSession(onPrompt: (prompt: string) => void): CreateA
   return async () => {
     const sequence = ++next;
     let messages: readonly unknown[] = [];
+    let lastText: string | undefined;
     return {
       session: {
         get state() {
@@ -184,8 +191,10 @@ function createSequencedTextSession(onPrompt: (prompt: string) => void): CreateA
         },
         async prompt(prompt) {
           onPrompt(prompt);
-          messages = [{ role: "assistant", content: [{ type: "text", text: `live-${sequence}:${prompt}` }] }];
+          lastText = `live-${sequence}:${prompt}`;
+          messages = [{ role: "assistant", content: [{ type: "text", text: lastText }] }];
         },
+        getLastAssistantText: () => lastText,
         subscribe() {
           return () => {};
         },

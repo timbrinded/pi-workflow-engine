@@ -1,5 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { CreateAgentSessionOptions, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type { CreateAgentSessionOptions, ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { WorkflowBudget } from "./budget.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { WorkflowAgentLimiter } from "./agent-limits.ts";
@@ -50,13 +50,11 @@ export interface AgentRunnerSession {
   getToolDefinition?(name: string): EffectiveToolDefinitionLike | undefined;
   setActiveToolsByName?(toolNames: readonly string[]): void;
   setAutoRetryEnabled?(enabled: boolean): void;
+  /** Optional only so injected failure-path test doubles can omit result extraction. */
+  getLastAssistantText?(): string | undefined;
 }
 
-type InjectedAgentSessionOptions = Omit<CreateAgentSessionOptions, "modelRegistry"> & {
-  readonly modelRegistry: Pick<ModelRegistry, "find">;
-};
-
-export type CreateAgentSession = (options: InjectedAgentSessionOptions) => Promise<{ session: AgentRunnerSession }>;
+export type CreateAgentSession = (options: CreateAgentSessionOptions) => Promise<{ session: AgentRunnerSession }>;
 
 export interface AgentProgress {
   agentQueued(phase: string | undefined, label: string): number;
@@ -91,13 +89,15 @@ interface RunContextBase {
 /** Shared per-run context threaded into every agent() call. */
 export type RunContext = RunContextBase & (
   | {
-      /** The real session factory requires the complete pi model registry. */
+      /** Production sessions share one lazily-created model runtime for this workflow run. */
       modelRegistry: ModelRegistry;
+      getModelRuntime: () => Promise<ModelRuntime>;
       createSession?: undefined;
     }
   | {
       /** Tests and other injected factories may deliberately consume only model lookup. */
       modelRegistry: Pick<ModelRegistry, "find">;
+      getModelRuntime?: undefined;
       createSession: CreateAgentSession;
     }
 );

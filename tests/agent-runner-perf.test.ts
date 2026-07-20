@@ -121,6 +121,7 @@ test("runAgent records lifecycle timing samples without LLM calls", async () => 
     session: {
       state: { messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }] },
       async prompt() {},
+      getLastAssistantText: () => "done",
       subscribe() {
         return () => {};
       },
@@ -157,6 +158,7 @@ test("runAgent records usage before disposing a successful subagent session", as
         return { messages };
       },
       async prompt() {},
+      getLastAssistantText: () => "done",
       subscribe() {
         return () => {};
       },
@@ -382,6 +384,7 @@ test("runAgent does not re-prompt non-schema agents", async () => {
       async prompt() {
         promptCalls += 1;
       },
+      getLastAssistantText: () => "done",
       subscribe() {
         return () => {};
       },

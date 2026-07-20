@@ -166,6 +166,68 @@ test("workflow runs command reports empty project history in headless mode", asy
   }
 });
 
+test("workflow run completions expose lifecycle actions and retained IDs", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-completions-"));
+  const notifications: Notification[] = [];
+  const ctx = context(cwd, notifications);
+  const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => undefined,
+    execute: async () => {},
+  });
+  try {
+    await runWorkflow(ctx as ExtensionContext, workflow(), "", {
+      runId: "completion-retained-run",
+      background: backgroundOrigin(ctx, 1),
+    });
+
+    assert.deepEqual(
+      (await controller.argumentCompletions("ins", ctx))?.map((item) => item.value),
+      ["inspect"],
+    );
+    assert.deepEqual(
+      (await controller.argumentCompletions("inspect completion", ctx))?.map((item) => item.value),
+      ["inspect completion-retained-run"],
+    );
+    assert.ok(
+      (await controller.inspectorArgumentCompletions("completion", ctx))
+        ?.some((item) => item.value === "completion-retained-run"),
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("workflow run history uses textual RPC output instead of a custom navigator", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-rpc-ui-"));
+  const notifications: Notification[] = [];
+  const base = context(cwd, notifications, "rpc");
+  let customCalls = 0;
+  const ctx = {
+    ...base,
+    hasUI: true,
+    ui: {
+      ...base.ui,
+      custom: async () => {
+        customCalls++;
+        throw new Error("RPC must not open custom components");
+      },
+    },
+  } as ExtensionCommandContext;
+  const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => undefined,
+    execute: async () => {},
+  });
+  try {
+    await controller.handleCommand("", ctx);
+    assert.equal(customCalls, 0);
+    assert.equal(notifications.at(-1)?.message, "No durable workflow runs are available for this project.");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("workflow runs command resumes paused runs and restarts terminal runs with new durable IDs", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-lifecycle-"));
   const notifications: Notification[] = [];

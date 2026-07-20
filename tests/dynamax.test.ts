@@ -8,7 +8,14 @@ import type {
   ExtensionShortcut,
   RegisteredCommand,
 } from "@earendil-works/pi-coding-agent";
-import type { Component, KeyId, TUI } from "@earendil-works/pi-tui";
+import type {
+  AutocompleteItem,
+  Component,
+  EditorComponent,
+  EditorTheme,
+  KeyId,
+  TUI,
+} from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
 import {
   DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
@@ -22,13 +29,17 @@ import {
   consumeDynamaxOneShot,
   createDynamaxRuntime,
   createDynamaxState,
+  DYNAMAX_ANIMATION_INTERVAL_MS,
   DYNAMAX_REMINDER,
   DYNAMAX_STATUS_KEY,
   DYNAMAX_WIDGET_KEY,
+  DynamaxEditor,
   type DynamaxRuntimeStore,
+  completeDynamaxAction,
   dynamaxWidgetLine,
   getDynamaxRuntime,
   hasDynamaxToken,
+  highlightDynamaxTokens,
   isDynamaxActive,
   markDynamaxOneShot,
   registerDynamax,
@@ -41,8 +52,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+}
+
+function createStubEditor(initialText = ""): EditorComponent {
+  let text = initialText;
+  return {
+    getText: () => text,
+    setText: (value: string) => {
+      text = value;
+    },
+    handleInput: (data: string) => {
+      text += data;
+    },
+    render: () => [`custom:${text}`],
+    invalidate: () => {},
+  };
+}
+
+function sendTerminalInput(ui: FakeUiState, data: string): void {
+  let input = data;
+  for (const handler of [...ui.terminalInputHandlers]) {
+    const result = handler(input);
+    if (result?.consume) return;
+    if (result?.data !== undefined) input = result.data;
+  }
+  ui.editor?.handleInput(input);
+}
+
 interface CapturedCommand {
   description?: string;
+  getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null | Promise<AutocompleteItem[] | null>;
   handler: RegisteredCommand["handler"];
 }
 
@@ -65,9 +106,16 @@ interface FakeUiState {
   widgetPlacements: Map<string, string | undefined>;
   statuses: Map<string, string | undefined>;
   editorComponentChanges: number;
+  editorFactory: EditorFactory | undefined;
+  editor: EditorComponent | undefined;
+  terminalInputHandlers: Set<TerminalInputHandler>;
   customComponent: Component | undefined;
   renderRequests: number;
 }
+
+type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
+type EditorKeybindings = Parameters<EditorFactory>[2];
+type TerminalInputHandler = Parameters<ExtensionContext["ui"]["onTerminalInput"]>[0];
 
 function captureDynamax(
   shortcut: KeyId | null = DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
@@ -115,17 +163,25 @@ function captureDynamax(
   return { commands, shortcuts, handlers };
 }
 
-function createFakeContext(sessionId: string, hasUI = true): { ctx: ExtensionCommandContext; ui: FakeUiState } {
+function createFakeContext(
+  sessionId: string,
+  hasUI = true,
+  initialEditorFactory?: EditorFactory,
+): { ctx: ExtensionCommandContext; ui: FakeUiState } {
   const uiState: FakeUiState = {
     notifications: [],
     widgets: new Map(),
     widgetPlacements: new Map(),
     statuses: new Map(),
     editorComponentChanges: 0,
+    editorFactory: initialEditorFactory,
+    editor: undefined,
+    terminalInputHandlers: new Set(),
     customComponent: undefined,
     renderRequests: 0,
   };
   const tui = {
+    terminal: { columns: 80, rows: 24 },
     requestRender: () => {
       uiState.renderRequests += 1;
     },
@@ -134,8 +190,17 @@ function createFakeContext(sessionId: string, hasUI = true): { ctx: ExtensionCom
     fg: (_color: string, text: string) => text,
     bold: (text: string) => text,
   } as unknown as ExtensionContext["ui"]["theme"];
+  const editorTheme = {
+    borderColor: (text: string) => text,
+    selectList: {},
+  } as EditorTheme;
+  const keybindings = {} as EditorKeybindings;
+  if (initialEditorFactory) {
+    uiState.editor = initialEditorFactory(tui as unknown as TUI, editorTheme, keybindings);
+  }
   const ctx = {
     hasUI,
+    mode: hasUI ? "tui" : "print",
     cwd: process.cwd(),
     sessionManager: {
       getSessionId: () => sessionId,
@@ -152,10 +217,18 @@ function createFakeContext(sessionId: string, hasUI = true): { ctx: ExtensionCom
       setStatus: (key: string, text: string | undefined) => {
         uiState.statuses.set(key, text);
       },
-      setEditorComponent: () => {
+      setEditorComponent: (factory: EditorFactory | undefined) => {
         uiState.editorComponentChanges += 1;
+        const text = uiState.editor?.getText() ?? "";
+        uiState.editorFactory = factory;
+        uiState.editor = factory ? factory(tui as unknown as TUI, editorTheme, keybindings) : undefined;
+        uiState.editor?.setText(text);
       },
-      getEditorComponent: () => undefined,
+      getEditorComponent: () => uiState.editorFactory,
+      onTerminalInput: (handler: TerminalInputHandler) => {
+        uiState.terminalInputHandlers.add(handler);
+        return () => uiState.terminalInputHandlers.delete(handler);
+      },
       custom: async <T>(
         factory: (tuiArg: TUI, themeArg: ExtensionContext["ui"]["theme"], keybindings: never, done: (result: T) => void) => Component,
       ): Promise<T> => {
@@ -195,20 +268,136 @@ test("hasDynamaxToken matches exact dynamax word case-insensitively", () => {
   assert.equal(hasDynamaxToken("dynamax_mode"), false);
 });
 
-test("Dynamax preserves the stock editor when pi has no decoration hook", async () => {
+test("Dynamax installs pi's stock-compatible animated editor", async () => {
   const captured = captureDynamax("ctrl+shift+x");
   const sessionStart = captured.handlers.get("session_start")?.[0];
-  const input = captured.handlers.get("input")?.[0];
-  if (!sessionStart || !input) throw new Error("expected Dynamax startup and input handlers");
+  const sessionShutdown = captured.handlers.get("session_shutdown")?.[0];
+  if (!sessionStart || !sessionShutdown) throw new Error("expected Dynamax startup and shutdown handlers");
   const { ctx, ui } = createFakeContext("session-a");
 
   await sessionStart({}, ctx);
-  assert.equal(ui.editorComponentChanges, 0);
+  assert.equal(ui.editorComponentChanges, 1);
+  assert.ok(ui.editor instanceof DynamaxEditor);
   assert.deepEqual(ui.notifications, []);
 
-  await input({ source: "interactive", text: "dynamax inspect this branch" }, ctx);
-  assert.equal(ui.editorComponentChanges, 0);
-  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /one-shot pending/);
+  ui.editor.setText("dynamax inspect this branch");
+  const rendered = ui.editor.render(80).join("\n");
+  assert.match(rendered, /\x1b\[38;2;/);
+
+  await sessionShutdown({}, ctx);
+  assert.equal(ui.editorFactory, undefined);
+  assert.equal(ui.editorComponentChanges, 2);
+});
+
+test("Dynamax highlights only standalone tokens and cycles colours", () => {
+  const prompt = "dynamax notdynamax dynamaxing dynamax_mode (DYNAMAX)";
+  const firstFrame = highlightDynamaxTokens(prompt, 0);
+  const nextFrame = highlightDynamaxTokens(prompt, 1);
+  const colorStarts = firstFrame.match(/\x1b\[38;2;/g) ?? [];
+
+  assert.equal(colorStarts.length, "dynamaxDYNAMAX".length);
+  assert.notEqual(firstFrame, nextFrame);
+  assert.equal(firstFrame.replace(/\x1b\[[0-9;]*m/g, ""), prompt);
+  assert.equal(highlightDynamaxTokens("notdynamax dynamaxing dynamax_mode", 0), "notdynamax dynamaxing dynamax_mode");
+
+  const cursorInsideToken = "\x1b[31mdyna\x1b_pi:c\x07\x1b[7mm\x1b[0max";
+  const highlightedCursorLine = highlightDynamaxTokens(cursorInsideToken, 0);
+  assert.equal(highlightedCursorLine.match(/\x1b\[38;2;/g)?.length, "dynamax".length);
+
+  const styledSuffix = highlightDynamaxTokens("\x1b[31mdynamax suffix\x1b[0m", 0);
+  assert.match(styledSuffix, /\x1b\[31m suffix/);
+  assert.doesNotMatch(styledSuffix, /\x1b\[39m suffix/);
+});
+
+test("Dynamax animation requests renders only while a token is present", async () => {
+  const captured = captureDynamax();
+  const sessionStart = captured.handlers.get("session_start")?.[0];
+  const sessionShutdown = captured.handlers.get("session_shutdown")?.[0];
+  if (!sessionStart || !sessionShutdown) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx, ui } = createFakeContext("session-a");
+
+  await sessionStart({}, ctx);
+  if (!ui.editor) throw new Error("expected Dynamax editor");
+  ui.editor.setText("use dynamax now");
+  await delay(DYNAMAX_ANIMATION_INTERVAL_MS * 2 + 20);
+  assert.ok(ui.renderRequests >= 1);
+
+  ui.editor.setText("ordinary prompt");
+  const stoppedAt = ui.renderRequests;
+  await delay(DYNAMAX_ANIMATION_INTERVAL_MS * 2 + 20);
+  assert.equal(ui.renderRequests, stoppedAt);
+
+  await sessionShutdown({}, ctx);
+});
+
+test("Dynamax composes an existing editor and restores it on shutdown", async () => {
+  const existingFactory: EditorFactory = () => createStubEditor();
+  const captured = captureDynamax();
+  const sessionStart = captured.handlers.get("session_start")?.[0];
+  const sessionShutdown = captured.handlers.get("session_shutdown")?.[0];
+  if (!sessionStart || !sessionShutdown) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx, ui } = createFakeContext("session-a", true, existingFactory);
+
+  await sessionStart({}, ctx);
+  assert.notEqual(ui.editorFactory, existingFactory);
+  if (!ui.editor) throw new Error("expected composed editor");
+  ui.editor.handleInput("dynamax");
+  assert.equal(ui.editor.getText(), "dynamax");
+  assert.match(ui.editor.render(80).join("\n"), /custom:.*\x1b\[38;2;/);
+  assert.deepEqual(ui.notifications, []);
+
+  await sessionShutdown({}, ctx);
+  assert.equal(ui.editorFactory, existingFactory);
+  assert.ok(ui.editor);
+  assert.equal(ui.editor.getText(), "dynamax");
+});
+
+test("Dynamax composes a late editor replacement before its first input and releases the old animation", async () => {
+  const captured = captureDynamax();
+  const sessionStart = captured.handlers.get("session_start")?.[0];
+  const sessionShutdown = captured.handlers.get("session_shutdown")?.[0];
+  if (!sessionStart || !sessionShutdown) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx, ui } = createFakeContext("session-a");
+
+  await sessionStart({}, ctx);
+  const oldEditor = ui.editor;
+  if (!oldEditor) throw new Error("expected original Dynamax editor");
+  oldEditor.setText("dynamax");
+
+  const lateFactory: EditorFactory = () => createStubEditor();
+  ctx.ui.setEditorComponent(lateFactory);
+  const rendersAtReplacement = ui.renderRequests;
+  await delay(DYNAMAX_ANIMATION_INTERVAL_MS * 2 + 20);
+  assert.equal(ui.renderRequests, rendersAtReplacement);
+  assert.doesNotMatch(oldEditor.render(80).join("\n"), /\x1b\[38;2;/);
+
+  ui.editor?.setText("");
+  sendTerminalInput(ui, "dynamax");
+  assert.notEqual(ui.editorFactory, lateFactory);
+  assert.match(ui.editor?.render(80).join("\n") ?? "", /custom:.*\x1b\[38;2;/);
+  assert.match(ui.notifications.at(-1)?.message ?? "", /replaced the Dynamax editor/);
+  assert.equal(ui.terminalInputHandlers.size, 1);
+
+  await sessionShutdown({}, ctx);
+  assert.equal(ui.editorFactory, lateFactory);
+  assert.equal(ui.terminalInputHandlers.size, 0);
+});
+
+test("Dynamax command completes native on, off, and status arguments", async () => {
+  assert.deepEqual(
+    completeDynamaxAction("")?.map((item) => item.value),
+    ["on", "off", "status"],
+  );
+  assert.deepEqual(
+    completeDynamaxAction("st")?.map((item) => item.value),
+    ["status"],
+  );
+  assert.equal(completeDynamaxAction("on extra"), null);
+
+  const command = captureDynamax().commands.get("workflow:dynamax");
+  if (!command?.getArgumentCompletions) throw new Error("expected Dynamax argument completions");
+  const completions = await command.getArgumentCompletions("o");
+  assert.deepEqual(completions?.map((item) => item.value), ["on", "off"]);
 });
 
 test("dynamax one-shot state is consumed by system reminder", () => {

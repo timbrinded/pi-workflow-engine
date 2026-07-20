@@ -187,6 +187,9 @@ export function createTextSession(model: Model<Api> | undefined = DEFAULT_SESSIO
         thinkingLevel: "low",
       },
       async prompt() {},
+      getLastAssistantText() {
+        return "done";
+      },
       subscribe() {
         return () => {};
       },

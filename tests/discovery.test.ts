@@ -157,3 +157,26 @@ test("user drop-in workflows still load from an injected test directory", async 
     await rm(tempRepo, { recursive: true, force: true });
   }
 });
+
+test("default user workflow discovery honors Pi's configured agent directory", async () => {
+  const tempRepo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-agent-dir-"));
+  const tempAgentDir = await mkdtemp(join(tmpdir(), "workflow-engine-agent-dir-"));
+  const workflowDir = join(tempAgentDir, "workflows");
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  try {
+    process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+    await mkdir(workflowDir, { recursive: true });
+    await writeFile(
+      join(workflowDir, "configured-agent-dir.ts"),
+      'export const meta = { name: "configured-agent-dir", description: "configured" };\nexport default async function run() { return "ok"; }\n',
+    );
+
+    const workflows = await discoverWorkflows(tempRepo, { refresh: true });
+    assert.equal(workflows.get("configured-agent-dir")?.meta.description, "configured");
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(tempAgentDir, { recursive: true, force: true });
+    await rm(tempRepo, { recursive: true, force: true });
+  }
+});

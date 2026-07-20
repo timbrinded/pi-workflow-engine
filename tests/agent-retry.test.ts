@@ -87,6 +87,14 @@ function scriptedSessions(scripts: readonly SessionScript[]): ScriptedSessions {
         script.onPrompt?.();
         messages = script.messages;
       },
+      getLastAssistantText() {
+        const last = messages.at(-1);
+        if (!last) return undefined;
+        return last.content
+          .filter((part): part is Extract<(typeof last.content)[number], { type: "text" }> => part.type === "text")
+          .map((part) => part.text)
+          .join("") || undefined;
+      },
       subscribe() {
         return () => {};
       },

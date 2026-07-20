@@ -1,13 +1,13 @@
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { SelectList, Text, truncateToWidth, type Component, type SelectItem, type SelectListTheme, type TUI } from "@earendil-works/pi-tui";
+import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { SelectList, Text, truncateToWidth, type AutocompleteItem, type Component, type SelectItem, type SelectListTheme, type TUI } from "@earendil-works/pi-tui";
 import { isAdvisoryReport } from "./src/advisory-schema.ts";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import type { PerfSink } from "./src/perf.ts";
-import type { WorkflowUsageSnapshot } from "./src/usage.ts";
+import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./src/usage.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
@@ -40,6 +40,8 @@ import { registerWorkflowModelProfileCommand } from "./src/model-profile-command
 import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
 import { registerWorkflowRunCommand, WorkflowRunController } from "./src/workflow-run-controller.ts";
+import { completeCurrentArgument, splitArgumentPrefix } from "./src/command-completions.ts";
+import { assertSupportedPiVersion } from "./src/pi-compat.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -191,9 +193,41 @@ function workflowPickerItems(workflows: ReadonlyMap<string, WorkflowModule>): Se
   ];
 }
 
+const WORKFLOW_OPTION_COMPLETIONS = [
+  { value: "--inspect", description: "Open the live workflow inspector" },
+  { value: "--refresh", description: "Refresh dynamic workflow discovery" },
+  { value: "--perf", description: "Collect workflow performance metrics" },
+  { value: "--result-viewer", description: "Open supported result viewers" },
+  { value: "--no-result-viewer", description: "Skip supported result viewers" },
+  { value: "--resume-edited", description: "Allow resume after workflow source edits" },
+  { value: "--concurrency=", description: "Set the global subagent concurrency cap" },
+  { value: "--parallel-limit=", description: "Set the parallel submission limit" },
+  { value: "--max-agents=", description: "Set the maximum admitted live agents" },
+  { value: "--agent-timeout-ms=", description: "Set the timeout for each agent attempt" },
+  { value: "--agent-retries=", description: "Set retries for each agent call" },
+  { value: "--budget=", description: "Set the workflow output-token budget" },
+  { value: "--resume=", description: "Resume from a retained workflow run ID" },
+] as const;
+
+export async function workflowArgumentCompletions(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
+  const parts = splitArgumentPrefix(argumentPrefix);
+  if (parts.completed.length === 0) {
+    const { discoverWorkflows } = await loadDiscovery();
+    const workflows = await discoverWorkflows(EXTENSION_DIR);
+    return completeCurrentArgument(
+      argumentPrefix,
+      [...workflows.values()].map((workflow) => ({
+        value: workflow.meta.name,
+        description: workflow.meta.description,
+      })),
+    );
+  }
+  return completeCurrentArgument(argumentPrefix, WORKFLOW_OPTION_COMPLETIONS);
+}
+
 async function selectWorkflowValue(workflows: ReadonlyMap<string, WorkflowModule>, ctx: ExtensionCommandContext): Promise<string | undefined> {
   const items = workflowPickerItems(workflows);
-  if (typeof ctx.ui.custom === "function") {
+  if (ctx.hasUI && ctx.mode === "tui") {
     return await ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => new WorkflowPickerComponent(items, tui, theme, done));
   }
 
@@ -232,6 +266,10 @@ export function getLastWorkflowInspection(): LastWorkflowInspection | undefined 
 }
 
 export async function openWorkflowInspector(ctx: ExtensionContext, inspection: LastWorkflowInspection | ActiveWorkflowInspection): Promise<void> {
+  if (!ctx.hasUI || ctx.mode !== "tui") {
+    ctx.ui.notify(formatWorkflowInspection(inspection), "info");
+    return;
+  }
   await ctx.ui.custom<void>(
     (tui, theme, _keybindings, done) => new WorkflowInspector(snapshotGetter(inspection), tui, theme, () => done(undefined)),
     { overlay: true, overlayOptions: { anchor: "right-center", width: "60%", maxHeight: "80%", margin: 1 } },
@@ -248,10 +286,6 @@ function workflowInspectionState(pi: ExtensionAPI, ctx: ExtensionContext): Sessi
 }
 
 async function openAvailableWorkflowInspector(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  if (!ctx.hasUI) {
-    ctx.ui.notify("Workflow inspector requires the TUI", "warning");
-    return;
-  }
   const state = workflowInspectionState(pi, ctx);
   const inspection = state.active ?? state.last;
   if (!inspection) {
@@ -259,6 +293,25 @@ async function openAvailableWorkflowInspector(pi: ExtensionAPI, ctx: ExtensionCo
     return;
   }
   await openWorkflowInspector(ctx, inspection);
+}
+
+export function formatWorkflowInspection(inspection: LastWorkflowInspection | ActiveWorkflowInspection): string {
+  const snapshot = snapshotGetter(inspection)();
+  const agents = snapshot.phases.flatMap((phase) => phase.agents);
+  const counts = agents.reduce(
+    (total, agent) => ({ ...total, [agent.status]: total[agent.status] + 1 }),
+    { queued: 0, running: 0, done: 0, failed: 0 },
+  );
+  const lines = [
+    `Workflow inspector: ${inspection.name}`,
+    `Run: ${snapshot.runId}`,
+    `Phase: ${snapshot.currentPhase}`,
+    `Agents: ${counts.running} running, ${counts.queued} queued, ${counts.done} done, ${counts.failed} failed`,
+  ];
+  const usage = formatWorkflowUsageLine(snapshot.usage);
+  if (usage) lines.push(usage);
+  if (snapshot.logs.length > 0) lines.push("Recent log:", ...snapshot.logs.slice(-8).map((entry) => `- ${entry}`));
+  return lines.join("\n");
 }
 
 function snapshotGetter(inspection: LastWorkflowInspection | ActiveWorkflowInspection): () => WorkflowProgressSnapshot {
@@ -638,6 +691,7 @@ function createReviewSessionCoordinator(pi: ExtensionAPI): ReviewSessionCoordina
 }
 
 export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShortcuts = resolveDynamaxShortcuts()): void {
+  assertSupportedPiVersion(VERSION);
   const reviewSessions = createReviewSessionCoordinator(pi);
   const backgroundWorkflows = new BackgroundWorkflowCoordinator(pi);
   const workflowRuns = new WorkflowRunController(backgroundWorkflows, {
@@ -691,6 +745,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
 
   pi.registerCommand("workflow:inspector", {
     description: "Open the current, last, or a retained run inspector",
+    getArgumentCompletions: (argumentPrefix) => workflowRuns.inspectorArgumentCompletions(argumentPrefix),
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const trimmed = args.trim();
       if (trimmed && trimmed !== "last") {
@@ -716,6 +771,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   // /workflow <name> [args] — user-invoked.
   pi.registerCommand("workflow", {
     description: "Run a multi-agent workflow: /workflow <name> [args]",
+    getArgumentCompletions: workflowArgumentCompletions,
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const direct = parseWorkflowInvocation(args);
       if (direct.optionErrors?.length) {
@@ -879,7 +935,7 @@ function registerWorkflowTool(
       }
 
       const runOptions = resolveWorkflowRunOptions({
-        inspect: ctx.hasUI,
+        inspect: ctx.hasUI && ctx.mode === "tui",
         concurrency: params.concurrency,
         parallelSubmissionLimit: params.parallelSubmissionLimit,
         maxAgents: params.maxAgents,

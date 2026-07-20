@@ -24,6 +24,16 @@ export interface AgentSkillResourceSetup {
   readonly diagnostics: readonly ResourceDiagnostic[];
 }
 
+type AgentSkillResourceLoaderOptions = Pick<
+  ConstructorParameters<typeof DefaultResourceLoader>[0],
+  "noSkills" | "skillsOverride"
+>;
+
+export interface PreparedAgentSkillResources {
+  readonly resourceLoaderOptions: AgentSkillResourceLoaderOptions;
+  resolve(resourceLoader: Pick<DefaultResourceLoader, "getSkills">): Omit<AgentSkillResourceSetup, "resourceLoader">;
+}
+
 export type AgentSkillIdentityCapture =
   | { readonly kind: "verified"; readonly skills: readonly ResolvedSkillIdentity[] }
   | { readonly kind: "unverifiable"; readonly reason: string };
@@ -104,13 +114,31 @@ export async function createAgentSkillResourceLoader(options: {
   readonly skills: unknown;
   readonly log?: (message: string) => void;
 }): Promise<AgentSkillResourceSetup> {
+  const prepared = prepareAgentSkillResources(options);
+  const loader = new DefaultResourceLoader({
+    cwd: options.cwd,
+    agentDir: getAgentDir(),
+    ...prepared.resourceLoaderOptions,
+  });
+  await loader.reload();
+  return { resourceLoader: loader, ...prepared.resolve(loader) };
+}
+
+/**
+ * Prepare the skill-selection hooks consumed by pi's session-service factory.
+ * The returned resolver is scoped to one resource loader and must not be reused
+ * across concurrently-created session services.
+ */
+export function prepareAgentSkillResources(options: {
+  readonly prompt: string;
+  readonly skills: unknown;
+  readonly log?: (message: string) => void;
+}): PreparedAgentSkillResources {
   const request = resolveAgentSkillRequest(options.prompt, options.skills);
   let resolution: AgentSkillResolution = { selected: [], unmatched: [] };
   let availableSkillNames: readonly string[] = [];
 
-  const loader = new DefaultResourceLoader({
-    cwd: options.cwd,
-    agentDir: getAgentDir(),
+  const resourceLoaderOptions: AgentSkillResourceLoaderOptions = {
     noSkills: request.selectors.length === 0,
     skillsOverride:
       request.selectors.length === 0
@@ -120,24 +148,29 @@ export async function createAgentSkillResourceLoader(options: {
             resolution = selectAgentSkills(current.skills, request.selectors);
             return { skills: [...resolution.selected], diagnostics: current.diagnostics };
           },
-  });
-  await loader.reload();
-  const { diagnostics } = loader.getSkills();
-  logSkillDiagnostics(options.log, diagnostics, request.selectors.length > 0);
+  };
 
-  if (request.strict && resolution.unmatched.length > 0) {
-    throw new Error(
-      `Unknown subagent skill${resolution.unmatched.length === 1 ? "" : "s"}: ${resolution.unmatched.join(", ")}. Available: ${
-        availableSkillNames.join(", ") || "(none)"
-      }.`,
-    );
-  }
+  return {
+    resourceLoaderOptions,
+    resolve(resourceLoader) {
+      const { diagnostics } = resourceLoader.getSkills();
+      logSkillDiagnostics(options.log, diagnostics, request.selectors.length > 0);
 
-  if (!request.strict && resolution.unmatched.length > 0) {
-    options.log?.(`Ignoring unrecognized subagent skill mention${resolution.unmatched.length === 1 ? "" : "s"}: ${resolution.unmatched.join(", ")}`);
-  }
+      if (request.strict && resolution.unmatched.length > 0) {
+        throw new Error(
+          `Unknown subagent skill${resolution.unmatched.length === 1 ? "" : "s"}: ${resolution.unmatched.join(", ")}. Available: ${
+            availableSkillNames.join(", ") || "(none)"
+          }.`,
+        );
+      }
 
-  return { resourceLoader: loader, selectedSkills: resolution.selected, unmatchedSelectors: resolution.unmatched, diagnostics };
+      if (!request.strict && resolution.unmatched.length > 0) {
+        options.log?.(`Ignoring unrecognized subagent skill mention${resolution.unmatched.length === 1 ? "" : "s"}: ${resolution.unmatched.join(", ")}`);
+      }
+
+      return { selectedSkills: resolution.selected, unmatchedSelectors: resolution.unmatched, diagnostics };
+    },
+  };
 }
 
 export function appendSkillReminder(prompt: string, skills: readonly Pick<Skill, "name" | "filePath">[]): string {

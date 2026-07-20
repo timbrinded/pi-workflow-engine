@@ -19,6 +19,9 @@ the cost reported by each provider session.
 
 ## Quick start
 
+Requires **pi 0.80.10 or newer**. The package deliberately keeps pi as a
+host-provided peer and checks the running pi version when the extension loads.
+
 ```bash
 pi install npm:pi-workflow-engine
 ```
@@ -33,10 +36,10 @@ dynamax investigate why typecheck started failing on this branch
 or author a temporary one for this task. Use `/workflow:dynamax on` when you
 want that permission to remain active for the session.
 
-The stock pi editor currently renders `dynamax` as ordinary text. Pi 0.80.7 has
-no visual-only token-decoration hook, so this package deliberately avoids a
-custom editor replacement; submission and the Dynamax status line still
-confirm the one-shot trigger. See [the editor API note](USAGE.md#prompt-editor-cue).
+The standalone `dynamax` token is highlighted with an animated colour cycle as
+you type. The cue extends pi's stock-compatible `CustomEditor`, so cursor,
+paste, undo, completion, and app-keybinding behavior remain pi-owned. See
+[the editor API note](USAGE.md#prompt-editor-cue) for custom-editor composition.
 
 Saved workflows are available directly:
 
