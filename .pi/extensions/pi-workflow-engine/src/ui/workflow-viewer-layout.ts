@@ -18,3 +18,8 @@ export function workflowViewerHeight(terminalRows: number): number {
   const proportionalRows = Math.floor(rows * VIEWPORT_HEIGHT_RATIO);
   return Math.min(availableRows, Math.max(3, proportionalRows));
 }
+
+export function fitWorkflowViewerRows(lines: readonly string[], height: number): string[] {
+  const visible = lines.slice(0, Math.max(0, height));
+  return [...visible, ...Array.from({ length: Math.max(0, height - visible.length) }, () => "")];
+}

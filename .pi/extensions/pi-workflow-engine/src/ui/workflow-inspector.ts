@@ -3,7 +3,7 @@ import { matchesKey, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-
 import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
 import { agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
-import { workflowViewerHeight } from "./workflow-viewer-layout.ts";
+import { fitWorkflowViewerRows, workflowViewerHeight } from "./workflow-viewer-layout.ts";
 
 type Section = "Overview" | "Agents" | "Findings" | "Logs" | "Result";
 
@@ -95,8 +95,8 @@ export class WorkflowInspector {
     const pct = body.length <= maxBody ? "100%" : `${Math.round((visibleEnd / body.length) * 100)}%`;
     const selected = this.selected[section] + 1;
     const count = Math.max(1, selectableCount);
-    const content = fitRows(visible.map((line) => line.text), maxBody);
-    const interior = fitRows(
+    const content = fitWorkflowViewerRows(visible.map((line) => line.text), maxBody);
+    const interior = fitWorkflowViewerRows(
       [
         ` ${th.fg("accent", th.bold("Workflow Inspector"))} ${th.fg("dim", snapshot.title)}`,
         ` ${this.tabs()}`,
@@ -311,9 +311,4 @@ export class WorkflowInspector {
 function padRight(text: string, width: number): string {
   const visible = visibleWidth(text);
   return text + " ".repeat(Math.max(0, width - visible));
-}
-
-function fitRows(lines: readonly string[], height: number): string[] {
-  const visible = lines.slice(0, Math.max(0, height));
-  return [...visible, ...Array.from({ length: Math.max(0, height - visible.length) }, () => "")];
 }
