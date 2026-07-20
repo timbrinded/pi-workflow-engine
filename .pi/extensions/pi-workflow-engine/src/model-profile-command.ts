@@ -8,6 +8,7 @@ import {
   setWorkflowModelProfile,
   workflowModelProfilePaths,
   WORKFLOW_MODEL_PROFILE_NAMES,
+  WORKFLOW_THINKING_LEVELS,
   type ResolvedWorkflowModelProfiles,
   type WorkflowModelProfilePaths,
   type WorkflowModelProfileName,
@@ -40,7 +41,6 @@ const MODEL_COMMAND_SCOPES = [
   { value: "--user", description: "Write the user-level workflow model config" },
   { value: "--project", description: "Write the project-level workflow model config" },
 ] as const;
-const MODEL_COMMAND_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export function registerWorkflowModelProfileCommand(pi: ExtensionAPI): void {
   pi.registerCommand("workflow:models", {
@@ -112,7 +112,7 @@ export function workflowModelProfileArgumentCompletions(argumentPrefix: string):
   }
   if (completedWithoutScopes.length === 3) {
     return completeCurrentArgument(argumentPrefix, [
-      ...MODEL_COMMAND_THINKING_LEVELS.map((value) => ({ value, description: "Thinking level" })),
+      ...WORKFLOW_THINKING_LEVELS.map((value) => ({ value, description: "Thinking level" })),
       ...scopes,
     ]);
   }

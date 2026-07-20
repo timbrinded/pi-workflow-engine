@@ -9,10 +9,7 @@ import {
   type Skill,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import {
-  appendSkillReminder,
-  prepareAgentSkillResources,
-} from "./agent-skills.ts";
+import { prepareAgentSkillResources } from "./agent-skills.ts";
 import type {
   AgentExecutionOptions,
   AgentRunTags,
@@ -156,7 +153,7 @@ export async function promptAgentSession(input: {
   readonly tags: AgentRunTags;
 }): Promise<unknown> {
   const { rc, handle, prompt, opts, label, rowId, tags } = input;
-  const { session, selectedSkills } = handle;
+  const { session } = handle;
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start" && event.toolName !== undefined && event.toolName !== FINAL_TOOL) {
       rc.progress.agentTool(label, event.toolName, rowId);
@@ -164,10 +161,9 @@ export async function promptAgentSession(input: {
   });
 
   try {
-    const promptedWithSkills = appendSkillReminder(prompt, selectedSkills);
     const finalPrompt = opts.schema
-      ? `${promptedWithSkills}\n\nWhen finished, return your result by calling the ${FINAL_TOOL} tool.`
-      : promptedWithSkills;
+      ? `${prompt}\n\nWhen finished, return your result by calling the ${FINAL_TOOL} tool.`
+      : prompt;
     throwIfAborted(rc.signal);
     const unlinkPromptAbort = linkSessionAbort(rc.signal, session);
     try {

@@ -1,16 +1,14 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
-import { agentDetailParts, agentLabelColor, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
+import { agentDetailParts, agentLabelColor, formatCount, formatDuration, statusIcon } from "./workflow-format.ts";
 
 const MAX_WIDGET_LINES = 12;
 
 export function renderWorkflowWidgetLines(
   snapshot: WorkflowProgressSnapshot,
-  width: number,
   theme: Theme,
 ): string[] {
-  const safeWidth = Math.max(1, width);
   const counts = countAgents(snapshot.phases);
   const active = counts.running + counts.queued;
   const elapsed = formatDuration((snapshot.doneAt ?? Date.now()) - snapshot.startedAt);
@@ -22,10 +20,7 @@ export function renderWorkflowWidgetLines(
   if (counts.failed > 0) headingParts.unshift(theme.fg("error", `${counts.failed} failed`));
 
   const lines: string[] = [
-    truncateDisplay(
-      `${activity} ${theme.bold(snapshot.title)} ${theme.fg("dim", "·")} ${theme.fg("muted", snapshot.currentPhase)} ${theme.fg("dim", "·")} ${headingParts.join(` ${theme.fg("dim", "·")} `)}`,
-      safeWidth,
-    ),
+    `${activity} ${theme.bold(snapshot.title)} ${theme.fg("dim", "·")} ${theme.fg("muted", snapshot.currentPhase)} ${theme.fg("dim", "·")} ${headingParts.join(` ${theme.fg("dim", "·")} `)}`,
   ];
 
   const footer = footerLine(snapshot, theme);
@@ -35,13 +30,13 @@ export function renderWorkflowWidgetLines(
   const visibleBodyLinesToRender = reserveHiddenLine ? body.lines.slice(0, Math.max(0, bodyBudget - 1)) : body.lines;
   const hidden = body.hidden + (body.lines.length - visibleBodyLinesToRender.length);
 
-  for (const line of visibleBodyLinesToRender) lines.push(truncateDisplay(line, safeWidth));
+  lines.push(...visibleBodyLinesToRender);
   if (hidden > 0 && lines.length < MAX_WIDGET_LINES) {
-    lines.push(truncateDisplay(`${theme.fg("dim", "└─")} ${theme.fg("dim", `+${hidden} more`)}`, safeWidth));
+    lines.push(`${theme.fg("dim", "└─")} ${theme.fg("dim", `+${hidden} more`)}`);
   }
-  if (footer && lines.length < MAX_WIDGET_LINES) lines.push(truncateDisplay(footer, safeWidth));
+  if (footer && lines.length < MAX_WIDGET_LINES) lines.push(footer);
 
-  return lines.slice(0, MAX_WIDGET_LINES).map((line) => truncateDisplay(line, safeWidth));
+  return lines.slice(0, MAX_WIDGET_LINES);
 }
 
 interface AgentCounts {

@@ -1,4 +1,4 @@
-import type { EditorComponent } from "@earendil-works/pi-tui";
+import { sliceByColumn, visibleWidth, type EditorComponent } from "@earendil-works/pi-tui";
 
 export type DynamaxEffect = "shine" | "static" | "off";
 
@@ -13,7 +13,7 @@ export interface DynamaxEditorDecoration {
 }
 
 export interface DynamaxEditorDecorationOptions {
-  getEffect?: () => DynamaxEffect;
+  effect?: DynamaxEffect;
   scheduler?: DynamaxAnimationScheduler;
   isActive?: () => boolean;
 }
@@ -60,7 +60,7 @@ export function highlightDynamaxTokens(line: string, shinePosition?: number): st
       insertions.set(rawPosition, foregroundColor(color, shine));
     }
     const restorePosition = rawPositions[visibleStart + token.length] ?? line.length;
-    insertions.set(restorePosition, activeForegroundAt(line, restorePosition));
+    insertions.set(restorePosition, foregroundRestoreAt(line, restorePosition));
   }
   if (insertions.size === 0) return line;
 
@@ -79,12 +79,11 @@ export function decorateDynamaxEditor(
 ): DynamaxEditorDecoration {
   const originalRender = editor.render;
   const scheduler = options.scheduler ?? DEFAULT_DYNAMAX_ANIMATION_SCHEDULER;
-  const getEffect = options.getEffect ?? resolveDynamaxEffect;
+  const effect = options.effect ?? resolveDynamaxEffect();
   const isActive = options.isActive ?? (() => true);
   let disposed = false;
   let cancelScheduled: (() => void) | undefined;
   let lastSignature: string | undefined;
-  let lastEffect: DynamaxEffect | undefined;
   let animationStartedAt: number | undefined;
 
   const cancelAnimation = (): void => {
@@ -103,12 +102,10 @@ export function decorateDynamaxEditor(
 
   const decoratedRender = (width: number): string[] => {
     const lines = originalRender.call(editor, width);
-    const effect = getEffect();
     const signature = visibleDynamaxSignature(lines);
-    if (signature !== lastSignature || effect !== lastEffect) {
+    if (signature !== lastSignature) {
       cancelAnimation();
       lastSignature = signature;
-      lastEffect = effect;
       if (signature && effect === "shine" && isActive()) animationStartedAt = scheduler.now();
     }
 
@@ -195,100 +192,20 @@ function terminalControlSequenceLength(line: string, position: number): number {
   return Math.min(2, line.length - position);
 }
 
-function activeForegroundAt(line: string, endPosition: number): string {
-  let foreground = RESET_FOREGROUND;
+function foregroundRestoreAt(line: string, rawPosition: number): string {
+  const column = visibleWidth(line.slice(0, rawPosition));
+  // The extra cell makes Pi emit the active SGR prefix even when the token ends the line.
+  const sliced = sliceByColumn(`${line} `, column, 1);
+  let controls = "";
   let position = 0;
-  while (position < endPosition) {
-    const controlLength = terminalControlSequenceLength(line, position);
-    if (controlLength === 0) {
-      position += 1;
-      continue;
-    }
-    const sequence = line.slice(position, position + controlLength);
-    if (sequence.startsWith("\x1b[") && sequence.endsWith("m")) {
-      foreground = foregroundAfterSgr(foreground, sequence);
-    }
+  while (position < sliced.length) {
+    const controlLength = terminalControlSequenceLength(sliced, position);
+    if (controlLength === 0) break;
+    const sequence = sliced.slice(position, position + controlLength);
+    if (sequence.startsWith("\x1b[") && sequence.endsWith("m")) controls += sequence;
     position += controlLength;
   }
-  return foreground;
-}
-
-function foregroundAfterSgr(current: string, sequence: string): string {
-  const rawParameters = sequence.slice(2, -1);
-  const parameters = rawParameters === "" ? ["0"] : rawParameters.split(";");
-  let foreground = current;
-  for (let index = 0; index < parameters.length; index++) {
-    const rawParameter = parameters[index]!;
-    const parameter = sgrParameter(rawParameter);
-    if (parameter === 0 || parameter === 39) {
-      foreground = RESET_FOREGROUND;
-      continue;
-    }
-    if ((parameter >= 30 && parameter <= 37) || (parameter >= 90 && parameter <= 97)) {
-      foreground = `\x1b[${parameter}m`;
-      continue;
-    }
-    if (parameter !== 38 && parameter !== 48 && parameter !== 58) continue;
-
-    const extended = parseExtendedSgrColor(parameters, index);
-    index = extended.lastIndex;
-    if (parameter === 38 && extended.color) foreground = extended.color;
-  }
-  return foreground;
-}
-
-function parseExtendedSgrColor(parameters: string[], index: number): { color?: string; lastIndex: number } {
-  const inline = parameters[index]!.split(":");
-  if (inline.length > 1) {
-    const mode = sgrParameter(inline[1] ?? "");
-    if (mode === 5) {
-      const paletteIndex = validColorChannel(inline[2]);
-      return { color: paletteIndex === undefined ? undefined : `\x1b[38;5;${paletteIndex}m`, lastIndex: index };
-    }
-    if (mode === 2) {
-      const channels = inline.length >= 6 ? inline.slice(-3) : inline.slice(2, 5);
-      const rgb = validRgbChannels(channels);
-      return { color: rgb ? `\x1b[38;2;${rgb.join(";")}m` : undefined, lastIndex: index };
-    }
-    return { lastIndex: index };
-  }
-
-  const mode = sgrParameter(parameters[index + 1] ?? "");
-  if (mode === 5) {
-    const paletteIndex = validColorChannel(parameters[index + 2]);
-    return {
-      color: paletteIndex === undefined ? undefined : `\x1b[38;5;${paletteIndex}m`,
-      lastIndex: Math.min(parameters.length - 1, index + 2),
-    };
-  }
-  if (mode === 2) {
-    const rgb = validRgbChannels(parameters.slice(index + 2, index + 5));
-    return {
-      color: rgb ? `\x1b[38;2;${rgb.join(";")}m` : undefined,
-      lastIndex: Math.min(parameters.length - 1, index + 4),
-    };
-  }
-  return { lastIndex: Math.min(parameters.length - 1, index + 1) };
-}
-
-function validRgbChannels(channels: string[]): [number, number, number] | undefined {
-  if (channels.length !== 3) return undefined;
-  const parsed = channels.map(validColorChannel);
-  if (parsed.some((channel) => channel === undefined)) return undefined;
-  return [parsed[0]!, parsed[1]!, parsed[2]!];
-}
-
-function validColorChannel(channel: string | undefined): number | undefined {
-  if (channel === undefined || !/^\d{1,3}$/.test(channel)) return undefined;
-  const parsed = Number(channel);
-  return parsed <= 255 ? parsed : undefined;
-}
-
-function sgrParameter(parameter: string): number {
-  const primary = parameter.split(":", 1)[0];
-  if (primary === "") return 0;
-  const parsed = Number(primary);
-  return Number.isFinite(parsed) ? parsed : -1;
+  return `${RESET_FOREGROUND}${controls}`;
 }
 
 function visibleDynamaxSignature(lines: string[]): string {

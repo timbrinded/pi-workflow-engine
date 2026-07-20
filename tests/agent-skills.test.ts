@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { createSyntheticSourceInfo, type Skill } from "@earendil-works/pi-coding-agent";
 import {
-  appendSkillReminder,
   captureAgentSkillIdentities,
   extractSkillSelectorsFromText,
   normalizeSkillSelector,
@@ -47,10 +46,12 @@ test("resolveAgentSkillRequest keeps subagents skillless unless prompt or option
   });
 });
 
-test("resolveAgentSkillRequest validates explicit skill options at runtime", () => {
-  assert.throws(() => resolveAgentSkillRequest("ordinary prompt", "diagnose"), /expected an array/);
-  assert.throws(() => resolveAgentSkillRequest("ordinary prompt", ["diagnose", 42]), /every skill name must be a string/);
-  assert.throws(() => resolveAgentSkillRequest("ordinary prompt", ["   "]), /not a valid skill name/);
+test("prepareAgentSkillResources validates explicit skill options at the production boundary", () => {
+  const prepare = (skills: unknown) => prepareAgentSkillResources({ prompt: "ordinary prompt", skills });
+
+  assert.throws(() => prepare("diagnose"), /expected an array/);
+  assert.throws(() => prepare(["diagnose", 42]), /every skill name must be a string/);
+  assert.throws(() => prepare(["   "]), /not a valid skill name/);
 });
 
 test("normalizeSkillSelector canonicalizes natural skill names", () => {
@@ -99,14 +100,6 @@ test("prepareAgentSkillResources rejects unknown explicit selectors after pi loa
     () => prepared.resolve({ getSkills: () => filtered }),
     /Unknown subagent skill: missing\. Available: diagnose/,
   );
-});
-
-test("appendSkillReminder points the subagent at selected SKILL.md files only", () => {
-  const prompt = appendSkillReminder("do work", [skill("diagnose")]);
-
-  assert.match(prompt, /Workflow subagent skills enabled: diagnose/);
-  assert.match(prompt, /\/skills\/diagnose\/SKILL.md/);
-  assert.match(prompt, /No other skills are available/);
 });
 
 test("skill identity uses the stable workspace namespace", async () => {

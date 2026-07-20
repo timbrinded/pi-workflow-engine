@@ -87,13 +87,10 @@ export class WorkflowRunController {
 
   sessionShutdown(ctx: Pick<ExtensionContext, "sessionManager">): void {
     this.usageLimitScheduler.cancelSession(ctx);
-    if (this.completionContext?.sessionManager.getSessionId() === ctx.sessionManager.getSessionId()) {
-      this.completionContext = undefined;
-    }
+    this.completionContext = undefined;
   }
 
   async handleCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
-    this.completionContext = { cwd: ctx.cwd, sessionManager: ctx.sessionManager };
     const command = parseWorkflowRunsCommand(args);
     if (command.kind === "error") {
       ctx.ui.notify(command.message, "warning");
@@ -112,7 +109,6 @@ export class WorkflowRunController {
   }
 
   async inspectStoredRun(ctx: ExtensionContext, runId: string): Promise<boolean> {
-    this.completionContext = { cwd: ctx.cwd, sessionManager: ctx.sessionManager };
     const record = await this.loadRecord(ctx.cwd, runId);
     if (!record) return false;
     await this.inspect(record, ctx);

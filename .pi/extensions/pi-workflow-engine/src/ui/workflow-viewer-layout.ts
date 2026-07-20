@@ -1,5 +1,4 @@
-import { visibleWidth } from "@earendil-works/pi-tui";
-import { truncateDisplay } from "./workflow-format.ts";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 
 const VIEWPORT_HEIGHT_RATIO = 0.8;
 const VIEWPORT_MARGIN_ROWS = 2;
@@ -23,9 +22,7 @@ export function workflowViewerHeight(terminalRows: number): number {
 }
 
 export function fitWorkflowViewerRow(text: string, width: number): string {
-  const fittedWidth = Math.max(0, width);
-  const truncated = truncateDisplay(text, fittedWidth);
-  return `${truncated}${" ".repeat(Math.max(0, fittedWidth - visibleWidth(truncated)))}`;
+  return truncateToWidth(text, Math.max(0, width), "...", true);
 }
 
 export function fitWorkflowViewerRows(lines: readonly string[], height: number): string[] {
@@ -35,8 +32,6 @@ export function fitWorkflowViewerRows(lines: readonly string[], height: number):
 
 export interface WorkflowViewerViewport<T> {
   readonly visible: readonly T[];
-  readonly start: number;
-  readonly end: number;
   readonly percentage: number;
 }
 
@@ -52,5 +47,5 @@ export function centerWorkflowViewerViewport<T>(
   const visible = rows.slice(start, start + visibleHeight);
   const end = Math.min(rows.length, start + visible.length);
   const percentage = rows.length <= visibleHeight ? 100 : Math.round((end / rows.length) * 100);
-  return { visible, start, end, percentage };
+  return { visible, percentage };
 }

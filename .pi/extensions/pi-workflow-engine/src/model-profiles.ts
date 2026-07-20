@@ -56,7 +56,8 @@ export class WorkflowModelProfileConfigError extends Error {
   }
 }
 
-const THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+export const WORKFLOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
+const THINKING_LEVELS = new Set<ThinkingLevel>(WORKFLOW_THINKING_LEVELS);
 const HOST_FALLBACK_THINKING: Record<WorkflowModelProfileName, ThinkingLevel> = {
   small: "low",
   medium: "medium",

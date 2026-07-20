@@ -179,7 +179,7 @@ function captureDynamax(
     events: { on: () => {}, emit: async () => {} },
   } as unknown as ExtensionAPI;
 
-  registerDynamax(fakePi, { inspector: shortcut, results: null }, { ...registrationOptions, openInspector });
+  registerDynamax(fakePi, { inspector: shortcut, results: null }, { effect: "shine", ...registrationOptions, openInspector });
   return { commands, shortcuts, handlers };
 }
 
@@ -302,7 +302,7 @@ test("Dynamax cancels a pending shine sweep on session shutdown", async () => {
   const scheduler = createFakeAnimationScheduler();
   const captured = captureDynamax(DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT, undefined, {
     animationScheduler: scheduler,
-    getEffect: () => "shine",
+    effect: "shine",
   });
   const sessionStart = captured.handlers.get("session_start")?.[0];
   const sessionShutdown = captured.handlers.get("session_shutdown")?.[0];
@@ -334,23 +334,23 @@ test("Dynamax highlights only standalone tokens", () => {
   const cursorInsideToken = "\x1b[31mdyna\x1b_pi:c\x07\x1b[7mm\x1b[0max";
   const highlightedCursorLine = highlightDynamaxTokens(cursorInsideToken);
   assert.equal(highlightedCursorLine.match(/\x1b\[38;2;/g)?.length, "dynamax".length);
+  assert.equal(highlightedCursorLine.match(/\x1b_pi:c\x07/g)?.length, 1);
 
   const styledSuffix = highlightDynamaxTokens("\x1b[31mdynamax suffix\x1b[0m");
   assert.match(styledSuffix, /\x1b\[31m suffix/);
   assert.doesNotMatch(styledSuffix, /\x1b\[39m suffix/);
 
   const compoundSuffix = highlightDynamaxTokens("\x1b[1;31;44m\x1b[49mdynamax suffix\x1b[0m");
-  assert.match(compoundSuffix, /\x1b\[31m suffix/);
-  assert.doesNotMatch(compoundSuffix, /\x1b\[1;31;44m suffix/);
+  assert.match(compoundSuffix, /\x1b\[1;31;44m\x1b\[49m suffix/);
 
   const indexedSuffix = highlightDynamaxTokens("\x1b[38;5;123;48;5;44m\x1b[49mdynamax suffix\x1b[0m");
-  assert.match(indexedSuffix, /\x1b\[38;5;123m suffix/);
+  assert.match(indexedSuffix, /\x1b\[38;5;123;48;5;44m\x1b\[49m suffix/);
 
   const rgbSuffix = highlightDynamaxTokens("\x1b[1;38;2;10;20;30;48;2;40;50;60m\x1b[49mdynamax suffix\x1b[0m");
-  assert.match(rgbSuffix, /\x1b\[38;2;10;20;30m suffix/);
+  assert.match(rgbSuffix, /\x1b\[1;38;2;10;20;30;48;2;40;50;60m\x1b\[49m suffix/);
 
   const colonRgbSuffix = highlightDynamaxTokens("\x1b[38:2::70:80:90;48:5:44m\x1b[49mdynamax suffix\x1b[0m");
-  assert.match(colonRgbSuffix, /\x1b\[38;2;70;80;90m suffix/);
+  assert.match(colonRgbSuffix, /\x1b\[38:2::70:80:90;48:5:44m\x1b\[49m suffix/);
 });
 
 test("Dynamax runs one bounded moving-shine sweep and returns to static highlighting", () => {
@@ -364,7 +364,7 @@ test("Dynamax runs one bounded moving-shine sweep and returns to static highligh
       renderRequests++;
       latest = editor.render(80)[0]!;
     },
-    { scheduler, getEffect: () => "shine" },
+    { scheduler, effect: "shine" },
   );
 
   const initial = editor.render(80)[0]!;
@@ -391,13 +391,13 @@ test("Dynamax runs one bounded moving-shine sweep and returns to static highligh
 test("Dynamax animation supports static and off preferences without scheduling", () => {
   const staticScheduler = createFakeAnimationScheduler();
   const staticEditor = createStubEditor("dynamax");
-  decorateDynamaxEditor(staticEditor, () => {}, { scheduler: staticScheduler, getEffect: () => "static" });
+  decorateDynamaxEditor(staticEditor, () => {}, { scheduler: staticScheduler, effect: "static" });
   assert.equal(staticEditor.render(80)[0], highlightDynamaxTokens("custom:dynamax"));
   assert.equal(staticScheduler.pending(), 0);
 
   const offScheduler = createFakeAnimationScheduler();
   const offEditor = createStubEditor("dynamax");
-  decorateDynamaxEditor(offEditor, () => {}, { scheduler: offScheduler, getEffect: () => "off" });
+  decorateDynamaxEditor(offEditor, () => {}, { scheduler: offScheduler, effect: "off" });
   assert.equal(offEditor.render(80)[0], "custom:dynamax");
   assert.equal(offScheduler.pending(), 0);
 });
@@ -483,7 +483,7 @@ test("Dynamax does not animate or overwrite a later editor replacement", async (
   const scheduler = createFakeAnimationScheduler();
   const captured = captureDynamax(DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT, undefined, {
     animationScheduler: scheduler,
-    getEffect: () => "shine",
+    effect: "shine",
   });
   const sessionStart = captured.handlers.get("session_start")?.[0];
   const sessionShutdown = captured.handlers.get("session_shutdown")?.[0];

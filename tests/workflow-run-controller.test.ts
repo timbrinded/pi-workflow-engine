@@ -75,7 +75,6 @@ function context(
   notifications: Notification[],
   mode: ExtensionContext["mode"] = "print",
   branch: unknown[] = [],
-  sessionId = "history-headless-session",
 ): ExtensionCommandContext {
   return {
     cwd,
@@ -85,7 +84,7 @@ function context(
     modelRegistry: { find: () => undefined },
     sessionManager: {
       getSessionFile: () => undefined,
-      getSessionId: () => sessionId,
+      getSessionId: () => "history-headless-session",
       getBranch: () => branch,
       getEntries: () => branch,
     },
@@ -202,7 +201,7 @@ test("workflow run completions expose lifecycle actions and retained IDs", async
   }
 });
 
-test("workflow run completions stay scoped to the active session", async () => {
+test("workflow run completions use only the active session context", async () => {
   const notifications: Notification[] = [];
   const queriedCwds: string[] = [];
   const emptyStore: WorkflowRunStore = {
@@ -220,22 +219,19 @@ test("workflow run completions stay scoped to the active session", async () => {
       return emptyStore;
     },
   });
-  const first = context("/project/first", notifications, "print", [], "session-first");
-  const second = context("/project/second", notifications, "print", [], "session-second");
+  const ctx = context("/project/current", notifications);
 
   assert.deepEqual((await controller.argumentCompletions("ins"))?.map((item) => item.value), ["inspect"]);
   assert.equal(await controller.argumentCompletions("inspect "), null);
   assert.deepEqual((await controller.inspectorArgumentCompletions(""))?.map((item) => item.value), ["last"]);
   assert.deepEqual(queriedCwds, [], "completions without an active session must not query a process-scoped store");
 
-  await controller.sessionStarted(first);
-  await controller.sessionStarted(second);
+  await controller.sessionStarted(ctx);
   queriedCwds.length = 0;
-  controller.sessionShutdown(first);
   await controller.inspectorArgumentCompletions("");
-  assert.deepEqual(queriedCwds, [second.cwd], "shutting down an older session must retain the replacement session");
+  assert.deepEqual(queriedCwds, [ctx.cwd]);
 
-  controller.sessionShutdown(second);
+  controller.sessionShutdown(ctx);
   queriedCwds.length = 0;
   assert.equal(await controller.argumentCompletions("inspect "), null);
   assert.deepEqual((await controller.inspectorArgumentCompletions(""))?.map((item) => item.value), ["last"]);

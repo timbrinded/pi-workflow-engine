@@ -73,7 +73,7 @@ test("workflow formatting helpers format durations, counts, agents, and truncati
   assert.equal(visibleWidth(fitted), 8);
 
   const viewport = centerWorkflowViewerViewport([0, 1, 2, 3, 4, 5], 3, 4);
-  assert.deepEqual(viewport, { visible: [3, 4, 5], start: 3, end: 6, percentage: 100 });
+  assert.deepEqual(viewport, { visible: [3, 4, 5], percentage: 100 });
 });
 
 test("workflow inspector renders a completed retained snapshot", () => {
@@ -281,7 +281,7 @@ test("workflow inspector and widget share the workflow usage formatter", () => {
   const inspector = new WorkflowInspector(() => snapshot, tui, theme, () => {});
 
   assert.ok(inspector.render(200).join("\n").includes(expected));
-  assert.ok(renderWorkflowWidgetLines(snapshot, 200, theme).join("\n").includes(expected));
+  assert.ok(renderWorkflowWidgetLines(snapshot, theme).join("\n").includes(expected));
 });
 
 test("workflow inspector expands findings as formatted multi-line details", () => {
@@ -355,7 +355,7 @@ test("workflow widget renders bounded rows for large snapshots", () => {
     logs: [],
   };
 
-  const lines = renderWorkflowWidgetLines(snapshot, 100, theme);
+  const lines = renderWorkflowWidgetLines(snapshot, theme);
   assert.ok(lines.length <= 12);
   assert.match(lines.join("\n"), /more/);
 });

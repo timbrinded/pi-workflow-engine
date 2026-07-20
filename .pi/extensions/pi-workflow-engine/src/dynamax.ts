@@ -39,7 +39,7 @@ export type DynamaxRuntimeStore = Map<string, DynamaxRuntime>;
 
 export interface DynamaxRegistrationOptions {
   openInspector?: (ctx: ExtensionContext) => Promise<void> | void;
-  getEffect?: () => DynamaxEffect;
+  effect?: DynamaxEffect;
   animationScheduler?: DynamaxAnimationScheduler;
 }
 
@@ -185,7 +185,7 @@ export function registerDynamax(
       factory: (tui, theme, keybindings) => {
         const decorate = (editor: EditorComponent): EditorComponent => {
           const decoration = decorateDynamaxEditor(editor, () => tui.requestRender(), {
-            getEffect: options.getEffect,
+            effect: options.effect,
             scheduler: options.animationScheduler,
             isActive: () => editorInstallation === installation && ctx.ui.getEditorComponent() === installation.factory,
           });
