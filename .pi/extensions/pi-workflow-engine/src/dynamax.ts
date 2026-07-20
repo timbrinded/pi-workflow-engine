@@ -7,20 +7,9 @@ import { sessionKey } from "./session-identity.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
   decorateDynamaxEditor,
-  type DynamaxAnimationScheduler,
-  type DynamaxEditorDecoration,
-  type DynamaxEffect,
-} from "./ui/dynamax-editor-decoration.ts";
-
-export {
-  decorateDynamaxEditor,
-  DYNAMAX_ANIMATION_FRAME_MS,
-  DYNAMAX_EFFECT_ENV,
-  highlightDynamaxTokens,
   resolveDynamaxEffect,
   type DynamaxAnimationScheduler,
   type DynamaxEditorDecoration,
-  type DynamaxEditorDecorationOptions,
   type DynamaxEffect,
 } from "./ui/dynamax-editor-decoration.ts";
 
@@ -167,6 +156,7 @@ export function registerDynamax(
   options: DynamaxRegistrationOptions = {},
 ): void {
   const runtimes: DynamaxRuntimeStore = new Map();
+  const effect = options.effect ?? resolveDynamaxEffect();
   let editorInstallation: DynamaxEditorInstallation | undefined;
   const openInspector =
     options.openInspector ??
@@ -174,7 +164,7 @@ export function registerDynamax(
       ctx.ui.notify("No workflow inspector is available yet", "warning");
     });
   const installEditor = (ctx: ExtensionContext): void => {
-    if (ctx.mode !== "tui") return;
+    if (ctx.mode !== "tui" || effect === "off") return;
     const previousFactory = ctx.ui.getEditorComponent();
     if (editorInstallation && editorInstallation.factory === previousFactory) return;
 
@@ -185,7 +175,7 @@ export function registerDynamax(
       factory: (tui, theme, keybindings) => {
         const decorate = (editor: EditorComponent): EditorComponent => {
           const decoration = decorateDynamaxEditor(editor, () => tui.requestRender(), {
-            effect: options.effect,
+            effect,
             scheduler: options.animationScheduler,
             isActive: () => editorInstallation === installation && ctx.ui.getEditorComponent() === installation.factory,
           });
@@ -210,10 +200,10 @@ export function registerDynamax(
           return decorate(editor);
         } catch (error) {
           ctx.ui.notify(
-            `Dynamax could not decorate the existing custom editor (${unknownErrorMessage(error)}); the existing editor remains active without highlighting`,
+            `Dynamax could not decorate the existing custom editor (${unknownErrorMessage(error)}); using pi's stock-compatible CustomEditor so highlighting stays enabled`,
             "warning",
           );
-          return editor;
+          return decorate(new CustomEditor(tui, theme, keybindings));
         }
       },
     };

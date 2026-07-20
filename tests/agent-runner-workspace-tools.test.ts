@@ -359,12 +359,10 @@ test("runAgent re-checks budget after waiting for a concurrency slot", async () 
 
 test("runAgent dynamically enables installed search-like tools", async () => {
   let observedTools: readonly string[] | undefined;
-  let observedExcludeTools: readonly string[] | undefined;
   let observedNoTools: "all" | "builtin" | undefined;
   let activatedTools: readonly string[] = [];
   const createSession: CreateAgentSession = async (options) => {
     observedTools = options.tools;
-    observedExcludeTools = options.excludeTools;
     observedNoTools = options.noTools;
     return {
       session: createAgentRunnerSession({
@@ -398,7 +396,6 @@ test("runAgent dynamically enables installed search-like tools", async () => {
 
   assert.deepEqual(result, { ok: true });
   assert.equal(observedTools, undefined);
-  assert.equal(observedExcludeTools, undefined);
   assert.equal(observedNoTools, "builtin");
   assert.deepEqual(activatedTools, ["read", "bash", "grep", "find", "ls", "final_answer", "ffgrep", "mgrep", "ast-grep"]);
 });

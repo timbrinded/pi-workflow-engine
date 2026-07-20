@@ -29,7 +29,7 @@ const DYNAMAX_COLORS = [
   [206, 130, 172],
 ] as const;
 const RESET_FOREGROUND = "\x1b[39m";
-export const DYNAMAX_EFFECT_ENV = "PI_DYNAMAX_EFFECT";
+const DYNAMAX_EFFECT_ENV = "PI_DYNAMAX_EFFECT";
 export const DYNAMAX_ANIMATION_FRAME_MS = 135;
 const DYNAMAX_SHINE_FRAME_COUNT = DYNAMAX_COLORS.length;
 const DEFAULT_DYNAMAX_ANIMATION_SCHEDULER: DynamaxAnimationScheduler = {
@@ -77,9 +77,11 @@ export function decorateDynamaxEditor(
   requestRender: () => void,
   options: DynamaxEditorDecorationOptions = {},
 ): DynamaxEditorDecoration {
+  const effect = options.effect ?? resolveDynamaxEffect();
+  if (effect === "off") return { editor, dispose() {} };
+
   const originalRender = editor.render;
   const scheduler = options.scheduler ?? DEFAULT_DYNAMAX_ANIMATION_SCHEDULER;
-  const effect = options.effect ?? resolveDynamaxEffect();
   const isActive = options.isActive ?? (() => true);
   let disposed = false;
   let cancelScheduled: (() => void) | undefined;
@@ -125,7 +127,6 @@ export function decorateDynamaxEditor(
       cancelAnimation();
     }
 
-    if (effect === "off") return lines;
     return lines.map((line) => highlightDynamaxTokens(line, shinePosition));
   };
 

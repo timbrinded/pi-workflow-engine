@@ -252,7 +252,6 @@ async function prepareAgentSessionResources(input: {
     thinkingLevel: opts.thinkingLevel,
     noTools: sessionOptions.noTools,
     tools: sessionOptions.tools,
-    excludeTools: sessionOptions.excludeTools,
     customTools,
     sessionManager: SessionManager.inMemory(cwd),
   });
@@ -312,7 +311,7 @@ function linkSessionAbort(signal: AbortSignal | undefined, session: AgentRunnerS
   return () => signal.removeEventListener("abort", onAbort);
 }
 
-type ToolSessionOptions = Pick<CreateAgentSessionOptions, "tools" | "excludeTools" | "noTools">;
+type ToolSessionOptions = Pick<CreateAgentSessionOptions, "tools" | "noTools">;
 
 interface ToolSelection {
   readonly sessionOptions: ToolSessionOptions;

@@ -352,12 +352,13 @@ test("workflow widget renders bounded rows for large snapshots", () => {
     summary: [],
     lanes: [],
     laneOverflow: [],
-    logs: [],
+    logs: ["latest update"],
   };
 
   const lines = renderWorkflowWidgetLines(snapshot, theme);
-  assert.ok(lines.length <= 12);
-  assert.match(lines.join("\n"), /more/);
+  assert.ok(lines.length <= 10);
+  assert.match(lines.join("\n"), /\+\d+ more/);
+  assert.match(lines.at(-1) ?? "", /latest update/);
 });
 
 test("advisory reports are structurally recognized", () => {

@@ -30,25 +30,27 @@ import {
   clearDynamax,
   createDynamaxRuntime,
   createDynamaxState,
-  decorateDynamaxEditor,
-  DYNAMAX_ANIMATION_FRAME_MS,
   DYNAMAX_REMINDER,
   DYNAMAX_STATUS_KEY,
-  type DynamaxAnimationScheduler,
   type DynamaxRegistrationOptions,
   type DynamaxRuntimeStore,
   dynamaxWidgetLine,
   enableDynamaxSticky,
   getDynamaxRuntime,
   hasDynamaxToken,
-  highlightDynamaxTokens,
   isDynamaxActive,
   markDynamaxOneShot,
   registerDynamax,
-  resolveDynamaxEffect,
   updateDynamaxSurfaces,
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
 import { sessionKey } from "../.pi/extensions/pi-workflow-engine/src/session-identity.ts";
+import {
+  decorateDynamaxEditor,
+  DYNAMAX_ANIMATION_FRAME_MS,
+  highlightDynamaxTokens,
+  resolveDynamaxEffect,
+  type DynamaxAnimationScheduler,
+} from "../.pi/extensions/pi-workflow-engine/src/ui/dynamax-editor-decoration.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -434,7 +436,7 @@ test("Dynamax composes an existing editor and restores it on shutdown", async ()
   assert.equal(ui.editor.getText(), "dynamax");
 });
 
-test("Dynamax preserves an existing editor when only decoration fails", async () => {
+test("Dynamax falls back to a highlighted stock editor when decoration fails", async () => {
   const existingFactory: EditorFactory = () => {
     const editor = createStubEditor();
     Object.defineProperty(editor, "render", { value: editor.render, writable: false });
@@ -447,16 +449,32 @@ test("Dynamax preserves an existing editor when only decoration fails", async ()
   const { ctx, ui } = createFakeContext("session-a", true, existingFactory);
 
   await sessionStart({}, ctx);
-  assert.ok(ui.editor);
-  assert.equal(ui.editor instanceof CustomEditor, false);
+  assert.ok(ui.editor instanceof CustomEditor);
   ui.editor.setText("dynamax");
-  assert.equal(ui.editor.render(80).join("\n"), "custom:dynamax");
-  assert.match(ui.notifications.at(-1)?.message ?? "", /could not decorate.*existing editor remains active/);
+  assert.match(ui.editor.render(80).join("\n"), /\x1b\[38;2;/);
+  assert.match(ui.notifications.at(-1)?.message ?? "", /could not decorate.*highlighting stays enabled/);
 
   await sessionShutdown({}, ctx);
   assert.equal(ui.editorFactory, existingFactory);
   assert.ok(ui.editor);
   assert.equal(ui.editor.getText(), "dynamax");
+});
+
+test("Dynamax leaves the editor untouched when highlighting is off", async () => {
+  const existingFactory: EditorFactory = () => createStubEditor();
+  const captured = captureDynamax(DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT, undefined, { effect: "off" });
+  const sessionStart = captured.handlers.get("session_start")?.[0];
+  const sessionShutdown = captured.handlers.get("session_shutdown")?.[0];
+  if (!sessionStart || !sessionShutdown) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx, ui } = createFakeContext("session-a", true, existingFactory);
+
+  await sessionStart({}, ctx);
+  assert.equal(ui.editorFactory, existingFactory);
+  assert.equal(ui.editorComponentChanges, 0);
+
+  await sessionShutdown({}, ctx);
+  assert.equal(ui.editorFactory, existingFactory);
+  assert.equal(ui.editorComponentChanges, 0);
 });
 
 test("Dynamax warns and falls back when an existing editor cannot be composed", async () => {

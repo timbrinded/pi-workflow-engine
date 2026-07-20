@@ -3,7 +3,7 @@ import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "
 import { formatWorkflowUsageLine } from "../usage.ts";
 import { agentDetailParts, agentLabelColor, formatCount, formatDuration, statusIcon } from "./workflow-format.ts";
 
-const MAX_WIDGET_LINES = 12;
+const MAX_WIDGET_LINES = 10;
 
 export function renderWorkflowWidgetLines(
   snapshot: WorkflowProgressSnapshot,
