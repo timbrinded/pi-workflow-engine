@@ -1,11 +1,11 @@
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 
-export interface ArgumentCompletionCandidate {
+interface ArgumentCompletionCandidate {
   readonly value: string;
   readonly description?: string;
 }
 
-export interface ArgumentPrefixParts {
+interface ArgumentPrefixParts {
   readonly completed: readonly string[];
   readonly current: string;
   readonly base: string;

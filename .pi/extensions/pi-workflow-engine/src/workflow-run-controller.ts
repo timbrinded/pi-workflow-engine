@@ -15,8 +15,10 @@ import {
   formatWorkflowRunDetails,
   formatWorkflowRunHistory,
   formatWorkflowRunSummary,
+  isWorkflowRunLifecycleAction,
   parseWorkflowRunsCommand,
   retainedWorkflowRunOutcome,
+  WORKFLOW_RUN_ACTIONS,
   WORKFLOW_RUN_HISTORY_LIMIT,
   type WorkflowRunLifecycleAction,
 } from "./workflow-run-history.ts";
@@ -31,6 +33,8 @@ import {
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./ui/workflow-viewer-layout.ts";
 import { completeCurrentArgument, splitArgumentPrefix } from "./command-completions.ts";
+
+type WorkflowRunCompletionContext = Pick<ExtensionContext, "cwd" | "sessionManager">;
 
 interface WorkflowRunControllerDependencies {
   readonly resolveWorkflow: (name: string) => Promise<LoadedWorkflow | undefined>;
@@ -49,7 +53,7 @@ export class WorkflowRunController {
   private readonly storeForCwd: (cwd: string) => WorkflowRunStore;
   private readonly usageLimitScheduler: WorkflowUsageLimitScheduler;
   private readonly log: (message: string) => void;
-  private completionContext: ExtensionContext | undefined;
+  private completionContext: WorkflowRunCompletionContext | undefined;
 
   constructor(
     private readonly background: BackgroundWorkflowCoordinator,
@@ -70,7 +74,7 @@ export class WorkflowRunController {
   }
 
   async sessionStarted(ctx: ExtensionContext): Promise<void> {
-    this.completionContext = ctx;
+    this.completionContext = { cwd: ctx.cwd, sessionManager: ctx.sessionManager };
     this.usageLimitScheduler.activateSession(ctx);
     try {
       for (const record of await this.storeForCwd(ctx.cwd).list()) {
@@ -89,7 +93,7 @@ export class WorkflowRunController {
   }
 
   async handleCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
-    this.completionContext = ctx;
+    this.completionContext = { cwd: ctx.cwd, sessionManager: ctx.sessionManager };
     const command = parseWorkflowRunsCommand(args);
     if (command.kind === "error") {
       ctx.ui.notify(command.message, "warning");
@@ -108,7 +112,7 @@ export class WorkflowRunController {
   }
 
   async inspectStoredRun(ctx: ExtensionContext, runId: string): Promise<boolean> {
-    this.completionContext = ctx;
+    this.completionContext = { cwd: ctx.cwd, sessionManager: ctx.sessionManager };
     const record = await this.loadRecord(ctx.cwd, runId);
     if (!record) return false;
     await this.inspect(record, ctx);
@@ -309,18 +313,13 @@ export class WorkflowRunController {
     const ctx = this.completionContext;
     const parts = splitArgumentPrefix(argumentPrefix);
     if (parts.completed.length === 0) {
-      return completeCurrentArgument(argumentPrefix, [
-        { value: "inspect", description: "Show a retained workflow run" },
-        { value: "stop", description: "Stop an active or paused workflow run" },
-        { value: "resume", description: "Resume a paused workflow run" },
-        { value: "restart", description: "Restart a terminal workflow run" },
-      ]);
+      return completeCurrentArgument(argumentPrefix, WORKFLOW_RUN_ACTIONS);
     }
-    if (parts.completed.length !== 1) return null;
+    if (parts.completed.length !== 1 || !ctx) return null;
     const action = parts.completed[0];
-    if (action !== "inspect" && action !== "stop" && action !== "resume" && action !== "restart") return null;
-    const records = await this.listRecent(ctx?.cwd ?? process.cwd());
-    const active = ctx === undefined ? new Set<string>() : this.background.activeRunIds(ctx);
+    if (!action || !isWorkflowRunLifecycleAction(action)) return null;
+    const records = await this.listRecent(ctx.cwd);
+    const active = this.background.activeRunIds(ctx);
     return completeCurrentArgument(
       argumentPrefix,
       records
@@ -336,7 +335,7 @@ export class WorkflowRunController {
     const ctx = this.completionContext;
     const parts = splitArgumentPrefix(argumentPrefix);
     if (parts.completed.length > 0) return null;
-    const records = await this.listRecent(ctx?.cwd ?? process.cwd());
+    const records = ctx ? await this.listRecent(ctx.cwd) : [];
     return completeCurrentArgument(argumentPrefix, [
       { value: "last", description: "Inspect the current or most recent in-session workflow" },
       ...records.map((record) => ({

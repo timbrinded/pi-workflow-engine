@@ -3,7 +3,12 @@ import { matchesKey, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-
 import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
 import { agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
-import { fitWorkflowViewerRows, workflowViewerHeight } from "./workflow-viewer-layout.ts";
+import {
+  centerWorkflowViewerViewport,
+  fitWorkflowViewerRow,
+  fitWorkflowViewerRows,
+  workflowViewerHeight,
+} from "./workflow-viewer-layout.ts";
 
 type Section = "Overview" | "Agents" | "Findings" | "Logs" | "Result";
 
@@ -87,15 +92,11 @@ export class WorkflowInspector {
     }
     const innerHeight = Math.max(1, workflowViewerHeight(this.tui.terminal.rows) - 2);
     const maxBody = Math.max(1, innerHeight - 5);
-    const selectedLine = this.selectedLineIndex(body);
-    const maxStart = Math.max(0, body.length - maxBody);
-    const start = Math.min(maxStart, Math.max(0, selectedLine - Math.floor(maxBody / 2)));
-    const visible = body.slice(start, start + maxBody);
-    const visibleEnd = Math.min(body.length, start + visible.length);
-    const pct = body.length <= maxBody ? "100%" : `${Math.round((visibleEnd / body.length) * 100)}%`;
+    const viewport = centerWorkflowViewerViewport(body, maxBody, this.selectedLineIndex(body));
+    const pct = `${viewport.percentage}%`;
     const selected = this.selected[section] + 1;
     const count = Math.max(1, selectableCount);
-    const content = fitWorkflowViewerRows(visible.map((line) => line.text), maxBody);
+    const content = fitWorkflowViewerRows(viewport.visible.map((line) => line.text), maxBody);
     const interior = fitWorkflowViewerRows(
       [
         ` ${th.fg("accent", th.bold("Workflow Inspector"))} ${th.fg("dim", snapshot.title)}`,
@@ -135,8 +136,8 @@ export class WorkflowInspector {
   }
 
   private row(content: string, innerWidth: number): string {
-    const padded = padRight(truncateDisplay(content, innerWidth), innerWidth);
-    return this.theme.fg("border", "│") + " " + padded + " " + this.theme.fg("border", "│");
+    const fitted = fitWorkflowViewerRow(content, innerWidth);
+    return this.theme.fg("border", "│") + " " + fitted + " " + this.theme.fg("border", "│");
   }
 
   private itemCount(section: Section): number {
@@ -306,9 +307,4 @@ export class WorkflowInspector {
     }
     return lines;
   }
-}
-
-function padRight(text: string, width: number): string {
-  const visible = visibleWidth(text);
-  return text + " ".repeat(Math.max(0, width - visible));
 }

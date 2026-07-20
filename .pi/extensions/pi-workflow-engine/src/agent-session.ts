@@ -25,6 +25,7 @@ import {
   WorkflowStructuredOutputError,
 } from "./structured-output.ts";
 import { providerErrorFromMessages } from "./agent-retry.ts";
+import { synchronizeWorkflowModelRuntime } from "./agent-session-providers.ts";
 import { matchesAgentToolHint, WorkflowToolHintUnavailableError } from "./tool-capabilities.ts";
 import type { AgentToolHint } from "./types.ts";
 
@@ -250,6 +251,15 @@ async function prepareAgentSessionResources(input: {
   readonly label: string;
 }): Promise<AgentSessionResources> {
   const { rc, prompt, opts, cwd, model, customTools, label } = input;
+  const commonSessionOptions = (sessionOptions: ToolSessionOptions) => ({
+    model,
+    thinkingLevel: opts.thinkingLevel,
+    noTools: sessionOptions.noTools,
+    tools: sessionOptions.tools,
+    excludeTools: sessionOptions.excludeTools,
+    customTools,
+    sessionManager: SessionManager.inMemory(cwd),
+  });
   const createSession = rc.createSession;
   if (createSession) {
     return {
@@ -257,13 +267,7 @@ async function prepareAgentSessionResources(input: {
       createSession: (sessionOptions) =>
         createSession({
           cwd,
-          model,
-          thinkingLevel: opts.thinkingLevel,
-          noTools: sessionOptions.noTools,
-          tools: sessionOptions.tools,
-          excludeTools: sessionOptions.excludeTools,
-          customTools,
-          sessionManager: SessionManager.inMemory(cwd),
+          ...commonSessionOptions(sessionOptions),
         }),
     };
   }
@@ -278,33 +282,13 @@ async function prepareAgentSessionResources(input: {
     cwd,
     resourceLoaderOptions: preparedSkills.resourceLoaderOptions,
   });
-  const hostProviderIds = new Set(rc.modelRegistry.getRegisteredProviderIds());
-  // Shared-cwd sessions mirror live removals; isolated cwd sessions retain target-only providers.
-  if (cwd === rc.cwd) {
-    for (const providerId of services.modelRuntime.getRegisteredProviderIds()) {
-      if (!hostProviderIds.has(providerId)) services.modelRuntime.unregisterProvider(providerId);
-    }
-  }
-  for (const providerId of hostProviderIds) {
-    const config = rc.modelRegistry.getRegisteredProviderConfig(providerId);
-    if (!config) continue;
-    services.modelRuntime.unregisterProvider(providerId);
-    services.modelRuntime.registerProvider(providerId, config);
-  }
-  const selectedProvider = model?.provider;
-  if (model && selectedProvider) {
-    const hostAuth = rc.modelRegistry.getProviderAuthStatus(selectedProvider);
-    const childAuth = services.modelRuntime.getProviderAuthStatus(selectedProvider);
-    if (hostAuth.configured && !childAuth.configured && rc.modelRegistry.isUsingOAuth(model)) {
-      throw new Error(
-        `Workflow subagents cannot inherit OAuth credentials for "${selectedProvider}" from a host-only credential store; configure OAuth in Pi's shared agent directory.`,
-      );
-    }
-    if (hostAuth.source === "runtime" || (hostAuth.configured && !childAuth.configured)) {
-      const apiKey = await rc.modelRegistry.getApiKeyForProvider(selectedProvider);
-      if (apiKey !== undefined) await services.modelRuntime.setRuntimeApiKey(selectedProvider, apiKey);
-    }
-  }
+  await synchronizeWorkflowModelRuntime({
+    host: rc.modelRegistry,
+    child: services.modelRuntime,
+    selectedModel: model,
+    // Shared-cwd sessions mirror live removals; isolated cwd sessions retain target-only providers.
+    removeChildOnlyProviders: cwd === rc.cwd,
+  });
   for (const diagnostic of services.diagnostics) {
     rc.progress.log(`${label}: session ${diagnostic.type}: ${diagnostic.message}`);
   }
@@ -314,13 +298,7 @@ async function prepareAgentSessionResources(input: {
     createSession: (sessionOptions) =>
       createAgentSessionFromServices({
         services,
-        sessionManager: SessionManager.inMemory(cwd),
-        model,
-        thinkingLevel: opts.thinkingLevel,
-        noTools: sessionOptions.noTools,
-        tools: sessionOptions.tools,
-        excludeTools: sessionOptions.excludeTools,
-        customTools,
+        ...commonSessionOptions(sessionOptions),
       }),
   };
 }

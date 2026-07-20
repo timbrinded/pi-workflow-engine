@@ -1,9 +1,9 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
 import { renderIssueDetailLines } from "./review-format.ts";
 import { formatIssueLocation, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
 import { truncateDisplay } from "../ui/workflow-format.ts";
-import { fitWorkflowViewerRows, workflowViewerHeight } from "../ui/workflow-viewer-layout.ts";
+import { fitWorkflowViewerRow, fitWorkflowViewerRows, workflowViewerHeight } from "../ui/workflow-viewer-layout.ts";
 
 const SPLIT_WIDTH = 96;
 const LIST_MIN_WIDTH = 34;
@@ -123,7 +123,7 @@ export class ReviewResultsViewer implements Component {
     const details = this.renderDetailPane(detailWidth, height);
     const divider = this.theme.fg("borderMuted", "│");
     return Array.from({ length: height }, (_value, index) =>
-      `${padAnsi(list[index] ?? "", listWidth)} ${divider} ${padAnsi(details[index] ?? "", detailWidth)}`,
+      `${fitWorkflowViewerRow(list[index] ?? "", listWidth)} ${divider} ${fitWorkflowViewerRow(details[index] ?? "", detailWidth)}`,
     );
   }
 
@@ -221,7 +221,7 @@ export class ReviewResultsViewer implements Component {
   }
 
   private borderedRow(content: string, width: number): string {
-    return `${this.theme.fg("border", "│")} ${padAnsi(content, width)} ${this.theme.fg("border", "│")}`;
+    return `${this.theme.fg("border", "│")} ${fitWorkflowViewerRow(content, width)} ${this.theme.fg("border", "│")}`;
   }
 
   private requestRender(): void {
@@ -290,12 +290,6 @@ export class ReviewResultsViewer implements Component {
   private selectedIssueIds(): string[] {
     return this.issues.filter((issue) => this.selected.has(issue.id)).map((issue) => issue.id);
   }
-}
-
-function padAnsi(text: string, width: number): string {
-  const truncated = truncateDisplay(text, width);
-  const padding = Math.max(0, width - visibleWidth(truncated));
-  return `${truncated}${" ".repeat(padding)}`;
 }
 
 function scrollArrows(hasAbove: boolean, hasBelow: boolean): string {

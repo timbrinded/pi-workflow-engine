@@ -1,3 +1,6 @@
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { truncateDisplay } from "./workflow-format.ts";
+
 const VIEWPORT_HEIGHT_RATIO = 0.8;
 const VIEWPORT_MARGIN_ROWS = 2;
 
@@ -19,7 +22,35 @@ export function workflowViewerHeight(terminalRows: number): number {
   return Math.min(availableRows, Math.max(3, proportionalRows));
 }
 
+export function fitWorkflowViewerRow(text: string, width: number): string {
+  const fittedWidth = Math.max(0, width);
+  const truncated = truncateDisplay(text, fittedWidth);
+  return `${truncated}${" ".repeat(Math.max(0, fittedWidth - visibleWidth(truncated)))}`;
+}
+
 export function fitWorkflowViewerRows(lines: readonly string[], height: number): string[] {
   const visible = lines.slice(0, Math.max(0, height));
   return [...visible, ...Array.from({ length: Math.max(0, height - visible.length) }, () => "")];
+}
+
+export interface WorkflowViewerViewport<T> {
+  readonly visible: readonly T[];
+  readonly start: number;
+  readonly end: number;
+  readonly percentage: number;
+}
+
+export function centerWorkflowViewerViewport<T>(
+  rows: readonly T[],
+  height: number,
+  selectedIndex: number,
+): WorkflowViewerViewport<T> {
+  const visibleHeight = Math.max(0, Math.floor(height));
+  const clampedSelection = Math.min(Math.max(0, rows.length - 1), Math.max(0, selectedIndex));
+  const maxStart = Math.max(0, rows.length - visibleHeight);
+  const start = Math.min(maxStart, Math.max(0, clampedSelection - Math.floor(visibleHeight / 2)));
+  const visible = rows.slice(start, start + visibleHeight);
+  const end = Math.min(rows.length, start + visible.length);
+  const percentage = rows.length <= visibleHeight ? 100 : Math.round((end / rows.length) * 100);
+  return { visible, start, end, percentage };
 }

@@ -17,6 +17,7 @@ import {
   openAgentSession,
 } from "../.pi/extensions/pi-workflow-engine/src/agent-session.ts";
 import type { RunContext } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import { synchronizeWorkflowModelRuntime } from "../.pi/extensions/pi-workflow-engine/src/agent-session-providers.ts";
 import { createBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
@@ -30,6 +31,43 @@ import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import { createProgress } from "./agent-runner-fixtures.ts";
+
+test("provider synchronization preserves isolated-cwd providers but removes shared-cwd stale providers", async () => {
+  const hostRuntime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+    allowModelNetwork: false,
+  });
+  const childRuntime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+    allowModelNetwork: false,
+  });
+  const targetOnlyProvider: ProviderConfig = {
+    baseUrl: "https://target-only.invalid",
+    apiKey: "target-only-key",
+    api: "anthropic-messages",
+    models: [],
+  };
+  childRuntime.registerProvider("target-only", targetOnlyProvider);
+  const hostRegistry = new ModelRegistry(hostRuntime);
+
+  await synchronizeWorkflowModelRuntime({
+    host: hostRegistry,
+    child: childRuntime,
+    selectedModel: undefined,
+    removeChildOnlyProviders: false,
+  });
+  assert.ok(childRuntime.getRegisteredProviderConfig("target-only"));
+
+  await synchronizeWorkflowModelRuntime({
+    host: hostRegistry,
+    child: childRuntime,
+    selectedModel: undefined,
+    removeChildOnlyProviders: true,
+  });
+  assert.equal(childRuntime.getRegisteredProviderConfig("target-only"), undefined);
+});
 
 test("production session services load skills, tools, and host runtime providers", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-workflow-session-services-"));

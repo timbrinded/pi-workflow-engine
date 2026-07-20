@@ -70,10 +70,8 @@ function createStubEditor(initialText = ""): EditorComponent {
 }
 
 interface FakeScheduledAnimation {
-  dueAt: number;
-  callback: () => void;
-  cancelled: boolean;
-  completed: boolean;
+  readonly dueAt: number;
+  readonly callback: () => void;
 }
 
 function createFakeAnimationScheduler(): DynamaxAnimationScheduler & {
@@ -81,33 +79,28 @@ function createFakeAnimationScheduler(): DynamaxAnimationScheduler & {
   pending(): number;
 } {
   let now = 0;
-  const scheduled: FakeScheduledAnimation[] = [];
+  const scheduled = new Set<FakeScheduledAnimation>();
   return {
     now: () => now,
     schedule(callback, delayMs) {
-      const task: FakeScheduledAnimation = {
-        dueAt: now + delayMs,
-        callback,
-        cancelled: false,
-        completed: false,
-      };
-      scheduled.push(task);
+      const task = { dueAt: now + delayMs, callback };
+      scheduled.add(task);
       return () => {
-        task.cancelled = true;
+        scheduled.delete(task);
       };
     },
     advance(ms) {
       now += ms;
       while (true) {
-        const due = scheduled
-          .filter((task) => !task.cancelled && !task.completed && task.dueAt <= now)
+        const due = [...scheduled]
+          .filter((task) => task.dueAt <= now)
           .sort((left, right) => left.dueAt - right.dueAt)[0];
         if (!due) return;
-        due.completed = true;
+        scheduled.delete(due);
         due.callback();
       }
     },
-    pending: () => scheduled.filter((task) => !task.cancelled && !task.completed).length,
+    pending: () => scheduled.size,
   };
 }
 
@@ -434,6 +427,31 @@ test("Dynamax composes an existing editor and restores it on shutdown", async ()
   assert.equal(ui.editor.getText(), "dynamax");
   assert.match(ui.editor.render(80).join("\n"), /custom:.*\x1b\[38;2;/);
   assert.deepEqual(ui.notifications, []);
+
+  await sessionShutdown({}, ctx);
+  assert.equal(ui.editorFactory, existingFactory);
+  assert.ok(ui.editor);
+  assert.equal(ui.editor.getText(), "dynamax");
+});
+
+test("Dynamax preserves an existing editor when only decoration fails", async () => {
+  const existingFactory: EditorFactory = () => {
+    const editor = createStubEditor();
+    Object.defineProperty(editor, "render", { value: editor.render, writable: false });
+    return editor;
+  };
+  const captured = captureDynamax();
+  const sessionStart = captured.handlers.get("session_start")?.[0];
+  const sessionShutdown = captured.handlers.get("session_shutdown")?.[0];
+  if (!sessionStart || !sessionShutdown) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx, ui } = createFakeContext("session-a", true, existingFactory);
+
+  await sessionStart({}, ctx);
+  assert.ok(ui.editor);
+  assert.equal(ui.editor instanceof CustomEditor, false);
+  ui.editor.setText("dynamax");
+  assert.equal(ui.editor.render(80).join("\n"), "custom:dynamax");
+  assert.match(ui.notifications.at(-1)?.message ?? "", /could not decorate.*existing editor remains active/);
 
   await sessionShutdown({}, ctx);
   assert.equal(ui.editorFactory, existingFactory);

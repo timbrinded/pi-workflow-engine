@@ -9,7 +9,7 @@ import { logicalWorkspacePath, type ReplayWorkspaceRoots } from "./replay-path-i
 import { captureTreeFingerprint } from "./tree-fingerprint.ts";
 import type { ResolvedSkillIdentity } from "./resume-context.ts";
 
-export interface AgentSkillRequest {
+interface AgentSkillRequest {
   readonly selectors: readonly string[];
   readonly strict: boolean;
 }
@@ -55,6 +55,13 @@ const PURPOSE_BOUNDARY_PATTERN = /\s+\b(?:for|to|when|while|so|because|in\s+orde
  * `include skill diagnose`, `include this Skill diagnose`, or `use the diagnose skill`.
  */
 export function resolveAgentSkillRequest(prompt: string, explicitSkills: unknown): AgentSkillRequest {
+  return resolveAuthoredAgentSkillRequest(prompt, parseExplicitSkillSelectors(explicitSkills));
+}
+
+function resolveAuthoredAgentSkillRequest(
+  prompt: string,
+  explicitSkills: readonly string[] | undefined,
+): AgentSkillRequest {
   if (explicitSkills !== undefined) {
     return { selectors: normalizeExplicitSkillSelectors(explicitSkills), strict: true };
   }
@@ -110,10 +117,10 @@ export function selectAgentSkills(skills: readonly Skill[], selectors: readonly 
  */
 export function prepareAgentSkillResources(options: {
   readonly prompt: string;
-  readonly skills: unknown;
+  readonly skills: readonly string[] | undefined;
   readonly log?: (message: string) => void;
 }): PreparedAgentSkillResources {
-  const request = resolveAgentSkillRequest(options.prompt, options.skills);
+  const request = resolveAuthoredAgentSkillRequest(options.prompt, options.skills);
   let resolution: AgentSkillResolution = { selected: [], unmatched: [] };
   let availableSkillNames: readonly string[] = [];
 
@@ -210,16 +217,21 @@ function parseSkillList(fragment: string): string[] {
     .filter((part) => part.length > 0);
 }
 
-function normalizeExplicitSkillSelectors(value: unknown): string[] {
+function parseExplicitSkillSelectors(value: unknown): readonly string[] | undefined {
+  if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
     throw new Error("Invalid subagent skills option: expected an array of skill names.");
   }
+  if (!value.every((item): item is string => typeof item === "string")) {
+    throw new Error("Invalid subagent skills option: every skill name must be a string.");
+  }
+  return value;
+}
+
+function normalizeExplicitSkillSelectors(value: readonly string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
   for (const item of value) {
-    if (typeof item !== "string") {
-      throw new Error("Invalid subagent skills option: every skill name must be a string.");
-    }
     const normalized = normalizeSkillSelector(item);
     if (!normalized || isGenericSkillWord(normalized)) {
       throw new Error(`Invalid subagent skills option: \"${item}\" is not a valid skill name.`);

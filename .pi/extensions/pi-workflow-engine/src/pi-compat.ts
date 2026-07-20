@@ -15,18 +15,18 @@ export function assertSupportedPiVersion(version: string): void {
 function parseVersionCore(version: string): readonly [number, number, number] | undefined {
   const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version.trim());
   if (!match) return undefined;
-  const core = match.slice(1, 4).map(Number);
-  if (core.some((part) => !Number.isSafeInteger(part))) return undefined;
-  return [core[0]!, core[1]!, core[2]!];
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  if (![major, minor, patch].every(Number.isSafeInteger)) return undefined;
+  return [major, minor, patch];
 }
 
 function compareVersionCore(
   left: readonly [number, number, number],
   right: readonly [number, number, number],
 ): number {
-  for (let index = 0; index < left.length; index++) {
-    const difference = left[index]! - right[index]!;
-    if (difference !== 0) return difference;
-  }
-  return 0;
+  const [leftMajor, leftMinor, leftPatch] = left;
+  const [rightMajor, rightMinor, rightPatch] = right;
+  return leftMajor - rightMajor || leftMinor - rightMinor || leftPatch - rightPatch;
 }

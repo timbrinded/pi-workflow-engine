@@ -6,6 +6,10 @@ import { createTestTheme } from "./fixtures/theme.ts";
 import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import { WorkflowInspector } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
+import {
+  centerWorkflowViewerViewport,
+  fitWorkflowViewerRow,
+} from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
 import { isAdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import { renderWorkflowResultText } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts";
 import { renderWorkflowWidgetLines } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
@@ -64,6 +68,12 @@ test("workflow formatting helpers format durations, counts, agents, and truncati
 
   const wide = truncateDisplay("漢字かな", 4);
   assert.ok(visibleWidth(wide) <= 4);
+
+  const fitted = fitWorkflowViewerRow("\x1b[31mwide 漢字\x1b[0m", 8);
+  assert.equal(visibleWidth(fitted), 8);
+
+  const viewport = centerWorkflowViewerViewport([0, 1, 2, 3, 4, 5], 3, 4);
+  assert.deepEqual(viewport, { visible: [3, 4, 5], start: 3, end: 6, percentage: 100 });
 });
 
 test("workflow inspector renders a completed retained snapshot", () => {

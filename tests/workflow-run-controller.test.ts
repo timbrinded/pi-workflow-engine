@@ -17,7 +17,7 @@ import { WorkflowProviderUsageLimitError } from "../.pi/extensions/pi-workflow-e
 import { runResolvedWorkflow, runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { WorkflowRunController } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-controller.ts";
-import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { ProjectWorkflowRunStore, type WorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
 import type { WorkflowUsageLimitSchedulerClock } from "../.pi/extensions/pi-workflow-engine/src/workflow-usage-limit-scheduler.ts";
 import { createTestTheme } from "./fixtures/theme.ts";
 
@@ -75,6 +75,7 @@ function context(
   notifications: Notification[],
   mode: ExtensionContext["mode"] = "print",
   branch: unknown[] = [],
+  sessionId = "history-headless-session",
 ): ExtensionCommandContext {
   return {
     cwd,
@@ -84,7 +85,7 @@ function context(
     modelRegistry: { find: () => undefined },
     sessionManager: {
       getSessionFile: () => undefined,
-      getSessionId: () => "history-headless-session",
+      getSessionId: () => sessionId,
       getBranch: () => branch,
       getEntries: () => branch,
     },
@@ -199,6 +200,46 @@ test("workflow run completions expose lifecycle actions and retained IDs", async
     controller.sessionShutdown(ctx);
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+test("workflow run completions stay scoped to the active session", async () => {
+  const notifications: Notification[] = [];
+  const queriedCwds: string[] = [];
+  const emptyStore: WorkflowRunStore = {
+    save: async () => {},
+    load: async () => undefined,
+    list: async () => [],
+    prune: async () => {},
+  };
+  const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => undefined,
+    execute: async () => {},
+    storeForCwd: (cwd) => {
+      queriedCwds.push(cwd);
+      return emptyStore;
+    },
+  });
+  const first = context("/project/first", notifications, "print", [], "session-first");
+  const second = context("/project/second", notifications, "print", [], "session-second");
+
+  assert.deepEqual((await controller.argumentCompletions("ins"))?.map((item) => item.value), ["inspect"]);
+  assert.equal(await controller.argumentCompletions("inspect "), null);
+  assert.deepEqual((await controller.inspectorArgumentCompletions(""))?.map((item) => item.value), ["last"]);
+  assert.deepEqual(queriedCwds, [], "completions without an active session must not query a process-scoped store");
+
+  await controller.sessionStarted(first);
+  await controller.sessionStarted(second);
+  queriedCwds.length = 0;
+  controller.sessionShutdown(first);
+  await controller.inspectorArgumentCompletions("");
+  assert.deepEqual(queriedCwds, [second.cwd], "shutting down an older session must retain the replacement session");
+
+  controller.sessionShutdown(second);
+  queriedCwds.length = 0;
+  assert.equal(await controller.argumentCompletions("inspect "), null);
+  assert.deepEqual((await controller.inspectorArgumentCompletions(""))?.map((item) => item.value), ["last"]);
+  assert.deepEqual(queriedCwds, []);
 });
 
 test("workflow run history uses Pi's native RPC selectors instead of a custom navigator", async () => {
