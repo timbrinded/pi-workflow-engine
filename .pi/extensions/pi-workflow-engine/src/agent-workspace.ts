@@ -1,6 +1,6 @@
 import type { AgentExecutionOptions, AgentProgress } from "./agent-runner-types.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
-import { spawnGitRunner, type WorktreeRegistry } from "./worktree.ts";
+import type { WorktreeRegistry } from "./worktree.ts";
 
 interface AgentWorkspaceBase {
   readonly cwd: string;
@@ -21,7 +21,7 @@ export type AgentWorkspace = SharedAgentWorkspace | IsolatedAgentWorkspace;
 
 export interface AgentWorkspaceContext {
   readonly cwd: string;
-  readonly worktrees: Pick<WorktreeRegistry, "probe" | "add" | "capturePatch" | "remove">;
+  readonly worktrees: Pick<WorktreeRegistry, "probe" | "add" | "capturePatch" | "applyPatch" | "remove">;
   readonly signal: AbortSignal | undefined;
   readonly progress: Pick<AgentProgress, "log">;
 }
@@ -58,10 +58,7 @@ export async function createAgentWorkspace(
     try {
       if (opts.candidatePatch.baselineOid !== added.baselineOid) throw new Error("Candidate baseline differs from evaluator baseline");
       if (opts.candidatePatch.patch.trim()) {
-        const applied = await spawnGitRunner.runGit({
-          cwd: worktreePath, args: ["apply", "--binary", "--index", "-"],
-          stdin: opts.candidatePatch.patch, signal: rc.signal, timeoutMs: 30_000,
-        });
+        const applied = await rc.worktrees.applyPatch(worktreePath, opts.candidatePatch.patch, rc.signal);
         if (!applied.ok) throw new Error(`Candidate patch could not be applied: ${applied.error ?? applied.stderr}`);
       }
     } catch (error) {

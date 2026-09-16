@@ -1,6 +1,3 @@
-import type { AdvisoryCandidate } from "../advisory-schema.ts";
-import { dedupeCandidates } from "../advisory-evidence.ts";
-
 const DIFF_EMBED_CAP = 60_000;
 
 export function buildCodeReviewScopeBlock(input: {
@@ -24,11 +21,4 @@ export function buildCodeReviewScopeBlock(input: {
     diffBlock +
     (input.target ? `\n## User instructions (verbatim)\n${input.target}\n` : "")
   );
-}
-
-export function dedupeCodeReviewCandidates<Context>(
-  groups: readonly { readonly angle: Context; readonly candidates: readonly AdvisoryCandidate[] }[],
-): Array<{ readonly angle: Context; readonly candidate: AdvisoryCandidate }> {
-  return dedupeCandidates(groups.flatMap(({ angle, candidates }) => candidates.map((candidate) => ({ ...candidate, angle }))))
-    .map(({ angle, ...candidate }) => ({ angle, candidate }));
 }

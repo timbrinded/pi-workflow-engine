@@ -20,8 +20,6 @@ export const AdvisoryLocationSchema = Type.Object({
 });
 
 export const AdvisoryCandidateSchema = Type.Object({
-  candidateId: Type.Optional(Type.String()),
-  sourceCandidateIds: Type.Optional(Type.Array(Type.String())),
   discoveryEvidence: Type.Optional(Type.Array(Type.String())),
   reviewAnchor: Type.Optional(AdvisoryLocationSchema),
   summary: Type.String({ description: "One-line candidate finding or hypothesis." }),
@@ -74,6 +72,7 @@ export const AdvisoryReportWithStatsSchema = Type.Object({
 
 export type AdvisoryLocation = Static<typeof AdvisoryLocationSchema>;
 export type AdvisoryCandidate = Static<typeof AdvisoryCandidateSchema>;
+export type IdentifiedAdvisoryCandidate = AdvisoryCandidate & { candidateId: string; sourceCandidateIds: string[] };
 export type AdvisoryVerdict = Static<typeof AdvisoryVerdictSchema>;
 export type AdvisoryFinding = Static<typeof AdvisoryFindingSchema>;
 export type AdvisoryReport = Static<typeof AdvisoryReportSchema>;

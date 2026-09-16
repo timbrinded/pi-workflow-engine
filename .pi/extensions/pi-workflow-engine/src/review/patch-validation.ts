@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Type, type Static } from "typebox";
 import { throwIfAborted } from "../cancellation.ts";
 import { runBoundedProcess, type BoundedProcessResult } from "../process-runner.ts";
-import { WorktreeRegistry, spawnGitRunner, type WorktreeBaseline } from "../worktree.ts";
+import { WorktreeRegistry, type WorktreeBaseline } from "../worktree.ts";
 import { unknownErrorMessage } from "../unknown-error.ts";
 import { fingerprintReviewWorktreeBaseline } from "./review-snapshot.ts";
 
@@ -30,8 +30,8 @@ export interface PatchValidation {
   evaluation?: PatchEvaluation;
   reason: string;
 }
-export function initialPatchValidation(baseline: WorktreeBaseline | undefined, baselineOid: string | undefined, patch: string): PatchValidation {
-  return { status: patch.trim() ? "blocked" : "no-patch", baselineFingerprint: baseline ? fingerprintReviewWorktreeBaseline(baseline) : "unavailable", ...(baselineOid ? { baselineOid } : {}),
+export function initialPatchValidation(baseline: WorktreeBaseline, baselineOid: string | undefined, patch: string): PatchValidation {
+  return { status: patch.trim() ? "blocked" : "no-patch", baselineFingerprint: fingerprintReviewWorktreeBaseline(baseline), ...(baselineOid ? { baselineOid } : {}),
     patchHash: createHash("sha256").update(patch).digest("hex"), checks: [], reason: patch.trim() ? "Independent evaluation has not completed." : "The implementer produced no patch; this does not establish that no change is needed." };
 }
 
@@ -49,35 +49,40 @@ export async function validateCandidatePatch(options: {
     const candidate = await worktrees.add(options.signal, options.baseline);
     if ("error" in candidate) return { ...validation, reason: candidate.error };
     if (candidate.baselineOid !== options.baselineOid) return { ...validation, status: "rejected", reason: "Candidate was produced from a different baseline." };
-    const applied = await spawnGitRunner.runGit({ cwd: candidate.path, args: ["apply", "--index", "--binary", "-"], stdin: options.patch, timeoutMs: 30_000, signal: options.signal });
+    const applied = await worktrees.applyPatch(candidate.path, options.patch, options.signal);
     if (!applied.ok) return { ...validation, status: "rejected", reason: applied.error ?? applied.stderr };
-    let rejected = options.evaluation.outcome === "rejected";
-    let blocked = options.evaluation.outcome === "blocked" || !options.evaluation.checks.some((check) => check.required);
+    const rejected = options.evaluation.outcome === "rejected" ? [options.evaluation.reason] : [];
+    const blocked = options.evaluation.outcome === "blocked" ? [options.evaluation.reason] : [];
+    if (!options.evaluation.checks.some((check) => check.required)) blocked.push("No required behavior check was selected.");
     for (const check of options.evaluation.checks) {
       const result = await runCheck(check, candidate.path, options.signal);
       validation.checks.push({ ...check, stage: "candidate", result });
       throwIfAborted(options.signal);
       if (!result.ok) {
-        if (result.failure.kind === "exit") rejected = true;
-        else if (check.required) blocked = true;
+        if (result.failure.kind === "exit") rejected.push(`${check.file}: ${result.failure.message}`);
+        else if (check.required) blocked.push(`${check.file}: ${result.failure.message}`);
       }
       if (check.regression) {
         const original = await worktrees.add(options.signal, options.baseline);
-        if ("error" in original) { blocked = true; continue; }
-        const testApplied = await spawnGitRunner.runGit({ cwd: original.path, args: ["apply", "--index", "--binary", "-"], stdin: check.regression.baselinePatch, timeoutMs: 30_000, signal: options.signal });
-        if (!testApplied.ok) { blocked = true; validation.reason = `Baseline regression setup failed: ${testApplied.error ?? testApplied.stderr}`; continue; }
+        if ("error" in original) { blocked.push(`Baseline worktree setup failed: ${original.error}`); continue; }
+        const testApplied = await worktrees.applyPatch(original.path, check.regression.baselinePatch, options.signal);
+        if (!testApplied.ok) { blocked.push(`Baseline regression setup failed: ${testApplied.error ?? testApplied.stderr}`); continue; }
         const baselineResult = await runCheck(check, original.path, options.signal);
         validation.checks.push({ ...check, stage: "baseline", result: baselineResult });
         throwIfAborted(options.signal);
         if (baselineResult.ok || baselineResult.failure.kind !== "exit" || !check.regression.expectedFailure.trim() ||
-          !(baselineResult.stdout + baselineResult.stderr).includes(check.regression.expectedFailure)) blocked = true;
+          !(baselineResult.stdout + baselineResult.stderr).includes(check.regression.expectedFailure)) {
+          blocked.push(`${check.file}: baseline did not reproduce the expected failure: ${check.regression.expectedFailure}`);
+        }
       }
     }
     // Tests must not silently replace the candidate under evaluation.
     const after = await worktrees.capturePatch(candidate.path, candidate.baselineOid, options.signal);
-    if ("error" in after || after.patch !== options.patch) blocked = true;
-    return { ...validation, status: rejected ? "rejected" : blocked ? "blocked" : "verified",
-      reason: rejected ? "Independent evaluation or an executed check rejected the candidate." : blocked ? "Required validation could not be completed against the unchanged candidate." : "Independent evaluation and all required checks passed." };
+    if ("error" in after) blocked.push(`Candidate capture failed: ${after.error}`);
+    else if (after.patch !== options.patch) blocked.push("Validation checks changed the candidate patch.");
+    if (rejected.length > 0) return { ...validation, status: "rejected", reason: [...rejected, ...blocked].join("\n") };
+    if (blocked.length > 0) return { ...validation, status: "blocked", reason: blocked.join("\n") };
+    return { ...validation, status: "verified", reason: "Independent evaluation and all required checks passed." };
   } catch (error) {
     throwIfAborted(options.signal);
     return { ...validation, status: "blocked", reason: unknownErrorMessage(error) };

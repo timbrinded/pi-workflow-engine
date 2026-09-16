@@ -13,11 +13,9 @@ const AdjudicationSchema = Type.Object({
   evidence: Type.Array(Type.String()),
   reason: Type.String(),
 });
-export interface ChallengeRecord {
-  challenge?: Static<typeof ChallengeSchema>;
-  adjudication?: Static<typeof AdjudicationSchema>;
-  status: "complete" | "failed";
-}
+export type ChallengeRecord =
+  | { status: "complete"; challenge: Static<typeof ChallengeSchema>; adjudication: Static<typeof AdjudicationSchema> }
+  | { status: "failed"; challenge?: Static<typeof ChallengeSchema> };
 export interface AdvisoryChallengeOptions {
   maxChallenges: number;
   shouldChallenge?: (finding: AdvisoryVerified) => boolean;
@@ -50,19 +48,19 @@ export async function challengeFindings<T extends AdvisoryVerified>(
   if (limit === 0) return findings;
   const selected = findings.filter((finding) => finding.verdict !== "REFUTED" && (options.shouldChallenge ?? needsChallenge)(finding)).slice(0, limit);
   const replacements = new Map<string, T>();
-  await collectAdvisoryStage(api, "Challenge", selected.map((finding) => ({ id: finding.candidateId!, run: async () => {
+  await collectAdvisoryStage(api, "Challenge", selected.map((finding) => ({ id: finding.candidateId, run: async () => {
     // Preserve the candidate as unresolved if either independent stage fails.
-    replacements.set(finding.candidateId!, { ...finding, verdict: "NOT_SUBSTANTIATED", challenge: { status: "failed" } });
+    replacements.set(finding.candidateId, { ...finding, verdict: "NOT_SUBSTANTIATED", challenge: { status: "failed" } });
     const challenge = await api.agent(
       `Assume this finding is a false positive. Try to DISPROVE it. Find the strongest concrete counterexample or alternative root cause. Inspect callers, invariants, tests and control flow. For a repair, seek an input, race or error path that still fails. State the smallest experiment distinguishing explanations. Do not edit files or claim tests you did not run. No counterexample found is not proof.\n\nExact review context:\n${context}\n\nCandidate and verifier evidence:\n${JSON.stringify(finding)}`,
       { label: `challenge:${finding.candidateId}`, phase: "Challenge", profile: "medium", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, schema: ChallengeSchema },
     );
-    replacements.set(finding.candidateId!, { ...finding, verdict: "NOT_SUBSTANTIATED", challenge: { status: "failed", challenge } });
+    replacements.set(finding.candidateId, { ...finding, verdict: "NOT_SUBSTANTIATED", challenge: { status: "failed", challenge } });
     const adjudication = await api.agent(
       `Adjudicate the original finding, independent verifier evidence and falsification attempt below. Preserve unresolved conflict; do not force consensus. A missing counterexample alone cannot upgrade a plausible claim. Cite concrete evidence and observed test results; never invent experiments.\nContext:\n${context}\nOriginal and verifier:\n${JSON.stringify(finding)}\nChallenger:\n${JSON.stringify(challenge)}`,
       { label: `adjudicate:${finding.candidateId}`, phase: "Challenge", profile: "medium", tools: [], schema: AdjudicationSchema },
     );
-    replacements.set(finding.candidateId!, {
+    replacements.set(finding.candidateId, {
       ...finding,
       verdict: adjudication.outcome === "refuted" ? "REFUTED" : adjudication.outcome === "unresolved" ? "NOT_SUBSTANTIATED" : finding.verdict,
       evidence: [...finding.evidence, ...challenge.evidence, ...(challenge.experiment ? [challenge.experiment] : []), ...adjudication.evidence, adjudication.reason],
@@ -70,5 +68,5 @@ export async function challengeFindings<T extends AdvisoryVerified>(
     });
     return finding.candidateId;
   } })), coverage);
-  return findings.map((finding) => replacements.get(finding.candidateId!) ?? finding);
+  return findings.map((finding) => replacements.get(finding.candidateId) ?? finding);
 }

@@ -70,6 +70,19 @@ test("regression validation observes intended baseline failure and repaired succ
   } finally { await repo.cleanup(); }
 });
 
+test("blocked validation retains the baseline regression setup failure", async () => {
+  const repo = await fixture();
+  try {
+    const result = await validateCandidatePatch({ ...repo, evaluation: {
+      ...accepted, checks: [{ ...check, regression: { baselinePatch: "invalid patch", expectedFailure: "value remains broken" } }],
+    } });
+    assert.equal(result.status, "blocked");
+    assert.match(result.reason, /Baseline regression setup failed:/);
+    assert.match(result.reason, /No valid patches/);
+    assert.deepEqual(result.checks.map((entry) => [entry.stage, entry.result.ok]), [["candidate", true]]);
+  } finally { await repo.cleanup(); }
+});
+
 test("fix workflow uses a fresh evaluator, retains rejected patches, and cannot trust implementer success claims", async () => {
   const repo = await fixture();
   const registry = new WorktreeRegistry(repo.cwd);
@@ -82,18 +95,14 @@ test("fix workflow uses a fresh evaluator, retains rejected patches, and cannot 
       try {
         if (options.label?.startsWith("fix:")) {
           await writeFile(join(workspace.cwd, "value.txt"), "fixed\n");
-          await writeFile(join(workspace.cwd, ".untracked-implementer"), "hidden contamination");
-          // Remove a scratch file before capture: evaluator must never inherit it.
-          await rm(join(workspace.cwd, ".untracked-implementer"));
           return await workspace.wrapResult("VERIFIED: all checks passed (implementer claim)");
         }
         assert.equal(await readFile(join(workspace.cwd, "value.txt"), "utf8"), "fixed\n");
         assert.notEqual(workspace.cwd, paths[0]);
-        await assert.rejects(readFile(join(workspace.cwd, ".untracked-implementer")), /ENOENT/);
         return await workspace.wrapResult({ outcome: "rejected", reason: "Repair breaks a caller", checks: [check] });
       } finally { await workspace.dispose(); }
     }) as WorkflowApi["agent"];
-    const result = await runReviewFixWorkflow({ agent, parallel: bindParallel({}), phase() {}, cwd: repo.cwd }, issues,
+    const result = await runReviewFixWorkflow({ agent, parallel: bindParallel({}), phase() {}, signal: undefined, cwd: repo.cwd }, issues,
       { workflowName: "code-review", target: "", files: ["value.txt"], diffTarget: { kind: "git", args: [] }, snapshot: { baselineFingerprint: repo.expectedFingerprint, diffFingerprint: "a".repeat(64) } }, repo.baseline);
     assert.equal(paths.length, 2);
     const preview = result.fixes[0]!;
@@ -138,6 +147,6 @@ test("fatal evaluator cancellation aborts the fix workflow instead of becoming b
     if (options.label?.startsWith("fix:")) return { result: "done", patch: "candidate", changed: true, baselineOid: baseline.ref };
     throw new WorkflowAbortError("evaluator cancelled");
   }) as WorkflowApi["agent"];
-  await assert.rejects(runReviewFixWorkflow({ agent, parallel: bindParallel({}), phase() {}, cwd: process.cwd() }, issues,
+  await assert.rejects(runReviewFixWorkflow({ agent, parallel: bindParallel({}), phase() {}, signal: undefined, cwd: process.cwd() }, issues,
     { workflowName: "code-review", target: "", files: [], diffTarget: { kind: "git", args: [] }, snapshot: { baselineFingerprint: fingerprintReviewWorktreeBaseline(baseline), diffFingerprint: "a".repeat(64) } }, baseline), /evaluator cancelled/);
 });

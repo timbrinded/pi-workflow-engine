@@ -1,28 +1,22 @@
 import { challengeFindings, parseChallengeArgs } from "../src/advisory-challenge.ts";
-import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, collectAdvisoryStage, identifyCandidates, withAdvisoryCoverage, type AdvisoryStageCoverage } from "../src/advisory-evidence.ts";
+import { type AdvisoryStageCoverage } from "../src/advisory-evidence.ts";
 import { Type } from "typebox";
 import {
-  AdvisoryCandidatesSchema,
-  AdvisoryVerdictSchema,
-  type AdvisoryReport,
-  type AdvisoryCandidate,
-  type AdvisoryVerdict,
-} from "../src/advisory-schema.ts";
-import {
   type AdvisoryVerified,
-  resolveAdvisorySynthesis,
+  type AdvisoryLens,
+  synthesizeAdvisoryReport,
+  finishAdvisoryReport,
   formatEvidence,
   formatLocation,
   normalizePath,
-  primaryLocation,
   publishVerifiedKeptProgress,
-  recordVerdictProgress,
+  runLensVerificationPipeline,
   verdictConfidence,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
 import { formatReviewDiffTarget, parseAllowedDiffCommand } from "../src/review-diff-target.ts";
-import { buildCodeReviewScopeBlock, dedupeCodeReviewCandidates } from "../src/review/code-review-orchestration.ts";
+import { buildCodeReviewScopeBlock } from "../src/review/code-review-orchestration.ts";
 import type { ReviewContext } from "../src/review/review-report.ts";
 import { captureReviewMaterial, type ReviewMaterialCaptureResult } from "../src/review/review-snapshot.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
@@ -41,26 +35,13 @@ const ScopeSchema = Type.Object({
   conventions: Type.Optional(Type.String({ description: "Relevant AGENTS.md / project conventions" })),
 });
 
-type Candidate = AdvisoryCandidate;
-
-interface Angle {
-  label: string;
-  kind: "bug" | "cleanup";
-  text: string;
-}
-interface Verified extends Candidate {
-  verdict: AdvisoryVerdict["verdict"];
-  evidence: string[];
-  kind: "bug" | "cleanup";
-}
-
 // The review lenses — this is the part you customise to your codebase's real failure modes.
-const ANGLES: Angle[] = [
-  { label: "logic-bugs", kind: "bug", text: "Off-by-one errors, wrong conditionals, incorrect return values, broken control flow." },
-  { label: "error-paths", kind: "bug", text: "Unhandled errors, swallowed exceptions, missing awaits, partial failure leaving inconsistent state." },
-  { label: "edge-cases", kind: "bug", text: "Empty/null inputs, boundary values, concurrency races, resource leaks." },
-  { label: "simplification", kind: "cleanup", text: "Dead code, needless complexity, duplicated logic, clearer equivalents." },
-  { label: "conventions", kind: "cleanup", text: "Violations of the project conventions noted in scope (naming, idioms, banned patterns)." },
+const ANGLES: AdvisoryLens[] = [
+  { label: "logic-bugs", category: "bug", text: "Off-by-one errors, wrong conditionals, incorrect return values, broken control flow." },
+  { label: "error-paths", category: "bug", text: "Unhandled errors, swallowed exceptions, missing awaits, partial failure leaving inconsistent state." },
+  { label: "edge-cases", category: "bug", text: "Empty/null inputs, boundary values, concurrency races, resource leaks." },
+  { label: "simplification", category: "cleanup", text: "Dead code, needless complexity, duplicated logic, clearer equivalents." },
+  { label: "conventions", category: "cleanup", text: "Violations of the project conventions noted in scope (naming, idioms, banned patterns)." },
 ];
 
 const TOOLS = DEFAULT_ADVISORY_TOOLS;
@@ -115,11 +96,6 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   let rawCandidateCount = 0;
   let droppedCandidateCount = 0;
   const coverage: AdvisoryStageCoverage[] = [];
-  let evidenceRecords: AdvisoryVerified[] = [];
-  const finish = <T extends AdvisoryReport>(report: T) => ({
-    ...withAdvisoryCoverage(report, coverage),
-    verification: evidenceRecords,
-  });
   const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
     files: fileCount,
     candidates: rawCandidateCount,
@@ -202,116 +178,59 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     target,
   });
 
-  // ─── Find barrier → dedup → Verify ───
-  phase("Find");
-  const perAngle = await collectAdvisoryStage(api, "Find",
-    ANGLES.map((angle) => ({ id: angle.label, run: async () => {
-      const found = await agent(
-        `## Code-review finder — ${angle.label}\n\n${scopeBlock}\n` +
-          `Review the change through ONLY this lens:\n${angle.text}\n` +
-          "Only flag issues on lines that are part of the diff above (run the diff command if it is not shown). " +
-          "Set reviewAnchor to the changed line causing the issue; locations and discoveryEvidence may include unchanged callers and other files. " +
-          `Surface up to ${PER_ANGLE} candidates. Use category exactly "${angle.kind}". Each candidate must include a one-line summary, ` +
-          "locations with the changed file and a line that appears in the diff, and impact describing the concrete failure or maintenance scenario. " +
-          "Pass through anything with a nameable impact — a separate verifier judges them next. Structured output only.",
-        { phase: "Find", label: `find:${angle.label}`, tools: TOOLS, toolHints: TOOL_HINTS, profile: "small", schema: AdvisoryCandidatesSchema },
-      );
-      if (!found) throw new Error("Finder produced no output");
-      const raw = identifyCandidates(found.candidates.slice(0, PER_ANGLE), angle.label);
-      rawCandidateCount += raw.length;
-      progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: raw.length });
-      const bounded = raw.flatMap((candidate) => {
-        const anchor = candidate.reviewAnchor ?? candidate.locations.find((location) => inDiff(changed, location.file, location.line));
-        return anchor && inDiff(changed, anchor.file, anchor.line) ? [{ ...candidate, reviewAnchor: anchor }] : [];
-      });
-      const dropped = raw.length - bounded.length;
-      if (dropped > 0) {
-        droppedCandidateCount += dropped;
-        progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: dropped });
-        log(`find:${angle.label}: dropped ${dropped} out-of-diff candidate(s)`);
-      }
-      for (const candidate of bounded) {
-        progress({
-          type: "lane_item",
-          lane: "Candidates",
-          title: candidate.summary,
-          subtitle: formatLocation(candidate),
-          status: "pending",
-          details: candidate.impact,
-        });
-      }
-      return { angle, candidates: bounded };
-    } })), coverage,
-  );
-
-  // Dedup after all finders complete so verifier agents cannot consume the global cap before full candidate discovery.
-  const novel = dedupeCodeReviewCandidates(perAngle);
-
-  phase("Verify");
-  const verdicts = await collectAdvisoryStage(api, "Verify",
-    novel.map(({ angle, candidate }) => ({ id: candidate.candidateId!, candidate, run: async (): Promise<Verified> => {
-      const location = primaryLocation(candidate);
-      const judged = await agent(
-        `## Code-review verifier\n\n${scopeBlock}\n## Candidate\n` +
-          `Candidate record: ${JSON.stringify(candidate)}\nLocation: ${formatLocation(candidate)}\n` +
-          `Category: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n\n` +
-          "Run the diff command, read the relevant file(s), and return exactly one verdict (CONFIRMED / PLAUSIBLE / NOT_SUBSTANTIATED / REFUTED) " +
-          "with evidence quoting the line(s). Use NOT_SUBSTANTIATED when evidence is insufficient; use REFUTED only for concrete disproof. Structured output only.",
-        {
-          phase: "Verify",
-          label: `verify:${location.file.split("/").pop() ?? location.file}`,
-          tools: TOOLS,
-          toolHints: TOOL_HINTS,
-          profile: "small",
-          schema: AdvisoryVerdictSchema,
-        },
-      );
-      if (!judged) throw new Error("Verifier produced no output");
-      recordVerdictProgress(progress, candidate, judged);
-      return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, kind: angle.kind };
-    } })), coverage,
-  );
-
-  const verified = await challengeFindings(api, verdicts, scopeBlock, challengeConfig.options, coverage);
-  evidenceRecords = verified;
+  const pipelineResult = await runLensVerificationPipeline({
+    api,
+    lenses: ANGLES,
+    perLens: PER_ANGLE,
+    boundCandidate: (candidate, lens) => {
+      const anchor = candidate.reviewAnchor ?? candidate.locations.find((location) => inDiff(changed, location.file, location.line));
+      return anchor && inDiff(changed, anchor.file, anchor.line)
+        ? { ...candidate, category: lens.category, reviewAnchor: anchor } : undefined;
+    },
+    finderPrompt: (lens) =>
+      `## Code-review finder — ${lens.label}\n\n${scopeBlock}\n` +
+      `Review the change through ONLY this lens:\n${lens.text}\n` +
+      "Only flag issues on lines that are part of the diff above (run the diff command if it is not shown). " +
+      "Set reviewAnchor to the changed line causing the issue; locations and discoveryEvidence may include unchanged callers and other files. " +
+      `Surface up to ${PER_ANGLE} candidates. Use category exactly "${lens.category}". Each candidate must include a one-line summary, ` +
+      "locations with the changed file and a line that appears in the diff, and impact describing the concrete failure or maintenance scenario. " +
+      "Pass through anything with a nameable impact — a separate verifier judges them next. Structured output only.",
+    verifierPrompt: (candidate) =>
+      `## Code-review verifier\n\n${scopeBlock}\n## Candidate\n` +
+      `Location: ${formatLocation(candidate)}\n` +
+      `Category: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n\n` +
+      "Run the diff command, read the relevant file(s), and return exactly one verdict (CONFIRMED / PLAUSIBLE / NOT_SUBSTANTIATED / REFUTED) " +
+      "with evidence quoting the line(s). Use NOT_SUBSTANTIATED when evidence is insufficient; use REFUTED only for concrete disproof. Structured output only.",
+  });
+  rawCandidateCount += pipelineResult.rawCandidates;
+  droppedCandidateCount += pipelineResult.dropped;
+  coverage.push(...pipelineResult.coverage);
+  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
   publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
 
   if (surviving.length === 0) {
-    return finish({ summary: "No findings survived verification.", findings: [], nextSteps: ["No code-review action is recommended from this workflow run."], stats, reviewContext });
+    return finishAdvisoryReport({ summary: "No findings survived verification.", findings: [], nextSteps: ["No code-review action is recommended from this workflow run."], stats, reviewContext }, coverage, verified);
   }
 
   // ─── Synthesize: rank, merge, report ───
-  phase("Synthesize");
-  const rank = (finding: Verified): number => (finding.kind === "cleanup" ? 2 : 0) + (finding.verdict !== "CONFIRMED" ? 1 : 0);
+  const rank = (finding: AdvisoryVerified): number => (finding.category === "cleanup" ? 2 : 0) + (finding.verdict !== "CONFIRMED" ? 1 : 0);
   const ranked = [...surviving].sort((a, b) => rank(a) - rank(b));
   const block = ranked
     .map(
       (finding, index) =>
-        `### [${index}] IDs: ${finding.sourceCandidateIds?.join(", ")} ${formatLocation(finding)} (${finding.verdict}${finding.kind === "cleanup" ? ", cleanup" : ""})\n` +
-        `Category: ${finding.kind}\nConfidence: ${verdictConfidence(finding.verdict)}\n` +
+        `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}${finding.category === "cleanup" ? ", cleanup" : ""})\n` +
+        `Category: ${finding.category}\nConfidence: ${verdictConfidence(finding.verdict)}\n` +
         `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}`,
     )
     .join("\n\n");
 
-  const [report] = await collectAdvisoryStage(api, "Synthesize", [{ id: "synthesize", run: () => agent(
-    SYNTHESIS_ID_INSTRUCTIONS + `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
+  const resolved = await synthesizeAdvisoryReport(api,
+    `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
       "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final advisory report. " +
       "Return summary, ID selections with severity (low/medium/high) and advisory recommendation, and nextSteps. Evidence and confidence are reconstructed from verified records. Structured output only.",
-    {
-      phase: "Synthesize",
-      label: "synthesize",
-      tools: [],
-      profile: "medium",
-      resume: "read-only",
-      schema: AdvisorySynthesisSchema,
-    },
-  ) }], coverage);
-
-  const resolved = resolveAdvisorySynthesis(report, ranked, {
-    impact: "Impact not restated by verification.",
-    recommendation: "Inspect the cited evidence and validate the smallest repair.",
-  }, coverage);
-  return finish({ ...resolved, stats: { ...stats, kept: resolved.findings.length }, reviewContext });
+    ranked, coverage,
+  );
+  return finishAdvisoryReport({ ...resolved, stats: { ...stats, kept: resolved.findings.length }, reviewContext }, coverage, verified);
 }

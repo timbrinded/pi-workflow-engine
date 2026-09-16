@@ -26,6 +26,8 @@ function finding(file: string, line: number, overrides: Partial<AdvisoryFinding>
 
 function verified(file: string, line: number, evidence: string[], impact: string, recommendation: string): AdvisoryVerified {
   return {
+    candidateId: "a",
+    sourceCandidateIds: ["a"],
     summary: "candidate",
     category: "bug",
     locations: [{ file, line }],
@@ -64,7 +66,7 @@ test("findingLocationKey normalizes diff prefixes", () => {
 
 test("synthesis merges IDs and reconstructs all evidence from verified sources", () => {
   const source = { ...verified("src/app.ts", 10, ["first evidence"], "first impact", "first recommendation"), candidateId: "a" };
-  const other = { ...verified("src/caller.ts", 30, ["second evidence"], "second impact", "second recommendation"), candidateId: "b" };
+  const other = { ...verified("src/caller.ts", 30, ["second evidence"], "second impact", "second recommendation"), candidateId: "b", sourceCandidateIds: ["b"] };
   const selection = { sourceCandidateIds: ["a", "b"], severity: "high" as const, recommendation: "Fix shared root cause", evidence: ["invented"] };
   const [result] = backfillAdvisoryFindings([selection], [source, other], { impact: "default" });
   assert.deepEqual(result?.sourceCandidateIds, ["a", "b"]);

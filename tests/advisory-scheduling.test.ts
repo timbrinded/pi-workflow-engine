@@ -1,15 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import type { AdvisoryCandidate, AdvisoryVerdict } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
-import { bindParallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import type { AdvisoryCandidate } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
+import { bindParallel } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { runLensVerificationPipeline, type AdvisoryLens } from "../.pi/extensions/pi-workflow-engine/src/workflow-advisory-utils.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
-
-interface Verified extends AdvisoryCandidate {
-  verdict: AdvisoryVerdict["verdict"];
-  evidence: string[];
-  lens: AdvisoryLens;
-}
 
 const lenses: AdvisoryLens[] = [
   { label: "alpha", category: "bug", text: "alpha lens" },
@@ -28,20 +22,18 @@ test("finder-barrier scheduling starts all finders before verifiers", async () =
     return { verdict: "CONFIRMED", evidence: [`evidence for ${label}`], confidence: "high" };
   }) as WorkflowApi["agent"];
 
-  const result = await runLensVerificationPipeline<AdvisoryLens, Verified>({
+  const result = await runLensVerificationPipeline({
     api: {
       agent,
       parallel: bindParallel({ limit: 10 }),
-      pipeline,
+      phase() {},
       progress() {},
       log() {},
     },
     lenses,
     perLens: 2,
-    schedulingMode: "finder-barrier",
     finderPrompt: (lens) => `find ${lens.label}`,
     verifierPrompt: (candidate) => `verify ${candidate.summary}`,
-    makeVerified: (candidate, lens, verdict) => ({ ...candidate, lens, verdict: verdict.verdict, evidence: verdict.evidence }),
   });
 
   assert.equal(result.verified.length, 2);
@@ -58,3 +50,31 @@ function candidateFor(label: string): AdvisoryCandidate {
     impact: `impact ${label}`,
   };
 }
+
+test("verifier output cannot replace discovery identities or evidence fields", async () => {
+  const candidate = candidateFor("original");
+  const agent = (async (_prompt: string, opts?: AgentOptions) => {
+    if (opts?.label?.startsWith("find:")) return { candidates: [candidate] };
+    return {
+      verdict: "CONFIRMED", evidence: ["verified evidence"],
+      candidateId: "invented", sourceCandidateIds: ["invented"],
+      summary: "invented summary", category: "invented", locations: [],
+      reviewAnchor: { file: "invented.ts", line: 1 }, discoveryEvidence: ["invented evidence"],
+    };
+  }) as WorkflowApi["agent"];
+  const result = await runLensVerificationPipeline({
+    api: { agent, parallel: bindParallel({}), phase() {}, progress() {}, log() {} },
+    lenses: lenses.slice(0, 1), perLens: 1,
+    finderPrompt: () => "find", verifierPrompt: () => "verify",
+  });
+  assert.equal(result.verified.length, 1);
+  const record = result.verified[0]!;
+  assert.notEqual(record.candidateId, "invented");
+  assert.deepEqual(record.sourceCandidateIds, [record.candidateId]);
+  assert.equal(record.summary, candidate.summary);
+  assert.equal(record.category, candidate.category);
+  assert.deepEqual(record.locations, candidate.locations);
+  assert.equal(record.reviewAnchor, undefined);
+  assert.equal(record.discoveryEvidence, undefined);
+  assert.deepEqual(record.evidence, ["verified evidence"]);
+});

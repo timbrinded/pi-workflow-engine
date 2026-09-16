@@ -1,5 +1,5 @@
-import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type AdvisoryFinding, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
-import { candidateDedupKey, candidateIds, collectAdvisoryStage, dedupeCandidates, identifyCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
+import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type IdentifiedAdvisoryCandidate, type AdvisoryFinding, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
+import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "./types.ts";
 
 export interface AdvisoryLens {
@@ -8,15 +8,15 @@ export interface AdvisoryLens {
   text: string;
 }
 
-export type AdvisoryVerified<Candidate extends AdvisoryCandidate = AdvisoryCandidate> = Candidate & {
+export type AdvisoryVerified = IdentifiedAdvisoryCandidate & {
   verdict: AdvisoryVerdict["verdict"];
   evidence: string[];
   confidence?: AdvisoryVerdict["confidence"];
   challenge?: import("./advisory-challenge.ts").ChallengeRecord;
 };
 
-export interface LensVerificationPipelineResult<Verified> {
-  verified: Verified[];
+export interface LensVerificationPipelineResult {
+  verified: AdvisoryVerified[];
   rawCandidates: number;
   dropped: number;
   refuted: number;
@@ -49,20 +49,14 @@ export function publishVerifiedKeptProgress(
   api.log(`${verified} verified → ${kept} kept`);
 }
 
-export type AdvisorySchedulingMode = "pipeline" | "finder-barrier";
-
-export interface LensVerificationPipelineOptions<Lens extends AdvisoryLens, Verified extends AdvisoryVerified> {
-  api: Pick<WorkflowApi, "agent" | "parallel" | "pipeline" | "progress" | "log">;
-  lenses: readonly Lens[];
+export interface LensVerificationPipelineOptions {
+  api: Pick<WorkflowApi, "agent" | "parallel" | "phase" | "progress" | "log">;
+  lenses: readonly AdvisoryLens[];
   perLens: number;
-  tools?: AgentOptions["tools"];
-  toolHints?: AgentOptions["toolHints"];
-  finderPhase?: string;
-  verifierPhase?: string;
-  schedulingMode?: AdvisorySchedulingMode;
-  finderPrompt(lens: Lens): string;
-  verifierPrompt(candidate: AdvisoryCandidate): string;
-  makeVerified(candidate: AdvisoryCandidate, lens: Lens, verdict: AdvisoryVerdict): Verified;
+  finderPhase?: "Find" | "Hypothesize";
+  finderPrompt(lens: AdvisoryLens): string;
+  verifierPrompt(candidate: IdentifiedAdvisoryCandidate): string;
+  boundCandidate?(candidate: IdentifiedAdvisoryCandidate, lens: AdvisoryLens): IdentifiedAdvisoryCandidate | undefined;
 }
 
 export interface AdvisoryBackfillDefaults {
@@ -70,101 +64,77 @@ export interface AdvisoryBackfillDefaults {
   recommendation?: string;
 }
 
-interface FoundForLens<Lens> {
-  lens: Lens;
-  candidates: AdvisoryCandidate[];
-}
-
-interface NovelCandidate<Lens> {
-  lens: Lens;
-  candidate: AdvisoryCandidate;
-}
-
-export async function runLensVerificationPipeline<Lens extends AdvisoryLens, Verified extends AdvisoryVerified>(
-  options: LensVerificationPipelineOptions<Lens, Verified>,
-): Promise<LensVerificationPipelineResult<Verified>> {
-  const {
-    api,
-    lenses,
-    perLens,
-    tools = DEFAULT_ADVISORY_TOOLS,
-    toolHints = DEFAULT_ADVISORY_TOOL_HINTS,
-    finderPhase = "Find",
-    verifierPhase = "Verify",
-    schedulingMode = "pipeline",
-    finderPrompt,
-    verifierPrompt,
-    makeVerified,
-  } = options;
+/** Finish all discovery before verification competes for the shared agent limit. */
+export async function runLensVerificationPipeline(
+  options: LensVerificationPipelineOptions,
+): Promise<LensVerificationPipelineResult> {
+  const { api, lenses, perLens, finderPhase = "Find", finderPrompt, verifierPrompt, boundCandidate } = options;
   const coverage: AdvisoryStageCoverage[] = [];
   let rawCandidates = 0;
-  let dropped = 0;
   let refuted = 0;
-
-  const findForLens = async (lens: Lens): Promise<FoundForLens<Lens>> => {
-    const found = await api.agent(finderPrompt(lens), {
-      phase: finderPhase,
-      label: `find:${lens.label}`,
-      tools,
-      toolHints,
-      profile: "small",
-      schema: AdvisoryCandidatesSchema,
+  api.phase(finderPhase);
+  const found = await collectAdvisoryStage(api, "Find", lenses.map((lens) => ({ id: lens.label, run: async () => {
+    const result = await api.agent(finderPrompt(lens), {
+      phase: finderPhase, label: `${finderPhase.toLowerCase()}:${lens.label}`,
+      tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS,
+      profile: "small", schema: AdvisoryCandidatesSchema,
     });
-    if (!found) throw new Error("Finder produced no output");
-    const candidates = identifyCandidates(found.candidates.slice(0, perLens), lens.label);
-    rawCandidates += candidates.length;
-    api.progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: candidates.length });
+    const raw = identifyCandidates(result.candidates.slice(0, perLens), lens.label);
+    rawCandidates += raw.length;
+    api.progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: raw.length });
+    const candidates = boundCandidate ? raw.flatMap((candidate) => {
+      const bounded = boundCandidate(candidate, lens);
+      return bounded ? [bounded] : [];
+    }) : raw;
     for (const candidate of candidates) {
-      api.progress({
-        type: "lane_item",
-        lane: "Candidates",
-        title: candidate.summary,
-        subtitle: formatLocation(candidate),
-        status: "pending",
-        details: candidate.impact,
-      });
+      api.progress({ type: "lane_item", lane: finderPhase === "Hypothesize" ? "Hypotheses" : "Candidates",
+        title: candidate.summary, subtitle: formatLocation(candidate), status: "pending", details: candidate.impact });
     }
-    return { lens, candidates };
-  };
-
-  const verifyCandidate = async ({ lens, candidate }: NovelCandidate<Lens>): Promise<Verified> => {
-    const location = primaryLocation(candidate);
-    const judged = await api.agent(`${verifierPrompt(candidate)}\nCandidate record: ${JSON.stringify(candidate)}`, {
-      phase: verifierPhase,
-      label: `verify:${location.file.split("/").pop() ?? location.file}`,
-      tools,
-      toolHints,
-      profile: "small",
-      schema: AdvisoryVerdictSchema,
-    });
-    if (!judged) throw new Error("Verifier produced no output");
-    recordVerdictProgress(api.progress, candidate, judged, () => {
-      refuted += 1;
-    });
-    return makeVerified(candidate, lens, judged);
-  };
-
-  const verify = async (found: FoundForLens<Lens>[]): Promise<Verified[]> => {
-    const entries = dedupeCandidates(found.flatMap(({ lens, candidates }) => candidates.map((candidate) => ({ ...candidate, lens }))));
-    dropped += found.reduce((count, group) => count + group.candidates.length, 0) - entries.length;
-    const results = await collectAdvisoryStage(api, "Verify", entries.map(({ lens, ...candidate }) => ({
-      id: candidate.candidateId!, candidate, run: async () => verifyCandidate({ lens, candidate }),
-    })), coverage);
-    return results;
-  };
-  let verified: Verified[];
-  if (schedulingMode === "finder-barrier") {
-    const found = await collectAdvisoryStage(api, "Find", lenses.map((lens) => ({ id: lens.label, run: () => findForLens(lens) })), coverage);
-    verified = await verify(found);
-  } else {
-    // Each lens can start verification immediately; cross-lens merging waits for synthesis.
-    const results = await collectAdvisoryStage(api, "Lenses", lenses.map((lens) => ({ id: lens.label, run: async () => {
-      const found = await collectAdvisoryStage(api, "Find", [{ id: lens.label, run: () => findForLens(lens) }], coverage);
-      return verify(found);
-    } })), coverage);
-    verified = results.flat();
+    return candidates;
+  } })), coverage);
+  const candidates = dedupeCandidates(found.flat());
+  const dropped = rawCandidates - candidates.length;
+  if (dropped > 0) {
+    api.progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: dropped });
+    api.log(`Dropped ${dropped} duplicate or out-of-scope candidate(s)`);
   }
+  api.phase("Verify");
+  const verified = await collectAdvisoryStage(api, "Verify", candidates.map((candidate) => ({
+    id: candidate.candidateId, candidate, run: async (): Promise<AdvisoryVerified> => {
+      const location = primaryLocation(candidate);
+      const judged = await api.agent(`${verifierPrompt(candidate)}\nCandidate record: ${JSON.stringify(candidate)}`, {
+        phase: "Verify", label: `verify:${location.file.split("/").pop() ?? location.file}`,
+        tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS,
+        profile: "small", schema: AdvisoryVerdictSchema,
+      });
+      recordVerdictProgress(api.progress, candidate, judged, () => { refuted += 1; });
+      return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, confidence: judged.confidence };
+    },
+  })), coverage);
   return { verified, rawCandidates, dropped, refuted, coverage };
+}
+
+export async function synthesizeAdvisoryReport(
+  api: Pick<WorkflowApi, "agent" | "parallel" | "phase">,
+  prompt: string,
+  ranked: readonly AdvisoryVerified[],
+  coverage: AdvisoryStageCoverage[],
+): Promise<AdvisoryReport> {
+  api.phase("Synthesize");
+  const [report] = await collectAdvisoryStage(api, "Synthesize", [{ id: "synthesize", run: () => api.agent(
+    SYNTHESIS_ID_INSTRUCTIONS + prompt,
+    { phase: "Synthesize", label: "synthesize", tools: [], profile: "medium", resume: "read-only", schema: AdvisorySynthesisSchema },
+  ) }], coverage);
+  return resolveAdvisorySynthesis(report, ranked, {
+    impact: "Impact not restated by verification.",
+    recommendation: "Inspect the cited evidence and validate the smallest repair.",
+  }, coverage);
+}
+
+export function finishAdvisoryReport<T extends AdvisoryReport>(
+  report: T, coverage: AdvisoryStageCoverage[], verification: AdvisoryVerified[] = [],
+) {
+  return { ...withAdvisoryCoverage(report, coverage), verification };
 }
 
 export function primaryLocation(candidate: Pick<AdvisoryCandidate, "locations">): AdvisoryLocation {
@@ -184,10 +154,6 @@ export function formatEvidence(evidence: readonly string[]): string {
 
 export function normalizePath(path: string): string {
   return path.replace(/^\.\//, "").replace(/^[ab]\//, "");
-}
-
-export function advisoryDedupKey(candidate: AdvisoryCandidate): string {
-  return candidateDedupKey(candidate);
 }
 
 export function verdictLane(verdict: AdvisoryVerdict["verdict"]): string {
@@ -262,14 +228,14 @@ export function backfillAdvisoryFindings<Source extends AdvisoryVerified>(
   ranked: readonly Source[],
   defaults: AdvisoryBackfillDefaults,
 ): AdvisoryReport["findings"] {
-  const sources = new Map(ranked.flatMap((source) => candidateIds(source).map((id) => [id, source] as const)));
+  const sources = new Map(ranked.flatMap((source) => source.sourceCandidateIds.map((id) => [id, source] as const)));
   const used = new Set<string>();
   return findings.flatMap((selection) => {
     const ids = [...new Set(selection.sourceCandidateIds)];
     if (ids.length === 0 || ids.some((id) => !sources.has(id) || used.has(id))) return [];
     const records = [...new Set(ids.map((id) => sources.get(id)!))];
     if (records.some((record) => record.verdict === "REFUTED")) return [];
-    const sourceCandidateIds = [...new Set(records.flatMap(candidateIds))];
+    const sourceCandidateIds = [...new Set(records.flatMap((record) => record.sourceCandidateIds))];
     if (sourceCandidateIds.some((id) => used.has(id))) return [];
     sourceCandidateIds.forEach((id) => used.add(id));
     const first = records[0]!;
@@ -299,7 +265,7 @@ export function resolveAdvisorySynthesis<Source extends AdvisoryVerified>(
   if (!report) {
     return {
       summary: "Synthesis unavailable; verified records retained.",
-      findings: backfillAdvisoryFindings(ranked.map((finding) => ({ sourceCandidateIds: candidateIds(finding), severity: "medium", recommendation: finding.recommendation ?? defaults.recommendation ?? "Inspect verifier evidence." })), ranked, defaults),
+      findings: backfillAdvisoryFindings(ranked.map((finding) => ({ sourceCandidateIds: finding.sourceCandidateIds, severity: "medium", recommendation: finding.recommendation ?? defaults.recommendation ?? "Inspect verifier evidence." })), ranked, defaults),
       nextSteps: ["Inspect verifier evidence or rerun synthesis."],
     };
   }

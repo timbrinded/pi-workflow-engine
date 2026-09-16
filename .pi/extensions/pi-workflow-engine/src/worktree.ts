@@ -154,6 +154,13 @@ export class WorktreeRegistry {
     });
   }
 
+  async applyPatch(path: string, patch: string, signal?: AbortSignal): Promise<WorktreeGitCommandResult> {
+    return this.runner.runGit({
+      cwd: path, args: ["apply", "--index", "--binary", "-"],
+      stdin: patch, signal, timeoutMs: this.timeoutMs,
+    });
+  }
+
   async validatePatch(path: string, candidate: WorktreePatch, signal?: AbortSignal): Promise<WorktreeGitCommandResult> {
     return await validateWorktreePatch({
       worktreePath: path,

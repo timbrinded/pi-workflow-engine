@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Type, type Static } from "typebox";
-import type { AdvisoryCandidate, AdvisoryReport } from "./advisory-schema.ts";
+import { AdvisorySeveritySchema, type IdentifiedAdvisoryCandidate, type AdvisoryCandidate, type AdvisoryReport } from "./advisory-schema.ts";
 import type { WorkflowApi } from "./types.ts";
 
 export interface AdvisoryStageCoverage {
@@ -24,7 +24,7 @@ export async function collectAdvisoryStage<T>(
   return results.flatMap((result) => result.ok ? [result.value] : []);
 }
 
-export function identifyCandidates(candidates: readonly AdvisoryCandidate[], lens: string): AdvisoryCandidate[] {
+export function identifyCandidates(candidates: readonly AdvisoryCandidate[], lens: string): IdentifiedAdvisoryCandidate[] {
   return candidates.map((candidate, index) => {
     const candidateId = createHash("sha256").update(JSON.stringify([lens, index, candidate])).digest("hex").slice(0, 20);
     // Identities are assigned by the workflow, never accepted from a finder.
@@ -36,31 +36,27 @@ function normalizedSummary(summary: string): string {
   return summary.toLowerCase().replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
 }
 
-export function candidateDedupKey(candidate: AdvisoryCandidate): string {
+function candidateDedupKey(candidate: AdvisoryCandidate): string {
   const location = candidate.locations[0];
   return JSON.stringify([candidate.category, location?.file.replace(/^\.\//, "").replace(/^[ab]\//, ""),
     location?.symbol ?? location?.line ?? null, normalizedSummary(candidate.summary)]);
 }
 
 /** Collapse only equivalent claims at the same anchor; keep every discovery ID and location. */
-export function dedupeCandidates<T extends AdvisoryCandidate>(candidates: readonly T[]): T[] {
+export function dedupeCandidates<T extends IdentifiedAdvisoryCandidate>(candidates: readonly T[]): T[] {
   const seen = new Map<string, T>();
   for (const candidate of candidates) {
     const key = candidateDedupKey(candidate);
     const previous = seen.get(key);
     if (!previous) seen.set(key, { ...candidate });
     else {
-      previous.sourceCandidateIds = [...new Set([...candidateIds(previous), ...candidateIds(candidate)])];
+      previous.sourceCandidateIds = [...new Set([...previous.sourceCandidateIds, ...candidate.sourceCandidateIds])];
       previous.locations = uniqueLocations([...previous.locations, ...candidate.locations]);
       previous.impact = [...new Set([previous.impact, candidate.impact])].join("\n");
       previous.discoveryEvidence = [...new Set([...(previous.discoveryEvidence ?? []), ...(candidate.discoveryEvidence ?? [])])];
     }
   }
   return [...seen.values()];
-}
-
-export function candidateIds(candidate: AdvisoryCandidate): string[] {
-  return candidate.sourceCandidateIds ?? (candidate.candidateId ? [candidate.candidateId] : []);
 }
 
 export function uniqueLocations(locations: AdvisoryCandidate["locations"]): AdvisoryCandidate["locations"] {
@@ -72,7 +68,7 @@ export const AdvisorySynthesisSchema = Type.Object({
   summary: Type.String(),
   findings: Type.Array(Type.Object({
     sourceCandidateIds: Type.Array(Type.String(), { minItems: 1 }),
-    severity: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")]),
+    severity: AdvisorySeveritySchema,
     recommendation: Type.String(),
   })),
   nextSteps: Type.Array(Type.String()),

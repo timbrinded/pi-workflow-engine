@@ -157,7 +157,10 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
       changed: true,
     };
   };
+  const baseline = { ref: "a".repeat(40) };
   const api: ReviewFixWorkflowApi = {
+    cwd: process.cwd(),
+    signal: undefined,
     get parallel() {
       parallelRead = true;
       return parallel;
@@ -168,7 +171,7 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
     agent: agent as ReviewFixWorkflowApi["agent"],
   };
 
-  const result = await runReviewFixWorkflow(api, issues, context);
+  const result = await runReviewFixWorkflow(api, issues, context, baseline);
 
   assert.deepEqual(phases, ["Generate patch previews"]);
   assert.equal(parallelRead, true);
@@ -189,7 +192,7 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
     result: "Updated src/app.ts and ran bun test tests/retry.test.ts (passed).",
     patch: "diff --git a/src/app.ts b/src/app.ts\n+fixed\n",
     changed: true,
-    validation: initialPatchValidation(undefined, undefined, "diff --git a/src/app.ts b/src/app.ts\n+fixed\n"),
+    validation: { ...initialPatchValidation(baseline, undefined, "diff --git a/src/app.ts b/src/app.ts\n+fixed\n"), reason: "Candidate has no recorded baseline identity." },
   });
   assert.deepEqual(result.fixes[1], {
     findingId: "R002",

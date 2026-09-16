@@ -1,14 +1,11 @@
 import { challengeFindings, parseChallengeArgs } from "../src/advisory-challenge.ts";
-import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, collectAdvisoryStage, withAdvisoryCoverage, type AdvisoryStageCoverage } from "../src/advisory-evidence.ts";
+import { type AdvisoryStageCoverage } from "../src/advisory-evidence.ts";
 import { Type } from "typebox";
 import {
-  type AdvisoryReport,
-  type AdvisoryCandidate,
-  type AdvisoryVerdict,
-} from "../src/advisory-schema.ts";
-import {
   type AdvisoryVerified,
-  resolveAdvisorySynthesis,
+  type AdvisoryLens,
+  synthesizeAdvisoryReport,
+  finishAdvisoryReport,
   emptyAdvisoryReport,
   formatEvidence,
   formatLocation,
@@ -33,22 +30,7 @@ const ScopeSchema = Type.Object({
   knownMeasurements: Type.Optional(Type.String({ description: "Existing measurements, timings, or explicit lack of measurements." })),
 });
 
-interface PerfLens {
-  label: string;
-  category: string;
-  text: string;
-}
-
-type Candidate = AdvisoryCandidate;
-
-interface Verified extends Candidate {
-  verdict: AdvisoryVerdict["verdict"];
-  evidence: string[];
-  confidence?: AdvisoryVerdict["confidence"];
-  lens: PerfLens;
-}
-
-const PERF_LENSES: PerfLens[] = [
+const PERF_LENSES: AdvisoryLens[] = [
   { label: "algorithmic", category: "algorithmic", text: "Complexity, repeated scans, avoidable nested loops, or data-structure choices that grow poorly with input size." },
   { label: "io", category: "io", text: "Filesystem, subprocess, network, or other I/O costs on hot paths or startup paths." },
   { label: "concurrency", category: "concurrency", text: "Unnecessary serialization, missing batching, excessive fan-out, contention, or concurrency limits." },
@@ -62,7 +44,7 @@ const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_LENS = 4;
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
-  const { agent, parallel, pipeline, phase, log, progress, args } = api;
+  const { agent, phase, log, progress, args } = api;
   const challengeConfig = parseChallengeArgs(args);
   const target = challengeConfig.args.trim() || "repository performance";
   let fileCount = 0;
@@ -70,11 +52,6 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   let droppedCandidateCount = 0;
   let refutedCandidateCount = 0;
   const coverage: AdvisoryStageCoverage[] = [];
-  let evidenceRecords: AdvisoryVerified[] = [];
-  const finish = <T extends AdvisoryReport>(report: T) => ({
-    ...withAdvisoryCoverage(report, coverage),
-    verification: evidenceRecords,
-  });
   const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
     files: fileCount,
     candidates: rawCandidateCount,
@@ -95,11 +72,11 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   );
 
   if (!scope || scope.files.length === 0) {
-    return finish(emptyAdvisoryReport(
+    return finishAdvisoryReport(emptyAdvisoryReport(
       "No performance-relevant files were identified.",
       ["Provide a slow command, workload, file path, or user-visible latency concern to review."],
       makeStats(0, 0),
-    ));
+    ), coverage);
   }
 
   fileCount = scope.files.length;
@@ -114,14 +91,10 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     `## Summary\n${scope.summary}\n\n## Known measurements\n${scope.knownMeasurements ?? "(none known)"}\n` +
     (args.trim() ? `\n## User instructions (verbatim)\n${args.trim()}\n` : "");
 
-  phase("Find");
   const pipelineResult = await runLensVerificationPipeline({
-    api: { agent, parallel, pipeline, progress, log },
+    api,
     lenses: PERF_LENSES,
-    schedulingMode: "finder-barrier",
     perLens: PER_LENS,
-    tools: TOOLS,
-    toolHints: TOOL_HINTS,
     finderPrompt: (lens) =>
       `## Perf-review finder — ${lens.label}\n\n${scopeBlock}\n` +
       "This workflow is advisory-only: identify bottleneck hypotheses, measurement gaps, and safe optimization directions, but do not edit files.\n" +
@@ -136,65 +109,44 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Read relevant files and package/scripts. Run only safe read-only measurement or inspection commands when useful. " +
       "Return CONFIRMED, PLAUSIBLE, NOT_SUBSTANTIATED, or REFUTED with evidence from code, scripts, config, or measurement output. " +
       "Default toward PLAUSIBLE or REFUTED when no measurement exists; do not overstate a bottleneck. Structured output only.",
-    makeVerified: (candidate, lens, judged): Verified => ({
-      ...candidate,
-      verdict: judged.verdict,
-      evidence: judged.evidence,
-      confidence: judged.confidence,
-      lens,
-    }),
   });
   rawCandidateCount += pipelineResult.rawCandidates;
   droppedCandidateCount += pipelineResult.dropped;
   refutedCandidateCount += pipelineResult.refuted;
   coverage.push(...pipelineResult.coverage);
   const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
-  evidenceRecords = verified;
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
   publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
 
   if (surviving.length === 0) {
-    return finish(emptyAdvisoryReport(
+    return finishAdvisoryReport(emptyAdvisoryReport(
       "No performance finding survived verification.",
       ["Add or run a focused measurement for the target workload before optimizing.", "Rerun perf-review with benchmark output or a narrower slow path."],
       stats,
-    ));
+    ), coverage, verified);
   }
 
-  phase("Synthesize");
   const ranked = [...surviving].sort((a, b) => rank(a) - rank(b));
   const block = ranked
     .map(
       (finding, index) =>
-        `### [${index}] IDs: ${finding.sourceCandidateIds?.join(", ")} ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
+        `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
         `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}\nRecommendation: ${finding.recommendation ?? "(none supplied)"}`,
     )
     .join("\n\n");
 
-  const [report] = await collectAdvisoryStage(api, "Synthesize", [{ id: "synthesize", run: () => agent(
-    SYNTHESIS_ID_INSTRUCTIONS + `## Synthesis: final perf-review report\n\n${ranked.length} candidates survived independent verification.\n\n${block}\n\n` +
+  const resolved = await synthesizeAdvisoryReport(api,
+    `## Synthesis: final perf-review report\n\n${ranked.length} candidates survived independent verification.\n\n${block}\n\n` +
       "Select findings by ID. " +
       "Severity is expected performance impact for the target workload. Prefer measurement recommendations before optimization recommendations when evidence is weak. " +
       "Recommendations must be safe advisory next actions, not patches. Include risky optimizations to avoid in recommendations or nextSteps when relevant. Structured output only.",
-    {
-      phase: "Synthesize",
-      label: "synthesize",
-      tools: [],
-      profile: "medium",
-      resume: "read-only",
-      schema: AdvisorySynthesisSchema,
-    },
-  ) }], coverage);
-
-  const resolved = resolveAdvisorySynthesis(report, ranked, {
-    impact: "Impact not restated by verification.",
-    recommendation: "Inspect the cited evidence and validate the smallest repair.",
-  }, coverage);
-  return finish({ ...resolved, stats: { ...stats, kept: resolved.findings.length } });
+    ranked, coverage,
+  );
+  return finishAdvisoryReport({ ...resolved, stats: { ...stats, kept: resolved.findings.length } }, coverage, verified);
 }
 
-function rank(finding: Verified): number {
+function rank(finding: AdvisoryVerified): number {
   const verdictRank = finding.verdict === "CONFIRMED" ? 0 : 1;
   const measurementPenalty = finding.category === "measurement" ? 1 : 0;
   return verdictRank + measurementPenalty;
