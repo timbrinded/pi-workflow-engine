@@ -37,7 +37,7 @@ export interface SerializedReviewIssue {
 
 export function toReviewIssues(name: string, report: Pick<AdvisoryReport, "findings">): ReviewIssue[] {
   return report.findings.map((finding, index) => {
-    const location = finding.locations[0];
+    const location = finding.reviewAnchor ?? finding.locations[0];
     return {
       id: formatIssueId(index),
       index,

@@ -66,6 +66,7 @@ test("code-review candidate deduplication retains first discovery order", () => 
     { angle: "edge", candidates: [duplicate, distinct] },
   ]), [
     { angle: "logic", candidate: first },
+    { angle: "edge", candidate: duplicate },
     { angle: "edge", candidate: distinct },
   ]);
 });

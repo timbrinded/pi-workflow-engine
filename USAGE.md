@@ -543,3 +543,59 @@ failures, timeouts, and host aborts are never provider-retried.
 - **Slow run**: lower fan-out, set `thinkingLevel`, or reduce `--concurrency`.
 - **Budget exhausted**: narrow the target, raise `--budget`, reduce fan-out/concurrency, or guard custom loops with `api.budget.remaining()`.
 - **Duplicate command/tool warnings while developing**: avoid loading both the global package and the working copy.
+
+### Advisory evidence and coverage
+
+`code-review`, `diagnose`, `refactor-scout`, and `perf-review` retain candidate IDs
+from discovery through verification and synthesis. Findings contain
+`sourceCandidateIds`; merged findings retain all contributing IDs, locations, and
+evidence. Code review uses `reviewAnchor` for the changed line that caused the
+finding. Other `locations` can identify unchanged callers or related files.
+
+These results include `status` (`complete` or `incomplete`), `coverage` with
+expected/completed/failed branch counts and failure reasons, `gaps`, and the
+`verification` records. Failed verification is not a refutation. Verifiers use
+`NOT_SUBSTANTIATED` when evidence is insufficient and `REFUTED` for concrete
+disproof. A failed finder or verifier prevents a clean conclusion. If synthesis
+fails, the result retains verified records and reports incomplete coverage.
+Synthesis selects or merges IDs; the workflow reconstructs evidence-bearing
+fields from those records.
+
+### Selective adversarial challenges
+
+Add `--challenge` to an advisory workflow to challenge up to three uncertain or
+high-risk findings. `--challenge=N` sets the limit, capped at ten; zero disables
+it. Ordinary confirmed, low-risk findings bypass this stage.
+
+```text
+/workflow code-review --challenge=2
+/workflow diagnose --challenge failing retry test
+```
+
+The challenger tries to disprove the finding or identify an alternative cause.
+A separate adjudicator receives both sides. Unresolved disagreement remains
+`NOT_SUBSTANTIATED`; finding no counterexample does not upgrade confidence.
+Custom workflows can use the `challengeFindings` recipe with `maxChallenges`
+and a `shouldChallenge` predicate, including selection based on domain-specific
+severity. It uses the existing `agent` and settled `parallel` calls.
+
+### Independently validated repair candidates
+
+The results viewer's fix action produces candidate patches in disposable
+worktrees. Each candidate retains the implementer's report separately from its
+`validation` record: reviewed baseline fingerprint, baseline commit, patch
+SHA-256, evaluator decision, executed commands, output, and process results.
+
+A fresh evaluator receives the exact reviewed baseline plus captured patch.
+The engine reconstructs another workspace and executes the evaluator's focused
+checks. Where applicable, a test-only patch and expected failure text let it
+check that a regression fails on the original baseline and passes after repair.
+Outcomes are `verified`, `rejected`, `blocked`, or `no-patch`. Missing required
+validation blocks verification. An empty patch does not prove that a finding
+needs no repair. Rejected and blocked candidates retain their patch and failure
+evidence for inspection.
+
+Isolated agent results now include `baselineOid`. For independent evaluation,
+`agent()` accepts `candidatePatch: { baselineOid, patch }` with
+`isolation: "worktree"`; the engine checks the fresh baseline before applying
+it. Worktree isolation separates filesystem state; it is not a security sandbox.

@@ -531,3 +531,66 @@ test("pipeline propagates a fatal abort", async () => {
     /stop/,
   );
 });
+
+test("Semaphore reserves the released slot before a newcomer microtask", async () => {
+  const semaphore = new Semaphore(1);
+  const gate = Promise.withResolvers<void>();
+  const order: string[] = [];
+  let active = 0;
+  let peak = 0;
+  const work = (name: string) => async () => {
+    order.push(name);
+    peak = Math.max(peak, ++active);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    active--;
+  };
+  const a = semaphore.run(() => gate.promise);
+  const b = semaphore.run(work("B"));
+  gate.resolve();
+  const c = Promise.resolve().then(() => semaphore.run(work("C")));
+  await Promise.all([a, b, c]);
+  assert.equal(peak, 1);
+  assert.deepEqual(order, ["B", "C"]);
+});
+
+test("Semaphore hands a selected cancelled reservation onward", async () => {
+  const semaphore = new Semaphore(1);
+  const gate = Promise.withResolvers<void>();
+  const controller = new AbortController();
+  const a = semaphore.run(() => gate.promise);
+  const b = semaphore.run(async () => assert.fail("cancelled work ran"), { signal: controller.signal });
+  const rejected = assert.rejects(b, /selected/);
+  gate.resolve();
+  queueMicrotask(() => controller.abort(new WorkflowAbortError("selected")));
+  const c = semaphore.run(async () => "next");
+  await Promise.all([a, rejected]);
+  assert.equal(await c, "next");
+  assert.equal(await semaphore.run(async () => "still available"), "still available");
+});
+
+test("Semaphore maintains capacity and FIFO through repeated cancellation interleavings", async () => {
+  for (let round = 0; round < 30; round++) {
+    const semaphore = new Semaphore(1 + round % 4);
+    const controllers = Array.from({ length: 30 }, () => new AbortController());
+    const admitted: number[] = [];
+    let active = 0;
+    let peak = 0;
+    const work = controllers.map((controller, index) => semaphore.run(async () => {
+      admitted.push(index);
+      peak = Math.max(peak, ++active);
+      for (let tick = 0; tick <= (index + round) % 5; tick++) await Promise.resolve();
+      active--;
+    }, { signal: controller.signal }));
+    const settled = Promise.allSettled(work);
+    for (let i = 0; i < controllers.length; i++) {
+      if ((i + round) % 3 === 0) controllers[i]!.abort();
+      await Promise.resolve();
+    }
+    await settled;
+    assert.ok(peak <= 1 + round % 4);
+    assert.deepEqual(admitted, [...admitted].sort((a, b) => a - b));
+    assert.equal(await semaphore.run(async () => 42), 42);
+  }
+});

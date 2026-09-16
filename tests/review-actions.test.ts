@@ -1,3 +1,4 @@
+import { initialPatchValidation } from "../.pi/extensions/pi-workflow-engine/src/review/patch-validation.ts";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
@@ -175,7 +176,7 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
   assert.equal(calls[0]?.options.isolation, "worktree");
   assert.equal(calls[0]?.options.label, "fix:R001");
   assert.equal(calls[0]?.options.phase, "Generate patch previews");
-  assert.equal(calls[0]?.options.thinkingLevel, "medium");
+  assert.equal(calls[0]?.options.profile, "medium");
   assert.ok(calls[0]?.options.tools?.includes("edit"));
   assert.ok(calls[0]?.options.tools?.includes("write"));
   assert.deepEqual(calls[0]?.options.toolHints, ["search"]);
@@ -188,12 +189,13 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
     result: "Updated src/app.ts and ran bun test tests/retry.test.ts (passed).",
     patch: "diff --git a/src/app.ts b/src/app.ts\n+fixed\n",
     changed: true,
+    validation: initialPatchValidation(undefined, undefined, "diff --git a/src/app.ts b/src/app.ts\n+fixed\n"),
   });
   assert.deepEqual(result.fixes[1], {
     findingId: "R002",
     error: { name: "Error", message: "validation environment unavailable" },
   });
-  assert.match(result.summary, /Generated 1 patch preview\(s\)/);
+  assert.match(result.summary, /1 blocked/);
   assert.match(result.summary, /1 attempt\(s\) failed/);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), result);
 });

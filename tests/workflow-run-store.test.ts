@@ -269,7 +269,7 @@ test("project run store atomically reloads records and isolates corrupt or futur
     assert.equal(await store.load("future-version"), undefined);
     assert.equal(await store.load("wrong-path"), undefined);
     assert.equal(await store.load("invalid-state-fields"), undefined);
-    assert.deepEqual((await store.list()).map((record) => record.runId), ["future-fields", "kept"]);
+    assert.deepEqual((await store.list()).map((record) => record.runId).sort(), ["future-fields", "kept"]);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

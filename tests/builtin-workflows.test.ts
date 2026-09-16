@@ -1,3 +1,4 @@
+import { identifyCandidates } from "../.pi/extensions/pi-workflow-engine/src/advisory-evidence.ts";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import codeReview from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
@@ -191,7 +192,7 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
     emptyCandidates(),
     emptyCandidates(),
     { verdict: "CONFIRMED", evidence: ["src/example.ts:12 proves the bug"], confidence: "high" },
-    report("One confirmed bug.", [finding("confirmed bug", "bug")]),
+    report("One confirmed bug.", [{ ...finding("confirmed bug", "bug"), sourceCandidateIds: identifyCandidates([surviving], "logic-bugs")[0]!.sourceCandidateIds }]),
   ]);
 
   const result = asReportResult(await codeReview(api, {
@@ -248,7 +249,7 @@ test("refactor-scout runs all finder agents before verifier agents", async () =>
     emptyCandidates(),
     emptyCandidates(),
     { verdict: "PLAUSIBLE", evidence: ["Two duplicated branches."], confidence: "medium" },
-    report("One refactor opportunity.", [finding("extract duplicate helper", "duplication", "medium")]),
+    report("One refactor opportunity.", [{ ...finding("extract duplicate helper", "duplication", "medium"), sourceCandidateIds: identifyCandidates([opportunity], "duplication")[0]!.sourceCandidateIds }]),
   ]);
 
   const result = asReportResult(await refactorScout(api));
@@ -289,7 +290,7 @@ test("diagnose keeps refuted hypotheses out of final findings", async () => {
     emptyCandidates(),
     { verdict: "REFUTED", evidence: ["Fixture is current."], confidence: "low" },
     { verdict: "CONFIRMED", evidence: ["Condition is inverted."], confidence: "high" },
-    report("One root cause.", [finding("wrong branch condition", "root-cause")]),
+    report("One root cause.", [{ ...finding("wrong branch condition", "root-cause"), sourceCandidateIds: identifyCandidates([refuted, confirmed], "recent-change")[1]!.sourceCandidateIds }]),
   ]);
 
   const result = asReportResult(await diagnose(api));
@@ -343,7 +344,7 @@ test("perf-review keeps weak measurement findings advisory", async () => {
     emptyCandidates(),
     { candidates: [measurementGap] },
     { verdict: "PLAUSIBLE", evidence: ["No benchmark output is checked in."], confidence: "low" },
-    report("Measurement gap only.", [measurementFinding]),
+    report("Measurement gap only.", [{ ...measurementFinding, sourceCandidateIds: identifyCandidates([measurementGap], "measurement")[0]!.sourceCandidateIds }]),
   ]);
 
   const result = asReportResult(await perfReview(api));

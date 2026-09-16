@@ -55,9 +55,10 @@ export function renderIssueDetails(issue: ReviewIssue, theme: Theme): string {
 
 export function renderIssueDetailLines(issue: ReviewIssue, theme: Theme, width: number): string[] {
   const finding = issue.finding;
-  const metadata = `${finding.category} · severity ${finding.severity} · confidence ${finding.confidence}`;
+  const metadata = `${finding.category} · severity ${finding.severity} · confidence ${finding.confidence}${finding.verdict ? ` · ${finding.verdict}` : ""}`;
   const lines = [`${theme.fg("accent", issue.id)} ${theme.fg("text", finding.summary)}`];
   lines.push(...fieldLines("Metadata", metadata, width, theme));
+  if (finding.sourceCandidateIds?.length) lines.push(...fieldLines("Sources", finding.sourceCandidateIds.join(", "), width, theme));
   lines.push(...fieldLines("Location", formatIssueLocation(issue), width, theme, "accent"));
   lines.push(...fieldLines("Impact", finding.impact, width, theme));
   lines.push(...fieldLines("Evidence", finding.evidence.join("; ") || "(none cited)", width, theme));

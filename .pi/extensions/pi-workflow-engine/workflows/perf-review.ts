@@ -1,11 +1,14 @@
+import { challengeFindings, parseChallengeArgs } from "../src/advisory-challenge.ts";
+import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, collectAdvisoryStage, withAdvisoryCoverage, type AdvisoryStageCoverage } from "../src/advisory-evidence.ts";
 import { Type } from "typebox";
 import {
-  AdvisoryReportSchema,
+  type AdvisoryReport,
   type AdvisoryCandidate,
   type AdvisoryVerdict,
 } from "../src/advisory-schema.ts";
 import {
-  backfillAdvisoryFindings,
+  type AdvisoryVerified,
+  resolveAdvisorySynthesis,
   emptyAdvisoryReport,
   formatEvidence,
   formatLocation,
@@ -19,7 +22,7 @@ import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.t
 export const meta: WorkflowMeta = {
   name: "perf-review",
   description: "Advisory-only performance review: scope slow path → per-lens bottleneck hypotheses → verify evidence → synthesize measurements and safe optimizations.",
-  phases: [{ title: "Scope" }, { title: "Find" }, { title: "Verify" }, { title: "Synthesize" }],
+  phases: [{ title: "Scope" }, { title: "Find" }, { title: "Verify" }, { title: "Challenge" }, { title: "Synthesize" }],
 };
 
 const ScopeSchema = Type.Object({
@@ -60,11 +63,18 @@ const PER_LENS = 4;
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
   const { agent, parallel, pipeline, phase, log, progress, args } = api;
-  const target = args.trim() || "repository performance";
+  const challengeConfig = parseChallengeArgs(args);
+  const target = challengeConfig.args.trim() || "repository performance";
   let fileCount = 0;
   let rawCandidateCount = 0;
   let droppedCandidateCount = 0;
   let refutedCandidateCount = 0;
+  const coverage: AdvisoryStageCoverage[] = [];
+  let evidenceRecords: AdvisoryVerified[] = [];
+  const finish = <T extends AdvisoryReport>(report: T) => ({
+    ...withAdvisoryCoverage(report, coverage),
+    verification: evidenceRecords,
+  });
   const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
     files: fileCount,
     candidates: rawCandidateCount,
@@ -85,11 +95,11 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   );
 
   if (!scope || scope.files.length === 0) {
-    return emptyAdvisoryReport(
+    return finish(emptyAdvisoryReport(
       "No performance-relevant files were identified.",
       ["Provide a slow command, workload, file path, or user-visible latency concern to review."],
       makeStats(0, 0),
-    );
+    ));
   }
 
   fileCount = scope.files.length;
@@ -124,7 +134,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n` +
       `Recommendation: ${candidate.recommendation ?? "(none supplied)"}\n\n` +
       "Read relevant files and package/scripts. Run only safe read-only measurement or inspection commands when useful. " +
-      "Return CONFIRMED, PLAUSIBLE, or REFUTED with evidence from code, scripts, config, or measurement output. " +
+      "Return CONFIRMED, PLAUSIBLE, NOT_SUBSTANTIATED, or REFUTED with evidence from code, scripts, config, or measurement output. " +
       "Default toward PLAUSIBLE or REFUTED when no measurement exists; do not overstate a bottleneck. Structured output only.",
     makeVerified: (candidate, lens, judged): Verified => ({
       ...candidate,
@@ -137,17 +147,19 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   rawCandidateCount += pipelineResult.rawCandidates;
   droppedCandidateCount += pipelineResult.dropped;
   refutedCandidateCount += pipelineResult.refuted;
-  const verified = pipelineResult.verified;
+  coverage.push(...pipelineResult.coverage);
+  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
+  evidenceRecords = verified;
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
   publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
 
   if (surviving.length === 0) {
-    return emptyAdvisoryReport(
+    return finish(emptyAdvisoryReport(
       "No performance finding survived verification.",
       ["Add or run a focused measurement for the target workload before optimizing.", "Rerun perf-review with benchmark output or a narrower slow path."],
       stats,
-    );
+    ));
   }
 
   phase("Synthesize");
@@ -155,14 +167,14 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   const block = ranked
     .map(
       (finding, index) =>
-        `### [${index}] ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
+        `### [${index}] IDs: ${finding.sourceCandidateIds?.join(", ")} ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
         `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}\nRecommendation: ${finding.recommendation ?? "(none supplied)"}`,
     )
     .join("\n\n");
 
-  const report = await agent(
-    `## Synthesis: final perf-review report\n\n${ranked.length} candidates survived independent verification.\n\n${block}\n\n` +
-      "Produce the shared advisory report shape. Categories should be algorithmic, io, concurrency, startup, allocation, or measurement when applicable. " +
+  const [report] = await collectAdvisoryStage(api, "Synthesize", [{ id: "synthesize", run: () => agent(
+    SYNTHESIS_ID_INSTRUCTIONS + `## Synthesis: final perf-review report\n\n${ranked.length} candidates survived independent verification.\n\n${block}\n\n` +
+      "Select findings by ID. " +
       "Severity is expected performance impact for the target workload. Prefer measurement recommendations before optimization recommendations when evidence is weak. " +
       "Recommendations must be safe advisory next actions, not patches. Include risky optimizations to avoid in recommendations or nextSteps when relevant. Structured output only.",
     {
@@ -171,17 +183,15 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       tools: [],
       profile: "medium",
       resume: "read-only",
-      schema: AdvisoryReportSchema,
+      schema: AdvisorySynthesisSchema,
     },
-  );
+  ) }], coverage);
 
-  if (!report) return emptyAdvisoryReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun perf-review with a narrower target."], stats);
-
-  const findings = backfillAdvisoryFindings(report.findings, ranked, {
-    impact: "Performance impact not restated by synthesis.",
-    recommendation: "Measure the target workload before changing code.",
-  });
-  return { ...report, findings, stats };
+  const resolved = resolveAdvisorySynthesis(report, ranked, {
+    impact: "Impact not restated by verification.",
+    recommendation: "Inspect the cited evidence and validate the smallest repair.",
+  }, coverage);
+  return finish({ ...resolved, stats: { ...stats, kept: resolved.findings.length } });
 }
 
 function rank(finding: Verified): number {

@@ -232,7 +232,7 @@ test("engine execution metadata injects the reviewed baseline into isolated work
 
   const result = await runWorkflowWithContext(rc, progress, mod, "", contextOpts());
 
-  assert.deepEqual(result, { result: "ok", patch: "", changed: false });
+  assert.deepEqual(result, { baselineOid: "0123456789012345678901234567890123456789", result: "ok", patch: "", changed: false });
   assert.match(sessionCwd ?? "", /pi-workflow-/);
   const add = gitCalls.find((call) => call.args[0] === "worktree" && call.args[1] === "add");
   assert.equal(add?.args.at(-1), baseline.ref);
