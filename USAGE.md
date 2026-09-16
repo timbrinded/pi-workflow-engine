@@ -564,8 +564,9 @@ fields from those records.
 ### Selective adversarial challenges
 
 Add `--challenge` to an advisory workflow to challenge up to three uncertain or
-high-risk findings. `--challenge=N` sets the limit, capped at ten; zero disables
-it. Ordinary confirmed, low-risk findings bypass this stage.
+high-risk findings. `--challenge=N` requires a non-negative integer and sets the
+limit, capped at ten; zero disables it. Invalid values stop the workflow before
+agents start. Ordinary confirmed, low-risk findings bypass this stage.
 
 ```text
 /workflow code-review --challenge=2
@@ -593,7 +594,9 @@ check that a regression fails on the original baseline and passes after repair.
 Outcomes are `verified`, `rejected`, `blocked`, or `no-patch`. Missing required
 validation blocks verification. An empty patch does not prove that a finding
 needs no repair. Rejected and blocked candidates retain their patch and failure
-evidence for inspection.
+evidence for inspection. Cleanup failures also retain the validation evidence and
+record a `cleanupError`; a passed candidate becomes `blocked` if cleanup fails,
+while a rejected candidate remains `rejected`.
 
 Isolated agent results now include `baselineOid`. For independent evaluation,
 `agent()` accepts `candidatePatch: { baselineOid, patch }` with

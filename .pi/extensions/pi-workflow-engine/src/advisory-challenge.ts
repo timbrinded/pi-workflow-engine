@@ -24,7 +24,10 @@ export interface AdvisoryChallengeOptions {
 /** Opt in with --challenge or --challenge=N (hard bound of 10). */
 export function parseChallengeArgs(args: string): { args: string; options: AdvisoryChallengeOptions } {
   let maxChallenges = 0;
-  const remaining = args.replace(/(?:^|\s)--challenge(?:=(\d+))?(?=\s|$)/g, (_match, limit: string | undefined) => {
+  const remaining = args.replace(/(?:^|\s)--challenge(?:=([^\s]*))?(?=\s|$)/g, (_match, limit: string | undefined) => {
+    if (limit !== undefined && !/^\d+$/.test(limit)) {
+      throw new Error(`Invalid --challenge value "${limit}". Use --challenge or --challenge=N with a non-negative integer; zero disables challenges.`);
+    }
     maxChallenges = Math.min(10, limit === undefined ? 3 : Number(limit));
     return " ";
   });

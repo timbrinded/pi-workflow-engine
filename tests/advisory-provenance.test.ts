@@ -115,3 +115,22 @@ test("challenge is opt-in, bounded, and failures preserve the candidate as unres
   assert.equal(result[0]?.challenge?.status, "failed");
   assert.equal(coverage[0]?.failed, 1);
 });
+
+for (const value of ["", "-1", "abc", "1.5", "Infinity"]) {
+  test(`invalid challenge value ${JSON.stringify(value)} fails before discovery`, async () => {
+    const args = `src --challenge=${value}`;
+    assert.throws(() => parseChallengeArgs(args), /Invalid --challenge value/);
+    let calls = 0;
+    const api = apiFor(() => { calls++; throw new Error("Agent must not start"); });
+    api.args = args;
+    await assert.rejects(codeReview(api), /Invalid --challenge value/);
+    assert.equal(calls, 0);
+  });
+}
+
+test("challenge parser preserves valid defaults, zero and bounded integer limits", () => {
+  assert.deepEqual(parseChallengeArgs("src --challenge"), { args: "src", options: { maxChallenges: 3 } });
+  assert.deepEqual(parseChallengeArgs("src --challenge=0"), { args: "src", options: { maxChallenges: 0 } });
+  assert.deepEqual(parseChallengeArgs("--challenge=2 src"), { args: "src", options: { maxChallenges: 2 } });
+  assert.deepEqual(parseChallengeArgs("src --challenge=99"), { args: "src", options: { maxChallenges: 10 } });
+});

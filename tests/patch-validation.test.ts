@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { watch } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -149,4 +150,74 @@ test("fatal evaluator cancellation aborts the fix workflow instead of becoming b
   }) as WorkflowApi["agent"];
   await assert.rejects(runReviewFixWorkflow({ agent, parallel: bindParallel({}), phase() {}, signal: undefined, cwd: process.cwd() }, issues,
     { workflowName: "code-review", target: "", files: [], diffTarget: { kind: "git", args: [] }, snapshot: { baselineFingerprint: fingerprintReviewWorktreeBaseline(baseline), diffFingerprint: "a".repeat(64) } }, baseline), /evaluator cancelled/);
+});
+
+for (const status of ["verified", "rejected", "blocked"] as const) {
+  test(`cleanup failure preserves ${status} validation evidence in the fix workflow`, async () => {
+    const repo = await fixture();
+    const evaluation: PatchEvaluation = {
+      outcome: status === "blocked" ? "blocked" : "accepted",
+      reason: status === "blocked" ? "Required service is unavailable" : "Independent evaluation complete",
+      checks: [{
+        file: process.execPath,
+        args: ["-e", `require('node:child_process').execFileSync('git', ['worktree', 'lock', process.cwd()]); console.error('observed check output'); process.exit(${status === "rejected" ? 1 : 0})`],
+        required: true,
+      }],
+    };
+    const issues = toReviewIssues("code-review", { findings: [{ summary: "Wrong value", category: "bug", severity: "high", confidence: "high", locations: [], evidence: [], impact: "failure", recommendation: "repair" }] });
+    const agent = (async (_prompt: string, options: AgentOptions) => ({
+      result: options.label?.startsWith("fix:") ? "Implementation complete" : evaluation,
+      patch: repo.patch, changed: true, baselineOid: repo.baselineOid,
+    })) as WorkflowApi["agent"];
+    try {
+      const result = await runReviewFixWorkflow({ agent, parallel: bindParallel({}), phase() {}, cwd: repo.cwd, signal: undefined }, issues,
+        { workflowName: "code-review", target: "", files: [], diffTarget: { kind: "git", args: [] }, snapshot: { baselineFingerprint: repo.expectedFingerprint, diffFingerprint: "a".repeat(64) } }, repo.baseline);
+      const preview = result.fixes[0]!;
+      assert.ok("patch" in preview);
+      assert.equal(preview.patch, repo.patch);
+      assert.equal(preview.validation.status, status === "verified" ? "blocked" : status);
+      assert.deepEqual(preview.validation.evaluation, evaluation);
+      assert.equal(preview.validation.checks.length, 1);
+      assert.equal(preview.validation.checks[0]?.result.ok, status !== "rejected");
+      assert.match(preview.validation.checks[0]?.result.stderr ?? "", /observed check output/);
+      assert.match(preview.validation.cleanupError ?? "", /locked working tree/);
+      assert.match(preview.validation.reason, /Cleanup failed:/);
+      if (status === "blocked") assert.match(preview.validation.reason, /Required service is unavailable/);
+      if (status === "rejected") assert.match(preview.validation.reason, /observed check output/);
+      assert.match(result.summary, /0 verified/);
+    } finally {
+      await removeLockedWorktrees(repo.cwd);
+      await repo.cleanup();
+    }
+  });
+}
+
+async function removeLockedWorktrees(cwd: string): Promise<void> {
+  const list = execFileSync("git", ["worktree", "list", "--porcelain"], { cwd, encoding: "utf8" });
+  for (const line of list.split("\n")) {
+    if (!line.startsWith("worktree ") || line.slice(9) === cwd) continue;
+    const path = line.slice(9);
+    execFileSync("git", ["worktree", "unlock", path], { cwd });
+    execFileSync("git", ["worktree", "remove", "--force", path], { cwd });
+  }
+}
+
+test("cleanup failure does not replace cancellation during validation", async () => {
+  const repo = await fixture();
+  const controller = new AbortController();
+  const cancelled = new Error("Validation cancelled by user");
+  const watcher = watch(repo.cwd, (_event, filename) => {
+    if (filename === "locked-marker") controller.abort(cancelled);
+  });
+  try {
+    await assert.rejects(validateCandidatePatch({ ...repo, signal: controller.signal, evaluation: {
+      ...accepted, checks: [{ file: process.execPath, required: true, args: ["-e",
+        `require('node:child_process').execFileSync('git', ['worktree', 'lock', process.cwd()]); require('node:fs').writeFileSync(${JSON.stringify(join(repo.cwd, "locked-marker"))}, 'ready'); setTimeout(() => {}, 30000);`,
+      ] }],
+    } }), (error) => error === cancelled);
+  } finally {
+    watcher.close();
+    await removeLockedWorktrees(repo.cwd);
+    await repo.cleanup();
+  }
 });
