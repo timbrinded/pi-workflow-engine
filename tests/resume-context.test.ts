@@ -105,6 +105,36 @@ test("repository capture is stable for genuine non-git directories but not faile
   }
 });
 
+test("an empty .git directory in an ancestor does not hide a genuine non-git directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-workflow-stray-git-dir-"));
+  const cwd = join(root, "project");
+  try {
+    await mkdir(join(root, ".git"));
+    await mkdir(cwd);
+    await writeFile(join(cwd, "input.txt"), "first\n", "utf8");
+    const context = await captureRepositoryResumeContext(cwd, ["input.txt"]);
+    assert.equal(context.kind, "verified");
+    if (context.kind !== "verified") assert.fail("expected a verified repository context");
+    assert.equal(context.state, "non-git");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a gitfile pointing at a missing repository keeps the probe unverifiable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-workflow-broken-gitfile-"));
+  const cwd = join(root, "project");
+  try {
+    await writeFile(join(root, ".git"), `gitdir: ${join(root, "missing-gitdir")}\n`, "utf8");
+    await mkdir(cwd);
+    await writeFile(join(cwd, "input.txt"), "first\n", "utf8");
+    const context = await captureRepositoryResumeContext(cwd, ["input.txt"]);
+    assert.equal(context.kind, "unverifiable");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("repository capture bounds untracked file content", async () => {
   const cwd = await createGitRepo();
   const path = join(cwd, "oversized-untracked.bin");

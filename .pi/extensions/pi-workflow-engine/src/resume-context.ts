@@ -1,4 +1,5 @@
-import { lstat } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { lstat, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { throwIfAborted } from "./cancellation.ts";
 import { isMissingPathError } from "./filesystem-error.ts";
@@ -575,6 +576,54 @@ async function runGit(cwd: string, args: readonly string[], signal: AbortSignal 
   });
 }
 
+/**
+ * Decide whether a `.git` entry found during the ancestor walk marks a repository
+ * that git may have failed to open, or a stray entry that git's own discovery
+ * also skips.
+ *
+ * The rule mirrors git's discovery loop so that "absent" means git itself would
+ * have walked past every `.git` entry and its "not a repository" answer is
+ * authoritative:
+ *
+ * - A regular file is a gitfile. Git halts on any regular `.git` file, even when
+ *   its content is malformed or its `gitdir:` target is missing, so the entry is
+ *   a marker regardless of content.
+ * - A directory is a repository only when `HEAD`, `objects/`, and `refs/` all
+ *   exist. Git skips a directory that lacks any of them (an empty `.git` is the
+ *   common case), so such a directory is not a marker.
+ * - A symbolic link is resolved first, as git uses `stat`. A dangling link is
+ *   skipped by git and is therefore not a marker.
+ * - Any other entry type (socket, FIFO, device) is skipped by git.
+ *
+ * A missing path (`ENOENT`) is a negative answer, not a failure. Any other
+ * filesystem error propagates so the caller reports the probe as "unknown".
+ */
+async function isRepositoryMarker(entryPath: string, entry: Stats): Promise<boolean> {
+  let target = entry;
+  if (entry.isSymbolicLink()) {
+    const resolved = await statIfPresent(entryPath);
+    if (!resolved) return false;
+    target = resolved;
+  }
+  if (target.isFile()) return true;
+  if (!target.isDirectory()) return false;
+  for (const name of GIT_DIRECTORY_REQUIRED_ENTRIES) {
+    if (!(await statIfPresent(join(entryPath, name)))) return false;
+  }
+  return true;
+}
+
+const GIT_DIRECTORY_REQUIRED_ENTRIES = ["HEAD", "objects", "refs"] as const;
+
+async function statIfPresent(path: string): Promise<Stats | undefined> {
+  try {
+    return await stat(path);
+  } catch (error) {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
+  }
+}
+
 type GitControlPathResult =
   | { readonly kind: "present" | "absent" }
   | { readonly kind: "unknown"; readonly reason: string };
@@ -583,9 +632,10 @@ async function findGitControlPath(cwd: string, signal: AbortSignal | undefined):
   let current = resolve(cwd);
   while (true) {
     throwIfAborted(signal);
+    const entryPath = join(current, ".git");
     try {
-      await lstat(join(current, ".git"));
-      return { kind: "present" };
+      const entry = await lstat(entryPath);
+      if (await isRepositoryMarker(entryPath, entry)) return { kind: "present" };
     } catch (error) {
       if (!isMissingPathError(error)) {
         return { kind: "unknown", reason: `git control-path probe failed: ${unknownErrorMessage(error)}` };
