@@ -21,7 +21,7 @@ export type AgentWorkspace = SharedAgentWorkspace | IsolatedAgentWorkspace;
 
 export interface AgentWorkspaceContext {
   readonly cwd: string;
-  readonly worktrees: Pick<WorktreeRegistry, "probe" | "add" | "capturePatch" | "remove">;
+  readonly worktrees: Pick<WorktreeRegistry, "probe" | "add" | "capturePatch" | "applyPatch" | "remove">;
   readonly signal: AbortSignal | undefined;
   readonly progress: Pick<AgentProgress, "log">;
 }
@@ -31,6 +31,7 @@ export async function createAgentWorkspace(
   opts: AgentExecutionOptions,
   label: string,
 ): Promise<AgentWorkspace> {
+  if (opts.candidatePatch && opts.isolation !== "worktree") throw new Error("Candidate evaluation requires worktree isolation");
   if (opts.isolation !== "worktree") {
     return {
       kind: "shared",
@@ -53,6 +54,19 @@ export async function createAgentWorkspace(
   const added = await rc.worktrees.add(rc.signal, opts.worktreeBaseline);
   if ("error" in added) throw new Error(`Failed to create isolated worktree: ${added.error}`);
   const worktreePath = added.path;
+  if (opts.candidatePatch) {
+    try {
+      if (opts.candidatePatch.baselineOid !== added.baselineOid) throw new Error("Candidate baseline differs from evaluator baseline");
+      if (opts.candidatePatch.patch.trim()) {
+        const applied = await rc.worktrees.applyPatch(worktreePath, opts.candidatePatch.patch, rc.signal);
+        if (!applied.ok) throw new Error(`Candidate patch could not be applied: ${applied.error ?? applied.stderr}`);
+      }
+    } catch (error) {
+      const removed = await rc.worktrees.remove(worktreePath);
+      if (!removed.ok) rc.progress.log(`${label}: evaluator setup cleanup failed: ${removed.error ?? removed.stderr}`);
+      throw error;
+    }
+  }
   rc.progress.log(`${label}: using isolated worktree ${worktreePath}`);
 
   return {
@@ -62,7 +76,7 @@ export async function createAgentWorkspace(
     async wrapResult(result) {
       const patch = await rc.worktrees.capturePatch(worktreePath, added.baselineOid, rc.signal);
       if ("error" in patch) throw new Error(`Failed to capture isolated worktree patch: ${patch.error}`);
-      return { result, patch: patch.patch, changed: patch.changed };
+      return { result, patch: patch.patch, changed: patch.changed, baselineOid: added.baselineOid };
     },
     async dispose() {
       const removed = await rc.worktrees.remove(worktreePath);

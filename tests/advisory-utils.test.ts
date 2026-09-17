@@ -1,31 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import type { AdvisoryFinding } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import {
   backfillAdvisoryFindings,
   emptyAdvisoryReport,
-  findingLocationKey,
   publishVerifiedKeptProgress,
-  sameFinding,
   type AdvisoryVerified,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-advisory-utils.ts";
 
-function finding(file: string, line: number, overrides: Partial<AdvisoryFinding> = {}): AdvisoryFinding {
-  return {
-    summary: "summary",
-    category: "bug",
-    severity: "medium",
-    confidence: "medium",
-    locations: [{ file, line }],
-    evidence: [],
-    impact: "",
-    recommendation: "",
-    ...overrides,
-  };
-}
-
 function verified(file: string, line: number, evidence: string[], impact: string, recommendation: string): AdvisoryVerified {
   return {
+    candidateId: "a",
+    sourceCandidateIds: ["a"],
     summary: "candidate",
     category: "bug",
     locations: [{ file, line }],
@@ -57,32 +42,30 @@ test("shared advisory report and verified progress helpers preserve the common c
   assert.deepEqual(logs, ["3 verified → 2 kept"]);
 });
 
-test("findingLocationKey normalizes diff prefixes", () => {
-  assert.equal(findingLocationKey({ locations: [{ file: "a/src/app.ts", line: 10 }] }), "src/app.ts:10");
-  assert.equal(sameFinding({ locations: [{ file: "b/src/app.ts", line: 10 }] }, finding("src/app.ts", 10)), true);
+test("synthesis merges IDs and reconstructs all evidence from verified sources", () => {
+  const source = { ...verified("src/app.ts", 10, ["first evidence"], "first impact", "first recommendation"), candidateId: "a" };
+  const other = { ...verified("src/caller.ts", 30, ["second evidence"], "second impact", "second recommendation"), candidateId: "b", sourceCandidateIds: ["b"] };
+  const selection = { sourceCandidateIds: ["a", "b"], severity: "high" as const, recommendation: "Fix shared root cause", evidence: ["invented"] };
+  const [result] = backfillAdvisoryFindings([selection], [source, other], { impact: "default" });
+  assert.deepEqual(result?.sourceCandidateIds, ["a", "b"]);
+  assert.deepEqual(result?.evidence, ["first evidence", "second evidence"]);
+  assert.deepEqual(result?.locations, [...source.locations, ...other.locations]);
+  assert.equal(result?.impact, "first impact\nsecond impact");
 });
 
-test("backfillAdvisoryFindings uses indexed first-ranked source", () => {
-  const source = verified("src/app.ts", 10, ["first evidence"], "first impact", "first recommendation");
-  const duplicate = verified("./src/app.ts", 10, ["second evidence"], "second impact", "second recommendation");
-  const [backfilled] = backfillAdvisoryFindings([finding("b/src/app.ts", 10)], [source, duplicate], {
-    impact: "default impact",
-    recommendation: "default recommendation",
-  });
-
-  assert.deepEqual(backfilled?.evidence, ["first evidence"]);
-  assert.equal(backfilled?.impact, "first impact");
-  assert.equal(backfilled?.recommendation, "first recommendation");
+test("synthesis cannot invent an extra finding or select a refuted source", () => {
+  const source = { ...verified("src/app.ts", 10, ["disproof"], "impact", "recommendation"), candidateId: "a", verdict: "REFUTED" as const };
+  const selection = (id: string) => ({ sourceCandidateIds: [id], severity: "high" as const, recommendation: "Invented repair" });
+  assert.deepEqual(backfillAdvisoryFindings([selection("hallucination"), selection("a")], [source], { impact: "default" }), []);
 });
 
-test("backfillAdvisoryFindings preserves existing finding fields before defaults", () => {
-  const [backfilled] = backfillAdvisoryFindings(
-    [finding("src/missing.ts", 1, { evidence: ["existing"], impact: "existing impact", recommendation: "existing recommendation" })],
-    [],
-    { impact: "default impact", recommendation: "default recommendation" },
-  );
-
-  assert.deepEqual(backfilled?.evidence, ["existing"]);
-  assert.equal(backfilled?.impact, "existing impact");
-  assert.equal(backfilled?.recommendation, "existing recommendation");
+test("failed synthesis retains verified evidence and unknown selections become a visible gap", async () => {
+  const { resolveAdvisorySynthesis } = await import("../.pi/extensions/pi-workflow-engine/src/workflow-advisory-utils.ts");
+  const source = { ...verified("src/app.ts", 10, ["proof"], "impact", "repair"), candidateId: "a" };
+  const fallback = resolveAdvisorySynthesis(undefined, [source], { impact: "default" }, []);
+  assert.deepEqual(fallback.findings[0]?.evidence, ["proof"]);
+  const coverage: import("../.pi/extensions/pi-workflow-engine/src/advisory-evidence.ts").AdvisoryStageCoverage[] = [];
+  const result = resolveAdvisorySynthesis({ summary: "invented", findings: [{ sourceCandidateIds: ["not-found"], severity: "high", recommendation: "invented" }], nextSteps: [] }, [source], { impact: "default" }, coverage);
+  assert.equal(result.findings.length, 0);
+  assert.equal(coverage[0]?.failed, 1);
 });

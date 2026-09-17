@@ -1,9 +1,9 @@
+import { dedupeCandidates, identifyCandidates } from "../.pi/extensions/pi-workflow-engine/src/advisory-evidence.ts";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { changedLines, inDiff } from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
 import {
   buildCodeReviewScopeBlock,
-  dedupeCodeReviewCandidates,
 } from "../.pi/extensions/pi-workflow-engine/src/review/code-review-orchestration.ts";
 
 function lines(map: Map<string, Set<number>>, file: string): number[] {
@@ -61,13 +61,11 @@ test("code-review candidate deduplication retains first discovery order", () => 
   const duplicate = candidate("duplicate", "./src/app.ts", 12);
   const distinct = candidate("distinct", "src/app.ts", 30);
 
-  assert.deepEqual(dedupeCodeReviewCandidates([
-    { angle: "logic", candidates: [first] },
-    { angle: "edge", candidates: [duplicate, distinct] },
-  ]), [
-    { angle: "logic", candidate: first },
-    { angle: "edge", candidate: distinct },
-  ]);
+  const discovered = [
+    ...identifyCandidates([first], "logic"),
+    ...identifyCandidates([duplicate, distinct], "edge"),
+  ];
+  assert.deepEqual(dedupeCandidates(discovered), discovered);
 });
 
 test("changedLines records multi-hunk edits and new files", () => {

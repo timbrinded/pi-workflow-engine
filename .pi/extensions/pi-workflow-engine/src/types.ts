@@ -98,6 +98,7 @@ export type AgentToolHint = "search" | "external-search";
 export type AgentResumePolicy = "read-only" | "off";
 
 export interface IsolatedAgentResult<T> {
+  readonly baselineOid?: string;
   readonly result: T;
   readonly patch: string;
   readonly changed: boolean;
@@ -152,6 +153,8 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   resumeInputs?: readonly string[];
   /** Run this agent in a disposable git worktree and return its patch with the result. */
   isolation?: "worktree";
+  /** Apply a captured candidate to a fresh isolated baseline before evaluation. */
+  candidatePatch?: { readonly baselineOid: string; readonly patch: string };
   /** Allowlist of concrete tool names the agent may use (e.g. ["read", "bash"]). */
   tools?: string[];
   /**

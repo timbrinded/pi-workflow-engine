@@ -471,3 +471,16 @@ const validReport = {
   nextSteps: ["Inspect src/app.ts retry loop", "Add a retry-boundary regression test"],
   stats: { files: 2, candidates: 3, verified: 1, kept: 1 },
 };
+
+test("incomplete advisory coverage cannot render a green clean-review result", () => {
+  const rendered = renderWorkflowResultText("code-review", {
+    summary: "Incomplete review", findings: [], nextSteps: ["Rerun missing work"], status: "incomplete",
+    coverage: [{ stage: "Verify", expected: 2, completed: 0, failed: 2, failures: [{ branch: "a", reason: "provider failed" }, { branch: "b", reason: "provider failed" }] }],
+    gaps: ["Verify/a: provider failed", "Verify/b: provider failed"],
+  }, true, createTestTheme());
+  assert.match(rendered, /⚠/);
+  assert.match(rendered, /Verify: 0\/2 complete, 2 failed/);
+  assert.match(rendered, /coverage is incomplete/);
+  assert.match(rendered, /Verify\/a: provider failed/);
+  assert.doesNotMatch(rendered, /✓|No findings\./);
+});

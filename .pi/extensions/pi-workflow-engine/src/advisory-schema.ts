@@ -9,7 +9,7 @@ export const AdvisoryConfidenceSchema = Type.Union([Type.Literal("low"), Type.Li
   description: "Confidence that the finding is actionable.",
 });
 
-export const AdvisoryVerifierVerdictSchema = Type.Union([Type.Literal("CONFIRMED"), Type.Literal("PLAUSIBLE"), Type.Literal("REFUTED")], {
+export const AdvisoryVerifierVerdictSchema = Type.Union([Type.Literal("CONFIRMED"), Type.Literal("PLAUSIBLE"), Type.Literal("REFUTED"), Type.Literal("NOT_SUBSTANTIATED")], {
   description: "Verifier judgment for a candidate finding.",
 });
 
@@ -20,6 +20,8 @@ export const AdvisoryLocationSchema = Type.Object({
 });
 
 export const AdvisoryCandidateSchema = Type.Object({
+  discoveryEvidence: Type.Optional(Type.Array(Type.String())),
+  reviewAnchor: Type.Optional(AdvisoryLocationSchema),
   summary: Type.String({ description: "One-line candidate finding or hypothesis." }),
   category: Type.String({ description: "Workflow-specific category such as bug, duplication, root-cause, or io." }),
   locations: Type.Array(AdvisoryLocationSchema, { description: "Relevant code or configuration locations." }),
@@ -38,6 +40,9 @@ export const AdvisoryVerdictSchema = Type.Object({
 });
 
 export const AdvisoryFindingSchema = Type.Object({
+  verdict: Type.Optional(AdvisoryVerifierVerdictSchema),
+  sourceCandidateIds: Type.Optional(Type.Array(Type.String())),
+  reviewAnchor: Type.Optional(AdvisoryLocationSchema),
   summary: Type.String({ description: "One-line final finding." }),
   category: Type.String({ description: "Workflow-specific category for grouping and display." }),
   severity: AdvisorySeveritySchema,
@@ -49,6 +54,12 @@ export const AdvisoryFindingSchema = Type.Object({
 });
 
 export const AdvisoryReportSchema = Type.Object({
+  status: Type.Optional(Type.Union([Type.Literal("complete"), Type.Literal("incomplete")])),
+  gaps: Type.Optional(Type.Array(Type.String())),
+  coverage: Type.Optional(Type.Array(Type.Object({
+    stage: Type.String(), expected: Type.Number(), completed: Type.Number(), failed: Type.Number(),
+    failures: Type.Array(Type.Object({ branch: Type.String(), reason: Type.String(), candidate: Type.Optional(AdvisoryCandidateSchema) })),
+  }))),
   summary: Type.String({ description: "Short overall advisory summary." }),
   findings: Type.Array(AdvisoryFindingSchema, { description: "Verified and ranked advisory findings." }),
   nextSteps: Type.Array(Type.String({ description: "Concrete follow-up commands, inspections, or decisions." })),
@@ -61,6 +72,7 @@ export const AdvisoryReportWithStatsSchema = Type.Object({
 
 export type AdvisoryLocation = Static<typeof AdvisoryLocationSchema>;
 export type AdvisoryCandidate = Static<typeof AdvisoryCandidateSchema>;
+export type IdentifiedAdvisoryCandidate = AdvisoryCandidate & { candidateId: string; sourceCandidateIds: string[] };
 export type AdvisoryVerdict = Static<typeof AdvisoryVerdictSchema>;
 export type AdvisoryFinding = Static<typeof AdvisoryFindingSchema>;
 export type AdvisoryReport = Static<typeof AdvisoryReportSchema>;

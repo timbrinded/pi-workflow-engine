@@ -1,11 +1,10 @@
+import { challengeFindings, parseChallengeArgs } from "../src/advisory-challenge.ts";
 import { Type } from "typebox";
 import {
-  AdvisoryReportSchema,
-  type AdvisoryCandidate,
-  type AdvisoryVerdict,
-} from "../src/advisory-schema.ts";
-import {
-  backfillAdvisoryFindings,
+  type AdvisoryVerified,
+  type AdvisoryLens,
+  synthesizeAdvisoryReport,
+  finishAdvisoryReport,
   emptyAdvisoryReport,
   formatEvidence,
   formatLocation,
@@ -19,7 +18,7 @@ import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.t
 export const meta: WorkflowMeta = {
   name: "refactor-scout",
   description: "Advisory-only refactor scout: scope → per-lens find → independent verify → synthesize safe refactor opportunities.",
-  phases: [{ title: "Scope" }, { title: "Find" }, { title: "Verify" }, { title: "Synthesize" }],
+  phases: [{ title: "Scope" }, { title: "Find" }, { title: "Verify" }, { title: "Challenge" }, { title: "Synthesize" }],
 };
 
 const ScopeSchema = Type.Object({
@@ -29,22 +28,7 @@ const ScopeSchema = Type.Object({
   conventions: Type.Optional(Type.String({ description: "Relevant project conventions from AGENTS.md / docs." })),
 });
 
-interface RefactorLens {
-  label: string;
-  category: string;
-  text: string;
-}
-
-type Candidate = AdvisoryCandidate;
-
-interface Verified extends Candidate {
-  verdict: AdvisoryVerdict["verdict"];
-  evidence: string[];
-  confidence?: AdvisoryVerdict["confidence"];
-  lens: RefactorLens;
-}
-
-const REFACTOR_LENSES: RefactorLens[] = [
+const REFACTOR_LENSES: AdvisoryLens[] = [
   { label: "duplication", category: "duplication", text: "Repeated logic, copy-pasted structures, or near-duplicate flows that could share one clearer implementation." },
   { label: "complexity", category: "complexity", text: "Oversized functions, tangled control flow, or abstractions that make local reasoning harder than necessary." },
   { label: "type-safety", category: "type-safety", text: "Weak typing, avoidable casts, unchecked shapes, or places stronger types would prevent mistakes." },
@@ -53,13 +37,12 @@ const REFACTOR_LENSES: RefactorLens[] = [
   { label: "conventions", category: "conventions", text: "Departures from project conventions, naming, dependency rules, or local idioms." },
 ];
 
-const TOOLS = DEFAULT_ADVISORY_TOOLS;
-const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_LENS = 5;
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
-  const { agent, parallel, pipeline, phase, log, progress, args } = api;
-  const target = args.trim() || ".";
+  const { agent, phase, log, progress, args } = api;
+  const challengeConfig = parseChallengeArgs(args);
+  const target = challengeConfig.args.trim() || ".";
   let fileCount = 0;
   let rawCandidateCount = 0;
   let droppedCandidateCount = 0;
@@ -80,15 +63,15 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Inspect repository structure, the target path or module, and relevant AGENTS.md / project docs conventions. " +
       "Return the concrete files that should be considered, a short summary, and any conventions that affect refactor advice. " +
       `This workflow will fan out across ${REFACTOR_LENSES.length} lenses with up to ${PER_LENS} candidates per lens. Structured output only.`,
-    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, profile: "medium", schema: ScopeSchema },
+    { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
   if (!scope || scope.files.length === 0) {
-    return emptyAdvisoryReport(
+    return finishAdvisoryReport(emptyAdvisoryReport(
       "No files were identified for refactor scouting.",
       ["Provide a target path, module, or subsystem to scout for refactor opportunities."],
       makeStats(0, 0),
-    );
+    ), []);
   }
 
   fileCount = scope.files.length;
@@ -101,14 +84,10 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     `## Summary\n${scope.summary}\n\n## Conventions\n${scope.conventions ?? "(none noted)"}\n` +
     (args.trim() ? `\n## User instructions (verbatim)\n${args.trim()}\n` : "");
 
-  phase("Find");
   const pipelineResult = await runLensVerificationPipeline({
-    api: { agent, parallel, pipeline, progress, log },
+    api,
     lenses: REFACTOR_LENSES,
-    schedulingMode: "finder-barrier",
     perLens: PER_LENS,
-    tools: TOOLS,
-    toolHints: TOOL_HINTS,
     finderPrompt: (lens) =>
       `## Refactor-scout finder — ${lens.label}\n\n${scopeBlock}\n` +
       "This workflow is advisory-only: do not edit files and do not propose broad rewrites.\n" +
@@ -120,65 +99,44 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       `## Refactor-scout verifier\n\n${scopeBlock}\n## Candidate\n` +
       `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n` +
       `Recommendation: ${candidate.recommendation ?? "(none supplied)"}\n\n` +
-      "Read the relevant files and return CONFIRMED, PLAUSIBLE, or REFUTED. " +
+      "Read the relevant files and return CONFIRMED, PLAUSIBLE, NOT_SUBSTANTIATED, or REFUTED. " +
       "Default toward REFUTED if the opportunity is generic, too broad, not evidenced by code, or lacks a safe first step. " +
       "Evidence must quote or cite code. Structured output only.",
-    makeVerified: (candidate, lens, judged): Verified => ({
-      ...candidate,
-      verdict: judged.verdict,
-      evidence: judged.evidence,
-      confidence: judged.confidence,
-      lens,
-    }),
   });
   rawCandidateCount += pipelineResult.rawCandidates;
   droppedCandidateCount += pipelineResult.dropped;
   refutedCandidateCount += pipelineResult.refuted;
-  const verified = pipelineResult.verified;
+  const { coverage } = pipelineResult;
+  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);
   publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
 
   if (surviving.length === 0) {
-    return emptyAdvisoryReport("No refactor opportunities survived verification.", ["Leave the scoped code unchanged unless a human reviewer has additional context."], stats);
+    return finishAdvisoryReport(emptyAdvisoryReport("No refactor opportunities survived verification.", ["Leave the scoped code unchanged unless a human reviewer has additional context."], stats), coverage, verified);
   }
 
-  phase("Synthesize");
   const ranked = [...surviving].sort((a, b) => rank(a) - rank(b));
   const block = ranked
     .map(
       (finding, index) =>
-        `### [${index}] ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
+        `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
         `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}\nSafe first step: ${finding.recommendation ?? "(none supplied)"}`,
     )
     .join("\n\n");
 
-  const report = await agent(
+  const resolved = await synthesizeAdvisoryReport(api,
     `## Synthesis: final refactor-scout report\n\n${ranked.length} opportunities survived independent verification.\n\n${block}\n\n` +
       "Merge findings with the same root cause and rank highest leverage / lowest risk first. " +
-      "Return the shared advisory report shape. Categories should come from the verified candidates. " +
-      "Severity is maintenance or future-correctness impact. Confidence is high for CONFIRMED, medium for PLAUSIBLE unless verifier confidence says otherwise. " +
+      "Select findings by ID. " +
+      "Severity is maintenance or future-correctness impact. " +
       "Recommendations must be safe first refactor steps, not rewrites. Include concrete nextSteps for the host developer. Structured output only.",
-    {
-      phase: "Synthesize",
-      label: "synthesize",
-      tools: [],
-      profile: "medium",
-      resume: "read-only",
-      schema: AdvisoryReportSchema,
-    },
+    ranked, coverage,
   );
-
-  if (!report) return emptyAdvisoryReport("Synthesis produced no output.", ["Inspect verifier evidence manually or rerun the workflow with a narrower target."], stats);
-
-  const findings = backfillAdvisoryFindings(report.findings, ranked, {
-    impact: "Impact not restated by synthesis.",
-    recommendation: "Choose a small, behavior-preserving refactor first step.",
-  });
-  return { ...report, findings, stats };
+  return finishAdvisoryReport({ ...resolved, stats: { ...stats, kept: resolved.findings.length } }, coverage, verified);
 }
 
-function rank(finding: Verified): number {
+function rank(finding: AdvisoryVerified): number {
   const verdictRank = finding.verdict === "CONFIRMED" ? 0 : 1;
   const categoryRank = finding.category === "dead-code" || finding.category === "conventions" ? 2 : 0;
   return verdictRank + categoryRank;

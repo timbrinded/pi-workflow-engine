@@ -1,6 +1,3 @@
-import type { AdvisoryCandidate } from "../advisory-schema.ts";
-import { normalizePath, primaryLocation } from "../workflow-advisory-utils.ts";
-
 const DIFF_EMBED_CAP = 60_000;
 
 export function buildCodeReviewScopeBlock(input: {
@@ -24,26 +21,4 @@ export function buildCodeReviewScopeBlock(input: {
     diffBlock +
     (input.target ? `\n## User instructions (verbatim)\n${input.target}\n` : "")
   );
-}
-
-export function dedupeCodeReviewCandidates<Context>(
-  groups: readonly { readonly angle: Context; readonly candidates: readonly AdvisoryCandidate[] }[],
-): Array<{ readonly angle: Context; readonly candidate: AdvisoryCandidate }> {
-  const seen = new Set<string>();
-  return groups.flatMap(({ angle, candidates }) =>
-    candidates
-      .filter((candidate) => {
-        const key = codeReviewDedupKey(candidate);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .map((candidate) => ({ angle, candidate })),
-  );
-}
-
-function codeReviewDedupKey(candidate: AdvisoryCandidate): string {
-  const location = primaryLocation(candidate);
-  const lineKey = location.line != null ? Math.round(location.line / 5) * 5 : candidate.summary.slice(0, 40).toLowerCase();
-  return `${normalizePath(location.file)}:${lineKey}`;
 }

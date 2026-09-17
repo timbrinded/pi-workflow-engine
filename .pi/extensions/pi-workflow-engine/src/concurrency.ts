@@ -14,22 +14,28 @@ export class Semaphore {
   private active = 0;
   private readonly waiters: Array<() => void> = [];
 
-  constructor(private readonly max: number) {}
+  constructor(private readonly max: number) {
+    if (!Number.isInteger(max) || max < 1) throw new RangeError("Semaphore capacity must be a positive integer");
+  }
 
   async run<T>(fn: () => Promise<T>, options: { onQueueWaitMs?: (durationMs: number) => void; signal?: AbortSignal } = {}): Promise<T> {
     throwIfAborted(options.signal);
     const queuedAt = performance.now();
     if (this.active >= this.max) {
       await this.waitForSlot(options.signal);
+    } else {
+      this.active++;
     }
-    options.onQueueWaitMs?.(performance.now() - queuedAt);
-    throwIfAborted(options.signal);
-    this.active++;
     try {
+      options.onQueueWaitMs?.(performance.now() - queuedAt);
+      throwIfAborted(options.signal);
       return await fn();
     } finally {
-      this.active--;
-      this.waiters.shift()?.();
+      // Transfer ownership directly. A selected waiter owns this reservation
+      // even before its continuation runs, including if it is then cancelled.
+      const next = this.waiters.shift();
+      if (next) next();
+      else this.active--;
     }
   }
 

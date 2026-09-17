@@ -115,6 +115,7 @@ function captureAgentCallHash(
         skills: opts.skills,
         schema: opts.schema,
         isolation: opts.isolation,
+        candidatePatch: opts.candidatePatch ? { baselineOid: opts.candidatePatch.baselineOid, hash: createHash("sha256").update(opts.candidatePatch.patch).digest("hex") } : undefined,
         worktreeBaseline: worktreeBaseline
           ? {
               ref: worktreeBaseline.ref,

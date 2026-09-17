@@ -44,9 +44,9 @@ test("runAgent with worktree isolation creates an isolated cwd and returns a pat
     isolation: "worktree",
   });
 
-  assert.deepEqual(result, { result: "done", patch: "diff --git a/file b/file\n", changed: true });
+  assert.deepEqual(result, { baselineOid: "a".repeat(40), result: "done", patch: "diff --git a/file b/file\n", changed: true });
   assert.notEqual(observedCwd, repoCwd);
-  assert.ok(observedCwd.startsWith("/tmp/pi-workflow-"));
+  assert.ok(observedCwd.startsWith(join(tmpdir(), "pi-workflow-")));
   assert.deepEqual(commandNames(calls), [
     "rev-parse --is-inside-work-tree",
     "worktree add",
@@ -87,7 +87,7 @@ test("isolated agents that mutate the main repository are not recorded", async (
       "hello",
       { isolation: "worktree" },
     );
-    assert.deepEqual(result, { result: "done", patch: "", changed: false });
+    assert.deepEqual(result, { baselineOid: "a".repeat(40), result: "done", patch: "", changed: false });
     assert.equal(records, 0);
   } finally {
     await rm(repoCwd, { recursive: true, force: true });
@@ -113,7 +113,7 @@ test("resume off disables journal reads and writes for isolated agents", async (
     "hello",
     { label: "isolated-off", isolation: "worktree", resume: "off" },
   );
-  assert.deepEqual(result, { result: "done", patch: "", changed: false });
+  assert.deepEqual(result, { baselineOid: "a".repeat(40), result: "done", patch: "", changed: false });
   assert.equal(journalCalls, 0);
 });
 
@@ -163,7 +163,7 @@ test("runAgent reports isolated worktree cleanup failures without masking succes
     isolation: "worktree",
   });
 
-  assert.deepEqual(result, { result: "done", patch: "diff --git a/file b/file\n", changed: true });
+  assert.deepEqual(result, { baselineOid: "a".repeat(40), result: "done", patch: "diff --git a/file b/file\n", changed: true });
   assert.ok(progress.events.includes("log:isolated: failed to remove isolated worktree (busy)"));
   assert.equal(registry.size, 1);
 });

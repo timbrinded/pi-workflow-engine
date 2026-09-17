@@ -62,15 +62,18 @@ function renderAdvisoryResult(
   metadata?: WorkflowRunDisplayMetadata,
   perf?: WorkflowPerfDetails,
 ): string {
-  const icon = theme.fg("success", "✓");
+  const incomplete = result.status === "incomplete";
+  const icon = incomplete ? theme.fg("warning", "⚠") : theme.fg("success", "✓");
   const title = theme.fg("accent", theme.bold(`Workflow: ${name}`));
   const lines = [`${icon} ${title}`, theme.fg("muted", result.summary)];
+  if (result.coverage?.length) lines.push(theme.fg("dim", result.coverage.map((stage) => `${stage.stage}: ${stage.completed}/${stage.expected} complete, ${stage.failed} failed`).join(" · ")));
+  if (expanded) for (const gap of result.gaps ?? []) lines.push(theme.fg("warning", gap));
   const stats = statsLine(result.stats, theme);
   if (stats) lines.push(stats);
   pushWorkflowDetailLines(lines, theme, { usage, metadata, perf });
 
   if (result.findings.length === 0) {
-    lines.push(theme.fg("success", "No findings."));
+    lines.push(incomplete ? theme.fg("warning", "No verified findings; coverage is incomplete.") : theme.fg("success", "No findings."));
     if (expanded && result.nextSteps.length > 0) renderNextSteps(result.nextSteps, lines, theme);
     return lines.join("\n");
   }
