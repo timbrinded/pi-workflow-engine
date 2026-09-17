@@ -1,5 +1,4 @@
 import { challengeFindings, parseChallengeArgs } from "../src/advisory-challenge.ts";
-import { type AdvisoryStageCoverage } from "../src/advisory-evidence.ts";
 import { Type } from "typebox";
 import {
   type AdvisoryVerified,
@@ -38,8 +37,6 @@ const REFACTOR_LENSES: AdvisoryLens[] = [
   { label: "conventions", category: "conventions", text: "Departures from project conventions, naming, dependency rules, or local idioms." },
 ];
 
-const TOOLS = DEFAULT_ADVISORY_TOOLS;
-const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_LENS = 5;
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
@@ -50,7 +47,6 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   let rawCandidateCount = 0;
   let droppedCandidateCount = 0;
   let refutedCandidateCount = 0;
-  const coverage: AdvisoryStageCoverage[] = [];
   const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
     files: fileCount,
     candidates: rawCandidateCount,
@@ -67,7 +63,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Inspect repository structure, the target path or module, and relevant AGENTS.md / project docs conventions. " +
       "Return the concrete files that should be considered, a short summary, and any conventions that affect refactor advice. " +
       `This workflow will fan out across ${REFACTOR_LENSES.length} lenses with up to ${PER_LENS} candidates per lens. Structured output only.`,
-    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, profile: "medium", schema: ScopeSchema },
+    { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
   if (!scope || scope.files.length === 0) {
@@ -75,7 +71,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "No files were identified for refactor scouting.",
       ["Provide a target path, module, or subsystem to scout for refactor opportunities."],
       makeStats(0, 0),
-    ), coverage);
+    ), []);
   }
 
   fileCount = scope.files.length;
@@ -110,7 +106,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   rawCandidateCount += pipelineResult.rawCandidates;
   droppedCandidateCount += pipelineResult.dropped;
   refutedCandidateCount += pipelineResult.refuted;
-  coverage.push(...pipelineResult.coverage);
+  const { coverage } = pipelineResult;
   const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);

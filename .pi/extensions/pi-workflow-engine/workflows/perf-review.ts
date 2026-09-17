@@ -1,5 +1,4 @@
 import { challengeFindings, parseChallengeArgs } from "../src/advisory-challenge.ts";
-import { type AdvisoryStageCoverage } from "../src/advisory-evidence.ts";
 import { Type } from "typebox";
 import {
   type AdvisoryVerified,
@@ -39,8 +38,6 @@ const PERF_LENSES: AdvisoryLens[] = [
   { label: "measurement", category: "measurement", text: "Missing, misleading, noisy, or insufficient benchmark/measurement design." },
 ];
 
-const TOOLS = DEFAULT_ADVISORY_TOOLS;
-const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_LENS = 4;
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
@@ -51,7 +48,6 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   let rawCandidateCount = 0;
   let droppedCandidateCount = 0;
   let refutedCandidateCount = 0;
-  const coverage: AdvisoryStageCoverage[] = [];
   const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
     files: fileCount,
     candidates: rawCandidateCount,
@@ -68,7 +64,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Inspect repository structure, scripts, likely hot-path files, and any existing benchmark or measurement commands. " +
       "Prefer identifying what to measure before claiming bottlenecks. Return files, commands, summary, and known measurements or the lack of them. " +
       `This workflow will fan out across ${PERF_LENSES.length} lenses with up to ${PER_LENS} candidates per lens. Structured output only.`,
-    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, profile: "medium", schema: ScopeSchema },
+    { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
   if (!scope || scope.files.length === 0) {
@@ -76,7 +72,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "No performance-relevant files were identified.",
       ["Provide a slow command, workload, file path, or user-visible latency concern to review."],
       makeStats(0, 0),
-    ), coverage);
+    ), []);
   }
 
   fileCount = scope.files.length;
@@ -113,7 +109,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   rawCandidateCount += pipelineResult.rawCandidates;
   droppedCandidateCount += pipelineResult.dropped;
   refutedCandidateCount += pipelineResult.refuted;
-  coverage.push(...pipelineResult.coverage);
+  const { coverage } = pipelineResult;
   const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);

@@ -1,5 +1,4 @@
 import { challengeFindings, parseChallengeArgs } from "../src/advisory-challenge.ts";
-import { type AdvisoryStageCoverage } from "../src/advisory-evidence.ts";
 import { Type } from "typebox";
 import {
   type AdvisoryVerified,
@@ -44,8 +43,6 @@ const ANGLES: AdvisoryLens[] = [
   { label: "conventions", category: "cleanup", text: "Violations of the project conventions noted in scope (naming, idioms, banned patterns)." },
 ];
 
-const TOOLS = DEFAULT_ADVISORY_TOOLS;
-const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_ANGLE = 6;
 
 /** Parse a unified diff into the set of added/changed new-file line numbers per file. */
@@ -95,7 +92,6 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   let fileCount = 0;
   let rawCandidateCount = 0;
   let droppedCandidateCount = 0;
-  const coverage: AdvisoryStageCoverage[] = [];
   const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
     files: fileCount,
     candidates: rawCandidateCount,
@@ -123,7 +119,7 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       "Then: list the changed files, summarize the change in one paragraph (mention the PR if one was found), " +
       "and read any relevant AGENTS.md or project docs noting conventions a reviewer should know.\n" +
       "Return diffCommand exactly as a reviewer should run it. Structured output only.",
-    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, profile: "medium", schema: ScopeSchema },
+    { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
   if (!scope) {
@@ -204,7 +200,7 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   });
   rawCandidateCount += pipelineResult.rawCandidates;
   droppedCandidateCount += pipelineResult.dropped;
-  coverage.push(...pipelineResult.coverage);
+  const { coverage } = pipelineResult;
   const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const stats = makeStats(verified.length, surviving.length);

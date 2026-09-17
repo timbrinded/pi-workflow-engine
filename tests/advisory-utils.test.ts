@@ -1,28 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import type { AdvisoryFinding } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import {
   backfillAdvisoryFindings,
   emptyAdvisoryReport,
-  findingLocationKey,
   publishVerifiedKeptProgress,
-  sameFinding,
   type AdvisoryVerified,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-advisory-utils.ts";
-
-function finding(file: string, line: number, overrides: Partial<AdvisoryFinding> = {}): AdvisoryFinding {
-  return {
-    summary: "summary",
-    category: "bug",
-    severity: "medium",
-    confidence: "medium",
-    locations: [{ file, line }],
-    evidence: [],
-    impact: "",
-    recommendation: "",
-    ...overrides,
-  };
-}
 
 function verified(file: string, line: number, evidence: string[], impact: string, recommendation: string): AdvisoryVerified {
   return {
@@ -57,11 +40,6 @@ test("shared advisory report and verified progress helpers preserve the common c
     { type: "summary", key: "kept", value: 2 },
   ]);
   assert.deepEqual(logs, ["3 verified → 2 kept"]);
-});
-
-test("findingLocationKey normalizes diff prefixes", () => {
-  assert.equal(findingLocationKey({ locations: [{ file: "a/src/app.ts", line: 10 }] }), "src/app.ts:10");
-  assert.equal(sameFinding({ locations: [{ file: "b/src/app.ts", line: 10 }] }, finding("src/app.ts", 10)), true);
 });
 
 test("synthesis merges IDs and reconstructs all evidence from verified sources", () => {

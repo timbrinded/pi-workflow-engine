@@ -1,5 +1,4 @@
 import { challengeFindings, parseChallengeArgs } from "../src/advisory-challenge.ts";
-import { type AdvisoryStageCoverage } from "../src/advisory-evidence.ts";
 import { Type } from "typebox";
 import {
   type AdvisoryVerified,
@@ -38,8 +37,6 @@ const HYPOTHESIS_LENSES: AdvisoryLens[] = [
   { label: "test-fixture", category: "test-fixture", text: "The failure is caused by test setup, fixtures, mocks, generated files, or stale local state rather than product code." },
 ];
 
-const TOOLS = DEFAULT_ADVISORY_TOOLS;
-const TOOL_HINTS = DEFAULT_ADVISORY_TOOL_HINTS;
 const PER_LENS = 4;
 
 export default async function run(api: WorkflowApi): Promise<unknown> {
@@ -50,7 +47,6 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   let rawCandidateCount = 0;
   let droppedCandidateCount = 0;
   let refutedCandidateCount = 0;
-  const coverage: AdvisoryStageCoverage[] = [];
   const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
     files: fileCount,
     candidates: rawCandidateCount,
@@ -69,7 +65,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Inspect relevant files, package/test configuration, and safe diagnostic commands. " +
       "Safe commands are read-only commands such as status, grep, listing files, typecheck/test commands, or commands explicitly requested by the user. " +
       "Do not run mutation, install, commit, network, or destructive commands. Return scoped files, observations, and constraints. Structured output only.",
-    { phase: "Scope", label: "scope", tools: TOOLS, toolHints: TOOL_HINTS, profile: "medium", schema: ScopeSchema },
+    { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
   if (!scope) {
@@ -77,7 +73,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Diagnosis could not establish a scope.",
       ["Provide the failing command, error message, or regression description and rerun diagnose."],
       makeStats(0, 0),
-    ), coverage);
+    ), []);
   }
 
   fileCount = scope.files.length;
@@ -114,7 +110,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   rawCandidateCount += pipelineResult.rawCandidates;
   droppedCandidateCount += pipelineResult.dropped;
   refutedCandidateCount += pipelineResult.refuted;
-  coverage.push(...pipelineResult.coverage);
+  const { coverage } = pipelineResult;
   const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
   const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
   const refuted = verified.filter((finding) => finding.verdict === "REFUTED");

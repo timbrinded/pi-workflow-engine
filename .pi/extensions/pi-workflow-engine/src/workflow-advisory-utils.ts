@@ -1,4 +1,4 @@
-import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type IdentifiedAdvisoryCandidate, type AdvisoryFinding, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
+import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
 import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "./types.ts";
 
@@ -156,50 +156,17 @@ export function normalizePath(path: string): string {
   return path.replace(/^\.\//, "").replace(/^[ab]\//, "");
 }
 
-export function verdictLane(verdict: AdvisoryVerdict["verdict"]): string {
-  switch (verdict) {
-    case "CONFIRMED":
-      return "Confirmed";
-    case "NOT_SUBSTANTIATED":
-      return "Unresolved";
-    case "PLAUSIBLE":
-      return "Plausible";
-    case "REFUTED":
-      return "Refuted";
-  }
-}
-
-export function verdictStatus(verdict: AdvisoryVerdict["verdict"]): "success" | "warning" | "error" {
-  switch (verdict) {
-    case "CONFIRMED":
-      return "success";
-    case "NOT_SUBSTANTIATED":
-    case "PLAUSIBLE":
-      return "warning";
-    case "REFUTED":
-      return "error";
-  }
-}
+const VERDICT_PRESENTATION = {
+  CONFIRMED: { lane: "Confirmed", status: "success", confidence: "high" },
+  PLAUSIBLE: { lane: "Plausible", status: "warning", confidence: "medium" },
+  NOT_SUBSTANTIATED: { lane: "Unresolved", status: "warning", confidence: "medium" },
+  REFUTED: { lane: "Refuted", status: "error", confidence: "low" },
+} satisfies Record<AdvisoryVerdict["verdict"], {
+  lane: string; status: "success" | "warning" | "error"; confidence: NonNullable<AdvisoryVerdict["confidence"]>;
+}>;
 
 export function verdictConfidence(verdict: AdvisoryVerdict["verdict"]): "high" | "medium" | "low" {
-  switch (verdict) {
-    case "CONFIRMED":
-      return "high";
-    case "NOT_SUBSTANTIATED":
-    case "PLAUSIBLE":
-      return "medium";
-    case "REFUTED":
-      return "low";
-  }
-}
-
-export function sameFinding(candidate: Pick<AdvisoryCandidate, "locations">, finding: Pick<AdvisoryFinding, "locations" | "summary">): boolean {
-  return findingLocationKey(candidate) === findingLocationKey(finding);
-}
-
-export function findingLocationKey(value: Pick<AdvisoryCandidate, "locations"> | Pick<AdvisoryFinding, "locations">): string {
-  const location = primaryLocation(value);
-  return `${normalizePath(location.file)}:${location.line ?? "file"}`;
+  return VERDICT_PRESENTATION[verdict].confidence;
 }
 
 export function recordVerdictProgress(
@@ -215,10 +182,10 @@ export function recordVerdictProgress(
   }
   progress({
     type: "lane_item",
-    lane: verdictLane(verdict.verdict),
+    lane: VERDICT_PRESENTATION[verdict.verdict].lane,
     title: candidate.summary,
     subtitle: formatLocation(candidate),
-    status: verdictStatus(verdict.verdict),
+    status: VERDICT_PRESENTATION[verdict.verdict].status,
     details: formatEvidence(verdict.evidence),
   });
 }
