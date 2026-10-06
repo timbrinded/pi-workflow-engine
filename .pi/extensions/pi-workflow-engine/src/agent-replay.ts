@@ -359,8 +359,8 @@ function declaresNoWorkspaceCapability(prompt: string, opts: AgentExecutionOptio
     opts.tools !== undefined &&
     opts.tools.length === 0 &&
     (opts.toolHints?.length ?? 0) === 0 &&
-    (opts.skills?.length ?? 0) === 0 &&
-    extractSkillSelectorsFromText(prompt).length === 0
+    // Explicit skills suppress prompt inference, matching resolveAgentSkillRequest.
+    (opts.skills !== undefined ? opts.skills.length === 0 : extractSkillSelectorsFromText(prompt).length === 0)
   );
 }
 

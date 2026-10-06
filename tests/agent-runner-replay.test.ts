@@ -178,6 +178,15 @@ test("tool-free structured agents can replay without fingerprinting the workspac
     { resume: "read-only", tools: [], schema },
   );
   assert.deepEqual(result, { ok: true });
+
+  // An explicit `skills: []` overrides skill-like prompt text, so the agent has no
+  // workspace to fingerprint: the cache hits even from an unreadable cwd.
+  const optedOut = await runAgent(
+    createRunContext({ createSession, cwd: join(tmpdir(), "pi-workflow-replay-missing-cwd"), journal }),
+    "synthesize the evidence; use the diagnose skill",
+    { resume: "read-only", tools: [], skills: [], schema },
+  );
+  assert.deepEqual(optedOut, { ok: true });
 });
 
 test("runAgent records successful live results into the journal", async () => {
