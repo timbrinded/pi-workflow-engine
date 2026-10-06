@@ -77,7 +77,7 @@ export interface CodeReviewDependencies {
 export default async function run(api: WorkflowApi, dependencies: CodeReviewDependencies = {}): Promise<unknown> {
   const { agent, phase, log, progress, args, cwd, signal } = api;
   const challengeConfig = parseChallengeArgs(args);
-  const target = challengeConfig.args.trim();
+  const target = challengeConfig.args;
 
   // ─── Phase 0: Scope ───
   phase("Scope");

@@ -40,7 +40,7 @@ const PER_LENS = 4;
 export default async function run(api: WorkflowApi): Promise<unknown> {
   const { agent, phase, log, progress, args } = api;
   const challengeConfig = parseChallengeArgs(args);
-  const symptom = challengeConfig.args.trim();
+  const symptom = challengeConfig.args;
 
   phase("Scope");
   const scope = await agent(
