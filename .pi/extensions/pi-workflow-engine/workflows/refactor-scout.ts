@@ -66,7 +66,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
-  if (!scope || scope.files.length === 0) {
+  if (scope.files.length === 0) {
     return finishAdvisoryReport(emptyAdvisoryReport(
       "No files were identified for refactor scouting.",
       ["Provide a target path, module, or subsystem to scout for refactor opportunities."],

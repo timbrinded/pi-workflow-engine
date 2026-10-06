@@ -61,7 +61,6 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
     throw error;
   }
 
-  if (!plan) return unavailableResearchReport("no-evidence");
   const lanes = normalizeResearchLanes(plan);
   if (lanes.length === 0) return unavailableResearchReport("no-evidence");
   progress({ type: "counter", key: "research.lanes", label: "research lanes", value: lanes.length });
@@ -91,7 +90,6 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
             schema: ResearchLaneResultSchema,
           },
         );
-        if (!result) return null;
         progress({ type: "counter_delta", key: "research.evidence", label: "evidence items", delta: result.evidence.length });
         progress({
           type: "lane_item",
@@ -125,7 +123,7 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
         resume: "off",
         schema: ResearchVerificationSchema,
       });
-      return result ? sanitizeVerification(result, candidate) : null;
+      return sanitizeVerification(result, candidate);
     }),
   );
   const verifications = verificationResults.map((result, index) => result ?? unavailableVerification(candidates[index]!));

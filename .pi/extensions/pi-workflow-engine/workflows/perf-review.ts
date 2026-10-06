@@ -67,7 +67,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
-  if (!scope || scope.files.length === 0) {
+  if (scope.files.length === 0) {
     return finishAdvisoryReport(emptyAdvisoryReport(
       "No performance-relevant files were identified.",
       ["Provide a slow command, workload, file path, or user-visible latency concern to review."],

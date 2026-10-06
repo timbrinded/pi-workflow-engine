@@ -121,7 +121,7 @@ test("built-in advisory workflows request dynamic search-like tools", async () =
   assert.deepEqual(codeReviewApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
   assert.equal(codeReviewApi.calls[0]?.profile, "medium");
 
-  const diagnoseApi = createScriptedApi([null], "failing command");
+  const diagnoseApi = createScriptedApi([{ symptom: "failing command", commands: [], files: [], observations: [] }], "failing command");
   await diagnose(diagnoseApi);
   assert.deepEqual(diagnoseApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
   assert.deepEqual(diagnoseApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
@@ -261,16 +261,6 @@ test("refactor-scout runs all finder agents before verifier agents", async () =>
   assert.equal(findIndexes.length, 6);
   assert.ok(firstVerifyIndex > -1, `expected verifier call in ${JSON.stringify(labels)}`);
   assert.ok(findIndexes.every(({ index }) => index < firstVerifyIndex), `expected all finders before verify: ${JSON.stringify(labels)}`);
-});
-
-test("diagnose returns the diagnostic empty report when scope is unavailable", async () => {
-  const api = createScriptedApi([null], "failing command");
-
-  const result = asReportResult(await diagnose(api));
-
-  assert.equal(result.summary, "Diagnosis could not establish a scope.");
-  assert.deepEqual(result.findings, []);
-  assert.equal(result.stats.verified, 0);
 });
 
 test("diagnose keeps refuted hypotheses out of final findings", async () => {

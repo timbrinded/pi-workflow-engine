@@ -68,14 +68,6 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
-  if (!scope) {
-    return finishAdvisoryReport(emptyAdvisoryReport(
-      "Diagnosis could not establish a scope.",
-      ["Provide the failing command, error message, or regression description and rerun diagnose."],
-      makeStats(0, 0),
-    ), []);
-  }
-
   fileCount = scope.files.length;
   progress({ type: "counter", key: "files", label: "files", value: fileCount });
   progress({ type: "summary", key: "symptom", value: scope.symptom });
