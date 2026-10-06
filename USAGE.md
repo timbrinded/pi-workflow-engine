@@ -172,7 +172,7 @@ is used so highlighting is never silently disabled. Pi editor registration is
 still last-writer-wins; the previous editor is restored on shutdown only while
 the Dynamax decorator still owns the registration.
 
-When the host agent calls the `workflow` tool from a TUI session, pi opens the live workflow inspector for that run. The compact workflow widget still shows the latest moving status above the editor, but the inspector is the richer view for phases, agents, findings, and logs.
+When the host agent calls the `workflow` tool, the inspector stays closed so the agent's reply remains in view; the compact workflow widget shows the moving status above the editor. Press the inspector shortcut or run `/workflow:inspector` for the richer view of phases, agents, findings, and logs, live or after the run.
 
 Configure either shortcut by creating `~/.pi/agent/extensions/pi-workflow-engine.json`:
 
@@ -244,6 +244,8 @@ These workflow usage totals are separate from `--perf`, which is internal timing
 The result, inspector overview, compact widget, and status line all use the same usage summary. Providers with a complete breakdown show `fresh`, `cache read`, `cache write`, and `output` separately. Zero cache components are omitted. If a provider reports only some components, the summary labels mixed-run component totals with `≥` and preserves the provider's aggregate `total`; if it reports no components, the summary falls back to aggregate `tokens`. Costs are summed from provider session totals and are never inferred from local pricing.
 
 During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow:inspector` if you want to bring the last completed inspector back up afterward.
+
+The inspector has Overview, Agents, Findings, and Logs sections, plus Result for a retained run opened from `/workflow:runs`. Switch sections with `tab`/`shift+tab`, `←`/`→`, or `1`–`5`; move with `↑`/`↓` or `j`/`k`, jump with `g`/`G`, expand an agent or finding with `enter`, and close with `q` or `esc`. Expanded agents show the full error, last tool, model, and token usage.
 
 ### Durable run records
 

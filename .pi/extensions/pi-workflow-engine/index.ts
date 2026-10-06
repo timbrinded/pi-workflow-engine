@@ -578,7 +578,6 @@ function registerWorkflowTool(
       }
 
       const runOptions = resolveWorkflowRunOptions({
-        inspect: ctx.hasUI && ctx.mode === "tui",
         concurrency: params.concurrency,
         parallelSubmissionLimit: params.parallelSubmissionLimit,
         maxAgents: params.maxAgents,

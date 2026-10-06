@@ -511,9 +511,9 @@ export default async function run({ phase, log }) {
   assert.match(inspection, /failing workflow log/);
 });
 
-test("a TUI tool-invoked workflow opens the live inspector", async () => {
+test("a TUI tool-invoked workflow leaves the inspector closed so the agent's reply stays in view", async () => {
   const tool = captureWorkflowTool();
-  const { ctx, customCalls, customOptions, customRenders } = createTuiContext();
+  const { ctx, customCalls } = createTuiContext();
   const script = `
 export const meta = { name: "inspect-live-probe", description: "Live inspector probe" };
 export default async function run({ phase }) {
@@ -524,9 +524,7 @@ export default async function run({ phase }) {
 
   await tool.execute("call-2", { script }, undefined, () => {}, ctx);
 
-  assert.equal(customCalls(), 1);
-  assert.deepEqual(customOptions()[0], WORKFLOW_INSPECTOR_OVERLAY_OPTIONS);
-  assert.match(customRenders()[0]?.join("\n") ?? "", /inspect-live-probe/);
+  assert.equal(customCalls(), 0);
 });
 
 test("the reopened inspector reports a failed tool-invoked run as failed", async () => {
@@ -732,29 +730,31 @@ test("the inspector shortcut opens the active workflow inspector while the workf
 export const meta = { name: "inspect-live-shortcut-probe", description: "Live inspector shortcut probe" };
 export default async function run({ phase }) {
   phase("Shortcut Live");
+  globalThis["__piWorkflowShortcutLiveStarted"] = true;
   await globalThis["__piWorkflowShortcutLiveGate"];
   return { ok: true };
 }
 `;
   // Hold the run open so the shortcut can only find the active inspection: a completed
   // snapshot is recorded only when the run finishes.
-  const runtime = globalThis as typeof globalThis & { __piWorkflowShortcutLiveGate?: Promise<void> };
+  const runtime = globalThis as typeof globalThis & { __piWorkflowShortcutLiveGate?: Promise<void>; __piWorkflowShortcutLiveStarted?: boolean };
   const gate = Promise.withResolvers<void>();
   runtime.__piWorkflowShortcutLiveGate = gate.promise;
 
   try {
     const running = tool.execute("call-3", { script }, undefined, () => {}, ctx);
-    await waitUntil(() => customCalls() >= 1, "initial live inspector");
+    await waitUntil(() => runtime.__piWorkflowShortcutLiveStarted === true, "live workflow body");
 
     await shortcut.handler(ctx);
 
-    assert.equal(customCalls(), 2);
+    assert.equal(customCalls(), 1);
     assert.deepEqual(customOptions().at(-1), WORKFLOW_INSPECTOR_OVERLAY_OPTIONS);
-    assert.match(customRenders().at(-1)?.join("\n") ?? "", /inspect-live-shortcut-probe/);
+    assert.match(customRenders().at(-1)?.join("\n") ?? "", /inspect-live-shortcut-probe.*● running · Shortcut Live/);
     gate.resolve();
     await running;
   } finally {
     gate.resolve();
     delete runtime.__piWorkflowShortcutLiveGate;
+    delete runtime.__piWorkflowShortcutLiveStarted;
   }
 });
