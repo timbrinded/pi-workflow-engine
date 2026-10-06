@@ -77,9 +77,9 @@ export class BoundedFingerprint {
     this.#hash.update("\0");
   }
 
+  /** File bytes may contain NUL, so they enter the outer hash as a fixed-length digest. */
   async addFileHandle(label: string, handle: FileHandle, signal?: AbortSignal): Promise<void> {
-    this.#hash.update(label);
-    this.#hash.update("\0");
+    const content = createHash("sha256");
     const stream = handle.createReadStream({ autoClose: false, highWaterMark: 64 << 10, signal });
     try {
       for await (const chunk of stream) {
@@ -90,13 +90,13 @@ export class BoundedFingerprint {
           stream.destroy();
           throw new Error(`content fingerprint exceeded ${this.maxBytes} bytes`);
         }
-        this.#hash.update(buffer);
+        content.update(buffer);
       }
     } catch (error) {
       throwIfAborted(signal);
       throw error;
     }
-    this.#hash.update("\0");
+    this.add(label, content.digest("hex"));
   }
 
   digest(): string {

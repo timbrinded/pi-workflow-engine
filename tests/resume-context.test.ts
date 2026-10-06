@@ -52,9 +52,11 @@ test("fingerprint file validation rejects a pathname replaced after opening", as
 test("fingerprint content stays bound to the validated descriptor", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-workflow-fingerprint-descriptor-"));
   const path = join(root, "input.txt");
+  const copy = join(root, "copy.txt");
   const replacement = join(root, "replacement.txt");
   try {
     await writeFile(path, "original\n", "utf8");
+    await writeFile(copy, "original\n", "utf8");
     await writeFile(replacement, "replacement\n", "utf8");
     const operations: FingerprintFileOperations = {
       open: async (candidate, flags) => await open(candidate, flags),
@@ -75,7 +77,7 @@ test("fingerprint content stays bound to the validated descriptor", async () => 
     );
 
     const expected = new BoundedFingerprint(1024);
-    expected.add("file", "original\n");
+    await withValidatedFingerprintFile(copy, undefined, async (handle) => await expected.addFileHandle("file", handle));
     assert.equal(actual.digest(), expected.digest());
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -523,6 +525,28 @@ test("file workflow provenance is revalidated against its load-time tree fingerp
     });
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("tree fingerprints do not let file contents absorb the following entries", async () => {
+  const split = await mkdtemp(join(tmpdir(), "pi-workflow-tree-split-"));
+  const merged = await mkdtemp(join(tmpdir(), "pi-workflow-tree-merged-"));
+  try {
+    await writeFile(join(split, "a"), "X", "utf8");
+    await writeFile(join(split, "b"), "Y", "utf8");
+    const mode = String((await lstat(join(split, "b"), { bigint: true })).mode);
+    await writeFile(join(merged, "a"), `X\0path\0b\0mode\0${mode}\0file\0Y`, "utf8");
+
+    const [splitCapture, mergedCapture] = await Promise.all([
+      captureTreeFingerprint({ root: split, maxBytes: 1 << 20, maxFiles: 32 }),
+      captureTreeFingerprint({ root: merged, maxBytes: 1 << 20, maxFiles: 32 }),
+    ]);
+    assert.equal(splitCapture.kind, "verified");
+    assert.equal(mergedCapture.kind, "verified");
+    assert.notDeepEqual(mergedCapture, splitCapture);
+  } finally {
+    await rm(split, { recursive: true, force: true });
+    await rm(merged, { recursive: true, force: true });
   }
 });
 
