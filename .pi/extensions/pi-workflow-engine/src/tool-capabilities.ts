@@ -7,8 +7,12 @@ export class WorkflowToolHintUnavailableError extends Error {
   readonly code = "WORKFLOW_TOOL_HINT_UNAVAILABLE";
   readonly hints: readonly AgentToolHint[];
 
-  constructor(hints: readonly AgentToolHint[]) {
-    super(`Required workflow tool capability unavailable: ${hints.join(", ")}`);
+  constructor(hints: readonly AgentToolHint[], options: { readonly hostToolsReachable?: boolean } = {}) {
+    // Host MCP tools only count in runs that can reach them; say so rather than imply none are installed.
+    const mcpNote = hints.includes("external-search") && options.hostToolsReachable === false
+      ? " (MCP tools reach subagents only in runs started by the workflow tool)"
+      : "";
+    super(`Required workflow tool capability unavailable: ${hints.join(", ")}${mcpNote}`);
     this.name = "WorkflowToolHintUnavailableError";
     this.hints = [...hints];
   }

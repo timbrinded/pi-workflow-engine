@@ -113,7 +113,7 @@ export async function openAgentSession(input: {
     if (!opts.tools?.includes(WORKFLOW_TOOL_NAME)) withholdWorkflowTool(session);
     if (opts.requireToolHints) {
       const missing = toolSelection.toolHints.filter((hint) => !matchedToolHints.has(hint));
-      if (missing.length > 0) throw new WorkflowToolHintUnavailableError(missing);
+      if (missing.length > 0) throw new WorkflowToolHintUnavailableError(missing, { hostToolsReachable: rc.hostTools !== undefined });
     }
     throwIfAborted(rc.signal);
     return {

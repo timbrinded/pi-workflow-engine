@@ -71,7 +71,8 @@ test("research returns actionable no-LLM results for empty questions and missing
     "What changed in the specification?",
   );
   const missingResult = await research(missing);
-  assert.match(missingResult.answer, /no installed external web-search or URL-extraction tool/i);
+  assert.match(missingResult.answer, /could reach no external web-search or URL-extraction tool/i);
+  assert.match(missingResult.nextSteps.join("\n"), /MCP web search server counts only when the host agent runs research through the workflow tool/);
   assert.match(missingResult.nextSteps[0] ?? "", /Install or enable/);
   assert.equal(missing.calls.length, 1);
   assert.deepEqual(missing.calls[0]?.options?.toolHints, ["external-search"]);

@@ -534,7 +534,9 @@ test("required tool hints fail before prompting when no installed capability mat
       toolHints: ["external-search"],
       requireToolHints: true,
     }),
-    WorkflowToolHintUnavailableError,
+    (error: unknown) =>
+      error instanceof WorkflowToolHintUnavailableError &&
+      /external-search \(MCP tools reach subagents only in runs started by the workflow tool\)/.test(error.message),
   );
   assert.equal(prompted, false);
   assert.equal(disposed, true);
