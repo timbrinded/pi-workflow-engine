@@ -155,8 +155,10 @@ const UNAVAILABLE_RESEARCH = {
     nextStep: "Run `/workflow research <question>` and include any source, date, or geography constraints in the arguments.",
   },
   "missing-capability": {
-    message: "Research could not start because pi exposed no installed external web-search or URL-extraction tool.",
-    nextStep: "Install or enable a pi tool that can search the web or extract HTTP(S) pages, then rerun the workflow.",
+    message: "Research could not start because its agents could reach no external web-search or URL-extraction tool.",
+    nextStep:
+      "Install or enable a pi tool that can search the web or extract HTTP(S) pages, then rerun the workflow. " +
+      "An MCP web search server counts only when the host agent runs research through the workflow tool, for example after `dynamax`.",
   },
   "lanes-failed": {
     message: "Research could not gather direct-page evidence because one or more research lanes failed.",

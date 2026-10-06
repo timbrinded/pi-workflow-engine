@@ -1,6 +1,6 @@
-const MINIMUM_PI_VERSION = "0.80.10";
+const MINIMUM_PI_VERSION = "1.0.0";
 
-const MINIMUM_PI_CORE = [0, 80, 10] as const;
+const MINIMUM_PI_CORE = [1, 0, 0] as const;
 
 /** Fail during extension registration instead of failing later in a workflow. */
 export function assertSupportedPiVersion(version: string): void {

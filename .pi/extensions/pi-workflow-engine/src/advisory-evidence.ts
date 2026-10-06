@@ -49,14 +49,17 @@ export function dedupeCandidates<T extends IdentifiedAdvisoryCandidate>(candidat
     const key = candidateDedupKey(candidate);
     const previous = seen.get(key);
     if (!previous) seen.set(key, { ...candidate });
-    else {
-      previous.sourceCandidateIds = [...new Set([...previous.sourceCandidateIds, ...candidate.sourceCandidateIds])];
-      previous.locations = uniqueLocations([...previous.locations, ...candidate.locations]);
-      previous.impact = [...new Set([previous.impact, candidate.impact])].join("\n");
-      previous.discoveryEvidence = [...new Set([...(previous.discoveryEvidence ?? []), ...(candidate.discoveryEvidence ?? [])])];
-    }
+    else mergeCandidateInto(previous, candidate);
   }
   return [...seen.values()];
+}
+
+/** Fold a duplicate into the kept candidate, keeping every source id, location, impact, and piece of evidence. */
+export function mergeCandidateInto<T extends IdentifiedAdvisoryCandidate>(kept: T, duplicate: T): void {
+  kept.sourceCandidateIds = [...new Set([...kept.sourceCandidateIds, ...duplicate.sourceCandidateIds])];
+  kept.locations = uniqueLocations([...kept.locations, ...duplicate.locations]);
+  kept.impact = [...new Set([kept.impact, duplicate.impact])].join("\n");
+  kept.discoveryEvidence = [...new Set([...(kept.discoveryEvidence ?? []), ...(duplicate.discoveryEvidence ?? [])])];
 }
 
 export function uniqueLocations(locations: AdvisoryCandidate["locations"]): AdvisoryCandidate["locations"] {

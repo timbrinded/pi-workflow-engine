@@ -2,7 +2,7 @@
 
 `pi-workflow-engine` adds zero-dependency Dynamax workflows to pi: opt into live, parallel subagents for the tasks that need a custom investigation instead of one long prompt. Most users only need these surfaces:
 
-This release requires **pi 0.80.10 or newer**. pi remains host-provided rather
+This release requires **pi 1.0.0 or newer**. pi remains host-provided rather
 than bundled by this package, and the extension rejects older runtimes at load
 time with an update message.
 
@@ -109,7 +109,9 @@ command instead of selecting another model.
 as external web search, browsing, or HTTP(S) page extraction. Local grep/find
 tools do not satisfy this check. The workflow does not bundle a scraper or a
 paid API; install or enable the web capability you prefer, then restart or
-reload pi so subagent sessions can see it.
+reload pi so subagent sessions can see it. An MCP web search server also
+qualifies when the host agent runs `research` through the `workflow` tool,
+because only those runs can reach the host's MCP tools.
 
 The workflow bounds decomposition to four lanes and verification to twelve
 claims, while the engine's concurrency, total-agent, timeout, cancellation, and
@@ -146,7 +148,7 @@ Sticky mode and inspector shortcut:
 
 The workflow inspector and code-review results viewer are also registered as first-class shortcuts shown by `/hotkeys`. The defaults are `ctrl+shift+m` for the inspector and `ctrl+shift+r` for the latest review results. `ctrl+o` is intentionally not used because pi already uses it for tool-output expansion and tree filtering.
 
-When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives the workflow permission reminder, stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. The footer status states the mode compactly: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its prompt, and `◆ dynamax · this turn` while that run is active; off mode clears it. A running workflow names itself in its own status next to it.
+When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives a `<dynamax>` system prompt section that permits the workflow tool (pi appends it as a section patch, so the cached prompt head is kept), stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. The footer status states the mode compactly: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its prompt, and `◆ dynamax · this turn` while that run is active; off mode clears it. A running workflow names itself in its own status next to it.
 
 ### Prompt editor cue
 
@@ -160,7 +162,7 @@ The default effect is `shine`. Set `PI_DYNAMAX_EFFECT=static` for a motionless
 cue or `PI_DYNAMAX_EFFECT=off` to disable it. A non-empty `NO_COLOR` also
 disables the default cue; an explicit `PI_DYNAMAX_EFFECT` value takes precedence.
 
-The implementation follows pi 0.80.10's [official `CustomEditor`
+The implementation follows pi's [official `CustomEditor`
 pattern](https://pi.dev/docs/latest/extensions#custom-editor): it decorates only
 the editor's rendered lines, retaining the wrapped editor's input, cursor,
 deletion, paste, multiline, undo, completion, IME, and app-keybinding behavior.
@@ -423,6 +425,11 @@ overrides its profile.
 
 `tools` is a strict allowlist. If you set `tools: ["read", "bash"]`, extension tools such as `ast-grep`, `mgrep`, `fffind`, or `ffgrep` are hidden from that subagent. Add `toolHints: ["search"]` to dynamically expose installed grep/find/search-like tools while keeping the concrete base allowlist portable. Use `toolHints: ["external-search"]` for installed web search, browsing, and URL-extraction tools; `requireToolHints: true` fails before prompting unless each requested capability matched. The built-in advisory workflows use `tools: ["read", "bash", "grep", "find", "ls"]` plus `toolHints: ["search"]`.
 
+Subagents are SDK sessions, so pi's built-in codemode and MCP extensions do not load in them. Two opt-ins cover that:
+
+- **Codemode.** Add `"codemode"` to an agent's `tools` to let it batch or filter many tool calls in one script, for example `tools: ["read", "grep", "codemode"]`. Scripts can call only that agent's other allowed tools, and never `final_answer`. Classifier calls a script makes count toward the run's usage and budget.
+- **Host MCP tools.** In runs started by the `workflow` tool, subagents reach the host's MCP tools over its existing connections and through its permission handlers. Name a tool in `tools` (for example `"mcp__linear__create_issue"`), or use `toolHints: ["external-search"]` to pick up MCP web research tools; servers that declare a tool not read-only or closed-world are excluded from that hint. Bridged tools act in the host session, so the local `search` hint never bridges them, and an isolated worktree agent that names a local MCP tool sees the main checkout through it, not its worktree. `/workflow` commands and background runs outlive the host tool call that makes this possible: an agent there that names an MCP tool fails before prompting rather than running without it.
+
 Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; if `tools` is also restricted, the engine automatically keeps `read` available so the subagent can load the selected `SKILL.md`. When `skills` is omitted, clear prompt text such as `/skill:name`, `include skill name`, or `use the name skill` is also treated as an opt-in. Pass `skills: []` to suppress that inference.
 
 Set `model` only when a subagent should use a specific model. Bare ids keep the Anthropic shorthand; `provider/id` targets built-in, custom, or local providers. Explicit models override a requested profile; calls with neither inherit the host/session default. Malformed or unknown explicit refs fail fast.
@@ -460,6 +467,25 @@ export default async function run({ workflow }: WorkflowApi) {
 ```
 
 Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name. Inside `parallel()` or `pipeline()`, recoverable branch errors become `null` results, so filter nulls before synthesis; a genuine run abort still rejects.
+
+### Classify between stages
+
+`classify(context, opts?)` answers typed `choice`, `score`, or `bool` questions about JSON `state` with one of pi's classifier models (for example TypeSafe Jev or Cloudflare Clef), using the host's credentials and no chat session. It suits cheap gates between stages, such as deduplicating findings or deciding which items need a follow-up agent.
+
+```ts
+const answers = await api.classify(
+  {
+    state: { finding },
+    questions: {
+      followUp: { type: "bool", instructions: "Does this finding need verification?", criteria: { true: "Plausible but unproven", false: "Clearly settled" } },
+    },
+  },
+  { label: `triage:${finding.id}` },
+);
+if (answers.followUp?.type === "bool" && answers.followUp.probability > 0.5) { /* verify it */ }
+```
+
+Without `opts.model` ("provider/id"), the first classifier with working credentials is used. Calls share the run's concurrency cap, count toward usage and the budget, and are not journaled, so a resumed run classifies again. When no classifier is configured the call rejects with a recoverable error, so guard it or let `parallel()` turn it into `null`.
 
 ### Where workflows live
 
@@ -574,6 +600,25 @@ disproof. A failed finder or verifier prevents a clean conclusion. If synthesis
 fails, the result retains verified records and reports incomplete coverage.
 Synthesis selects or merges IDs; the workflow reconstructs evidence-bearing
 fields from those records.
+
+### Duplicate candidates
+
+Lenses often report the same defect in different words. When a TypeSafe Jev
+classifier is reachable (TypeSafe directly, OpenRouter, Cloudflare Workers AI,
+Vercel AI Gateway, or OpenCode Zen), the four advisory workflows ask it whether
+each pair of candidates in the same file describes one defect. Before
+verification, a candidate joins a group only when the classifier is at least 80%
+sure it matches every member, so each defect gets one verifier. Merged
+candidates keep all of their source IDs, locations, impacts, and evidence, and
+the verifier sees the other wordings as "Also reported as" evidence. If the
+first comparison fails (no Jev credentials, a bad key, a rate limit), the merge
+is skipped.
+
+Measured on GPT-6.1 Sol code reviews with planted bugs, the merge cut verifier
+agents and cost by about 40% (e.g. 29 → 18 agents, $0.60 → $0.37 list price on
+a small diff; 22 → 14 agents, $1.74 → $0.89 on a 160 KB diff). In every
+instrumented run, each planted bug that a finder proposed reached the final
+report, with or without merging.
 
 ### Selective adversarial challenges
 

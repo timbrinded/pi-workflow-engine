@@ -1,4 +1,5 @@
 import type { ToolInfo } from "@earendil-works/pi-coding-agent";
+import { isMcpToolName } from "./host-tools.ts";
 import type { AgentToolHint } from "./types.ts";
 
 /** Raised before prompting when required semantic tool capabilities are unavailable. */
@@ -6,8 +7,12 @@ export class WorkflowToolHintUnavailableError extends Error {
   readonly code = "WORKFLOW_TOOL_HINT_UNAVAILABLE";
   readonly hints: readonly AgentToolHint[];
 
-  constructor(hints: readonly AgentToolHint[]) {
-    super(`Required workflow tool capability unavailable: ${hints.join(", ")}`);
+  constructor(hints: readonly AgentToolHint[], options: { readonly hostToolsReachable?: boolean } = {}) {
+    // Host MCP tools only count in runs that can reach them; say so rather than imply none are installed.
+    const mcpNote = hints.includes("external-search") && options.hostToolsReachable === false
+      ? " (MCP tools reach subagents only in runs started by the workflow tool)"
+      : "";
+    super(`Required workflow tool capability unavailable: ${hints.join(", ")}${mcpNote}`);
     this.name = "WorkflowToolHintUnavailableError";
     this.hints = [...hints];
   }
@@ -18,7 +23,9 @@ export function matchesAgentToolHint(tool: ToolInfo, hint: AgentToolHint): boole
 }
 
 function isExternalSearchLikeTool(tool: ToolInfo): boolean {
-  if (isMutationLikeToolName(tool.name) || tool.sourceInfo.source === "builtin") return false;
+  if (isMutationLikeToolName(tool.name) || isPiLocalTool(tool)) return false;
+  // MCP servers declare these hints: a tool that changes its environment or stays in a closed domain is not web research.
+  if (tool.annotations?.readOnlyHint === false || tool.annotations?.openWorldHint === false) return false;
   const name = tool.name.toLowerCase();
   const description = [tool.description, ...(tool.promptGuidelines ?? [])].join(" ").toLowerCase();
   const text = `${name} ${description}`;
@@ -38,6 +45,11 @@ function isSearchLikeTool(tool: ToolInfo): boolean {
   const name = tool.name.toLowerCase();
   if (name.includes("grep") || name.includes("find") || name.includes("search") || name === "rg" || name.includes("ripgrep")) return true;
   return /\b(?:grep|find|search|ripgrep|rg|structural search|code search)\b/.test(tool.description.toLowerCase());
+}
+
+/** pi's own tools, such as read and bash. MCP tools also come from a built-in extension but reach outside it. */
+function isPiLocalTool(tool: ToolInfo): boolean {
+  return tool.sourceInfo.source === "builtin" && !isMcpToolName(tool.name);
 }
 
 function isMutationLikeToolName(name: string): boolean {

@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, ClassifierApi, ClassifierModel, Model } from "@earendil-works/pi-ai";
 import type {
   AgentSession,
   CreateAgentSessionOptions,
@@ -8,6 +8,7 @@ import type { WorkflowBudget } from "./budget.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { WorkflowAgentLimiter } from "./agent-limits.ts";
 import type { AgentRetryScheduler } from "./agent-retry.ts";
+import type { HostToolBridge } from "./host-tools.ts";
 import type { ResolvedWorkflowModelProfiles } from "./model-profiles.ts";
 import type { WorkflowJournal } from "./journal.ts";
 import type { PerfSink } from "./perf.ts";
@@ -63,6 +64,10 @@ interface RunContextBase {
   budget: WorkflowBudget;
   journal: WorkflowJournal;
   worktrees: WorktreeRegistry;
+  /** Host MCP tools subagents may call; set only for a synchronous `workflow` tool run. */
+  hostTools?: HostToolBridge;
+  /** Classifier routes resolved this run, so repeated `api.classify()` calls skip the credential lookup. */
+  classifierRoutes?: Map<string, Promise<ClassifierModel<ClassifierApi>>>;
 }
 
 /** Shared per-run context threaded into every agent() call. */
@@ -74,7 +79,7 @@ export type RunContext = RunContextBase & (
     }
   | {
       /** Injected test sessions bypass Pi's resource loader and therefore do not resolve skills. */
-      modelRegistry: Pick<ModelRegistry, "find">;
+      modelRegistry: Pick<ModelRegistry, "find" | "classify" | "getAvailableOfType" | "getModelOfType">;
       createSession: CreateAgentSession;
     }
 );

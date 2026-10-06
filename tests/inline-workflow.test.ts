@@ -13,6 +13,9 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}, onAgent?: (opts: Ag
 
   return {
     agent,
+    classify: async () => {
+      throw new Error("no classifier is configured in this test");
+    },
     workflow: async () => {
       throw new Error("sub-workflows are not enabled in this context");
     },

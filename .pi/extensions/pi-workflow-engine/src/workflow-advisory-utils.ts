@@ -1,5 +1,8 @@
 import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, formatAdvisoryLocation, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
-import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
+import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, mergeCandidateInto, repoPathCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
+import { isFatalWorkflowError } from "./cancellation.ts";
+import { WorkflowClassifierUnavailableError } from "./classify.ts";
+import { unknownErrorMessage } from "./unknown-error.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "./types.ts";
 
 
@@ -49,7 +52,7 @@ export function publishVerifiedKeptProgress(
 }
 
 export interface LensVerificationPipelineOptions {
-  api: Pick<WorkflowApi, "agent" | "parallel" | "phase" | "progress" | "log">;
+  api: Pick<WorkflowApi, "agent" | "classify" | "parallel" | "phase" | "progress" | "log">;
   lenses: readonly AdvisoryLens[];
   perLens: number;
   finderPhase?: "Find" | "Hypothesize";
@@ -90,7 +93,7 @@ export async function runLensVerificationPipeline(
     }
     return candidates;
   } })), coverage);
-  const candidates = dedupeCandidates(found.flat());
+  const candidates = await mergeEquivalentCandidates(api, dedupeCandidates(found.flat()));
   const dropped = rawCandidates - candidates.length;
   if (dropped > 0) {
     api.progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: dropped });
@@ -110,6 +113,106 @@ export async function runLensVerificationPipeline(
     },
   })), coverage);
   return { verified, rawCandidates, dropped, coverage };
+}
+
+/** TypeSafe Jev routes in preference order. Jev is the classifier the duplicate merge was measured with. */
+export const DUPLICATE_CANDIDATE_CLASSIFIERS = [
+  "typesafe/jev-latest",
+  "openrouter/~typesafe/jev-latest",
+  "openrouter/typesafe/jev-1.13",
+  "cloudflare-workers-ai/typesafe/jev",
+  "vercel-ai-gateway/typesafe-ai/jev",
+  "opencode/jev-1.13",
+  "opencode/jev-1.13-free",
+] as const;
+
+/** Probability above which two candidates count as one defect. */
+const SAME_DEFECT_PROBABILITY = 0.8;
+
+/**
+ * Merge same-file candidates that a classifier judges to be one defect, so each defect gets one verifier.
+ * Lenses often report the same bug in different words; on GPT-6.1 Sol code reviews this cut verifier
+ * agents and cost by about 40% without losing a finding. Runs without a reachable Jev classifier skip it.
+ */
+export async function mergeEquivalentCandidates<T extends IdentifiedAdvisoryCandidate>(
+  api: Pick<WorkflowApi, "classify" | "parallel" | "log">,
+  candidates: readonly T[],
+): Promise<T[]> {
+  const files = candidates.map(candidateFile);
+  const pairs: Array<readonly [number, number]> = [];
+  for (let first = 0; first < candidates.length; first++) {
+    for (let second = first + 1; second < candidates.length; second++) {
+      if (files[first] === files[second]) pairs.push([first, second]);
+    }
+  }
+  if (pairs.length === 0) return [...candidates];
+  const sameDefect = async ([first, second]: readonly [number, number]): Promise<number> => {
+    const answers = await api.classify({
+      state: { first: candidateForClassifier(candidates[first]!), second: candidateForClassifier(candidates[second]!) },
+      questions: {
+        same: {
+          type: "bool",
+          instructions: "Two code-review candidates were raised against the same file. Do they describe the same underlying defect (same root cause and same fix), even if worded differently?",
+          criteria: { true: "Same underlying defect", false: "Different defects" },
+        },
+      },
+    }, { model: DUPLICATE_CANDIDATE_CLASSIFIERS, label: "dedup" });
+    return answers.same?.type === "bool" ? answers.same.probability : 0;
+  };
+  // The first call probes the classifier: if it fails for any reason (no Jev route, bad credentials, a rate
+  // limit), skip the merge rather than send every other pair into the same failure.
+  let firstProbability: number;
+  try {
+    firstProbability = await sameDefect(pairs[0]!);
+  } catch (error) {
+    if (isFatalWorkflowError(error, undefined)) throw error;
+    if (!(error instanceof WorkflowClassifierUnavailableError)) api.log(`Skipped merging duplicate candidates: ${unknownErrorMessage(error)}`);
+    return [...candidates];
+  }
+  if (pairs.length > 1) api.log(`Comparing ${pairs.length} same-file candidate pairs for duplicates`);
+  const rest = await api.parallel(pairs.slice(1).map((pair) => () => sameDefect(pair)));
+  const probability = new Map<string, number>();
+  pairs.forEach(([first, second], index) => probability.set(`${first}:${second}`, index === 0 ? firstProbability : rest[index - 1] ?? 0));
+
+  // Complete linkage: a candidate joins a group only when it matches every member, so one vague candidate
+  // that resembles two different defects cannot chain them together.
+  const groups: number[][] = [];
+  candidates.forEach((_, index) => {
+    const group = groups.find((members) =>
+      members.every((member) => (probability.get(`${member}:${index}`) ?? 0) >= SAME_DEFECT_PROBABILITY));
+    if (group) group.push(index);
+    else groups.push([index]);
+  });
+  const merged = groups.map(([keep, ...folded]) => {
+    const kept = { ...candidates[keep!]! };
+    for (const index of folded) {
+      const duplicate = candidates[index]!;
+      mergeCandidateInto(kept, duplicate);
+      // The kept summary leads; keep folded wording visible to the verifier in case the classifier was wrong.
+      if (duplicate.summary !== kept.summary) {
+        kept.discoveryEvidence = [...new Set([...(kept.discoveryEvidence ?? []), `Also reported as: ${duplicate.summary}`])];
+      }
+    }
+    return kept;
+  });
+  const folded = candidates.length - merged.length;
+  if (folded > 0) api.log(`Merged ${folded} candidate(s) describing the same defect before verification`);
+  return merged;
+}
+
+/** Pair by the changed line when there is one, with the repository-relative path exact dedup uses. */
+function candidateFile(candidate: IdentifiedAdvisoryCandidate): string {
+  return repoPathCandidates((candidate.reviewAnchor ?? primaryLocation(candidate)).file)[1];
+}
+
+function candidateForClassifier(candidate: IdentifiedAdvisoryCandidate) {
+  return {
+    category: candidate.category,
+    summary: candidate.summary,
+    impact: candidate.impact,
+    location: formatLocation(candidate),
+    evidence: (candidate.discoveryEvidence ?? []).slice(0, 4),
+  };
 }
 
 /** Stats for a lens review that stopped before discovery. */

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { createWorkflowUsageRecorder, emptyWorkflowUsageTotals, formatWorkflowUsageLine } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import {
+  createWorkflowUsageRecorder,
+  emptyWorkflowUsageTotals,
+  formatWorkflowUsageLine,
+  workflowUsageForPi,
+} from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 
 function assistantUsage(overrides: {
@@ -271,4 +276,42 @@ test("formatWorkflowUsageLine suppresses true zero usage", () => {
 
   assert.equal(recorder.snapshot().assistantMessages, 1);
   assert.equal(formatWorkflowUsageLine(recorder.snapshot()), undefined);
+});
+
+test("workflow usage converts to pi's Usage so the session cost includes subagent spend", () => {
+  const recorder = createWorkflowUsageRecorder();
+  assert.equal(workflowUsageForPi(recorder.snapshot()), undefined);
+
+  recorder.recordAgentSession({
+    label: "finder",
+    messages: [assistantUsage({ input: 100, output: 20, cacheRead: 300, cacheWrite: 40, costInput: 0.1, costOutput: 0.2, costCacheRead: 0.03, costCacheWrite: 0.04, costTotal: 0.37 })],
+  });
+
+  assert.deepEqual(workflowUsageForPi(recorder.snapshot()), {
+    input: 100,
+    output: 20,
+    cacheRead: 300,
+    cacheWrite: 40,
+    totalTokens: 460,
+    cost: { input: 0.1, output: 0.2, cacheRead: 0.03, cacheWrite: 0.04, total: 0.37 },
+  });
+});
+
+test("tool results that report usage, such as codemode classifier calls, count toward the agent", () => {
+  const recorder = createWorkflowUsageRecorder();
+
+  recorder.recordAgentSession({
+    label: "scripted",
+    messages: [
+      assistantUsage({ input: 100, output: 10, costTotal: 0.01 }),
+      { role: "toolResult", content: [], usage: { input: 40, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 42, cost: { input: 0.004, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.005 } } },
+      { role: "toolResult", content: [] },
+    ],
+  });
+
+  const agent = recorder.snapshot().agents[0];
+  assert.equal(agent?.assistantMessages, 1);
+  assert.equal(agent?.usage.input, 140);
+  assert.equal(agent?.usage.output, 12);
+  assert.ok(Math.abs((agent?.usage.cost.total ?? 0) - 0.015) < 1e-9);
 });

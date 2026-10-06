@@ -148,6 +148,9 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
   const agent = (async (_prompt: string, opts?: AgentOptions) => (opts?.schema ? { ok: true } : "agent text")) as WorkflowApi["agent"];
   return {
     agent,
+    classify: async () => {
+      throw new Error("no classifier is configured in this test");
+    },
     workflow: async () => {
       throw new Error("sub-workflows are not enabled in this context");
     },
@@ -239,15 +242,16 @@ test("RPC command and inspector surfaces use native selection and text instead o
   assert.match(notifications.at(-1) ?? "", /Workflow inspector: rpc-inspection/);
 });
 
-test("temporary authoring, tool, and documentation guidance teach adaptive follow-up", () => {
+test("tool and documentation guidance teach adaptive follow-up; the authoring prompt defers to them", () => {
   const temporaryPrompt = buildTemporaryWorkflowAuthorPrompt("investigate the parser");
   const toolGuidance = captureWorkflowTool().promptGuidelines?.join("\n");
   assert.ok(toolGuidance, "expected the registered workflow tool to provide prompt guidelines");
   const usage = readFileSync(new URL("../USAGE.md", import.meta.url), "utf8");
 
-  assert.ok(temporaryPrompt.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
+  // The authoring prompt defers to the tool's guidelines instead of repeating them.
+  assert.ok(!temporaryPrompt.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
   assert.ok(toolGuidance.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
-  for (const text of [temporaryPrompt, toolGuidance, usage]) {
+  for (const text of [toolGuidance, usage]) {
     assert.match(text, /first.pass/i);
     assert.match(text, /structured gap.analysis/i);
     assert.match(text, /follow.up/i);
@@ -389,6 +393,24 @@ test("inline compile errors are shaped for workflow tool results", () => {
   if (result.details.error !== "inline_compile_error") throw new Error("expected inline compile details");
   assert.match(result.details.message, /meta/);
   assert.match(result.content[0]?.text ?? "", /Inline workflow did not compile/);
+  assert.equal(result.isError, true);
+});
+
+test("the workflow tool's guidelines carry the profile rule the Dynamax reminder no longer repeats", () => {
+  assert.match(captureWorkflowTool().promptGuidelines?.join("\n") ?? "", /profile: \\?"small\\?".*every `api\.agent\(\)` call/);
+});
+
+test("the workflow tool is a model-only orchestrator that codemode scripts cannot start", () => {
+  assert.equal(captureWorkflowTool().exposure, "model-only");
+});
+
+test("workflow tool marks an unknown workflow as a failed call", async () => {
+  const result = await captureWorkflowTool().execute("call-unknown", { name: "does-not-exist" }, undefined, () => {}, HEADLESS_CTX);
+
+  assert.ok(isRecord(result));
+  assert.equal(result.isError, true);
+  assert.ok(isRecord(result.details));
+  assert.equal(result.details.error, "unknown_workflow");
 });
 
 test("workflow tool rejects blank resumeFromRunId", async () => {
@@ -407,6 +429,7 @@ export default async function run() {
   assert.ok(Array.isArray(content));
   assert.equal(content[0]?.text, "resumeFromRunId must be non-empty.");
   assert.deepEqual(result.details, { error: "invalid_resume_from_run_id" });
+  assert.equal(result.isError, true);
 });
 
 test("workflow tool requires a prior run for edited-source reuse", async () => {
@@ -424,6 +447,7 @@ test("workflow tool requires a prior run for edited-source reuse", async () => {
   assert.ok(Array.isArray(content));
   assert.equal(content[0]?.text, "resumeEditedWorkflow requires resumeFromRunId.");
   assert.deepEqual(result.details, { error: "invalid_edited_workflow_resume" });
+  assert.equal(result.isError, true);
 });
 
 test("workflow tool rejects background mode in finite print execution", async () => {
@@ -439,6 +463,7 @@ test("workflow tool rejects background mode in finite print execution", async ()
 
   assert.ok(isRecord(result));
   assert.deepEqual(result.details, { error: "background_unavailable", mode: "print" });
+  assert.equal(result.isError, true);
 });
 
 test("workflow tool returns a durable background run id and detaches from the initiating tool signal", async () => {
@@ -503,7 +528,12 @@ export default async function run({ phase, log }) {
 }
 `;
 
-  await assert.rejects(() => extension.tool.execute("call-failing-inspect", { script }, undefined, () => {}, ctx), /boom/);
+  // A failed run comes back as a failed call, so the usage it spent can still reach the session.
+  const failed = await extension.tool.execute("call-failing-inspect", { script }, undefined, () => {}, ctx);
+  assert.ok(isRecord(failed));
+  assert.equal(failed.isError, true);
+  assert.deepEqual(failed.details, { error: "workflow_failed", name: "failing-inspect-probe", message: "boom" });
+  assert.match(JSON.stringify(failed.content), /Workflow failing-inspect-probe failed: boom/);
   await inspector.handler("", ctx);
 
   const inspection = notifications.at(-1) ?? "";
@@ -541,7 +571,9 @@ export default async function run({ phase }) {
 }
 `;
 
-  await assert.rejects(() => extension.tool.execute("call-failed-state", { script }, undefined, () => {}, ctx), /boom/);
+  const failed = await extension.tool.execute("call-failed-state", { script }, undefined, () => {}, ctx);
+  assert.ok(isRecord(failed));
+  assert.equal(failed.isError, true);
   await inspector.handler("", ctx as ExtensionCommandContext);
 
   assert.match(customRenders().at(-1)?.[0] ?? "", /failed-state-probe.*✗ failed/);

@@ -100,11 +100,23 @@ export function assistantTextMessage(text: string): AssistantMessage {
   };
 }
 
-export function createRegistry(models: readonly Model<Api>[], calls: FindCall[] = []): Pick<ModelRegistry, "find"> {
+/** The registry surface injected test runs see: chat model lookup plus classifiers, which tests leave unconfigured. */
+export type TestModelRegistry = Pick<ModelRegistry, "find" | "classify" | "getAvailableOfType" | "getModelOfType">;
+
+export function createRegistry(models: readonly Model<Api>[], calls: FindCall[] = []): TestModelRegistry {
   return {
     find(provider, modelId) {
       calls.push({ provider, modelId });
       return models.find((model) => model.provider === provider && model.id === modelId);
+    },
+    async classify() {
+      throw new Error("no classifier is configured in this test");
+    },
+    async getAvailableOfType() {
+      return [];
+    },
+    getModelOfType() {
+      return undefined;
     },
   };
 }
@@ -144,7 +156,7 @@ export function createProgress(): AgentProgress & { readonly events: string[] } 
 export function createRunContext(input: {
   readonly createSession: CreateAgentSession;
   readonly hostModel?: Model<Api>;
-  readonly modelRegistry?: Pick<ModelRegistry, "find">;
+  readonly modelRegistry?: TestModelRegistry;
   readonly progress?: AgentProgress;
   readonly cwd?: string;
   readonly semaphore?: Semaphore;
@@ -269,6 +281,7 @@ export const TEST_TOOL: ToolInfo = {
   description: TEST_TOOL_DEFINITION.description,
   parameters: TEST_TOOL_DEFINITION.parameters,
   promptGuidelines: [],
+  exposure: "direct",
   sourceInfo: { path: "builtin:read", source: "builtin", scope: "temporary", origin: "top-level" },
 };
 
@@ -287,6 +300,7 @@ export function createToolInfo(
     description,
     parameters: TEST_TOOL_PARAMETERS,
     promptGuidelines: [],
+    exposure: "direct",
     sourceInfo,
   };
 }

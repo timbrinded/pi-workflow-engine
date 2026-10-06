@@ -7,6 +7,7 @@ import { resolveWorkflowModelProfiles, type ResolvedWorkflowModelProfiles } from
 import { abortReason, isWorkflowPauseError, linkAbortSignal, throwIfAborted } from "./cancellation.ts";
 import { createBudget } from "./budget.ts";
 import { runAgent, type AgentExecutionOptions, type RunContext } from "./agent-runner.ts";
+import { runClassifier } from "./classify.ts";
 import { ProgressTracker } from "./progress.ts";
 import { createPerfRecorder, formatPerfSummary, type PerfSink } from "./perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "./usage.ts";
@@ -177,6 +178,8 @@ export async function runResolvedWorkflow(
       budget,
       journal,
       worktrees,
+      hostTools: resolvedOptions.hostTools,
+      classifierRoutes: new Map(),
     };
 
     // perf.total_ms wraps the whole tree: sub-workflows run inside this span via api.workflow().
@@ -401,6 +404,7 @@ export async function runWorkflowWithContext(
 
   const api: WorkflowApi = {
     agent,
+    classify: (context, classifyOpts) => runClassifier(rc, context, { ...classifyOpts, phase: scope.agentOptions({ phase: classifyOpts?.phase }).phase }),
     workflow,
     parallel: bindParallel({
       signal: rc.signal,

@@ -40,6 +40,9 @@ import { registerWorkflowRunCommand, WorkflowRunController } from "./src/workflo
 import { completeCurrentArgument, splitArgumentPrefix } from "./src/command-completions.ts";
 import { assertSupportedPiVersion } from "./src/pi-compat.ts";
 import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/workflow-format.ts";
+import { workflowUsageForPi, type WorkflowUsageSnapshot } from "./src/usage.ts";
+import { unknownErrorMessage } from "./src/unknown-error.ts";
+import { createHostToolBridge } from "./src/host-tools.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -195,15 +198,7 @@ export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {
 User brief:
 ${brief.trim()}
 
-Use the workflow tool with a script argument, not a saved workflow name.
-The script must start with export const meta = { ... } and default-export an async workflow function.
-Use the injected Type object for schemas. Do not import anything or use dynamic import().
-Set profile to "small", "medium", or "big" on each agent() call; use explicit model/thinkingLevel only for an intentional override.
-Always pass a plain string as the first api.agent() argument; build prompts with template strings before calling agent().
-If using \`isolation: "worktree"\`, remember api.agent() returns \`{ result, patch, changed }\`; read \`.result\` for the agent answer and \`.patch\` for the diff.
-When the run is budgeted, guard expensive loops with \`while (api.budget.total && api.budget.remaining() > N) { ... }\`; api.agent() throws once the budget is spent.
-Subagents receive no skills by default. When the brief asks for a skill or a stage clearly benefits from one, pass \`skills: ["skill-name"]\` on that agent call only.
-${ADAPTIVE_WORKFLOW_GUIDANCE}
+Use the workflow tool with a script argument, not a saved workflow name, and follow its guidelines for inline scripts.
 Do not edit files unless the user explicitly requested edits.`;
 }
 
@@ -219,9 +214,17 @@ export type WorkflowToolRequest =
   | { readonly kind: "inline"; readonly script: string }
   | { readonly kind: "error"; readonly error: "invalid_workflow_invocation"; readonly message: string };
 
-export interface WorkflowToolErrorResult {
+export interface WorkflowToolErrorResult<TDetails = WorkflowToolErrorDetails> {
   readonly content: Array<{ readonly type: "text"; readonly text: string }>;
-  readonly details: { readonly error: "invalid_workflow_invocation" } | { readonly error: "inline_compile_error"; readonly message: string };
+  readonly details: TDetails;
+  /** The model sees a failed call while the renderer still reads `details`. */
+  readonly isError: true;
+}
+
+type WorkflowToolErrorDetails = { readonly error: "invalid_workflow_invocation" } | { readonly error: "inline_compile_error"; readonly message: string };
+
+function workflowToolError<TDetails>(text: string, details: TDetails): WorkflowToolErrorResult<TDetails> {
+  return { content: [{ type: "text", text }], details, isError: true };
 }
 
 const INVALID_WORKFLOW_INVOCATION_MESSAGE = "Provide exactly one workflow name or inline workflow script.";
@@ -236,11 +239,11 @@ export function normalizeWorkflowToolRequest(params: WorkflowToolRequestParams):
 }
 
 export function invalidWorkflowInvocationResult(): WorkflowToolErrorResult {
-  return { content: [{ type: "text", text: INVALID_WORKFLOW_INVOCATION_MESSAGE }], details: { error: "invalid_workflow_invocation" } };
+  return workflowToolError(INVALID_WORKFLOW_INVOCATION_MESSAGE, { error: "invalid_workflow_invocation" });
 }
 
 export function inlineCompileErrorResult(message: string): WorkflowToolErrorResult {
-  return { content: [{ type: "text", text: `Inline workflow did not compile: ${message}` }], details: { error: "inline_compile_error", message } };
+  return workflowToolError(`Inline workflow did not compile: ${message}`, { error: "inline_compile_error", message });
 }
 
 export type WorkflowPickerSelection =
@@ -485,6 +488,10 @@ function registerWorkflowTool(
     description:
       "ONLY call workflow when the user opted into multi-agent orchestration via the literal token `dynamax`, sticky `/workflow:dynamax on`, an explicit request to run or author a workflow, or a command/skill instruction. Runs either a registered named workflow or an inline one-off workflow script (fan-out → verify → synthesize), synchronously by default or explicitly in the background.",
     promptSnippet: "Run an existing named workflow or an inline one-off workflow script",
+    // Like codemode itself, an orchestrating tool stays a top-level model action: from a codemode script a
+    // run would lose its tool row, hit the script's output cap, and parallel runs would each get their own
+    // concurrency cap. It also stays declared under `codemode.mode: "only"`, which hides direct tools.
+    exposure: "model-only",
     promptGuidelines: [
       "Use workflow only when the user opted into workflow orchestration via `dynamax`, `/workflow:dynamax on`, an explicit request to run/author a workflow, or a command/skill instruction.",
       "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, or perf-review.",
@@ -492,9 +499,13 @@ function registerWorkflowTool(
       "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
       "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
       "Subagents receive no skills by default. In inline workflows, pass `skills: [\"skill-name\"]` per `agent()` call when the user asks for a skill or a stage should use one; grant only the needed skills.",
+      "Set `profile: \"small\"`, `\"medium\"`, or `\"big\"` on every `api.agent()` call so the user's central model routes apply; use `model`/`thinkingLevel` only for an intentional override.",
       "Always pass a plain string as the first `api.agent()` argument; build prompts with template strings before calling agent().",
       "When using `isolation: \"worktree\"`, `api.agent()` returns `{ result, patch, changed }`; use `.result` for the answer and `.patch` for the isolated diff.",
       "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
+      "Add \"codemode\" to an inline agent's `tools` when it should batch or filter many tool calls in one script; its scripts can call only that agent's other allowed tools.",
+      "`api.classify({ state, questions }, { label })` answers typed choice/score/bool questions with a classifier model and no chat session; use it for cheap gates such as dedup or triage, and handle its rejection when no classifier is configured.",
+      "Host MCP tools reach subagents only in synchronous workflow tool runs: name them in `tools` (e.g. `mcp__server__tool`), or use `toolHints: [\"external-search\"]` to pick up MCP web research tools.",
       "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
       ADAPTIVE_WORKFLOW_GUIDANCE,
       "Set background: true only when the user explicitly wants the workflow to continue after this tool call; the tool returns a durable run ID and completion is delivered later.",
@@ -565,16 +576,10 @@ function registerWorkflowTool(
       if (request.kind === "error") return invalidWorkflowInvocationResult();
       const resumeFromRunId = params.resumeFromRunId?.trim();
       if (params.resumeFromRunId !== undefined && resumeFromRunId === "") {
-        return {
-          content: [{ type: "text", text: "resumeFromRunId must be non-empty." }],
-          details: { error: "invalid_resume_from_run_id" },
-        };
+        return workflowToolError("resumeFromRunId must be non-empty.", { error: "invalid_resume_from_run_id" });
       }
       if (params.resumeEditedWorkflow && !resumeFromRunId) {
-        return {
-          content: [{ type: "text", text: "resumeEditedWorkflow requires resumeFromRunId." }],
-          details: { error: "invalid_edited_workflow_resume" },
-        };
+        return workflowToolError("resumeEditedWorkflow requires resumeFromRunId.", { error: "invalid_edited_workflow_resume" });
       }
       if (params.background) {
         const unavailable = backgroundUnavailableResult(ctx.mode);
@@ -606,10 +611,7 @@ function registerWorkflowTool(
         const named = workflows.get(request.name);
         if (!named) {
           const available = [...workflows.keys()].join(", ") || "(none)";
-          return {
-            content: [{ type: "text", text: `Unknown workflow "${request.name}". Available: ${available}` }],
-            details: { error: "unknown_workflow", available },
-          };
+          return workflowToolError(`Unknown workflow "${request.name}". Available: ${available}`, { error: "unknown_workflow", available });
         }
         mod = named;
         resultName = request.name;
@@ -647,11 +649,30 @@ function registerWorkflowTool(
       }
       // Marks the tool row as running (rendered `● running <name>`) until the envelope replaces it.
       onUpdate?.({ content: [{ type: "text", text: `Running workflow ${resultName}.` }], details: { state: "running", name: resultName } });
-      const envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
+      // Only this synchronous path may bridge host MCP tools: executeTool ends with the tool call.
+      const hostTools = createHostToolBridge(() => pi.getAllTools(), ctx);
+      // Keep the latest usage: a failed run still reports what its agents spent instead of dropping it with the error.
+      let spent: WorkflowUsageSnapshot | undefined;
+      const onUsageSnapshot = (snapshot: WorkflowUsageSnapshot) => {
+        spent = snapshot;
+        return runOptions.onUsageSnapshot?.(snapshot);
+      };
+      let envelope: WorkflowResultEnvelope;
+      try {
+        envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, { ...runOptions, hostTools, onUsageSnapshot }, perfRecorder);
+      } catch (error) {
+        const message = unknownErrorMessage(error);
+        return {
+          ...workflowToolError(`Workflow ${resultName} failed: ${message}`, { error: "workflow_failed", name: resultName, message }),
+          usage: workflowUsageForPi(spent),
+        };
+      }
       reviewSessions.remember(ctx, envelope, runOptions);
       return {
         content: [{ type: "text", text: formatWorkflowResultForContext(envelope) }],
         details: envelope,
+        // pi counts tool-result usage toward the session cost; subagent spend was invisible there before.
+        usage: workflowUsageForPi(envelope.usage),
       };
     },
   });

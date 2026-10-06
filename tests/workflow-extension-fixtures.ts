@@ -9,6 +9,7 @@ import {
 
 export interface CapturedTool {
   readonly name: string;
+  readonly exposure?: string;
   readonly promptGuidelines?: readonly string[];
   execute(
     toolCallId: string,

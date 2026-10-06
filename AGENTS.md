@@ -31,6 +31,7 @@ A **workflow** (`.pi/extensions/pi-workflow-engine/workflows/*.ts`) exports `met
 - `agent(prompt, { schema?, profile?, model?, thinkingLevel?, tools?, label?, phase? })` — runs one subagent; with a typebox `schema` it returns validated structured data, else final text.
 - `parallel(thunks)` — concurrent barrier; recoverable failures become `null` slots and survivors continue.
 - `pipeline(items, ...stages)` — each item through all stages independently; recoverable item failures become `null`, with no barrier between stages.
+- `classify(context, opts?)` — answers typed questions about JSON state with a pi classifier model (no chat session).
 - `phase(title)` / `log(msg)` — drive the live progress tree.
 
 Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope → per-angle Find → independent Verify → Synthesize.
@@ -45,7 +46,9 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 - `.pi/extensions/pi-workflow-engine/src/progress.ts` — live phase/agent tree via `ctx.ui.setWidget`; stderr breadcrumbs when headless.
 - `.pi/extensions/pi-workflow-engine/src/discovery.ts` + `.pi/extensions/pi-workflow-engine/src/workflows.ts` — static registry (`BUILTIN_WORKFLOW_DEFINITIONS`) plus best-effort dynamic drop-in loading.
 - `.pi/extensions/pi-workflow-engine/src/inline-workflow.ts` — inline workflow compiler (`script` string → `WorkflowModule`) with pure-literal `export const meta` extraction and injected Type schemas.
-- `.pi/extensions/pi-workflow-engine/src/dynamax.ts` — `dynamax` trigger/sticky state and reminder injection.
+- `.pi/extensions/pi-workflow-engine/src/dynamax.ts` — `dynamax` trigger/sticky state and the `<dynamax>` system prompt section.
+- `.pi/extensions/pi-workflow-engine/src/host-tools.ts` — bridge that lets subagents call host MCP tools via `ctx.executeTool`.
+- `.pi/extensions/pi-workflow-engine/src/classify.ts` — `api.classify()` over `ctx.modelRegistry.classify()`.
 - `.pi/extensions/pi-workflow-engine/src/types.ts` — `WorkflowApi` / `WorkflowModule` / `AgentOptions` contracts.
 
 ## Critical non-obvious facts (read before editing)
@@ -55,6 +58,8 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 - **`jiti` is NOT a virtual module.** A dynamically `import()`-ed drop-in workflow may resolve a *different* `typebox` than pi's bundled one, breaking schema validation. **Therefore guaranteed workflows must be statically imported and registered in `.pi/extensions/pi-workflow-engine/src/workflows.ts`** (they ride pi's jiti and share its typebox). Dynamic discovery is best-effort only.
 - **Inline workflow scripts must never use `import`/dynamic `import()`.** They compile in-process via `AsyncFunction` and receive the extension's injected Type value so `agent({ schema })` preserves pi's bundled TypeBox identity. The `export const meta` block must stay a pure literal so metadata can be validated before untrusted code runs.
 - **Inline workflow bodies must execute in the same VM as the extension.** `agent()` closes over live `RunContext` handles (`Semaphore`, `ProgressTracker`, model registry, abort signal); subprocess/stdin execution cannot access those handles without building a second orchestration system.
+- **Subagents are SDK sessions, so pi's built-in extensions (codemode, MCP, tool_search) do not load in them.** Codemode is registered per agent only when its `tools` allowlist names it; MCP tools reach subagents only through `host-tools.ts`, which needs `ctx.executeTool`. That exists only on the context of a running tool call, so only synchronous `workflow` tool runs get the bridge, never `/workflow` commands or background runs.
+- **Change the host prompt through `systemPromptOptions`, not by returning `systemPrompt` from `before_agent_start`.** A returned prompt forces pi to replace the whole prompt head; a section edit is appended as a patch and keeps the provider's prompt cache.
 - **Never call `session.setAutoRetryEnabled()` on a subagent.** In pi it is not session-scoped: it writes `retry.enabled` to the user's global `~/.pi/agent/settings.json`, changing retry for the host and every later session. Subagents inherit pi's in-session turn retry; `agentRetries` is the outer whole-agent restart.
 - **Set `profile` per `agent()` stage.** Use `small`, `medium`, or `big` so users can centrally configure exact model/effort routes; reserve `model` and `thinkingLevel` for intentional per-call overrides.
 - **`pi install` runs `npm install`** (not bun). `bun.lock` is for local dev only.

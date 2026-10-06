@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
 import { Type } from "typebox";
+import type { ExtensionToolContext, ToolInfo } from "@earendil-works/pi-coding-agent";
+import { WorkflowHostToolUnavailableError, type HostToolBridge } from "../.pi/extensions/pi-workflow-engine/src/host-tools.ts";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import type { CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import {
   WorkflowBudgetExceededError,
@@ -531,8 +534,123 @@ test("required tool hints fail before prompting when no installed capability mat
       toolHints: ["external-search"],
       requireToolHints: true,
     }),
-    WorkflowToolHintUnavailableError,
+    (error: unknown) =>
+      error instanceof WorkflowToolHintUnavailableError &&
+      /external-search \(MCP tools reach subagents only in runs started by the workflow tool\)/.test(error.message),
   );
   assert.equal(prompted, false);
   assert.equal(disposed, true);
+});
+
+type ToolDefinitionLike = NonNullable<Parameters<CreateAgentSession>[0]["customTools"]>[number];
+// Proxies never read their context: they forward to the host bridge.
+const HOST_TOOL_TEST_CTX = {} as ExtensionToolContext;
+
+const MCP_SOURCE = { path: "builtin:mcp", source: "builtin", scope: "temporary", origin: "top-level" } as const;
+
+test("MCP tools match external-search despite their built-in source unless their annotations rule them out", () => {
+  const webSearch = createToolInfo("mcp__parallel__web_search", "Search the web and return page URLs", MCP_SOURCE);
+  assert.equal(matchesAgentToolHint(webSearch, "external-search"), true);
+  assert.equal(matchesAgentToolHint({ ...webSearch, annotations: { readOnlyHint: false } }, "external-search"), false);
+  assert.equal(matchesAgentToolHint({ ...webSearch, annotations: { openWorldHint: false } }, "external-search"), false);
+  assert.equal(
+    matchesAgentToolHint({ ...createToolInfo("web_fetch", "Fetch a web page", { ...MCP_SOURCE, path: "builtin:web_fetch" }) }, "external-search"),
+    false,
+  );
+});
+
+function fakeHostTools(tools: readonly ToolInfo[]): HostToolBridge & { readonly calls: Array<{ name: string; args: unknown }> } {
+  const calls: Array<{ name: string; args: unknown }> = [];
+  return {
+    calls,
+    tools: () => tools,
+    async execute(name, args) {
+      calls.push({ name, args });
+      return {
+        toolCall: { type: "toolCall", id: `host/${calls.length}`, name, arguments: {} },
+        result: { content: [{ type: "text", text: `host ${name}` }], details: undefined },
+        isError: name.endsWith("broken"),
+      };
+    },
+  };
+}
+
+test("external-search agents reach host MCP research tools through the host bridge, never local or mutating ones", async () => {
+  const bridge = fakeHostTools([
+    createToolInfo("mcp__parallel__web_search", "Search the web and return page URLs", MCP_SOURCE),
+    createToolInfo("mcp__fff__grep", "Search local files with grep", MCP_SOURCE),
+    { ...createToolInfo("mcp__linear__search_issues", "Search the web of Linear issues", MCP_SOURCE), annotations: { readOnlyHint: false } },
+  ]);
+  let customToolNames: string[] = [];
+  let activatedTools: readonly string[] = [];
+  let proxyResult: unknown;
+  const createSession: CreateAgentSession = async (options) => {
+    const customTools = options.customTools ?? [];
+    customToolNames = customTools.map((tool) => tool.name);
+    return {
+      session: createAgentRunnerSession({
+        messages: [assistantTextMessage("")],
+        async prompt() {
+          const proxy = customTools.find((tool) => tool.name === "mcp__parallel__web_search");
+          proxyResult = await proxy?.execute("call-1", { query: "pi codemode" }, undefined, undefined, HOST_TOOL_TEST_CTX);
+          await executeTestFinalAnswer(options, { ok: true });
+        },
+        subscribe() {
+          return () => {};
+        },
+        dispose() {},
+        async abort() {},
+        getAllTools() {
+          return [createToolInfo("read", "Read local files"), ...customTools.map((tool) => createToolInfo(tool.name, tool.description, { path: `<sdk:${tool.name}>`, source: "sdk", scope: "temporary", origin: "top-level" }))];
+        },
+        setActiveToolsByName(toolNames) {
+          activatedTools = toolNames;
+        },
+      }),
+    };
+  };
+
+  const result = await runAgent({ ...createRunContext({ createSession }), hostTools: bridge }, "research", {
+    tools: [],
+    toolHints: ["external-search"],
+    requireToolHints: true,
+    schema: Type.Object({ ok: Type.Boolean() }),
+  });
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(customToolNames, ["final_answer", "mcp__parallel__web_search"]);
+  assert.ok(activatedTools.includes("mcp__parallel__web_search"));
+  assert.deepEqual(bridge.calls, [{ name: "mcp__parallel__web_search", args: { query: "pi codemode" } }]);
+  assert.deepEqual(proxyResult, { content: [{ type: "text", text: "host mcp__parallel__web_search" }], details: undefined });
+});
+
+test("an allowlisted MCP tool is bridged, its host failures stay failures, and an unreachable one fails the agent", async () => {
+  const bridge = fakeHostTools([createToolInfo("mcp__linear__broken", "Create a Linear issue", MCP_SOURCE)]);
+  let proxy: ToolDefinitionLike | undefined;
+  const createSession: CreateAgentSession = async (options) => {
+    proxy = options.customTools?.find((tool) => tool.name === "mcp__linear__broken");
+    return createTextSession();
+  };
+  await runAgent({ ...createRunContext({ createSession }), hostTools: bridge }, "file it", { tools: ["read", "mcp__linear__broken"] });
+  const failed = await proxy?.execute("call-1", {}, undefined, undefined, HOST_TOOL_TEST_CTX);
+  assert.ok(isRecord(failed));
+  assert.equal(failed.isError, true);
+
+  // A named tool the run cannot reach fails the agent before any session starts, like requireToolHints.
+  let sessions = 0;
+  const countingSession: CreateAgentSession = async () => {
+    sessions += 1;
+    return createTextSession();
+  };
+  await assert.rejects(
+    () => runAgent(createRunContext({ createSession: countingSession }), "file it", { tools: ["read", "mcp__linear__broken"] }),
+    (error: unknown) =>
+      error instanceof WorkflowHostToolUnavailableError &&
+      /MCP tools reach subagents only in runs started by the workflow tool; unavailable: mcp__linear__broken/.test(error.message),
+  );
+  await assert.rejects(
+    () => runAgent({ ...createRunContext({ createSession: countingSession }), hostTools: fakeHostTools([]) }, "file it", { tools: ["read", "read_mcp_resource"] }),
+    /Host MCP tools not available: read_mcp_resource/,
+  );
+  assert.equal(sessions, 0);
 });

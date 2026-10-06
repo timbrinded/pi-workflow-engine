@@ -15,7 +15,7 @@ one-off workflow for the task.
 
 ## Quick start
 
-Requires **pi 0.80.10 or newer**.
+Requires **pi 1.0.0 or newer**.
 
 ```bash
 pi install npm:pi-workflow-engine

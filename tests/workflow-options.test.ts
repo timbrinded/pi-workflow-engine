@@ -300,7 +300,6 @@ test("buildTemporaryWorkflowAuthorPrompt asks for an inline one-shot workflow", 
   assert.match(prompt, /dynamax author and run a temporary one-shot inline workflow/);
   assert.match(prompt, /inspect src and summarize risks/);
   assert.match(prompt, /workflow tool with a script argument, not a saved workflow name/);
-  assert.match(prompt, /Use the injected Type object/);
-  assert.match(prompt, /Set profile to "small", "medium", or "big"/);
-  assert.match(prompt, /skills: \["skill-name"]/);
+  // The authoring rules live in the workflow tool's guidelines, which the model already sees.
+  assert.doesNotMatch(prompt, /injected Type object/);
 });
