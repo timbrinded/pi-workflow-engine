@@ -6,7 +6,7 @@ import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import type { PerfSink } from "./perf.ts";
 import { loadWorkflow, parseWorkflowModule } from "./workflow-module.ts";
 import { BUILTIN_SOURCE_ROOT, BUILTIN_WORKFLOW_DEFINITIONS, BUILTIN_WORKFLOW_FILES } from "./workflows.ts";
-import { captureTreeFingerprint, FINGERPRINT_EXCLUDED_RELATIVE_PATHS } from "./tree-fingerprint.ts";
+import { captureSourceTreeFingerprint } from "./tree-fingerprint.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 export interface DiscoverWorkflowsOptions {
@@ -14,9 +14,6 @@ export interface DiscoverWorkflowsOptions {
   readonly perf?: PerfSink;
   readonly userWorkflowDir?: string;
 }
-
-const DISCOVERY_FINGERPRINT_MAX_BYTES = 32 << 20;
-const DISCOVERY_FINGERPRINT_MAX_FILES = 4096;
 
 const discoveryCache = new Map<string, Map<string, LoadedWorkflow>>();
 /** Best-effort dynamic load of every `*.ts` workflow in a directory. */
@@ -33,7 +30,7 @@ async function loadDir(
     return [];
   }
 
-  const before = provenanceRoot ? await captureDiscoveryFingerprint(provenanceRoot) : undefined;
+  const before = provenanceRoot ? await captureSourceTreeFingerprint(provenanceRoot) : undefined;
   const modules: Array<{ readonly path: string; readonly module: Parameters<typeof loadWorkflow>[0] }> = [];
   for (const name of entries) {
     if (excludeFiles.has(name)) continue;
@@ -55,15 +52,6 @@ async function loadDir(
   return modules.map(({ path, module }) => loadWorkflow(module, sourceIdentity(path)));
 }
 
-async function captureDiscoveryFingerprint(root: string) {
-  return await captureTreeFingerprint({
-    root,
-    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-    maxBytes: DISCOVERY_FINGERPRINT_MAX_BYTES,
-    maxFiles: DISCOVERY_FINGERPRINT_MAX_FILES,
-  });
-}
-
 /**
  * All available workflows by name. Static registry wins on name collisions, so the
  * bundled example is always the verified one even if a same-named file is dropped in.
@@ -79,7 +67,7 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
 
   const byName = await timed(options.perf, "discovery.total_ms", async () => {
     const next = new Map<string, LoadedWorkflow>();
-    const builtinSource = await captureDiscoveryFingerprint(BUILTIN_SOURCE_ROOT);
+    const builtinSource = await captureSourceTreeFingerprint(BUILTIN_SOURCE_ROOT);
     for (const definition of BUILTIN_WORKFLOW_DEFINITIONS) {
       const source: WorkflowSourceIdentity =
         builtinSource.kind === "verified"

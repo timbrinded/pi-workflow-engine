@@ -4,7 +4,7 @@ import { isMissingPathError } from "./filesystem-error.ts";
 import { hashIdentity } from "./identity-fingerprint.ts";
 import { logicalWorkspacePath } from "./replay-path-identity.ts";
 import {
-  captureTreeFingerprint,
+  captureSourceTreeFingerprint,
   FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
   isPathWithin,
   portableRelativePath,
@@ -38,9 +38,6 @@ export interface ToolSourceIdentityOptions {
   readonly cache: ToolSourceFingerprintCache;
   readonly signal?: AbortSignal;
 }
-
-const SOURCE_FINGERPRINT_MAX_BYTES = 32 << 20;
-const SOURCE_FINGERPRINT_MAX_FILES = 4096;
 
 export async function captureEffectiveToolSourceIdentity(
   sourceInfo: EffectiveToolSourceInfoLike,
@@ -77,13 +74,7 @@ export async function captureEffectiveToolSourceIdentity(
 
   let capture = options.cache.get(sourceRoot);
   if (!capture) {
-    capture = captureTreeFingerprint({
-      root: sourceRoot,
-      excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-      maxBytes: SOURCE_FINGERPRINT_MAX_BYTES,
-      maxFiles: SOURCE_FINGERPRINT_MAX_FILES,
-      signal: options.signal,
-    });
+    capture = captureSourceTreeFingerprint(sourceRoot, options.signal);
     options.cache.set(sourceRoot, capture);
   }
   const fingerprint = await capture;

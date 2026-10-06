@@ -12,6 +12,9 @@ export const FINGERPRINT_EXCLUDED_RELATIVE_PATHS: ReadonlySet<string> = new Set(
   ".pi/.workflow-runs",
 ]);
 
+const SOURCE_TREE_MAX_BYTES = 32 << 20;
+const SOURCE_TREE_MAX_FILES = 4096;
+
 export type FingerprintCapture =
   | { readonly kind: "verified"; readonly fingerprint: string }
   | { readonly kind: "unverifiable"; readonly reason: string };
@@ -182,6 +185,20 @@ export async function captureTreeFingerprint(options: TreeFingerprintOptions): P
     throwIfAborted(options.signal);
     return { kind: "unverifiable", reason: unknownErrorMessage(error) };
   }
+}
+
+/**
+ * Fingerprint a workflow or tool source tree. Workflow provenance captured at
+ * load time is revalidated on resume, so both captures must share these bounds.
+ */
+export async function captureSourceTreeFingerprint(root: string, signal?: AbortSignal): Promise<FingerprintCapture> {
+  return await captureTreeFingerprint({
+    root,
+    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+    maxBytes: SOURCE_TREE_MAX_BYTES,
+    maxFiles: SOURCE_TREE_MAX_FILES,
+    signal,
+  });
 }
 
 /** Fingerprint only explicitly declared files/directories under one shared bound. */

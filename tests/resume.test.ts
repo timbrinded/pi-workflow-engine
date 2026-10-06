@@ -31,10 +31,7 @@ import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engin
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { captureRepositoryResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
-import {
-  captureTreeFingerprint,
-  FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-} from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
+import { captureSourceTreeFingerprint } from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
 import {
   TEST_TOOL,
   TEST_TOOL_DEFINITION,
@@ -81,12 +78,7 @@ function workflowModule(name: string, run: WorkflowModule["default"]): LoadedWor
 }
 
 async function sourceTreeFingerprint(root: string): Promise<string> {
-  const capture = await captureTreeFingerprint({
-    root,
-    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-    maxBytes: 1 << 20,
-    maxFiles: 128,
-  });
+  const capture = await captureSourceTreeFingerprint(root);
   if (capture.kind === "unverifiable") throw new Error(capture.reason);
   return capture.fingerprint;
 }

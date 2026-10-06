@@ -12,7 +12,7 @@ import { runBoundedProcess, type BoundedProcessResult } from "./process-runner.t
 import {
   BoundedFingerprint,
   captureDeclaredInputFingerprint,
-  captureTreeFingerprint,
+  captureSourceTreeFingerprint,
   FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
   isExcludedDeclaredInput,
   isPathWithin,
@@ -90,7 +90,6 @@ type BoundedProcessFailureResult = Extract<BoundedProcessResult, { readonly ok: 
 const GIT_CONTEXT_TIMEOUT_MS = 15_000;
 const GIT_CONTEXT_MAX_BYTES = 32 << 20;
 const CONTENT_FINGERPRINT_MAX_BYTES = 32 << 20;
-const SOURCE_TREE_MAX_FILES = 4096;
 const REPOSITORY_INPUT_MAX_ENTRIES = 4096;
 const GIT_UNTRACKED_MAX_ENTRIES = 32_768;
 const GIT_VISIBLE_PATHS = [
@@ -474,13 +473,7 @@ export async function captureWorkflowResumeContext(
     return unverifiableWorkflowResumeContext(mod.meta.name, `workflow source file is not part of its source tree: ${validation.reason}`);
   }
 
-  const current = await captureTreeFingerprint({
-    root: sourceRoot,
-    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-    maxBytes: CONTENT_FINGERPRINT_MAX_BYTES,
-    maxFiles: SOURCE_TREE_MAX_FILES,
-    signal,
-  });
+  const current = await captureSourceTreeFingerprint(sourceRoot, signal);
   if (current.kind === "unverifiable") {
     return unverifiableWorkflowResumeContext(mod.meta.name, `workflow source tree could not be verified: ${current.reason}`);
   }
