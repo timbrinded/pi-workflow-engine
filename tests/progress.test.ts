@@ -155,6 +155,23 @@ test("TUI runs mount one width-aware widget that redraws on change; string-only 
   }
 });
 
+test("a background run shows one summary line and no footer status", () => {
+  const ui = uiContext("tui");
+  const tracker = new ProgressTracker(ui.ctx, "code-review", "56b57550-a9a2-49c6-b711-9db09388e4c7", undefined, { display: "background" });
+  try {
+    tracker.phase("Find");
+    tracker.agentStart(tracker.agentQueued("Find", "find:logic-bugs"));
+    tracker.agentQueued("Find", "find:edge-cases");
+
+    const lines = ui.mount("workflow:56b57550-a9a2-49c6-b711-9db09388e4c7").render(120).map(plain);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0] ?? "", /◆ background · code-review 56b57550 · Find 0\/2/);
+    assert.equal(ui.statuses.size, 0);
+  } finally {
+    tracker.done();
+  }
+});
+
 test("ProgressTracker records late agent events after done without reviving its live surfaces", () => {
   const originalSetInterval = globalThis.setInterval;
   const originalClearInterval = globalThis.clearInterval;

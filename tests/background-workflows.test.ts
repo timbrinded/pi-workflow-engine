@@ -20,7 +20,7 @@ import {
   type WorkflowRunRecord,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-record.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
-import { createTestTheme } from "./fixtures/theme.ts";
+import { createTestTheme, plain } from "./fixtures/theme.ts";
 
 interface SessionHarness {
   readonly branch: unknown[];
@@ -158,7 +158,7 @@ test("background start returns after durable metadata and delivers success once 
   }
 });
 
-test("RPC background activity uses Pi's string widget surface", async () => {
+test("RPC background activity is one pre-rendered line per run, cleared when the run settles", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-rpc-widget-"));
   const harness: SessionHarness = { branch: [], idle: false };
   const widgets = new Map<string, string[]>();
@@ -190,10 +190,12 @@ test("RPC background activity uses Pi's string widget surface", async () => {
       return { summary: "done" };
     }), "background-rpc-widget-run");
 
-    assert.match(widgets.get("workflow-background")?.join("\n") ?? "", /background-rpc-widget/);
+    const lines = widgets.get("workflow:background-rpc-widget-run") ?? [];
+    assert.equal(lines.length, 1);
+    assert.match(plain(lines[0] ?? ""), /◆ background · background-rpc-widget backgrou · Workflow/);
     release?.();
     await waitFor(async () => (await new ProjectWorkflowRunStore(cwd).load("background-rpc-widget-run"))?.state === "completed");
-    assert.equal(widgets.has("workflow-background"), false);
+    assert.equal(widgets.has("workflow:background-rpc-widget-run"), false);
   } finally {
     release?.();
     await coordinator.sessionShutdown(ctx);

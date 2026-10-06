@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
-import { renderWorkflowWidget, setWorkflowInspectorShortcut } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
+import {
+  renderBackgroundWorkflowLine,
+  renderWorkflowWidget,
+  setWorkflowInspectorShortcut,
+} from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
 import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createTestTheme, plain } from "./fixtures/theme.ts";
 
@@ -190,4 +194,19 @@ test("a failure log appears only when no failed agent already accounts for it", 
 
   const quiet = snapshot([{ title: "Find", agents: [agent(1, "find:logic-bugs", "running")] }], { logs: ["3 changed files"] });
   assert.doesNotMatch(renderWorkflowWidget(quiet, 140, theme).map(plain).join("\n"), /changed files/);
+});
+
+test("a background run renders as one fitted line with its short run id and phase progress", () => {
+  const view = snapshot([
+    { title: "Scope", agents: [agent(1, "scope", "done")] },
+    { title: "Find", agents: [agent(2, "find:a", "running"), agent(3, "find:b", "failed", { error: "x" }), agent(4, "find:c", "done")] },
+  ]);
+  for (const width of [140, 40]) {
+    const lines = renderBackgroundWorkflowLine(view, width, theme);
+    assert.equal(lines.length, 1);
+    assert.ok(visibleWidth(lines[0] ?? "") <= width);
+  }
+  const line = plain(renderBackgroundWorkflowLine(view, 140, theme)[0] ?? "");
+  assert.match(line, /◆ background · code-review 3cfb22c2 · Find 3\/4 · 1 failed · 12s/);
+  assert.doesNotMatch(line, /5434-4359/);
 });

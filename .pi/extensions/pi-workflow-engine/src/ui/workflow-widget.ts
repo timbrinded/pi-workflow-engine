@@ -61,6 +61,20 @@ export class WidthAwareWidget implements Component {
   invalidate(): void {}
 }
 
+/** `◆ background · code-review 56b57550 · Find 6/10 · 12s`: one line for a run the user sent to the background. */
+export function renderBackgroundWorkflowLine(snapshot: WorkflowProgressSnapshot, width: number, theme: Theme): string[] {
+  const counts = countAgents(snapshot.phases);
+  const progress = counts.total > 0 ? `${snapshot.currentPhase} ${counts.done + counts.failed}/${counts.total}` : snapshot.currentPhase;
+  const line = joinParts([
+    `${theme.fg("accent", GLYPH.workflow)} ${theme.fg("muted", "background")}`,
+    `${theme.bold(snapshot.title)} ${theme.fg("dim", snapshot.runId.slice(0, 8))}`,
+    theme.fg("muted", progress),
+    counts.failed > 0 ? theme.fg("error", `${counts.failed} failed`) : undefined,
+    theme.fg("dim", formatElapsed(Date.now() - snapshot.startedAt)),
+  ], theme);
+  return [` ${truncateToWidth(line, Math.max(1, width - 2), "…")}`];
+}
+
 interface ClassifiedPhases {
   /** Every shown phase in chronological order; finished and active phases interleave when pipelines overlap. */
   readonly ordered: readonly PhaseSnapshot[];

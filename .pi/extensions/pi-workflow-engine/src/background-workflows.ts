@@ -15,7 +15,6 @@ import { workflowResultSummary } from "./workflow-execution.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 const BACKGROUND_DELIVERY_CUSTOM_TYPE = "workflow-result";
-const BACKGROUND_WIDGET_KEY = "workflow-background";
 const SHUTDOWN_WAIT_MS = 5_000;
 const SUMMARY_LIMIT = 500;
 
@@ -108,7 +107,6 @@ export class BackgroundWorkflowCoordinator {
       } finally {
         settled = true;
         this.active.delete(input.runId);
-        this.updateBackgroundSurface(input.ctx);
         await this.notifyRunSettled(input.ctx, input.runId);
         scheduleDelivery();
       }
@@ -129,7 +127,6 @@ export class BackgroundWorkflowCoordinator {
     }
 
     accepted = true;
-    this.updateBackgroundSurface(input.ctx);
     scheduleDelivery();
   }
 
@@ -239,7 +236,6 @@ export class BackgroundWorkflowCoordinator {
         this.log(`[workflow:${runId}] failed to force paused state during shutdown: ${unknownErrorMessage(error)}`);
       }
     }
-    if (ctx.hasUI) ctx.ui.setWidget(BACKGROUND_WIDGET_KEY, undefined);
   }
 
   private async queueOrDeliver(ctx: ExtensionContext, runId: string): Promise<void> {
@@ -286,23 +282,6 @@ export class BackgroundWorkflowCoordinator {
     this.pendingDelivery.set(sessionId, pending);
   }
 
-  private updateBackgroundSurface(ctx: ExtensionContext): void {
-    if (!ctx.hasUI) return;
-    const sessionId = ctx.sessionManager.getSessionId();
-    const runs = [...this.active.entries()]
-      .filter(([, run]) => run.sessionId === sessionId)
-      .map(([runId, run]) => ({ runId, name: run.name }));
-    if (runs.length === 0) {
-      ctx.ui.setWidget(BACKGROUND_WIDGET_KEY, undefined);
-      return;
-    }
-    ctx.ui.setWidget(
-      BACKGROUND_WIDGET_KEY,
-      [formatBackgroundActivity(runs, ctx.ui.theme)],
-      { placement: "aboveEditor" },
-    );
-  }
-
   private async deliver(ctx: ExtensionContext, runId: string): Promise<boolean> {
     const store = this.storeForCwd(ctx.cwd);
     const record = await store.load(runId);
@@ -325,16 +304,6 @@ export class BackgroundWorkflowCoordinator {
     await markDelivery(store, runId, { state: "delivered", deliveredAt: Date.now() });
     return true;
   }
-}
-
-function formatBackgroundActivity(
-  runs: readonly { readonly runId: string; readonly name: string }[],
-  theme: ExtensionContext["ui"]["theme"],
-): string {
-  const visible = runs.slice(0, 2).map((run) => `${run.name} ${run.runId.slice(0, 8)}`);
-  const hidden = runs.length - visible.length;
-  const suffix = hidden > 0 ? ` · +${hidden} more` : "";
-  return `${theme.fg("accent", "●")} ${theme.bold("Background workflows")} ${theme.fg("dim", `· ${visible.join(" · ")}${suffix}`)}`;
 }
 
 export function backgroundOrigin(ctx: Pick<ExtensionContext, "sessionManager">, requestedAt = Date.now()): WorkflowBackgroundOrigin {

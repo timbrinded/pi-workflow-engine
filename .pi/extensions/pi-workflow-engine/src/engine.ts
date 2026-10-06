@@ -98,6 +98,7 @@ export async function runResolvedWorkflow(
   let durableProgress: DurableWorkflowRun | undefined;
   const progress = new ProgressTracker(ctx, mod.meta.name, runId, (snapshot) => durableProgress?.updateProgress(snapshot), {
     plannedPhases: mod.meta.phases?.map((phase) => phase.title),
+    display: resolvedOptions.background ? "background" : "live",
   });
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
   const usage = createWorkflowUsageRecorder((snapshot) => progress.updateUsage(snapshot));

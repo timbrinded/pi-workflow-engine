@@ -5,7 +5,12 @@ import type { AgentRowStatus, WorkflowLaneItemStatus, WorkflowProgressSnapshot }
 import type { WorkflowUsageSnapshot } from "./usage.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { statusTextFromCounts, type WorkflowStatusCounts } from "./ui/workflow-format.ts";
-import { renderWorkflowWidget, STRING_WIDGET_WIDTH, WidthAwareWidget } from "./ui/workflow-widget.ts";
+import {
+  renderBackgroundWorkflowLine,
+  renderWorkflowWidget,
+  STRING_WIDGET_WIDTH,
+  WidthAwareWidget,
+} from "./ui/workflow-widget.ts";
 
 interface AgentRow {
   id: number;
@@ -45,6 +50,11 @@ export const DEFAULT_LANE_ITEM_LIMIT = 200;
 export interface ProgressTrackerOptions {
   /** Phase titles from the workflow's `meta.phases`, shown as upcoming until the run reaches them. */
   readonly plannedPhases?: readonly string[];
+  /**
+   * `live` (default) draws the full progress widget and a footer status; `background` draws one
+   * summary line per run so a run the user sent to the background never takes over the screen.
+   */
+  readonly display?: "live" | "background";
 }
 
 /**
@@ -70,6 +80,7 @@ export class ProgressTracker {
   private widgetRefreshInterval: ReturnType<typeof setInterval> | undefined;
   private readonly surfaceKey: string;
   private readonly plannedPhases: readonly string[] | undefined;
+  private readonly display: "live" | "background";
   /** Latest published snapshot; the TUI widget renders it at whatever width the terminal has. */
   private latest: WorkflowProgressSnapshot | undefined;
   /** Set once the TUI has instantiated this run's widget component. */
@@ -85,6 +96,7 @@ export class ProgressTracker {
   ) {
     this.surfaceKey = `workflow:${runId}`;
     this.plannedPhases = options.plannedPhases?.length ? [...options.plannedPhases] : undefined;
+    this.display = options.display ?? "live";
     this.ensurePhase(this.currentPhase);
   }
 
@@ -261,7 +273,7 @@ export class ProgressTracker {
    */
   private publishWidget(snapshot: WorkflowProgressSnapshot): void {
     if (this.ctx.mode !== "tui") {
-      this.ctx.ui.setWidget(this.surfaceKey, renderWorkflowWidget(snapshot, STRING_WIDGET_WIDTH, this.ctx.ui.theme), { placement: "aboveEditor" });
+      this.ctx.ui.setWidget(this.surfaceKey, this.renderWidget(snapshot, STRING_WIDGET_WIDTH, this.ctx.ui.theme), { placement: "aboveEditor" });
       return;
     }
     if (this.widgetRegistered) {
@@ -273,10 +285,14 @@ export class ProgressTracker {
       this.surfaceKey,
       (tui, theme) => {
         this.tui = tui;
-        return new WidthAwareWidget((width) => (this.latest ? renderWorkflowWidget(this.latest, width, theme) : []));
+        return new WidthAwareWidget((width) => (this.latest ? this.renderWidget(this.latest, width, theme) : []));
       },
       { placement: "aboveEditor" },
     );
+  }
+
+  private renderWidget(snapshot: WorkflowProgressSnapshot, width: number, theme: ExtensionContext["ui"]["theme"]): string[] {
+    return this.display === "background" ? renderBackgroundWorkflowLine(snapshot, width, theme) : renderWorkflowWidget(snapshot, width, theme);
   }
 
   /** Elapsed time ticks even when no agent reports, so redraw the widget and status once a second. */
@@ -295,7 +311,9 @@ export class ProgressTracker {
     this.widgetRefreshInterval = undefined;
   }
 
+  /** Background runs are summarised by their widget line alone. */
   private publishStatus(snapshot: WorkflowProgressSnapshot): void {
+    if (this.display === "background") return;
     const next = statusTextFromCounts(snapshot, this.statusCounts(), this.ctx.ui.theme);
     if (next === this.lastStatusText) return;
     this.ctx.ui.setStatus(this.surfaceKey, next);
