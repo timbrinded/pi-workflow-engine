@@ -77,8 +77,10 @@ export class WorkflowRunController {
     this.completionContext = { cwd: ctx.cwd, sessionManager: ctx.sessionManager };
     this.usageLimitScheduler.activateSession(ctx);
     try {
-      for (const record of await this.storeForCwd(ctx.cwd).list()) {
-        if (canRelaunchWorkflowRun(record)) this.usageLimitScheduler.arm(ctx, record);
+      const records = await this.storeForCwd(ctx.cwd).list();
+      const resumed = resumedRunIds(records);
+      for (const record of records) {
+        if (!resumed.has(record.runId) && canRelaunchWorkflowRun(record)) this.usageLimitScheduler.arm(ctx, record);
       }
     } catch (error) {
       this.log(`[workflow] provider-limit recovery could not load run history: ${unknownErrorMessage(error)}`);
@@ -282,6 +284,7 @@ export class WorkflowRunController {
       || !record.pause.autoResume
       || record.pause.attempt !== attempt
       || !canRelaunchWorkflowRun(record)
+      || resumedRunIds(await this.storeForCwd(ctx.cwd).list()).has(runId)
     ) {
       return;
     }
@@ -340,6 +343,11 @@ export class WorkflowRunController {
       })),
     ]);
   }
+}
+
+/** A resumed run keeps its paused record; a later run naming it as its resume source supersedes it. */
+function resumedRunIds(records: readonly WorkflowRunRecord[]): ReadonlySet<string> {
+  return new Set(records.flatMap((record) => record.options.resumeFromRunId ?? []));
 }
 
 export function registerWorkflowRunCommand(

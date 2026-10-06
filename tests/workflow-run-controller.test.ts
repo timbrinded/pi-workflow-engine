@@ -403,6 +403,11 @@ test("provider-limit timers resume from the journal and manual stop cancels pend
       && record.options.usageLimitAttempt === 1
       && record.state === "completed"
     ));
+    // The source stays paused after its resume; re-entering the session must not resume it again.
+    const scheduledBeforeReentry = clock.delays.length;
+    controller.sessionShutdown(ctx);
+    await controller.sessionStarted(ctx);
+    assert.equal(clock.delays.length, scheduledBeforeReentry);
 
     await assert.rejects(runWorkflow(ctx as ExtensionContext, limited, "", {
       runId: "manual-stop-source",
