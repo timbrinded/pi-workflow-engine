@@ -3,6 +3,7 @@ import { throwIfAborted } from "../cancellation.ts";
 import { captureDiffTarget, type DiffCaptureFailure } from "../diff-capture.ts";
 import { isGitObjectId } from "../guards.ts";
 import {
+  GIT_DIFF_MACHINE_FORMAT,
   reviewGitDiffBaseline,
   type GitReviewDiffTarget,
   type PullRequestReviewDiffTarget,
@@ -237,9 +238,7 @@ async function captureMutableGitBaseline(
   const head = await tryResolveCommit("HEAD", cwd, signal);
   if (!head) throw new Error("the reviewed repository has no committed HEAD baseline");
 
-  const args = staged
-    ? ["diff", "--no-ext-diff", "--binary", "--cached", "HEAD"]
-    : ["diff", "--no-ext-diff", "--binary", "HEAD"];
+  const args = ["diff", "--no-ext-diff", ...GIT_DIFF_MACHINE_FORMAT, "--binary", ...(staged ? ["--cached"] : []), "HEAD"];
   const snapshot = await runReviewCommand("git", args, cwd, signal, REVIEW_SNAPSHOT_MAX_BYTES);
   if (!snapshot.ok) {
     throw new Error(`the reviewed working state could not be captured: ${snapshot.error}`);

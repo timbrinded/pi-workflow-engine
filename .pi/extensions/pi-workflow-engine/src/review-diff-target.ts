@@ -96,15 +96,22 @@ function isAllowedGitDiffFlag(token: string): boolean {
   return SAFE_GIT_DIFF_FLAGS.has(token) || /^-U\d+$/.test(token) || /^--unified=\d+$/.test(token) || /^--inter-hunk-context=\d+$/.test(token);
 }
 
+/**
+ * Pins the git diff output that the engine parses or applies, so user config such as
+ * diff.noprefix, diff.mnemonicPrefix, diff.srcPrefix or color.ui cannot change it.
+ */
+export const GIT_DIFF_MACHINE_FORMAT = ["--no-color", "--src-prefix=a/", "--dst-prefix=b/"] as const;
+
+/** Executable argv. Git targets gain the machine-format pins, which stay out of the persisted and displayed target. */
 export function reviewDiffCommand(target: ReviewDiffTarget): { readonly file: "git" | "gh"; readonly args: readonly string[] } {
   return target.kind === "pull-request"
     ? { file: "gh", args: ["pr", "diff", String(target.number), "--color=never"] }
-    : { file: "git", args: target.args };
+    : { file: "git", args: ["diff", ...GIT_DIFF_MACHINE_FORMAT, ...target.args.slice(1)] };
 }
 
 /** Canonical display form. Never execute this string directly; use reviewDiffCommand(). */
 export function formatReviewDiffTarget(target: ReviewDiffTarget): string {
-  const command = reviewDiffCommand(target);
+  const command = target.kind === "git" ? { file: "git", args: target.args } : reviewDiffCommand(target);
   return [command.file, ...command.args].join(" ");
 }
 

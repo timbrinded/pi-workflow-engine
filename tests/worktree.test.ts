@@ -218,7 +218,7 @@ test("captureWorktreePatch captures diff through the injected git runner", async
   });
   assert.deepEqual(runner.calls.map((call) => call.args), [
     ["add", "-N", "."],
-    ["diff", "--binary", "--full-index", "--no-ext-diff", "--no-color", BASELINE_OID, "--"],
+    ["diff", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", BASELINE_OID, "--"],
   ]);
   assert.equal(runner.calls[1]?.maxBufferBytes, 16 << 20);
 });
