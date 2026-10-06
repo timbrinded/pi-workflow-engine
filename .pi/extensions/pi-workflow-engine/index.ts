@@ -61,7 +61,7 @@ function formatMessageContent(envelope: WorkflowResultEnvelope): string {
 /** The host model only sees this text, never the envelope `details`, so it carries every result field. */
 function formatResultForContext(name: string, result: unknown): string {
   if (typeof result === "string") return result;
-  if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(name, result);
+  if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(result);
   const summary = workflowResultSummary(result);
   if (summary !== undefined && isRecord(result) && Object.keys(result).length === 1) return summary;
   const json = formatResultJson(result);
@@ -69,9 +69,9 @@ function formatResultForContext(name: string, result: unknown): string {
   return summary === undefined ? json : `${summary}\n\n${json}`;
 }
 
-function formatAdvisoryReportForContext(name: string, report: AdvisoryReport): string {
+function formatAdvisoryReportForContext(report: AdvisoryReport): string {
   const lines = [report.summary];
-  const issues = toReviewIssues(name, report);
+  const issues = toReviewIssues(report);
   if (issues.length > 0) {
     lines.push("", "Findings:");
     for (const { id, finding } of issues) {

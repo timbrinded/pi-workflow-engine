@@ -1,12 +1,9 @@
 import {
   runBoundedProcess,
   scrubbedGitEnv,
-  type BoundedProcessFailure,
   type BoundedProcessResult,
 } from "./process-runner.ts";
 import { reviewDiffCommand, type ReviewDiffTarget } from "./review-diff-target.ts";
-
-export type DiffCaptureFailure = BoundedProcessFailure;
 
 export interface DiffCaptureOptions {
   readonly cwd: string;

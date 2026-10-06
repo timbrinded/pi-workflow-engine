@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { throwIfAborted } from "../cancellation.ts";
-import { captureDiffTarget, type DiffCaptureFailure, type DiffCaptureResult } from "../diff-capture.ts";
+import { captureDiffTarget } from "../diff-capture.ts";
 import { isGitObjectId } from "../guards.ts";
 import {
   GIT_DIFF_MACHINE_FORMAT,
@@ -9,7 +9,7 @@ import {
   type PullRequestReviewDiffTarget,
   type ReviewDiffTarget,
 } from "../review-diff-target.ts";
-import { runBoundedProcess } from "../process-runner.ts";
+import { runBoundedProcess, scrubbedGitEnv, type BoundedProcessFailure, type BoundedProcessResult } from "../process-runner.ts";
 import { unknownErrorMessage } from "../unknown-error.ts";
 import type { WorktreeBaseline } from "../worktree.ts";
 import type { ReviewContext, ReviewSnapshotIdentity } from "./review-report.ts";
@@ -41,7 +41,7 @@ export interface CapturedReviewMaterial {
 export interface ReviewMaterialCaptureFailure {
   readonly ok: false;
   readonly error: string;
-  readonly failure: DiffCaptureFailure;
+  readonly failure: BoundedProcessFailure;
 }
 
 export type ReviewMaterialCaptureResult = CapturedReviewMaterial | ReviewMaterialCaptureFailure;
@@ -138,7 +138,7 @@ export function fingerprintReviewWorktreeBaseline(baseline: WorktreeBaseline): s
     .digest("hex");
 }
 
-function captureReviewDiff(target: ReviewDiffTarget, cwd: string, signal: AbortSignal | undefined): Promise<DiffCaptureResult> {
+function captureReviewDiff(target: ReviewDiffTarget, cwd: string, signal: AbortSignal | undefined): Promise<BoundedProcessResult> {
   return captureDiffTarget(target, { cwd, signal, timeoutMs: REVIEW_SNAPSHOT_TIMEOUT_MS, maxBufferBytes: REVIEW_SNAPSHOT_MAX_BYTES });
 }
 
@@ -271,7 +271,7 @@ async function runReviewCommand(
     file,
     args,
     cwd,
-    env: { ...process.env, GIT_EXTERNAL_DIFF: "", GIT_DIFF_OPTS: "" },
+    env: scrubbedGitEnv(),
     signal,
     timeoutMs: REVIEW_SNAPSHOT_TIMEOUT_MS,
     maxBufferBytes,
