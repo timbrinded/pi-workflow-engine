@@ -36,7 +36,7 @@ const result = {
 };
 
 const written = await maybeWriteBenchmarkOutput("concurrency", result, options.out);
-printBenchmarkOutput(written ? { ...result, written } : result, options.json);
+printBenchmarkOutput(written ? { ...result, written } : result);
 
 async function runSemaphoreScenario(items: number, concurrencyLimit: number): Promise<ScenarioResult> {
   const perf = new PerfRecorder();

@@ -3,7 +3,6 @@ import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 export interface BenchCliOptions {
-  readonly json: boolean;
   readonly iterations: number;
   readonly out: string | undefined;
   readonly flags: ReadonlyMap<string, string>;
@@ -21,16 +20,11 @@ export interface BenchmarkStats {
 
 export function parseBenchArgs(argv: readonly string[] = process.argv.slice(2)): BenchCliOptions {
   const flags = new Map<string, string>();
-  let json = false;
   let iterations = 1;
   let out: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--json") {
-      json = true;
-      continue;
-    }
     if (arg === "--out") {
       const next = argv[i + 1];
       if (next && !next.startsWith("--")) {
@@ -74,7 +68,7 @@ export function parseBenchArgs(argv: readonly string[] = process.argv.slice(2)):
     }
   }
 
-  return { json, iterations, out, flags };
+  return { iterations, out, flags };
 }
 
 export function numberFlag(options: BenchCliOptions, name: string, defaultValue: number): number {
@@ -116,11 +110,7 @@ export async function maybeWriteBenchmarkOutput(name: string, data: unknown, out
   return path;
 }
 
-export function printBenchmarkOutput(data: unknown, json: boolean): void {
-  if (json) {
-    console.log(JSON.stringify(data, null, 2));
-    return;
-  }
+export function printBenchmarkOutput(data: unknown): void {
   console.log(JSON.stringify(data, null, 2));
 }
 

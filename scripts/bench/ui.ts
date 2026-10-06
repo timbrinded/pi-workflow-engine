@@ -42,7 +42,7 @@ const result = {
 };
 
 const written = await maybeWriteBenchmarkOutput("ui", result, options.out);
-printBenchmarkOutput(written ? { ...result, written } : result, options.json);
+printBenchmarkOutput(written ? { ...result, written } : result);
 
 function createSnapshot(config: { agents: number; laneItems: number; phases: number }): WorkflowProgressSnapshot {
   const phaseSnapshots = Array.from({ length: config.phases }, (_value, phaseIndex) => ({
