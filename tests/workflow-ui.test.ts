@@ -388,12 +388,12 @@ test("generic workflow results stringify raw JSON only when expanded", () => {
     values: Array.from({ length: 100 }, (_value, index) => ({ index, payload: `payload-${index}` })),
   };
 
-  const collapsed = renderWorkflowResultText("generic", large, false, theme);
+  const collapsed = renderWorkflowResultText({ name: "generic", result: large }, false, theme);
   assert.match(collapsed, /Result available in expanded view/);
   assert.doesNotMatch(collapsed, /deeplyNestedFieldThatShouldNotAppearCollapsed/);
   assert.doesNotMatch(collapsed, /payload-99/);
 
-  const expanded = renderWorkflowResultText("generic", large, true, theme);
+  const expanded = renderWorkflowResultText({ name: "generic", result: large }, true, theme);
   assert.match(expanded, /deeplyNestedFieldThatShouldNotAppearCollapsed/);
   assert.match(expanded, /payload-99/);
 });
@@ -401,22 +401,23 @@ test("generic workflow results stringify raw JSON only when expanded", () => {
 test("workflow result text renders usage summaries", () => {
   const theme = createTestTheme();
 
-  const generic = renderWorkflowResultText("generic", { summary: "Done" }, false, theme, usageSnapshot);
+  const generic = renderWorkflowResultText({ name: "generic", result: { summary: "Done" }, usage: usageSnapshot }, false, theme);
   assert.match(generic, /Usage: fresh 12.3k · cache read 40k · cache write 5k · output 1.8k · cost \$0.123 · agents 1/);
 
-  const advisory = renderWorkflowResultText("refactor-scout", validReport, true, theme, usageSnapshot);
+  const advisory = renderWorkflowResultText({ name: "refactor-scout", result: validReport, usage: usageSnapshot }, true, theme);
   assert.match(advisory, /Usage: fresh 12.3k · cache read 40k · cache write 5k · output 1.8k · cost \$0.123 · agents 1/);
 });
 
 test("workflow result text renders perf detail lines", () => {
   const theme = createTestTheme();
-  const rendered = renderWorkflowResultText("generic", { summary: "Done" }, false, theme, undefined, undefined, {
+  const perf = {
     enabled: true,
     startedAt: 1,
     aggregates: [
       { name: "workflow.total_ms", count: 1, total: 123.4, min: 123.4, max: 123.4, mean: 123.4, p50: 123.4, p95: 123.4 },
     ],
-  });
+  };
+  const rendered = renderWorkflowResultText({ name: "generic", result: { summary: "Done" }, perf }, false, theme);
 
   assert.match(rendered, /Perf: workflow\.total_ms 123ms/);
 });
@@ -424,7 +425,7 @@ test("workflow result text renders perf detail lines", () => {
 test("workflow result text ignores malformed usage details", () => {
   const theme = createTestTheme();
 
-  const rendered = renderWorkflowResultText("generic", { summary: "Done" }, false, theme, {});
+  const rendered = renderWorkflowResultText({ name: "generic", result: { summary: "Done" }, usage: {} }, false, theme);
 
   assert.match(rendered, /Done/);
   assert.doesNotMatch(rendered, /Usage:/);
@@ -433,7 +434,7 @@ test("workflow result text ignores malformed usage details", () => {
 test("workflow result text renders advisory reports collapsed and expanded", () => {
   const theme = createTestTheme();
 
-  const collapsed = renderWorkflowResultText("refactor-scout", validReport, false, theme);
+  const collapsed = renderWorkflowResultText({ name: "refactor-scout", result: validReport }, false, theme);
   assert.match(collapsed, /Workflow: refactor-scout/);
   assert.match(collapsed, /Review complete/);
   assert.match(collapsed, /files 2/);
@@ -446,7 +447,7 @@ test("workflow result text renders advisory reports collapsed and expanded", () 
   assert.match(collapsed, /R001/);
   assert.match(collapsed, /src\/app\.ts:10 \(retry\)/);
 
-  const expanded = renderWorkflowResultText("refactor-scout", validReport, true, theme);
+  const expanded = renderWorkflowResultText({ name: "refactor-scout", result: validReport }, true, theme);
   assert.match(expanded, /R001.*Off-by-one in retry loop/);
   assert.match(expanded, /Impact:.*A final retry is skipped/);
   assert.match(expanded, /Evidence:.*line 10 increments before checking the limit/);
@@ -474,11 +475,11 @@ const validReport = {
 };
 
 test("incomplete advisory coverage cannot render a green clean-review result", () => {
-  const rendered = renderWorkflowResultText("code-review", {
+  const rendered = renderWorkflowResultText({ name: "code-review", result: {
     summary: "Incomplete review", findings: [], nextSteps: ["Rerun missing work"], status: "incomplete",
     coverage: [{ stage: "Verify", expected: 2, completed: 0, failed: 2, failures: [{ branch: "a", reason: "provider failed" }, { branch: "b", reason: "provider failed" }] }],
     gaps: ["Verify/a: provider failed", "Verify/b: provider failed"],
-  }, true, createTestTheme());
+  } }, true, createTestTheme());
   assert.match(rendered, /⚠/);
   assert.match(rendered, /Verify: 0\/2 complete, 2 failed/);
   assert.match(rendered, /coverage is incomplete/);

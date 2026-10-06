@@ -54,7 +54,6 @@ export interface WorkflowExecutionInput {
 }
 
 export interface WorkflowExecution {
-  readonly metadata?: WorkflowRunMetadata;
   readonly envelope: WorkflowResultEnvelope;
 }
 
@@ -96,7 +95,6 @@ export async function executeWorkflowInvocation(input: WorkflowExecutionInput): 
   const result = await input.runResolvedWorkflow(input.ctx, input.mod, input.args, runOptions);
   const perf = compactPerfSnapshot(perfSnapshot);
   return {
-    metadata: runMetadata,
     envelope: {
       name: input.name,
       result,

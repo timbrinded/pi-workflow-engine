@@ -15,64 +15,39 @@ export function isWorkflowResult(value: unknown): value is WorkflowResultEnvelop
   return typeof value.name === "string" && "result" in value && typeof value.completedAt === "number";
 }
 
-export interface WorkflowRunDisplayMetadata {
+/** What the result renderers read. Persisted message details are unvalidated, so `usage` stays `unknown`. */
+export interface WorkflowResultView {
+  readonly name: string;
+  readonly result: unknown;
+  readonly usage?: unknown;
+  readonly perf?: WorkflowPerfDetails;
   readonly runId?: string;
   readonly resumedFromRunId?: string;
 }
 
-export interface WorkflowDetailLineInput {
-  readonly usage?: unknown;
-  readonly perf?: WorkflowPerfDetails;
-  readonly metadata?: WorkflowRunDisplayMetadata;
-}
+type WorkflowDetailLineInput = Pick<WorkflowResultView, "usage" | "perf" | "runId" | "resumedFromRunId">;
 
-export function renderWorkflowResult(
-  name: string,
-  result: unknown,
-  expanded: boolean,
-  theme: Theme,
-  usage?: unknown,
-  metadata?: WorkflowRunDisplayMetadata,
-  perf?: WorkflowPerfDetails,
-): Component {
+export function renderWorkflowResult(view: WorkflowResultView, expanded: boolean, theme: Theme): Component {
   const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-  box.addChild(new Text(renderWorkflowResultText(name, result, expanded, theme, usage, metadata, perf), 0, 0));
+  box.addChild(new Text(renderWorkflowResultText(view, expanded, theme), 0, 0));
   return box;
 }
 
-export function renderWorkflowResultText(
-  name: string,
-  result: unknown,
-  expanded: boolean,
-  theme: Theme,
-  usage?: unknown,
-  metadata?: WorkflowRunDisplayMetadata,
-  perf?: WorkflowPerfDetails,
-): string {
-  if (isAdvisoryReport(result)) {
-    return renderAdvisoryResult(name, result, expanded, theme, usage, metadata, perf);
-  }
-  return renderGenericWorkflowResult(name, result, expanded, theme, usage, metadata, perf);
+export function renderWorkflowResultText(view: WorkflowResultView, expanded: boolean, theme: Theme): string {
+  if (isAdvisoryReport(view.result)) return renderAdvisoryResult(view, view.result, expanded, theme);
+  return renderGenericWorkflowResult(view, expanded, theme);
 }
 
-function renderAdvisoryResult(
-  name: string,
-  result: AdvisoryReportWithStats,
-  expanded: boolean,
-  theme: Theme,
-  usage?: unknown,
-  metadata?: WorkflowRunDisplayMetadata,
-  perf?: WorkflowPerfDetails,
-): string {
+function renderAdvisoryResult(view: WorkflowResultView, result: AdvisoryReportWithStats, expanded: boolean, theme: Theme): string {
   const incomplete = result.status === "incomplete";
   const icon = incomplete ? theme.fg("warning", "⚠") : theme.fg("success", "✓");
-  const title = theme.fg("accent", theme.bold(`Workflow: ${name}`));
+  const title = theme.fg("accent", theme.bold(`Workflow: ${view.name}`));
   const lines = [`${icon} ${title}`, theme.fg("muted", result.summary)];
   if (result.coverage?.length) lines.push(theme.fg("dim", result.coverage.map((stage) => `${stage.stage}: ${stage.completed}/${stage.expected} complete, ${stage.failed} failed`).join(" · ")));
   if (expanded) for (const gap of result.gaps ?? []) lines.push(theme.fg("warning", gap));
   const stats = statsLine(result.stats, theme);
   if (stats) lines.push(stats);
-  pushWorkflowDetailLines(lines, theme, { usage, metadata, perf });
+  pushWorkflowDetailLines(lines, theme, view);
 
   if (result.findings.length === 0) {
     lines.push(incomplete ? theme.fg("warning", "No verified findings; coverage is incomplete.") : theme.fg("success", "No findings."));
@@ -80,7 +55,7 @@ function renderAdvisoryResult(
     return lines.join("\n");
   }
 
-  const issues = toReviewIssues(name, result);
+  const issues = toReviewIssues(view.name, result);
   lines.push(theme.fg("dim", "Findings:"));
   lines.push(renderIssuesTable(issues, theme, { maxRows: expanded ? issues.length : 12 }));
   if (expanded) {
@@ -99,20 +74,12 @@ function renderNextSteps(nextSteps: string[], lines: string[], theme: Theme): vo
   }
 }
 
-function renderGenericWorkflowResult(
-  name: string,
-  result: unknown,
-  expanded: boolean,
-  theme: Theme,
-  usage?: unknown,
-  metadata?: WorkflowRunDisplayMetadata,
-  perf?: WorkflowPerfDetails,
-): string {
-  const lines = [`${theme.fg("success", "✓")} ${theme.fg("accent", theme.bold(`Workflow: ${name}`))}`];
-  const summary = workflowResultSummary(result);
+function renderGenericWorkflowResult(view: WorkflowResultView, expanded: boolean, theme: Theme): string {
+  const lines = [`${theme.fg("success", "✓")} ${theme.fg("accent", theme.bold(`Workflow: ${view.name}`))}`];
+  const summary = workflowResultSummary(view.result);
   if (summary) lines.push(theme.fg("muted", summary));
-  pushWorkflowDetailLines(lines, theme, { usage, metadata, perf });
-  if (expanded) lines.push(theme.fg("dim", safeJson(result)));
+  pushWorkflowDetailLines(lines, theme, view);
+  if (expanded) lines.push(theme.fg("dim", safeJson(view.result)));
   else if (!summary) lines.push(theme.fg("dim", "Result available in expanded view."));
   return lines.join("\n");
 }
@@ -125,19 +92,15 @@ function pushWorkflowDetailLines(lines: string[], theme: Theme, input: WorkflowD
 
 export function formatWorkflowDetailLines(input: WorkflowDetailLineInput): string[] {
   return [
-    formatWorkflowRunLine(input.metadata),
+    formatWorkflowRunLine(input),
     formatWorkflowUsageLine(input.usage),
-    formatWorkflowPerfLine(input.perf),
+    input.perf ? formatPerfSummary(input.perf.aggregates) : undefined,
   ].filter((line): line is string => line !== undefined);
 }
 
-export function formatWorkflowRunLine(metadata: WorkflowRunDisplayMetadata | undefined): string | undefined {
-  if (!metadata?.runId) return undefined;
-  return metadata.resumedFromRunId ? `Run: ${metadata.runId} (resumed from ${metadata.resumedFromRunId})` : `Run: ${metadata.runId}`;
-}
-
-export function formatWorkflowPerfLine(perf: WorkflowPerfDetails | undefined): string | undefined {
-  return perf ? formatPerfSummary(perf.aggregates) : undefined;
+function formatWorkflowRunLine({ runId, resumedFromRunId }: WorkflowDetailLineInput): string | undefined {
+  if (!runId) return undefined;
+  return resumedFromRunId ? `Run: ${runId} (resumed from ${resumedFromRunId})` : `Run: ${runId}`;
 }
 
 function statsLine(stats: Record<string, string | number> | undefined, theme: Theme): string | undefined {

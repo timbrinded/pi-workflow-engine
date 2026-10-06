@@ -4,11 +4,10 @@ import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type Extensio
 import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { isAdvisoryReport } from "./src/advisory-schema.ts";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
-import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
+import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./src/ui/workflow-viewer-layout.ts";
 import type { PerfSink } from "./src/perf.ts";
-import type { WorkflowUsageSnapshot } from "./src/usage.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
@@ -36,7 +35,7 @@ import {
   WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS,
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
 } from "./src/options.ts";
-import { executeWorkflowInvocation, workflowResultSummary, type WorkflowExecution, type WorkflowPerfDetails } from "./src/workflow-execution.ts";
+import { executeWorkflowInvocation, workflowResultSummary, type WorkflowExecution, type WorkflowResultEnvelope } from "./src/workflow-execution.ts";
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
 import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
@@ -53,15 +52,9 @@ function summarize(result: unknown): string {
   return workflowResultSummary(result) ?? "Workflow finished.";
 }
 
-function formatMessageContent(
-  name: string,
-  result: unknown,
-  usage?: WorkflowUsageSnapshot,
-  perf?: WorkflowPerfDetails,
-  metadata?: WorkflowRunMetadata,
-): string {
-  const details = formatWorkflowDetailLines({ usage, perf, metadata });
-  return `## Workflow: ${name}\n\n${formatResultForContext(result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
+function formatMessageContent(envelope: WorkflowResultEnvelope): string {
+  const details = formatWorkflowDetailLines(envelope);
+  return `## Workflow: ${envelope.name}\n\n${formatResultForContext(envelope.result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
 }
 
 function formatResultForContext(result: unknown): string {
@@ -586,17 +579,10 @@ async function executeResolvedWorkflow(
 }
 
 function sendWorkflowExecution(pi: ExtensionAPI, execution: WorkflowExecution): void {
-  const { name } = execution.envelope;
   pi.sendMessage(
     {
       customType: "workflow-result",
-      content: formatMessageContent(
-        name,
-        execution.envelope.result,
-        execution.envelope.usage,
-        execution.envelope.perf,
-        execution.metadata,
-      ),
+      content: formatMessageContent(execution.envelope),
       display: true,
       details: execution.envelope,
     },
@@ -658,13 +644,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
 
   pi.registerMessageRenderer("workflow-result", (message, { expanded }, theme) => {
     const details = message.details;
-    if (isWorkflowResult(details)) {
-      return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage, {
-        runId: details.runId,
-        resumedFromRunId: details.resumedFromRunId,
-      }, details.perf);
-    }
-    return renderWorkflowResult("workflow", details ?? message.content, expanded, theme);
+    return renderWorkflowResult(isWorkflowResult(details) ? details : { name: "workflow", result: details ?? message.content }, expanded, theme);
   });
 
   pi.registerCommand("workflow:inspector", {
@@ -827,12 +807,7 @@ function registerWorkflowTool(
     renderResult(result, { expanded, isPartial }, theme) {
       if (isPartial) return new Text(theme.fg("accent", "Running workflow…"), 0, 0);
       const details = result.details;
-      if (isWorkflowResult(details)) {
-        return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage, {
-          runId: details.runId,
-          resumedFromRunId: details.resumedFromRunId,
-        }, details.perf);
-      }
+      if (isWorkflowResult(details)) return renderWorkflowResult(details, expanded, theme);
       const first = result.content[0];
       const text = first?.type === "text" ? first.text : "Workflow finished.";
       return new Text(theme.fg("muted", text), 0, 0);
@@ -926,16 +901,7 @@ function registerWorkflowTool(
       const execution = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
       reviewSessions.remember(ctx, execution, runOptions);
       return {
-        content: [{
-          type: "text",
-          text: formatMessageContent(
-            resultName,
-            execution.envelope.result,
-            execution.envelope.usage,
-            execution.envelope.perf,
-            execution.metadata,
-          ),
-        }],
+        content: [{ type: "text", text: formatMessageContent(execution.envelope) }],
         details: execution.envelope,
       };
     },
