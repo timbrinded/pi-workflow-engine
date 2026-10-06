@@ -57,6 +57,25 @@ test("runBoundedProcess retains structured exit metadata", async () => {
   assert.equal(result.error, "expected failure");
 });
 
+test("runBoundedProcess decodes multi-byte characters split across output chunks", async () => {
+  // Each stream writes the first byte of "€" and the remaining two bytes after a pause,
+  // so the parent observes the character split across separate pipe chunks.
+  const result = await runBoundedProcess(processOptions(`
+    const euro = Buffer.from("€");
+    process.stdout.write(euro.subarray(0, 1));
+    process.stderr.write(euro.subarray(0, 1));
+    setTimeout(() => {
+      process.stdout.write(euro.subarray(1));
+      process.stderr.write(euro.subarray(1));
+    }, 50);
+  `));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.stdout, "€");
+  assert.equal(result.stderr, "€");
+  assert.equal(result.bytes, 6);
+});
+
 test("runBoundedProcess distinguishes output-limit termination from child exit", async () => {
   const result = await runBoundedProcess({
     ...processOptions('process.stdout.write("too much output")'),

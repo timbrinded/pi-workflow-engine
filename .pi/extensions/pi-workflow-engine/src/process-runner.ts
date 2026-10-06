@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { performance } from "node:perf_hooks";
+import { StringDecoder } from "node:string_decoder";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 export interface BoundedProcessOptions {
@@ -102,6 +103,13 @@ export async function runBoundedProcess(
   let stdout = "";
   let stderr = "";
   let bytes = 0;
+  // Pipe chunks can split a multi-byte UTF-8 sequence; streaming decoders carry the tail forward.
+  const stdoutDecoder = new StringDecoder("utf8");
+  const stderrDecoder = new StringDecoder("utf8");
+  const flushDecoders = () => {
+    stdout += stdoutDecoder.end();
+    stderr += stderrDecoder.end();
+  };
   let pendingFailure: BoundedProcessFailure | undefined;
   const child = spawn(options.file, [...options.args], {
     cwd: options.cwd,
@@ -127,6 +135,7 @@ export async function runBoundedProcess(
       if (settled) return;
       settled = true;
       cleanup();
+      flushDecoders();
       const base = { stdout, stderr, durationMs: performance.now() - start, bytes };
       if (!failure) {
         resolve({ ...base, ok: true });
@@ -216,7 +225,7 @@ export async function runBoundedProcess(
     const onAbort = () => terminate({ kind: "abort", message: options.abortError });
     const timeout = setTimeout(() => terminate({ kind: "timeout", message: options.timeoutError }), options.timeoutMs);
 
-    const captureChunk = (chunk: Buffer, append: (text: string) => void) => {
+    const captureChunk = (chunk: Buffer, decoder: StringDecoder, append: (text: string) => void) => {
       if (pendingFailure) return;
       bytes += chunk.length;
       if (options.maxBufferBytes !== undefined && bytes > options.maxBufferBytes) {
@@ -226,10 +235,10 @@ export async function runBoundedProcess(
         });
         return;
       }
-      append(chunk.toString("utf8"));
+      append(decoder.write(chunk));
     };
-    child.stdout?.on("data", (chunk: Buffer) => captureChunk(chunk, (text) => (stdout += text)));
-    child.stderr?.on("data", (chunk: Buffer) => captureChunk(chunk, (text) => (stderr += text)));
+    child.stdout?.on("data", (chunk: Buffer) => captureChunk(chunk, stdoutDecoder, (text) => (stdout += text)));
+    child.stderr?.on("data", (chunk: Buffer) => captureChunk(chunk, stderrDecoder, (text) => (stderr += text)));
     child.on("error", (spawnError) => {
       if (!pendingFailure) finish({ kind: "spawn", message: spawnError.message });
     });
@@ -242,6 +251,7 @@ export async function runBoundedProcess(
         finish();
         return;
       }
+      flushDecoders();
       const message = options.exitError(stderr, code, signal);
       finish({ kind: "exit", message, code, signal });
     });
