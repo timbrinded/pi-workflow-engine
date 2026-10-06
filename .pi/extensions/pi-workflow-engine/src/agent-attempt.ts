@@ -40,6 +40,7 @@ export async function executeAgentAttempt(input: {
   if (replay.kind === "isolated") {
     const mutationGuard = await captureRepositoryMutationGuard(rc.cwd, rc.signal);
     if (mutationGuard.kind === "verified") armed = { ...replay, mutationGuard: mutationGuard.fingerprint };
+    else rc.progress.log(`${label}: resume disabled for this call (${mutationGuard.reason})`);
   } else if (replay.kind === "shared") {
     armed = replay;
     repositoryBefore = await captureSharedRepositoryBeforeSetup(rc, prompt, opts, replay);
