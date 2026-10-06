@@ -18,11 +18,7 @@ import {
   type AgentReplayPlan,
 } from "./agent-replay.ts";
 import { openAgentSession, promptAgentSession, type AgentSessionHandle } from "./agent-session.ts";
-import {
-  createAgentWorkspace,
-  disposeAgentWorkspace,
-  type AgentWorkspace,
-} from "./agent-workspace.ts";
+import { createAgentWorkspace, type AgentWorkspace } from "./agent-workspace.ts";
 import type { AgentResumeBaseContext, AgentResumeContext, RepositoryResumeContext } from "./resume-context.ts";
 import { captureRepositoryMutationGuard } from "./resume-context.ts";
 
@@ -66,7 +62,7 @@ export async function executeAgentAttempt(input: {
     }
     handle = await openAgentSession({ rc, prompt, opts, cwd: workspace.cwd, model, label, tags });
 
-    let identity: AgentResumeContext | undefined;
+    let contract: ReplayContract | undefined;
     if (isReplayEnabled(replay) && repositoryBefore && evidence) {
       const capture = await captureReplayIdentity({
         rc,
@@ -79,21 +75,11 @@ export async function executeAgentAttempt(input: {
       if (capture.kind === "unverifiable") {
         rc.progress.log(`${label}: resume disabled for this call (${capture.reason})`);
       } else {
-        identity = capture.identity;
+        const { identity } = capture;
+        contract = { identity, replay, evidence };
         const cached = await lookupReplayResult({ rc, key: replay.key, identity, opts, workspace });
         if (cached.hit) {
-          const contract = await validateReplayIdentity({
-            rc,
-            identity,
-            selectedSkills: handle.selectedSkills,
-            session: handle.session,
-            sessionCwd: workspace.cwd,
-            replay,
-            workspace,
-          });
-          const validation = contract.ok
-            ? await validateReplayEvidence(rc, evidence)
-            : contract;
+          const validation = await validateReplayContract(rc, contract, handle, workspace);
           if (validation.ok) {
             return { kind: "cache-hit", result: cached.result, identity, evidence };
           }
@@ -116,23 +102,11 @@ export async function executeAgentAttempt(input: {
       tags,
     });
     const result = await workspace.wrapResult(rawResult);
-    if (!identity) return { kind: "live-unrecordable", result };
-    if (!isReplayEnabled(replay) || !evidence) throw new Error("Replay identity produced without complete replay evidence.");
+    if (!contract) return { kind: "live-unrecordable", result };
 
-    const contract = await validateReplayIdentity({
-      rc,
-      identity,
-      selectedSkills: handle.selectedSkills,
-      session: handle.session,
-      sessionCwd: workspace.cwd,
-      replay,
-      workspace,
-    });
-    const validation = contract.ok
-      ? await validateReplayEvidence(rc, evidence)
-      : contract;
+    const validation = await validateReplayContract(rc, contract, handle, workspace);
     if (validation.ok) {
-      return { kind: "live-recordable", result, identity, evidence };
+      return { kind: "live-recordable", result, identity: contract.identity, evidence: contract.evidence };
     }
     rc.progress.log(`${label}: read-only resume contract was not recorded (${validation.reason})`);
     return { kind: "live-unrecordable", result };
@@ -141,7 +115,32 @@ export async function executeAgentAttempt(input: {
       const session = handle?.session;
       if (session) rc.perf.timeSync("agent.dispose_ms", () => session.dispose(), tags);
     } finally {
-      await disposeAgentWorkspace(rc, label, workspace);
+      await workspace?.dispose();
     }
   }
+}
+
+interface ReplayContract {
+  readonly identity: AgentResumeContext;
+  readonly replay: Extract<AgentReplayPlan, { readonly kind: "shared" | "isolated" }>;
+  readonly evidence: AgentReplayEvidence;
+}
+
+/** Re-check a captured replay identity and its repository evidence against the session and workspace as they are now. */
+async function validateReplayContract(
+  rc: RunContext,
+  contract: ReplayContract,
+  handle: AgentSessionHandle,
+  workspace: AgentWorkspace,
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
+  const identity = await validateReplayIdentity({
+    rc,
+    identity: contract.identity,
+    selectedSkills: handle.selectedSkills,
+    session: handle.session,
+    sessionCwd: workspace.cwd,
+    replay: contract.replay,
+    workspace,
+  });
+  return identity.ok ? await validateReplayEvidence(rc, contract.evidence) : identity;
 }

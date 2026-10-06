@@ -1,5 +1,4 @@
 import type { AgentExecutionOptions, AgentProgress } from "./agent-runner-types.ts";
-import { unknownErrorMessage } from "./unknown-error.ts";
 import type { WorktreeRegistry } from "./worktree.ts";
 
 interface AgentWorkspaceBase {
@@ -87,17 +86,4 @@ export async function createAgentWorkspace(
       }
     },
   };
-}
-
-export async function disposeAgentWorkspace(
-  rc: Pick<AgentWorkspaceContext, "progress">,
-  label: string,
-  workspace: AgentWorkspace | undefined,
-): Promise<void> {
-  if (!workspace) return;
-  try {
-    await workspace.dispose();
-  } catch (error) {
-    rc.progress.log(`${label}: failed to dispose isolated workspace (${unknownErrorMessage(error)})`);
-  }
 }
