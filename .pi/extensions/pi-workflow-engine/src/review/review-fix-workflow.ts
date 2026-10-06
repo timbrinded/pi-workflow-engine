@@ -141,8 +141,9 @@ async function evaluateReviewFix(api: ReviewFixWorkflowApi, input: {
         label: `evaluate:${issue.id}`, phase: "Validate patch previews", profile: "medium", resume: "off",
         tools: ["read", "bash", "grep", "find", "ls"], toolHints: ["search"], schema: PatchEvaluationSchema },
     );
+    // Drift here is usually a test byproduct in the evaluator's worktree, not evidence against the repair.
     if (evaluated.baselineOid !== isolated.baselineOid || evaluated.patch !== isolated.patch) {
-      return { ...validation, status: "rejected", reason: "Evaluator changed the candidate or used a different baseline.", evaluation: evaluated.result };
+      return { ...validation, status: "blocked", reason: "Evaluator session changed its workspace (candidate patch or baseline drifted); independent checks were not run.", evaluation: evaluated.result };
     }
     return await validateCandidatePatch({ cwd: api.cwd, baseline, expectedFingerprint: context.snapshot.baselineFingerprint,
         baselineOid: isolated.baselineOid, patch: isolated.patch, evaluation: evaluated.result, signal: api.signal });

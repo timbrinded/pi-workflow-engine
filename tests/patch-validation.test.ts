@@ -140,6 +140,23 @@ test("evaluator reconstruction includes the reviewed dirty snapshot", async () =
   } finally { await registry.removeAll(); await repo.cleanup(); }
 });
 
+test("evaluator workspace byproducts block the candidate instead of rejecting the repair", async () => {
+  const baseline = { ref: "a".repeat(40) };
+  const issues = toReviewIssues("code-review", { findings: [{ summary: "bug", category: "bug", severity: "high", confidence: "high", locations: [], evidence: [], impact: "impact", recommendation: "repair" }] });
+  const agent = (async (_prompt: string, options: AgentOptions) => options.label?.startsWith("fix:")
+    ? { result: "done", patch: "candidate", changed: true, baselineOid: baseline.ref }
+    : { result: accepted, patch: "candidate\n+__pycache__/app.pyc", changed: true, baselineOid: baseline.ref }) as WorkflowApi["agent"];
+
+  const result = await runReviewFixWorkflow({ agent, parallel: bindParallel({}), phase() {}, signal: undefined, cwd: process.cwd() }, issues,
+    { workflowName: "code-review", target: "", files: [], diffTarget: { kind: "git", args: [] }, snapshot: { baselineFingerprint: fingerprintReviewWorktreeBaseline(baseline), diffFingerprint: "a".repeat(64) } }, baseline);
+
+  const preview = result.fixes[0]!;
+  assert.ok("patch" in preview);
+  assert.equal(preview.validation.status, "blocked");
+  assert.match(preview.validation.reason, /independent checks were not run/);
+  assert.match(result.summary, /0 rejected; 1 blocked/);
+});
+
 test("fatal evaluator cancellation aborts the fix workflow instead of becoming blocked", async () => {
   const { WorkflowAbortError } = await import("../.pi/extensions/pi-workflow-engine/src/cancellation.ts");
   const baseline = { ref: "a".repeat(40) };
