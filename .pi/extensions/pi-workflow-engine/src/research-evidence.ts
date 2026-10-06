@@ -163,17 +163,27 @@ export function fallbackResearchReport(
   };
 }
 
-export function unavailableResearchReport(reason: "empty-question" | "missing-capability" | "no-evidence"): ResearchReport {
-  const message = reason === "empty-question"
-    ? "No research question was provided."
-    : reason === "missing-capability"
-      ? "Research could not start because pi exposed no installed external web-search or URL-extraction tool."
-      : "Research completed without enough direct-page evidence to support an answer.";
-  const nextStep = reason === "empty-question"
-    ? "Run `/workflow research <question>` and include any source, date, or geography constraints in the arguments."
-    : reason === "missing-capability"
-      ? "Install or enable a pi tool that can search the web or extract HTTP(S) pages, then rerun the workflow."
-      : "Check the installed external-search tool, narrow the question, or provide preferred source domains.";
+const UNAVAILABLE_RESEARCH = {
+  "empty-question": {
+    message: "No research question was provided.",
+    nextStep: "Run `/workflow research <question>` and include any source, date, or geography constraints in the arguments.",
+  },
+  "missing-capability": {
+    message: "Research could not start because pi exposed no installed external web-search or URL-extraction tool.",
+    nextStep: "Install or enable a pi tool that can search the web or extract HTTP(S) pages, then rerun the workflow.",
+  },
+  "lanes-failed": {
+    message: "Research could not gather direct-page evidence because one or more research lanes failed.",
+    nextStep: "Check the installed external-search tool and its provider, then rerun the workflow.",
+  },
+  "no-evidence": {
+    message: "Research completed without enough direct-page evidence to support an answer.",
+    nextStep: "Check the installed external-search tool, narrow the question, or provide preferred source domains.",
+  },
+} as const;
+
+export function unavailableResearchReport(reason: keyof typeof UNAVAILABLE_RESEARCH): ResearchReport {
+  const { message, nextStep } = UNAVAILABLE_RESEARCH[reason];
   return {
     answer: message,
     supportedClaims: [],

@@ -1,4 +1,3 @@
-import { compactResults } from "../src/concurrency.ts";
 import {
   MAX_RESEARCH_LANES,
   ResearchLaneResultSchema,
@@ -67,46 +66,47 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
   progress({ type: "summary", key: "research.question", value: question });
 
   phase("Gather");
-  const gathered = compactResults(
-    await parallel(
-      lanes.map((lane) => async () => {
-        const result = await agent(
-          `Research one bounded lane using only installed external web-search, browsing, or URL-extraction tools.\n\n` +
-            `Question: ${question}\n` +
-            `Scope constraints: ${plan.scopeConstraints.join("; ") || "(none)"}\n` +
-            `Lane id: ${lane.id}\nLane: ${lane.title}\nObjective: ${lane.objective}\n` +
-            `Queries:\n${lane.queries.map((query) => `- ${query}`).join("\n")}\n\n` +
-            "Open the supporting pages instead of citing a search-results page. Prefer primary and authoritative sources; use independent sources when useful. " +
-            "Return concrete claims with importance, whether each page supports or conflicts with the claim, a short passage or precise paraphrase, and the exact page title and URL. " +
-            "State evidence gaps. Never invent a URL or claim that the opened page does not support. Structured output only.",
-          {
-            phase: "Gather",
-            label: `gather:${lane.id}`,
-            tools: EXTERNAL_TOOLS,
-            toolHints: EXTERNAL_TOOL_HINTS,
-            requireToolHints: true,
-            profile: "small",
-            resume: "off",
-            schema: ResearchLaneResultSchema,
-          },
-        );
-        progress({ type: "counter_delta", key: "research.evidence", label: "evidence items", delta: result.evidence.length });
-        progress({
-          type: "lane_item",
-          lane: "Research lanes",
-          title: lane.title,
-          subtitle: `${result.evidence.length} evidence item(s)`,
-          status: result.evidence.length > 0 ? "success" : "warning",
-          details: result.gaps.join("; ") || lane.objective,
-        });
-        return result;
-      }),
-    ),
+  const gatherResults = await parallel(
+    lanes.map((lane) => async () => {
+      const result = await agent(
+        `Research one bounded lane using only installed external web-search, browsing, or URL-extraction tools.\n\n` +
+          `Question: ${question}\n` +
+          `Scope constraints: ${plan.scopeConstraints.join("; ") || "(none)"}\n` +
+          `Lane id: ${lane.id}\nLane: ${lane.title}\nObjective: ${lane.objective}\n` +
+          `Queries:\n${lane.queries.map((query) => `- ${query}`).join("\n")}\n\n` +
+          "Open the supporting pages instead of citing a search-results page. Prefer primary and authoritative sources; use independent sources when useful. " +
+          "Return concrete claims with importance, whether each page supports or conflicts with the claim, a short passage or precise paraphrase, and the exact page title and URL. " +
+          "State evidence gaps. Never invent a URL or claim that the opened page does not support. Structured output only.",
+        {
+          phase: "Gather",
+          label: `gather:${lane.id}`,
+          tools: EXTERNAL_TOOLS,
+          toolHints: EXTERNAL_TOOL_HINTS,
+          requireToolHints: true,
+          profile: "small",
+          resume: "off",
+          schema: ResearchLaneResultSchema,
+        },
+      );
+      progress({ type: "counter_delta", key: "research.evidence", label: "evidence items", delta: result.evidence.length });
+      progress({
+        type: "lane_item",
+        lane: "Research lanes",
+        title: lane.title,
+        subtitle: `${result.evidence.length} evidence item(s)`,
+        status: result.evidence.length > 0 ? "success" : "warning",
+        details: result.gaps.join("; ") || lane.objective,
+      });
+      return result;
+    }),
+    { settled: true },
   );
+  const gathered = gatherResults.flatMap((result) => (result.ok ? [result.value] : []));
+  const failedLanes = lanes.filter((_, index) => !gatherResults[index]!.ok);
 
   const laneResults = sanitizeLaneResults(gathered);
   const candidates = buildClaimCandidates(laneResults);
-  if (candidates.length === 0) return unavailableResearchReport("no-evidence");
+  if (candidates.length === 0) return unavailableResearchReport(failedLanes.length > 0 ? "lanes-failed" : "no-evidence");
   progress({ type: "counter", key: "research.claims", label: "claims to verify", value: candidates.length });
   log(`${candidates.length} bounded claim(s) selected for independent verification`);
 
@@ -133,7 +133,8 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
   const synthesisInputs = verifications.filter((verification) => verification.verdict !== "REJECTED");
 
   phase("Synthesize");
-  const synthesis = await agent(
+  // parallel() turns a recoverable synthesis failure into null, so verified claims still reach the fallback.
+  const [synthesis] = await parallel([() => agent(
     `Answer the research question using only the independently verified handoff below.\n\n` +
       `Question: ${question}\nScope constraints: ${plan.scopeConstraints.join("; ") || "(none)"}\n\n` +
       `Verified claims JSON:\n${JSON.stringify(synthesisInputs)}\n\n` +
@@ -149,12 +150,15 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
       resume: "off",
       schema: ResearchReportSchema,
     },
-  );
+  )]);
 
-  return sanitizeResearchReport(
-    synthesis ?? fallbackResearchReport(synthesisInputs, "The model did not return a structured synthesis."),
+  const report = sanitizeResearchReport(
+    synthesis ?? fallbackResearchReport(synthesisInputs, "The synthesis stage failed; verified claims are listed without a narrative answer."),
     synthesisInputs,
   );
+  if (failedLanes.length === 0) return report;
+  const laneGap = `${failedLanes.length} of ${lanes.length} research lane(s) failed (${failedLanes.map((lane) => lane.title).join(", ")}); coverage is incomplete.`;
+  return { ...report, limitations: [...report.limitations, laneGap] };
 }
 
 function verificationPrompt(question: string, candidate: ResearchClaimCandidate): string {
