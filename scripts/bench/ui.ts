@@ -2,7 +2,7 @@ import { performance } from "node:perf_hooks";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ProgressTracker } from "../../.pi/extensions/pi-workflow-engine/src/progress.ts";
 import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
-import { statusText } from "../../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
+import { countAgents, statusTextFromCounts } from "../../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
 import { renderWorkflowWidgetLines } from "../../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
 import { createTestTheme } from "../../tests/fixtures/theme.ts";
 import { intFlag, maybeWriteBenchmarkOutput, parseBenchArgs, printBenchmarkOutput, runBenchmark } from "./lib.ts";
@@ -16,7 +16,7 @@ const theme = createTestTheme();
 const snapshot = createSnapshot({ agents, laneItems, phases });
 
 const statusTextMs = await runBenchmark("ui.status_text", iterations, () => {
-  statusText(snapshot, theme);
+  statusTextFromCounts(snapshot, countAgents(snapshot.phases), theme);
 });
 const widgetRenderMs = await runBenchmark("ui.widget_render", iterations, () => {
   renderWorkflowWidgetLines(snapshot, theme);

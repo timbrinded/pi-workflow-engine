@@ -236,7 +236,7 @@ export class ProgressTracker {
     if (!this.ctx.hasUI || this.doneAt !== undefined) return;
     this.publishWidget(snapshot);
     this.startWidgetRefresh();
-    this.publishStatus();
+    this.publishStatus(snapshot);
   }
 
   private publishWidget(snapshot = this.snapshot()): void {
@@ -258,18 +258,9 @@ export class ProgressTracker {
     this.widgetRefreshInterval = undefined;
   }
 
-  private publishStatus(): void {
-    const status = statusTextFromCounts(
-      {
-        title: this.title,
-        doneAt: this.doneAt,
-        currentPhase: this.currentPhase,
-        counters: [...this.counters.values()].map((counter) => ({ ...counter })),
-      },
-      this.statusCounts(),
-      this.ctx.ui.theme,
-    );
-    const usage = formatWorkflowUsageLine(this.usageSnapshot);
+  private publishStatus(snapshot: WorkflowProgressSnapshot): void {
+    const status = statusTextFromCounts(snapshot, this.statusCounts(), this.ctx.ui.theme);
+    const usage = formatWorkflowUsageLine(snapshot.usage);
     const next = usage ? `${status} · ${usage}` : status;
     if (next === this.lastStatusText) return;
     this.ctx.ui.setStatus(this.surfaceKey, next);

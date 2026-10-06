@@ -75,13 +75,6 @@ export interface WorkflowStatusCounts {
   readonly total: number;
 }
 
-export interface WorkflowStatusSource {
-  readonly title: string;
-  readonly doneAt?: number;
-  readonly currentPhase: string;
-  readonly counters: readonly { readonly key: string; readonly label: string; readonly value: number }[];
-}
-
 interface WorkflowInspectionSource {
   readonly name: string;
   readonly snapshot: WorkflowProgressSnapshot | (() => WorkflowProgressSnapshot);
@@ -106,11 +99,7 @@ export function formatWorkflowInspection(inspection: WorkflowInspectionSource): 
   return lines.join("\n");
 }
 
-export function statusText(snapshot: WorkflowProgressSnapshot, theme: Theme): string | undefined {
-  return statusTextFromCounts(snapshot, countAgents(snapshot.phases), theme);
-}
-
-export function statusTextFromCounts(snapshot: WorkflowStatusSource, counts: WorkflowStatusCounts, theme: Theme): string | undefined {
+export function statusTextFromCounts(snapshot: WorkflowProgressSnapshot, counts: WorkflowStatusCounts, theme: Theme): string | undefined {
   if (snapshot.doneAt !== undefined) return undefined;
 
   const complete = counts.done + counts.failed;
