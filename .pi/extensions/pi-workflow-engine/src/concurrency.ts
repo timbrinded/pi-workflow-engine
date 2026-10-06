@@ -330,27 +330,19 @@ export function bindPipeline(options: PipelineOptions) {
     items: readonly unknown[],
     ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
   ): Promise<Array<unknown | null>> {
-    return pipelineWithOptions(items, stages, options);
+    return await parallel(
+      items.map((item, index) => async () => {
+        let acc: unknown = item;
+        for (const stage of stages) {
+          throwIfAborted(options.signal);
+          acc = await stage(acc, item, index);
+        }
+        return acc;
+      }),
+      options,
+    );
   }
   return boundPipeline;
-}
-
-export async function pipelineWithOptions(
-  items: readonly unknown[],
-  stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>,
-  options: PipelineOptions = {},
-): Promise<Array<unknown | null>> {
-  return await parallel(
-    items.map((item, index) => async () => {
-      let acc: unknown = item;
-      for (const stage of stages) {
-        throwIfAborted(options.signal);
-        acc = await stage(acc, item, index);
-      }
-      return acc;
-    }),
-    options,
-  );
 }
 
 export type Pipeline = ReturnType<typeof bindPipeline>;

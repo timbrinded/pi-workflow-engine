@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { WorkflowBudgetExceededError } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
-import { bindParallel, parallel, pipeline, pipelineWithOptions, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { bindParallel, bindPipeline, parallel, pipeline, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import {
   STRUCTURED_OUTPUT_ERROR_CODE,
   WorkflowStructuredOutputError,
@@ -436,15 +436,12 @@ test("pipeline preserves the abort reason when a stage throws afterward", async 
   const controller = new AbortController();
 
   await assert.rejects(
-    pipelineWithOptions(
+    bindPipeline({ signal: controller.signal, abortController: controller })(
       [1],
-      [
-        async () => {
-          controller.abort(new WorkflowAbortError("stop"));
-          throw new Error("plain after abort");
-        },
-      ],
-      { signal: controller.signal, abortController: controller },
+      async () => {
+        controller.abort(new WorkflowAbortError("stop"));
+        throw new Error("plain after abort");
+      },
     ),
     /stop/,
   );
@@ -455,28 +452,25 @@ test("pipeline aborts sibling item chains after a fatal failure", async () => {
   let siblingStage2Ran = false;
   let siblingUnwound = false;
 
-  const running = pipelineWithOptions(
+  const running = bindPipeline({ signal: controller.signal, abortController: controller })(
     [1, 2],
-    [
-      async (_prev, item) => {
-        if (item === 1) {
-          await delay(1);
-          throw new WorkflowAbortError("fatal");
-        }
-        try {
-          await delay(10);
-          return item;
-        } finally {
-          await delay(5);
-          siblingUnwound = true;
-        }
-      },
-      async (prev) => {
-        siblingStage2Ran = true;
-        return prev;
-      },
-    ],
-    { signal: controller.signal, abortController: controller },
+    async (_prev, item) => {
+      if (item === 1) {
+        await delay(1);
+        throw new WorkflowAbortError("fatal");
+      }
+      try {
+        await delay(10);
+        return item;
+      } finally {
+        await delay(5);
+        siblingUnwound = true;
+      }
+    },
+    async (prev) => {
+      siblingStage2Ran = true;
+      return prev;
+    },
   );
 
   await assert.rejects(running, /fatal/);
