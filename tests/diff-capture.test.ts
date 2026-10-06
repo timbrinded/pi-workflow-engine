@@ -3,8 +3,14 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { captureDiff } from "../.pi/extensions/pi-workflow-engine/src/diff-capture.ts";
-import { parseAllowedDiffCommand, reviewDiffCommand } from "../.pi/extensions/pi-workflow-engine/src/review-diff-target.ts";
+import { captureDiffTarget } from "../.pi/extensions/pi-workflow-engine/src/diff-capture.ts";
+import {
+  parseAllowedDiffCommand,
+  reviewDiffCommand,
+  type ReviewDiffTarget,
+} from "../.pi/extensions/pi-workflow-engine/src/review-diff-target.ts";
+
+const GIT_DIFF_HEAD: ReviewDiffTarget = { kind: "git", args: ["diff", "--no-ext-diff", "HEAD"] };
 
 async function fakeBin(script: string): Promise<{ dir: string; env: NodeJS.ProcessEnv; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), "workflow-engine-diff-bin-"));
@@ -43,6 +49,9 @@ test("parseAllowedDiffCommand accepts safe git and gh diff commands", () => {
     kind: "git",
     args: ["diff", "--no-ext-diff", "--binary", "HEAD"],
   });
+  const otherExecutable = parseAllowedDiffCommand("cat package.json");
+  if (!("error" in otherExecutable)) assert.fail("expected non-diff executables to be rejected");
+  assert.match(otherExecutable.error, /allowlist/);
   assert.ok("error" in parseAllowedDiffCommand("git status"));
   assert.ok("error" in parseAllowedDiffCommand("git diff main; rm -rf /"));
 });
@@ -82,10 +91,10 @@ test("pull-request capture always uses the cumulative diff argv", () => {
   assert.equal(reviewDiffCommand(target).args.includes("--patch"), false);
 });
 
-test("captureDiff captures stdout for an allowed command", async () => {
+test("captureDiffTarget captures stdout for an allowed command", async () => {
   const bin = await fakeBin("#!/usr/bin/env bash\nprintf 'diff --git a/a b/a\\n+hello\\n'\n");
   try {
-    const result = await captureDiff("git diff HEAD", { cwd: process.cwd(), timeoutMs: 1_000, maxBufferBytes: 1_000, env: bin.env });
+    const result = await captureDiffTarget(GIT_DIFF_HEAD, { cwd: process.cwd(), timeoutMs: 1_000, maxBufferBytes: 1_000, env: bin.env });
     assert.equal(result.ok, true);
     assert.match(result.stdout, /\+hello/);
     assert.ok(result.bytes > 0);
@@ -94,16 +103,10 @@ test("captureDiff captures stdout for an allowed command", async () => {
   }
 });
 
-test("captureDiff rejects unsupported commands without spawning", async () => {
-  const result = await captureDiff("cat package.json", { cwd: process.cwd(), timeoutMs: 1_000, maxBufferBytes: 1_000 });
-  assert.equal(result.ok, false);
-  assert.match(result.error ?? "", /allowlist/);
-});
-
-test("captureDiff enforces max buffer", async () => {
+test("captureDiffTarget enforces max buffer", async () => {
   const bin = await fakeBin("#!/usr/bin/env bash\npython3 - <<'PY'\nprint('x' * 2000)\nPY\n");
   try {
-    const result = await captureDiff("git diff HEAD", { cwd: process.cwd(), timeoutMs: 1_000, maxBufferBytes: 100, env: bin.env });
+    const result = await captureDiffTarget(GIT_DIFF_HEAD, { cwd: process.cwd(), timeoutMs: 1_000, maxBufferBytes: 100, env: bin.env });
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /exceeded/);
   } finally {
@@ -111,10 +114,10 @@ test("captureDiff enforces max buffer", async () => {
   }
 });
 
-test("captureDiff enforces timeout", async () => {
+test("captureDiffTarget enforces timeout", async () => {
   const bin = await fakeBin("#!/usr/bin/env bash\nwhile true; do :; done\n");
   try {
-    const result = await captureDiff("git diff HEAD", { cwd: process.cwd(), timeoutMs: 10, maxBufferBytes: 1_000, env: bin.env, killGraceMs: 5 });
+    const result = await captureDiffTarget(GIT_DIFF_HEAD, { cwd: process.cwd(), timeoutMs: 10, maxBufferBytes: 1_000, env: bin.env, killGraceMs: 5 });
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /timed out/);
   } finally {
@@ -122,11 +125,11 @@ test("captureDiff enforces timeout", async () => {
   }
 });
 
-test("captureDiff honors abort signals", async () => {
+test("captureDiffTarget honors abort signals", async () => {
   const bin = await fakeBin("#!/usr/bin/env bash\nwhile true; do :; done\n");
   const controller = new AbortController();
   try {
-    const running = captureDiff("git diff HEAD", { cwd: process.cwd(), signal: controller.signal, timeoutMs: 1_000, maxBufferBytes: 1_000, env: bin.env, killGraceMs: 5 });
+    const running = captureDiffTarget(GIT_DIFF_HEAD, { cwd: process.cwd(), signal: controller.signal, timeoutMs: 1_000, maxBufferBytes: 1_000, env: bin.env, killGraceMs: 5 });
     controller.abort();
     const result = await running;
     assert.equal(result.ok, false);
@@ -136,10 +139,10 @@ test("captureDiff honors abort signals", async () => {
   }
 });
 
-test("captureDiff resolves when child ignores SIGTERM", async () => {
+test("captureDiffTarget resolves when child ignores SIGTERM", async () => {
   const bin = await fakeBin("#!/usr/bin/env bash\ntrap '' TERM\nwhile true; do :; done\n");
   try {
-    const result = await captureDiff("git diff HEAD", { cwd: process.cwd(), timeoutMs: 10, maxBufferBytes: 1_000, env: bin.env, killGraceMs: 5 });
+    const result = await captureDiffTarget(GIT_DIFF_HEAD, { cwd: process.cwd(), timeoutMs: 10, maxBufferBytes: 1_000, env: bin.env, killGraceMs: 5 });
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /timed out/);
   } finally {
