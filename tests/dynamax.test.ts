@@ -179,7 +179,7 @@ function captureDynamax(
     events: { on: () => {}, emit: async () => {} },
   } as unknown as ExtensionAPI;
 
-  registerDynamax(fakePi, { inspector: shortcut, results: null }, { effect: "shine", ...registrationOptions, openInspector });
+  registerDynamax(fakePi, { inspector: shortcut, results: null }, { effect: "shine", ...registrationOptions, openInspector: openInspector ?? (() => {}) });
   return { commands, shortcuts, handlers };
 }
 

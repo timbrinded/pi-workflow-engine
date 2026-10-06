@@ -658,6 +658,33 @@ test("retained code-review results stay isolated to their originating session", 
   assert.equal(reopenedA.customCalls(), 1);
 });
 
+test("the picker's authored temporary workflow activates Dynamax for the run it starts", async () => {
+  const extension = captureWorkflowExtension();
+  const command = extension.commands.get("workflow");
+  if (!command) throw new Error("expected /workflow command");
+  const statuses = new Map<string, string | undefined>();
+  const ctx = {
+    ...HEADLESS_CTX,
+    hasUI: true,
+    ui: {
+      select: async (_title: string, options: readonly string[]) => options.find((option) => option.startsWith("Author temporary")),
+      editor: async () => "inspect src and summarize risks",
+      notify: () => {},
+      setStatus: (key: string, value: string | undefined) => statuses.set(key, value),
+    },
+  } as unknown as ExtensionCommandContext;
+
+  await command.handler("", ctx);
+
+  assert.match(String(extension.sentUserMessages[0]), /inspect src and summarize risks/);
+  assert.match(statuses.get("dynamax") ?? "", /one-shot pending/);
+  const starts = await Promise.all((extension.handlers.get("before_agent_start") ?? []).map((handler) => handler({ systemPrompt: "base" }, ctx)));
+  assert.ok(
+    starts.some((result) => isRecord(result) && typeof result.systemPrompt === "string" && result.systemPrompt.includes("dynamax workflow opt-in")),
+    "expected the Dynamax reminder in the next run's system prompt",
+  );
+});
+
 test("workflow inspector history stays isolated to its originating session", async () => {
   const extension = captureWorkflowExtension();
   const command = extension.commands.get("workflow:inspector");

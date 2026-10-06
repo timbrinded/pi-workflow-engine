@@ -544,7 +544,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
   backgroundWorkflows.onRunSettled((ctx, runId) => workflowRuns.runSettled(ctx, runId));
-  registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
+  const dynamax = registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
   registerWorkflowModelProfileCommand(pi);
   registerWorkflowRunCommand(pi, workflowRuns);
   pi.on("session_start", async (_event, ctx) => {
@@ -623,6 +623,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
       }
 
       if (invocation.authorBrief) {
+        dynamax.markOneShot(ctx);
         pi.sendUserMessage(buildTemporaryWorkflowAuthorPrompt(invocation.authorBrief));
         return;
       }
