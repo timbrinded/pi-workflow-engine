@@ -19,25 +19,18 @@ export class InlineWorkflowCompileError extends Error {
   }
 }
 
-export interface InlineMetaLiteral {
-  readonly literal: string;
-  readonly value: unknown;
-  readonly endOffset: number;
-}
-
 type InlineWorkflowExecutor = (api: WorkflowApi, typebox: typeof Type) => Promise<unknown>;
 type AsyncFunctionConstructor = new (...args: string[]) => InlineWorkflowExecutor;
 
 const AsyncFunction = Object.getPrototypeOf(async function inlineWorkflowCompilerSentinel() {}).constructor as AsyncFunctionConstructor;
 
 export function compileInlineWorkflow(source: string): LoadedWorkflow {
-  rejectForbiddenModuleSyntax(source);
+  rejectImportSyntax(source);
   const metaLiteral = extractMetaLiteral(source);
   const parsedMeta = parseWorkflowMeta(metaLiteral.value);
   if ("reason" in parsedMeta) throw new InlineWorkflowCompileError(parsedMeta.reason);
 
-  const defaultExpression = extractDefaultWorkflowExpression(source, metaLiteral.endOffset);
-  const executor = compileExecutor(defaultExpression);
+  const executor = compileExecutor(extractDefaultWorkflowExpression(source, metaLiteral.endOffset));
   return {
     meta: parsedMeta.meta,
     default: (api) => executor(api, Type),
@@ -45,7 +38,7 @@ export function compileInlineWorkflow(source: string): LoadedWorkflow {
   };
 }
 
-export function extractMetaLiteral(source: string): InlineMetaLiteral {
+function extractMetaLiteral(source: string): { readonly value: unknown; readonly endOffset: number } {
   const start = skipWhitespace(source, 0);
   const prefix = /export\s+const\s+meta\s*=/y;
   prefix.lastIndex = start;
@@ -61,83 +54,46 @@ export function extractMetaLiteral(source: string): InlineMetaLiteral {
 
   const parser = new LiteralParser(source, objectStart);
   const value = parser.parseValue();
-  const literalEnd = parser.offset;
-  let endOffset = skipWhitespace(source, literalEnd);
+  let endOffset = skipWhitespace(source, parser.offset);
   if (source[endOffset] === ";") endOffset++;
 
-  return { literal: source.slice(objectStart, literalEnd), value, endOffset };
+  return { value, endOffset };
 }
 
-function rejectForbiddenModuleSyntax(source: string): void {
-  if (/^\s*import\s/m.test(source)) {
-    throw new InlineWorkflowCompileError("inline workflows must not contain import statements; use injected Type instead");
-  }
-  if (/\bimport\s*\(/.test(source)) {
-    throw new InlineWorkflowCompileError("inline workflows must not use dynamic import()");
-  }
+/**
+ * Enforce the no-`import` rule on code only, so prompts may mention imports. This is a lint
+ * against honest mistakes, not a security boundary: inline code can still reach eval.
+ */
+function rejectImportSyntax(source: string): void {
+  // `import` as a keyword: not part of a longer identifier, a `.import` member, or an `import:` key.
+  const match = /(?<![\w$]|[^.]\.)import(?![\w$])(?!\s*:)(\s*\()?/.exec(maskNonCode(source));
+  if (!match) return;
+  throw new InlineWorkflowCompileError(
+    match[1] === undefined
+      ? "inline workflows must not contain import statements; use injected Type instead"
+      : "inline workflows must not use dynamic import()",
+  );
 }
 
 function extractDefaultWorkflowExpression(source: string, startOffset: number): string {
   const moduleSource = source.slice(startOffset).trim();
   if (!moduleSource) throw new InlineWorkflowCompileError("inline workflow must export a default async function");
-  if (!moduleSource.startsWith("export default")) {
+  const prefix = /^export\s+default\b\s*/.exec(moduleSource);
+  if (!prefix) {
     throw new InlineWorkflowCompileError("inline workflow default export must directly follow the meta declaration");
   }
 
-  const defaultPrefix = /^export\s+default\s+/;
-  const match = defaultPrefix.exec(moduleSource);
-  if (!match) throw new InlineWorkflowCompileError("inline workflow must export a default async function");
-
-  const expressionSource = moduleSource.slice(match[0].length).trimStart();
-  const bodyOpen = findDefaultBodyOpen(expressionSource);
-  const bodyClose = findMatchingDelimiter(expressionSource, bodyOpen, "{", "}");
-  const expression = expressionSource.slice(0, bodyClose + 1);
-  const remainder = expressionSource.slice(bodyClose + 1).trim();
-  if (remainder !== "" && remainder !== ";") {
-    throw new InlineWorkflowCompileError("inline workflow must not contain code after the default export");
+  const expression = moduleSource.slice(prefix[0].length).replace(/;$/, "");
+  if (!/^async\b/.test(expression)) {
+    throw new InlineWorkflowCompileError("inline workflow default export must be an async function or async arrow function");
   }
   return expression;
 }
 
-function findDefaultBodyOpen(expressionSource: string): number {
-  const functionMatch = /^async\s+function(?:\s+[A-Za-z_$][\w$]*)?\s*/.exec(expressionSource);
-  if (functionMatch) {
-    const paramsOpen = skipWhitespace(expressionSource, functionMatch[0].length);
-    if (expressionSource[paramsOpen] !== "(") {
-      throw new InlineWorkflowCompileError("default async function must declare parameters with parentheses");
-    }
-    const paramsClose = findMatchingDelimiter(expressionSource, paramsOpen, "(", ")");
-    const bodyOpen = skipWhitespace(expressionSource, paramsClose + 1);
-    if (expressionSource[bodyOpen] !== "{") {
-      throw new InlineWorkflowCompileError("default async function must use a block body");
-    }
-    return bodyOpen;
-  }
-
-  const arrowMatch = /^async\s*/.exec(expressionSource);
-  if (arrowMatch) {
-    const paramsOpen = skipWhitespace(expressionSource, arrowMatch[0].length);
-    if (expressionSource[paramsOpen] !== "(") {
-      throw new InlineWorkflowCompileError("default async arrow workflow must declare parameters with parentheses");
-    }
-    const paramsClose = findMatchingDelimiter(expressionSource, paramsOpen, "(", ")");
-    let cursor = skipWhitespace(expressionSource, paramsClose + 1);
-    if (!expressionSource.startsWith("=>", cursor)) {
-      throw new InlineWorkflowCompileError("default async arrow workflow must use =>");
-    }
-    cursor = skipWhitespace(expressionSource, cursor + 2);
-    if (expressionSource[cursor] !== "{") {
-      throw new InlineWorkflowCompileError("default async arrow workflow must use a block body");
-    }
-    return cursor;
-  }
-
-  throw new InlineWorkflowCompileError("inline workflow default export must be an async function or async arrow function");
-}
-
 function compileExecutor(defaultExpression: string): InlineWorkflowExecutor {
   try {
-    return new AsyncFunction("api", "Type", `"use strict";\nconst workflow = ${defaultExpression};\nreturn await workflow(api);`);
+    // Parenthesised so the parser rejects any statement or export after the default export.
+    return new AsyncFunction("api", "Type", `"use strict";\nconst workflow = (\n${defaultExpression}\n);\nreturn await workflow(api);`);
   } catch (error) {
     throw new InlineWorkflowCompileError(`inline workflow default export did not compile: ${unknownErrorMessage(error)}`);
   }
@@ -330,56 +286,96 @@ class LiteralParser {
   }
 }
 
-function findMatchingDelimiter(source: string, openIndex: number, open: string, close: string): number {
-  let depth = 1;
-  let index = openIndex + 1;
+const REGEX_PREFIX_KEYWORDS = new Set([
+  "await", "case", "delete", "do", "else", "in", "instanceof", "new", "of", "return", "throw", "typeof", "void", "yield",
+]);
+
+/**
+ * Blank the contents of strings, template text, comments and regex literals, keeping offsets
+ * and delimiters, so keyword checks see only code. A `/` after `)`, `]` or `}` is read as
+ * division; the parser, not this mask, decides whether a script is valid.
+ */
+function maskNonCode(source: string): string {
+  const masked = source.split("");
+  const blank = (start: number, end: number): number => {
+    masked.fill(" ", start, end);
+    return end;
+  };
+  // One entry per open brace; true when it is a template `${` whose `}` resumes template text.
+  const braces: boolean[] = [];
+  const templateText = (start: number): number => {
+    for (let index = start; index < source.length; index++) {
+      if (source[index] === "\\") index++;
+      else if (source[index] === "`") return blank(start, index) + 1;
+      else if (source.startsWith("${", index)) {
+        braces.push(true);
+        return blank(start, index) + 2;
+      }
+    }
+    return blank(start, source.length);
+  };
+
+  let index = 0;
   while (index < source.length) {
     const char = source[index];
-    if (char === '"' || char === "'" || char === "`") {
-      index = skipQuotedSource(source, index, char);
-      continue;
+    if (source.startsWith("//", index)) {
+      const newline = source.indexOf("\n", index);
+      index = blank(index, newline === -1 ? source.length : newline);
+    } else if (source.startsWith("/*", index)) {
+      const close = source.indexOf("*/", index + 2);
+      index = blank(index, close === -1 ? source.length : close + 2);
+    } else if (char === '"' || char === "'") {
+      index = blank(index + 1, quotedTextEnd(source, index + 1, char)) + 1;
+    } else if (char === "`") {
+      index = templateText(index + 1);
+    } else if (char === "{") {
+      braces.push(false);
+      index++;
+    } else if (char === "}") {
+      index = braces.pop() === true ? templateText(index + 1) : index + 1;
+    } else if (char === "/" && regexCanStart(masked, index)) {
+      const close = regexLiteralEnd(source, index + 1);
+      index = close === undefined ? index + 1 : blank(index + 1, close) + 1;
+    } else {
+      index++;
     }
-    if (char === "/" && source[index + 1] === "/") {
-      index = skipLineComment(source, index);
-      continue;
-    }
-    if (char === "/" && source[index + 1] === "*") {
-      index = skipBlockComment(source, index);
-      continue;
-    }
-    if (char === open) depth++;
-    if (char === close) {
-      depth--;
-      if (depth === 0) return index;
-    }
-    index++;
   }
-  throw new InlineWorkflowCompileError(`unterminated ${open}${close} block in inline workflow default export`);
+  return masked.join("");
 }
 
-function skipQuotedSource(source: string, start: number, quote: string): number {
-  let index = start + 1;
-  while (index < source.length) {
+/** Index of the closing quote, or of the line break that leaves a broken string confined to one line. */
+function quotedTextEnd(source: string, start: number, quote: string): number {
+  for (let index = start; index < source.length; index++) {
     const char = source[index];
-    if (char === "\\") {
-      index += 2;
-      continue;
-    }
-    if (char === quote) return index + 1;
-    index++;
+    if (char === "\\") index++;
+    else if (char === quote || char === "\n") return index;
   }
-  throw new InlineWorkflowCompileError("unterminated string in inline workflow default export");
+  return source.length;
 }
 
-function skipLineComment(source: string, start: number): number {
-  const newline = source.indexOf("\n", start + 2);
-  return newline === -1 ? source.length : newline + 1;
+/** Whether a `/` here starts a regex literal, judged by the code token before it. */
+function regexCanStart(masked: readonly string[], slash: number): boolean {
+  let end = slash - 1;
+  while (end >= 0 && /\s/.test(masked[end])) end--;
+  if (end < 0) return true;
+  if (!/[\w$]/.test(masked[end])) return !/[)\]}"'`]/.test(masked[end]);
+  let start = end;
+  while (start > 0 && /[\w$]/.test(masked[start - 1])) start--;
+  return REGEX_PREFIX_KEYWORDS.has(masked.slice(start, end + 1).join(""));
 }
 
-function skipBlockComment(source: string, start: number): number {
-  const end = source.indexOf("*/", start + 2);
-  if (end === -1) throw new InlineWorkflowCompileError("unterminated block comment in inline workflow default export");
-  return end + 2;
+/** Index of the closing `/` of a regex literal body starting at `start`, if it closes on this line. */
+function regexLiteralEnd(source: string, start: number): number | undefined {
+  let inClass = false;
+  for (let index = start; index < source.length; index++) {
+    const char = source[index];
+    if (char === "\\") index++;
+    else if (char === "\n") return undefined;
+    else if (char === "[") inClass = true;
+    else if (char === "]") inClass = false;
+    else if (char === "/" && !inClass) return index;
+  }
+  return undefined;
 }
 
 function skipWhitespace(source: string, start: number): number {

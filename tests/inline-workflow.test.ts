@@ -80,6 +80,32 @@ export default async ({ agent }) => {
   assert.equal(capturedProfile, "small");
 });
 
+test("compileInlineWorkflow accepts regex literals and prompts that mention imports", async () => {
+  const prompts: string[] = [];
+  const mod = compileInlineWorkflow(`
+export const meta = { name: "import-prose", description: "Flags import (cycle) risks" };
+
+export default async ({ agent, args }) => {
+  const cleaned = args.replace(/'/g, "").replace(/[{}]/g, "");
+  await agent(\`Review \${cleaned}.
+import order must be sorted.\`);
+  await agent("Flag every dynamic import (call) site");
+  return /\\}/.test(args) ? cleaned : "no brace";
+}
+`);
+
+  const result = await mod.default(createFakeApi({
+    args: "it's {x}",
+    agent: (async (prompt: string) => {
+      prompts.push(prompt);
+      return "agent text";
+    }) as WorkflowApi["agent"],
+  }));
+
+  assert.equal(result, "its x");
+  assert.deepEqual(prompts, ["Review its x.\nimport order must be sorted.", "Flag every dynamic import (call) site"]);
+});
+
 test("compileInlineWorkflow rejects non-literal metadata", () => {
   assert.throws(
     () =>
@@ -99,6 +125,18 @@ const rejectedSources: Array<{ name: string; source: string }> = [
   {
     name: "dynamic import",
     source: 'export const meta = { name: "x" };\nexport default async function run(api) { const fs = await import("node:fs"); return fs; }',
+  },
+  {
+    name: "dynamic import split by a comment",
+    source: 'export const meta = { name: "x" };\nexport default async function run(api) { const fs = await import/**/("node:fs"); return fs; }',
+  },
+  {
+    name: "static import inside the default export",
+    source: 'export const meta = { name: "x" };\nexport default async function run(api) { import fs from "node:fs"; return fs; }',
+  },
+  {
+    name: "code after the default export",
+    source: 'export const meta = { name: "x" };\nexport default async (api) => { return "x"; };\nconsole.log("after");',
   },
   {
     name: "second export before default",
