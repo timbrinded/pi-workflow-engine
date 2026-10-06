@@ -9,6 +9,7 @@ import {
 } from "./options.ts";
 import type { WorkflowProgressSnapshot } from "./progress-types.ts";
 import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
+import { truncateText } from "./text.ts";
 import { isWorkflowUsageSnapshot, type WorkflowUsageSnapshot } from "./usage.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
@@ -459,7 +460,7 @@ function compactWorkflowRunPause(pause: WorkflowRunPause): WorkflowRunPause {
 }
 
 function boundedText(value: string): string {
-  return value.length <= MAX_PERSISTED_TEXT ? value : `${value.slice(0, MAX_PERSISTED_TEXT - 1)}…`;
+  return truncateText(value, MAX_PERSISTED_TEXT);
 }
 
 export function isWorkflowRunRecord(value: unknown): value is WorkflowRunRecord {

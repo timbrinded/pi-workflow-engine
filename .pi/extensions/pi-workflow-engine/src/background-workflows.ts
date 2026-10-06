@@ -9,6 +9,7 @@ import {
 } from "./workflow-run-record.ts";
 import { updateWorkflowRunDelivery } from "./workflow-run-background.ts";
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
+import { truncateText } from "./text.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { emptyWorkflowUsageTotals } from "./usage.ts";
 
@@ -363,13 +364,13 @@ export function backgroundResultDetails(record: WorkflowRunRecord): BackgroundWo
 }
 
 function backgroundSummary(record: WorkflowRunRecord): string {
-  if (record.state !== "completed") return boundedSummary(`Workflow ${record.state}: ${record.message}`);
+  if (record.state !== "completed") return truncateText(`Workflow ${record.state}: ${record.message}`, SUMMARY_LIMIT);
   if (record.result.kind === "unavailable") {
-    return boundedSummary(`Workflow completed; retained result is unavailable: ${record.result.reason}`);
+    return truncateText(`Workflow completed; retained result is unavailable: ${record.result.reason}`, SUMMARY_LIMIT);
   }
   const value = record.result.value;
-  if (typeof value === "string") return boundedSummary(value);
-  if (isRecord(value) && typeof value.summary === "string") return boundedSummary(value.summary);
+  if (typeof value === "string") return truncateText(value, SUMMARY_LIMIT);
+  if (isRecord(value) && typeof value.summary === "string") return truncateText(value.summary, SUMMARY_LIMIT);
   return "Workflow completed. Open run history for the retained result.";
 }
 
@@ -482,8 +483,4 @@ async function waitForRuns(runs: readonly Promise<void>[], timeoutMs: number): P
   } finally {
     if (timer) clearTimeout(timer);
   }
-}
-
-function boundedSummary(value: string): string {
-  return value.length <= SUMMARY_LIMIT ? value : `${value.slice(0, SUMMARY_LIMIT - 1)}…`;
 }

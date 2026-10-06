@@ -1,4 +1,5 @@
 import { isFiniteNumber, isRecord } from "./guards.ts";
+import { truncateText } from "./text.ts";
 import type { WorkflowBackgroundOrigin } from "./types.ts";
 import type { WorkflowRunRecord } from "./workflow-run-record.ts";
 
@@ -20,7 +21,7 @@ export function createPersistedWorkflowBackground(
   if (!origin) return undefined;
   return {
     origin: {
-      sessionId: boundedText(origin.sessionId),
+      sessionId: truncateText(origin.sessionId, MAX_BACKGROUND_TEXT),
       requestedAt: origin.requestedAt,
     },
     delivery: { state: "pending" },
@@ -39,7 +40,7 @@ export function updateWorkflowRunDelivery(
     background: {
       origin: record.background.origin,
       delivery: delivery.state === "unavailable"
-        ? { ...delivery, message: boundedText(delivery.message) }
+        ? { ...delivery, message: truncateText(delivery.message, MAX_BACKGROUND_TEXT) }
         : delivery,
     },
   };
@@ -58,8 +59,4 @@ export function isPersistedWorkflowBackground(value: unknown): value is Persiste
     default:
       return false;
   }
-}
-
-function boundedText(value: string): string {
-  return value.length <= MAX_BACKGROUND_TEXT ? value : `${value.slice(0, MAX_BACKGROUND_TEXT - 1)}…`;
 }

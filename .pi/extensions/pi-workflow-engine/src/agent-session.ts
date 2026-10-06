@@ -25,6 +25,7 @@ import {
 import { providerErrorFromMessages } from "./agent-retry.ts";
 import { synchronizeWorkflowModelRuntime } from "./agent-session-providers.ts";
 import { matchesAgentToolHint, WorkflowToolHintUnavailableError } from "./tool-capabilities.ts";
+import { truncateText } from "./text.ts";
 import type { AgentToolHint } from "./types.ts";
 
 export const FINAL_TOOL = "final_answer";
@@ -166,9 +167,7 @@ export async function promptAgentSession(input: {
     } else if (event.type === "auto_retry_start") {
       if (lastFailure) retriedFailures.push(lastFailure);
       lastFailure = undefined;
-      const reason = event.errorMessage.length > RETRY_REASON_CHARS
-        ? `${event.errorMessage.slice(0, RETRY_REASON_CHARS)}…`
-        : event.errorMessage;
+      const reason = truncateText(event.errorMessage, RETRY_REASON_CHARS);
       rc.progress.log(
         `${label}: transient provider failure (${reason}); retrying turn ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms`,
       );

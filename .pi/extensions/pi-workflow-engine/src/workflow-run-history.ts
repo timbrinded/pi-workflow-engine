@@ -1,3 +1,4 @@
+import { truncateText } from "./text.ts";
 import { formatWorkflowUsageLine } from "./usage.ts";
 import type { WorkflowRunRecord, WorkflowRunState } from "./workflow-run-record.ts";
 import { formatDuration } from "./ui/workflow-format.ts";
@@ -136,11 +137,11 @@ export function formatWorkflowRunDetails(
 
 export function retainedWorkflowRunOutcome(record: WorkflowRunRecord): string {
   if (record.state === "completed") {
-    if (record.result.kind === "unavailable") return boundedOutcome(`Result unavailable: ${record.result.reason}`);
-    return boundedOutcome(JSON.stringify(record.result.value, null, 2));
+    if (record.result.kind === "unavailable") return truncateText(`Result unavailable: ${record.result.reason}`, WORKFLOW_RUN_OUTCOME_TEXT_LIMIT);
+    return truncateText(JSON.stringify(record.result.value, null, 2), WORKFLOW_RUN_OUTCOME_TEXT_LIMIT);
   }
   if (record.state === "failed" || record.state === "stopped" || record.state === "paused") {
-    return boundedOutcome(record.message);
+    return truncateText(record.message, WORKFLOW_RUN_OUTCOME_TEXT_LIMIT);
   }
   return "Run is still in progress.";
 }
@@ -153,10 +154,4 @@ export function formatWorkflowRunDuration(record: WorkflowRunRecord, now = Date.
 
 export function workflowRunStateLabel(state: WorkflowRunState): string {
   return state.toUpperCase();
-}
-
-function boundedOutcome(value: string): string {
-  return value.length <= WORKFLOW_RUN_OUTCOME_TEXT_LIMIT
-    ? value
-    : `${value.slice(0, WORKFLOW_RUN_OUTCOME_TEXT_LIMIT - 1)}…`;
 }

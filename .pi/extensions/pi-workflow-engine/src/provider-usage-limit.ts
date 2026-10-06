@@ -3,6 +3,7 @@ import {
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
   type ResolvedWorkflowRunOptions,
 } from "./options.ts";
+import { truncateText } from "./text.ts";
 import type { WorkflowProviderUsageLimitPause } from "./workflow-run-record.ts";
 
 export const WORKFLOW_PROVIDER_USAGE_LIMIT_CODE = "WORKFLOW_PROVIDER_USAGE_LIMIT";
@@ -170,7 +171,7 @@ function parseDurationMs(value: string): number | undefined {
 }
 
 function boundedHint(value: string): string {
-  return value.length <= MAX_RESET_HINT_LENGTH ? value : `${value.slice(0, MAX_RESET_HINT_LENGTH - 1)}…`;
+  return truncateText(value, MAX_RESET_HINT_LENGTH);
 }
 
 function isAssistantMessage(value: unknown): value is {

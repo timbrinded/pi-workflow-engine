@@ -43,6 +43,7 @@ import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/
 import { registerWorkflowRunCommand, WorkflowRunController } from "./src/workflow-run-controller.ts";
 import { completeCurrentArgument, splitArgumentPrefix } from "./src/command-completions.ts";
 import { assertSupportedPiVersion } from "./src/pi-compat.ts";
+import { truncateText } from "./src/text.ts";
 import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/workflow-format.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
@@ -427,7 +428,7 @@ function parseNumericOption(value: string | undefined): number | undefined {
 function compactInlinePreview(script: string | undefined): string {
   if (!script) return "";
   const compact = script.replace(/\s+/g, " ").trim();
-  return compact.length > 60 ? `${compact.slice(0, 57)}…` : compact;
+  return truncateText(compact, 60);
 }
 
 export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {
