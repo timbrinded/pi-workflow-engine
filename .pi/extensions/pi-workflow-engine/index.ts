@@ -463,9 +463,13 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts);
 }
 
-/** Result footers advertise the configured triage shortcut and pi's current expand key, read at render time. */
+/** Result footers advertise the configured triage and inspector shortcuts and pi's current expand key, read at render time. */
 function workflowResultHints(shortcuts: DynamaxShortcuts): WorkflowResultHints {
-  return { triage: shortcuts.results ?? "/workflow:results", expand: keyText("app.tools.expand") || undefined };
+  return {
+    triage: shortcuts.results ?? "/workflow:results",
+    inspect: shortcuts.inspector ?? "/workflow:inspector",
+    expand: keyText("app.tools.expand") || undefined,
+  };
 }
 
 /** Register the host-facing workflow tool independently from command and lifecycle surfaces. */

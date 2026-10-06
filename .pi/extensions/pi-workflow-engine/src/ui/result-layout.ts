@@ -31,6 +31,8 @@ export interface WorkflowResultView {
 export interface WorkflowResultHints {
   /** Opens the code-review findings viewer: the configured shortcut, or `/workflow:results` when unbound. */
   readonly triage?: string;
+  /** Opens the live or most recent run's inspector: the configured shortcut, or `/workflow:inspector` when unbound. */
+  readonly inspect?: string;
   /** pi's expand-tool-output key (`app.tools.expand`). */
   readonly expand?: string;
 }
@@ -184,12 +186,13 @@ export function shortRunId(runId: string): string {
 }
 
 /**
- * `ctrl+shift+r triage · ctrl+o expand · run 3cfb22c2`. Collapsed results name the short run id;
+ * `ctrl+shift+r triage · ctrl+shift+m inspect · ctrl+o expand · run 3cfb22c2`. Collapsed results name the short run id;
  * expanded ones show the full id in the Run row instead, so it is not repeated here.
  */
 export function footerLine(frame: ResultFrame, pairs: readonly HintPair[], options: { readonly more: boolean }): string | undefined {
   const { view, theme, hints, expanded } = frame;
   const allPairs = [...pairs];
+  if (hints.inspect) allPairs.push([hints.inspect, "inspect"]);
   if (hints.expand && (expanded || options.more)) allPairs.push([hints.expand, expanded ? "collapse" : "expand"]);
   const keys = allPairs.length > 0 ? keyHints(allPairs, theme) : undefined;
   const facts = expanded ? [] : [

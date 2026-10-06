@@ -58,6 +58,7 @@ export function renderWorkflowToolResult(
 ): Component {
   const details = result.details;
   if (options.isPartial) {
+    // The live widget below names the inspector shortcut for the whole run.
     return new LinesComponent(() => [`${theme.fg("accent", GLYPH.running)} ${theme.fg("muted", "running")} ${theme.bold(workflowToolTitle(args).name)}`]);
   }
   if (isWorkflowResult(details)) return workflowResultComponent(details, options.expanded, theme, hints);

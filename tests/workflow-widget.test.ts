@@ -207,6 +207,6 @@ test("a background run renders as one fitted line with its short run id and phas
     assert.ok(visibleWidth(lines[0] ?? "") <= width);
   }
   const line = plain(renderBackgroundWorkflowLine(view, 140, theme)[0] ?? "");
-  assert.match(line, /◆ background · code-review 3cfb22c2 · Find 3\/4 · 1 failed · 12s/);
+  assert.match(line, /◆ background · code-review 3cfb22c2 · Find 3\/4 · 1 failed · 12s\s+\/workflow:inspector inspect$/);
   assert.doesNotMatch(line, /5434-4359/);
 });

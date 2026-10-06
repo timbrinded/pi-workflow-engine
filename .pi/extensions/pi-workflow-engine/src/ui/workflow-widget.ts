@@ -72,7 +72,7 @@ export function renderBackgroundWorkflowLine(snapshot: WorkflowProgressSnapshot,
     counts.failed > 0 ? theme.fg("error", `${counts.failed} failed`) : undefined,
     theme.fg("dim", formatElapsed(Date.now() - snapshot.startedAt)),
   ], theme);
-  return [` ${truncateToWidth(line, Math.max(1, width - 2), "…")}`];
+  return [` ${spread(line, keyHints([[workflowInspectorHint(), "inspect"]], theme), Math.max(1, width - 2))}`];
 }
 
 interface ClassifiedPhases {

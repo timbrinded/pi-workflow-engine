@@ -11,7 +11,7 @@ import { createReviewReportFixture, createTestTheme } from "./fixtures/theme.ts"
 const plain = stripVTControlCharacters;
 
 const theme = createTestTheme();
-const hints = { triage: "ctrl+alt+t", expand: "ctrl+o" };
+const hints = { triage: "ctrl+alt+t", inspect: "ctrl+alt+i", expand: "ctrl+o" };
 const RUN_ID = "3cfb22c2-5434-4359-ad9f-67ed0af1dabb";
 
 const totals = {
@@ -101,7 +101,7 @@ test("collapsed review results list findings most severe first and hide zero cou
   const rows = lines.filter((line) => /^ {2}(HIGH|MED|LOW)/.test(line)).map((line) => line.trim().slice(0, 4).trim());
   assert.deepEqual(rows, ["HIGH", "MED", "LOW"]);
   assert.doesNotMatch(text, /\b0 (dropped|failed)|\$0\b|dropped 0/);
-  assert.match(lines.at(-1) ?? "", /ctrl\+alt\+t triage · ctrl\+o expand · run 3cfb22c2$/);
+  assert.match(lines.at(-1) ?? "", /ctrl\+alt\+t triage · ctrl\+alt\+i inspect · ctrl\+o expand · run 3cfb22c2$/);
   assert.doesNotMatch(text, new RegExp(RUN_ID));
 });
 
@@ -182,7 +182,7 @@ test("generic results show the summary collapsed and the remaining JSON only whe
 test("background runs that ended without a result point at run history", () => {
   const lines = render(view("code-review", { summary: "Workflow paused: host exited" }, { background: true, status: "paused" }), false);
   assert.match(lines[0] ?? "", /^⚠ code-review {2}paused/);
-  assert.match(lines.at(-1) ?? "", /\/workflow:runs resume · ctrl\+o expand · run 3cfb22c2 · background$/);
+  assert.match(lines.at(-1) ?? "", /\/workflow:runs resume · ctrl\+alt\+i inspect · ctrl\+o expand · run 3cfb22c2 · background$/);
 });
 
 test("the workflow tool call names the workflow, its detail and tags", () => {
