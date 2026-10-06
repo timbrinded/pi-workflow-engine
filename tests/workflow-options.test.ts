@@ -242,6 +242,26 @@ test("pickWorkflow does not prompt for inspector by default", async () => {
   assert.deepEqual(invocation, { name: "code-review", args: "review src", options: {} });
 });
 
+test("pickWorkflow cancels when the code-review target prompt is dismissed", async () => {
+  const workflows = new Map<string, WorkflowModule>([
+    ["code-review", { meta: { name: "code-review", description: "Review code" }, default: async () => "ok" }],
+  ]);
+  const ctx = {
+    hasUI: true,
+    mode: "tui",
+    ui: {
+      async select() {
+        return "code-review — Review code";
+      },
+      async input() {
+        return undefined;
+      },
+    },
+  } as unknown as ExtensionCommandContext;
+
+  assert.equal(await pickWorkflow(workflows, ctx), undefined);
+});
+
 test("pickWorkflow maps Pi's native selection label back to the workflow name", async () => {
   let offered: readonly string[] = [];
   const workflows = new Map<string, WorkflowModule>([

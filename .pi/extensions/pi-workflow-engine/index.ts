@@ -441,10 +441,10 @@ export async function pickWorkflow(
   workflows: ReadonlyMap<string, WorkflowModule>,
   ctx: ExtensionCommandContext,
 ): Promise<WorkflowInvocation | undefined> {
-  const choice = await selectWorkflowValue(workflows, ctx);
-  if (!choice) return undefined;
+  const name = await selectWorkflowValue(workflows, ctx);
+  if (!name) return undefined;
 
-  if (choice === AUTHOR_TEMP_WORKFLOW_VALUE || choice === AUTHOR_TEMP_WORKFLOW_LABEL) {
+  if (name === AUTHOR_TEMP_WORKFLOW_VALUE) {
     const brief = await ctx.ui.editor(
       "Describe temporary workflow",
       "Goal:\n\nAgents to run:\n- \n\nFinal output should include:\n- summary\n- findings\n- next steps\n",
@@ -454,10 +454,10 @@ export async function pickWorkflow(
     return { name: "", args: "", options: {}, authorBrief: trimmed };
   }
 
-  const separator = choice.indexOf(" — ");
-  const name = separator === -1 ? choice : choice.slice(0, separator);
-  const args = name === "code-review" ? (await ctx.ui.input("Code-review target/instructions", "Blank = auto-detect diff"))?.trim() ?? "" : "";
-  return { name, args, options: {} };
+  if (name !== "code-review") return { name, args: "", options: {} };
+  // Escape resolves undefined and cancels; only a submitted blank target means auto-detect.
+  const target = await ctx.ui.input("Code-review target/instructions", "Blank = auto-detect diff");
+  return target === undefined ? undefined : { name, args: target.trim(), options: {} };
 }
 
 export async function sendWorkflowResult(
@@ -665,8 +665,8 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
         return;
       }
 
-      const effectiveOptions = invocation === direct ? directOptions : resolveWorkflowRunOptions(invocation.options);
-      await sendResolvedWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, effectiveOptions, perfRecorder, reviewSessions);
+      // A picked invocation only exists for a blank command line, so its options equal the already-resolved defaults.
+      await sendResolvedWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, directOptions, perfRecorder, reviewSessions);
     },
   });
 
