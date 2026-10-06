@@ -378,7 +378,7 @@ test("runAgent dynamically enables installed search-like tools", async () => {
         getAllTools() {
           return ["read", "bash", "grep", "find", "ls", "ffgrep", "mgrep", "ast-grep", "search_replace"]
             .map((name) => createToolInfo(name))
-            .concat(createToolInfo("workflow", "Run a workflow"));
+            .concat(createToolInfo("workflow", "Run a workflow"), createToolInfo("web_search", "Search the web and return page URLs"));
         },
         setActiveToolsByName(toolNames) {
           activatedTools = toolNames;
