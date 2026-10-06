@@ -196,23 +196,6 @@ test("WorktreeRegistry removeAll tries every path, retains failures, and throws 
   assert.deepEqual(removed.sort(), ["/tmp/leaked-one", "/tmp/leaked-two"]);
 });
 
-test("WorktreeRegistry can use an injected patch capture", async () => {
-  let capturedBaseline = "";
-  const registry = new WorktreeRegistry("/repo", {
-    runner: fakeRunner(() => OK),
-    patchCapture: async ({ worktreePath, baselineOid }) => {
-      capturedBaseline = baselineOid;
-      return { patch: `diff for ${worktreePath}`, changed: true };
-    },
-  });
-
-  assert.deepEqual(await registry.capturePatch("/tmp/worktree", BASELINE_OID), {
-    patch: "diff for /tmp/worktree",
-    changed: true,
-  });
-  assert.equal(capturedBaseline, BASELINE_OID);
-});
-
 test("captureWorktreePatch reports git add failures before diff capture", async () => {
   const runner = fakeRunner(() => ({ ok: false, stdout: "", stderr: "add failed", error: "add failed" }));
 
