@@ -8,19 +8,14 @@ export interface RenderIssuesTableOptions {
 }
 
 const DEFAULT_MAX_ROWS = 12;
-const ID_WIDTH = 4;
-const SEVERITY_WIDTH = 6;
-const CONFIDENCE_WIDTH = 6;
-const CATEGORY_WIDTH = 8;
-const LOCATION_WIDTH = 30;
-const SUMMARY_WIDTH = 58;
-const COLUMN_WIDTHS = [ID_WIDTH, SEVERITY_WIDTH, CONFIDENCE_WIDTH, CATEGORY_WIDTH, LOCATION_WIDTH, SUMMARY_WIDTH] as const;
+// ID, Sev, Conf, Cat, Location, Summary
+const COLUMN_WIDTHS = [4, 6, 6, 8, 30, 58] as const;
 
 export function renderIssuesTable(issues: readonly ReviewIssue[], theme: Theme, options: RenderIssuesTableOptions = {}): string {
   const visible = issues.slice(0, options.maxRows ?? DEFAULT_MAX_ROWS);
   const lines = [
-    renderRow(["ID", "Sev", "Conf", "Cat", "Location", "Summary"], theme.fg("dim", "│"), theme),
-    theme.fg("dim", renderSeparator()),
+    renderRow(["ID", "Sev", "Conf", "Cat", "Location", "Summary"], theme),
+    theme.fg("dim", COLUMN_WIDTHS.map((width) => "─".repeat(width)).join("─┼─")),
   ];
 
   for (const issue of visible) {
@@ -34,7 +29,6 @@ export function renderIssuesTable(issues: readonly ReviewIssue[], theme: Theme, 
           formatIssueLocation(issue),
           issue.finding.summary,
         ],
-        theme.fg("dim", "│"),
         theme,
         issue,
       ),
@@ -75,19 +69,15 @@ function fieldLines(label: string, value: string, width: number, theme: Theme, v
 /** A header row (no issue) is dimmed; issue rows colour their severity and confidence cells. */
 function renderRow(
   cells: readonly [string, string, string, string, string, string],
-  separator: string,
   theme: Theme,
   issue?: ReviewIssue,
 ): string {
+  const separator = theme.fg("dim", "│");
   const rendered = cells.map((value, index) => truncateDisplay(value, COLUMN_WIDTHS[index]).padEnd(COLUMN_WIDTHS[index], " "));
   if (!issue) return rendered.map((entry) => theme.fg("dim", entry)).join(` ${separator} `);
   rendered[1] = theme.fg(severityColor(issue.finding.severity), rendered[1]);
   rendered[2] = theme.fg(confidenceColor(issue.finding.confidence), rendered[2]);
   return rendered.join(` ${separator} `);
-}
-
-function renderSeparator(): string {
-  return COLUMN_WIDTHS.map((width) => "─".repeat(width)).join("─┼─");
 }
 
 export function severityColor(severity: ReviewIssue["finding"]["severity"]): WorkflowThemeColor {

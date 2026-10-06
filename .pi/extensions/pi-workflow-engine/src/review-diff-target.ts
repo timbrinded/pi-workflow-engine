@@ -117,9 +117,8 @@ export function reviewGitDiffBaseline(target: GitReviewDiffTarget): GitDiffBasel
   return parsed.baseline;
 }
 
-/** Validate persisted targets by round-tripping through the single command allowlist parser. */
-export function isReviewDiffTarget(value: unknown): value is ReviewDiffTarget {
-  if (!Value.Check(ReviewDiffTargetSchema, value)) return false;
-  const parsed = parseAllowedDiffCommand(formatReviewDiffTarget(value));
-  return !("error" in parsed) && Value.Equal(parsed, value);
+/** Validate a schema-checked persisted target by round-tripping it through the single command allowlist parser. */
+export function isAllowedReviewDiffTarget(target: ReviewDiffTarget): boolean {
+  const parsed = parseAllowedDiffCommand(formatReviewDiffTarget(target));
+  return !("error" in parsed) && Value.Equal(parsed, target);
 }

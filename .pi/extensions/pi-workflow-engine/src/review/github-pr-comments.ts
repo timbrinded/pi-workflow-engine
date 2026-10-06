@@ -116,7 +116,7 @@ export async function postInlineComments(
   const statuses: InlineCommentStatus[] = [];
   for (const issue of issues) {
     throwIfAborted(signal);
-    const key = inlineCommentKey(issue, prContext.headSha);
+    const key = commentKey(buildInlineCommentBody(issue), issue.file, issue.line, prContext.headSha);
     if (existing.keys.has(key)) {
       statuses.push({ issueId: issue.id, status: "skipped", reason: "An identical inline comment already exists on this PR head." });
       continue;
@@ -186,10 +186,6 @@ function parseExistingInlineCommentKeys(value: unknown): Set<string> | undefined
     if (body && path && line !== undefined && headSha) keys.add(commentKey(body, path, line, headSha));
   }
   return keys;
-}
-
-function inlineCommentKey(issue: CommentableReviewIssue, headSha: string): string {
-  return commentKey(buildInlineCommentBody(issue), issue.file, issue.line, headSha);
 }
 
 function commentKey(body: string, path: string, line: number, headSha: string): string {
