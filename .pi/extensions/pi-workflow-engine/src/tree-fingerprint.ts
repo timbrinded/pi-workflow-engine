@@ -6,6 +6,12 @@ import { throwIfAborted } from "./cancellation.ts";
 import { isMissingPathError } from "./filesystem-error.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
+/** Engine-owned paths that are never part of a fingerprinted or snapshotted workspace. */
+export const FINGERPRINT_EXCLUDED_RELATIVE_PATHS: ReadonlySet<string> = new Set([
+  ".git",
+  ".pi/.workflow-runs",
+]);
+
 export type FingerprintCapture =
   | { readonly kind: "verified"; readonly fingerprint: string }
   | { readonly kind: "unverifiable"; readonly reason: string };
@@ -341,6 +347,20 @@ export function isPathWithin(root: string, path: string): boolean {
   return pathFromRoot === "" || (!isAbsolute(pathFromRoot) && pathFromRoot !== ".." && !pathFromRoot.startsWith(`..${sep}`));
 }
 
+export function portableRelativePath(root: string, path: string): string {
+  const value = relative(root, path).split(sep).join("/");
+  return value.length === 0 ? "." : value;
+}
+
+/** Resolve `git rev-parse --show-toplevel` output to a root that contains `cwd`. */
+export function parseGitTopLevel(output: string, cwd: string): string | undefined {
+  const withoutLf = output.endsWith("\n") ? output.slice(0, -1) : output;
+  const value = withoutLf.endsWith("\r") ? withoutLf.slice(0, -1) : withoutLf;
+  if (value.length === 0 || value.includes("\n") || value.includes("\0")) return undefined;
+  const root = resolve(cwd, value);
+  return isPathWithin(root, cwd) ? root : undefined;
+}
+
 function isExcludedRelativePath(path: string, excluded: ReadonlySet<string> | undefined): boolean {
   if (!excluded || excluded.size === 0) return false;
   const normalized = normalizeRelativePath(path);
@@ -361,8 +381,7 @@ function declaredInputPath(root: string, base: string, input: string): string {
   const path = resolve(base, input);
   if (!isPathWithin(root, path)) throw new Error(`declared input escapes the repository root: ${input}`);
   if (!isPathWithin(base, path)) throw new Error(`declared input escapes the workflow cwd: ${input}`);
-  const relativePath = relative(root, path).split(sep).join("/");
-  return relativePath.length === 0 ? "." : relativePath;
+  return portableRelativePath(root, path);
 }
 
 function rejectExcludedDeclaredInput(path: string, excluded: ReadonlySet<string> | undefined): void {
@@ -370,7 +389,7 @@ function rejectExcludedDeclaredInput(path: string, excluded: ReadonlySet<string>
   throw new Error(`declared input enters excluded path: ${path}`);
 }
 
-function isExcludedDeclaredInput(path: string, excluded: ReadonlySet<string> | undefined): boolean {
+export function isExcludedDeclaredInput(path: string, excluded: ReadonlySet<string> | undefined): boolean {
   if (!excluded) return false;
   const normalized = normalizeRelativePath(path);
   for (const candidate of excluded) {

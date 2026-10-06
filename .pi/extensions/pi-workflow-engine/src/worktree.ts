@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { runBoundedProcess } from "./process-runner.ts";
+import {
+  FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+  isExcludedDeclaredInput,
+  parseGitTopLevel,
+  portableRelativePath,
+} from "./tree-fingerprint.ts";
 import { isGitObjectId } from "./guards.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
@@ -524,21 +530,8 @@ async function requireGitCommand(options: WorktreeGitCommandOptions): Promise<vo
   if (!result.ok) throw new Error(result.error ?? (result.stderr.trim() || "git command failed"));
 }
 
-function parseGitTopLevel(output: string, cwd: string): string | undefined {
-  const withoutLf = output.endsWith("\n") ? output.slice(0, -1) : output;
-  const value = withoutLf.endsWith("\r") ? withoutLf.slice(0, -1) : withoutLf;
-  if (value.length === 0 || value.includes("\n") || value.includes("\0")) return undefined;
-  const root = resolve(cwd, value);
-  const cwdFromRoot = relative(root, resolve(cwd));
-  return isAbsolute(cwdFromRoot) || cwdFromRoot === ".." || cwdFromRoot.startsWith(`..${sep}`) ? undefined : root;
-}
-
 function isExcludedSnapshotPath(sourceRoot: string, source: string): boolean {
-  const path = relative(sourceRoot, source);
-  if (path.length === 0) return false;
-  const segments = path.split(sep);
-  if (segments.includes(".git")) return true;
-  return segments.some((segment, index) => segment === ".pi" && segments[index + 1] === ".workflow-runs");
+  return isExcludedDeclaredInput(portableRelativePath(sourceRoot, source), FINGERPRINT_EXCLUDED_RELATIVE_PATHS);
 }
 
 function isInvalidHeadError(message: string): boolean {

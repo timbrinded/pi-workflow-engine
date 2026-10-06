@@ -2,8 +2,15 @@ import { lstat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { isMissingPathError } from "./filesystem-error.ts";
 import { hashIdentity } from "./identity-fingerprint.ts";
-import { logicalWorkspacePath, portableRelativePath } from "./replay-path-identity.ts";
-import { captureTreeFingerprint, isPathWithin, validateTreeFile, type FingerprintCapture } from "./tree-fingerprint.ts";
+import { logicalWorkspacePath } from "./replay-path-identity.ts";
+import {
+  captureTreeFingerprint,
+  FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+  isPathWithin,
+  portableRelativePath,
+  validateTreeFile,
+  type FingerprintCapture,
+} from "./tree-fingerprint.ts";
 
 export interface EffectiveToolSourceInfoLike {
   readonly path: string;
@@ -34,7 +41,6 @@ export interface ToolSourceIdentityOptions {
 
 const SOURCE_FINGERPRINT_MAX_BYTES = 32 << 20;
 const SOURCE_FINGERPRINT_MAX_FILES = 4096;
-const SOURCE_FINGERPRINT_EXCLUSIONS = new Set([".git", ".pi/.workflow-runs"]);
 
 export async function captureEffectiveToolSourceIdentity(
   sourceInfo: EffectiveToolSourceInfoLike,
@@ -64,7 +70,7 @@ export async function captureEffectiveToolSourceIdentity(
   const validation = await validateTreeFile({
     root: sourceRoot,
     path: sourcePath,
-    excludedRelativePaths: SOURCE_FINGERPRINT_EXCLUSIONS,
+    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
     signal: options.signal,
   });
   if (validation.kind === "unverifiable") throw new Error(`tool source "${path}" is not fingerprintable: ${validation.reason}`);
@@ -73,7 +79,7 @@ export async function captureEffectiveToolSourceIdentity(
   if (!capture) {
     capture = captureTreeFingerprint({
       root: sourceRoot,
-      excludedRelativePaths: SOURCE_FINGERPRINT_EXCLUSIONS,
+      excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
       maxBytes: SOURCE_FINGERPRINT_MAX_BYTES,
       maxFiles: SOURCE_FINGERPRINT_MAX_FILES,
       signal: options.signal,

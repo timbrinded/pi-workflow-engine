@@ -13,7 +13,10 @@ import {
   BoundedFingerprint,
   captureDeclaredInputFingerprint,
   captureTreeFingerprint,
+  FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+  isExcludedDeclaredInput,
   isPathWithin,
+  parseGitTopLevel,
   resolveDeclaredInputPaths,
   validateTreeFile,
   type FingerprintCapture,
@@ -95,10 +98,6 @@ const GIT_VISIBLE_PATHS = [
   ":(exclude).pi/.workflow-runs/**",
   ":(glob,exclude)**/.pi/.workflow-runs/**",
 ] as const;
-export const FINGERPRINT_EXCLUDED_RELATIVE_PATHS = new Set([
-  ".git",
-  ".pi/.workflow-runs",
-]);
 
 export function unverifiableRepositoryResumeContext(reason: string): RepositoryResumeContext {
   return { kind: "unverifiable", reason };
@@ -318,7 +317,7 @@ async function captureGitVisibleStateUnchecked(
 
   const untracked = await captureDeclaredInputFingerprint({
     root: cwd,
-    inputs: validated.untrackedPaths.filter((path) => !isFingerprintExcludedPath(path)),
+    inputs: validated.untrackedPaths.filter((path) => !isExcludedDeclaredInput(path, FINGERPRINT_EXCLUDED_RELATIVE_PATHS)),
     excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
     maxBytes: CONTENT_FINGERPRINT_MAX_BYTES,
     maxEntries: GIT_UNTRACKED_MAX_ENTRIES,
@@ -714,29 +713,6 @@ function parseNullTerminatedRecords(output: string, operation: string): string[]
   if (output.length === 0) return [];
   if (!output.endsWith("\0")) throw new Error(`${operation} returned unterminated data`);
   return output.slice(0, -1).split("\0");
-}
-
-function parseGitTopLevel(output: string, cwd: string): string | undefined {
-  const withoutLf = output.endsWith("\n") ? output.slice(0, -1) : output;
-  const value = withoutLf.endsWith("\r") ? withoutLf.slice(0, -1) : withoutLf;
-  if (value.length === 0 || value.includes("\n") || value.includes("\0")) return undefined;
-  const root = resolve(cwd, value);
-  return isPathWithin(root, cwd) ? root : undefined;
-}
-
-function isFingerprintExcludedPath(path: string): boolean {
-  const normalized = path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
-  for (const excluded of FINGERPRINT_EXCLUDED_RELATIVE_PATHS) {
-    if (
-      normalized === excluded ||
-      normalized.startsWith(`${excluded}/`) ||
-      normalized.endsWith(`/${excluded}`) ||
-      normalized.includes(`/${excluded}/`)
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function sanitizeProcessMessage(message: string): string {

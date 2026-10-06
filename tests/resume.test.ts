@@ -30,11 +30,11 @@ import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
+import { captureRepositoryResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import {
-  captureRepositoryResumeContext,
+  captureTreeFingerprint,
   FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-} from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
-import { captureTreeFingerprint } from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
+} from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
 import {
   TEST_TOOL,
   TEST_TOOL_DEFINITION,

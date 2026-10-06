@@ -6,8 +6,7 @@ import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import type { PerfSink } from "./perf.ts";
 import { loadWorkflow, parseWorkflowModule } from "./workflow-module.ts";
 import { BUILTIN_SOURCE_ROOT, BUILTIN_WORKFLOW_DEFINITIONS, BUILTIN_WORKFLOW_FILES } from "./workflows.ts";
-import { captureTreeFingerprint } from "./tree-fingerprint.ts";
-import { FINGERPRINT_EXCLUDED_RELATIVE_PATHS } from "./resume-context.ts";
+import { captureTreeFingerprint, FINGERPRINT_EXCLUDED_RELATIVE_PATHS } from "./tree-fingerprint.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 export interface DiscoverWorkflowsOptions {
