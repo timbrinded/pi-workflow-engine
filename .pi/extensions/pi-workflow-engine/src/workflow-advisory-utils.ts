@@ -112,15 +112,23 @@ export async function runLensVerificationPipeline(
   return { verified, rawCandidates, dropped, coverage };
 }
 
+/** Stats for a lens review that stopped before discovery. */
+export const EMPTY_LENS_REVIEW_STATS: Readonly<WorkflowRunStats> = Object.freeze({ files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0, refuted: 0 });
+
 export interface LensReviewConclusion {
   /** Scoped file count reported in stats. */
   files: number;
   rank(finding: AdvisoryVerified): number;
-  /** Heading for each ranked finding's recommendation in the synthesis prompt. */
-  recommendationLabel: string;
+  /** One ranked finding's synthesis-prompt block, headed by the IDs synthesis selects; defaults to {@link formatRankedFinding}. */
+  formatFinding?(finding: AdvisoryVerified, index: number): string;
   /** Report used when no finding survives verification and challenge. */
   empty: { summary: string; nextSteps: string[] };
   synthesisPrompt(block: string, ranked: readonly AdvisoryVerified[], refuted: readonly AdvisoryVerified[]): string;
+}
+
+export function formatRankedFinding(finding: AdvisoryVerified, index: number, recommendationLabel = "Recommendation"): string {
+  return `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
+    `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}\n${recommendationLabel}: ${finding.recommendation ?? "(none supplied)"}`;
 }
 
 /** Rank and synthesize the findings that survived verification and challenge into the final report. */
@@ -146,13 +154,7 @@ export async function concludeLensReview(
   }
 
   const ranked = [...surviving].sort((a, b) => conclusion.rank(a) - conclusion.rank(b));
-  const block = ranked
-    .map(
-      (finding, index) =>
-        `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
-        `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}\n${conclusion.recommendationLabel}: ${finding.recommendation ?? "(none supplied)"}`,
-    )
-    .join("\n\n");
+  const block = ranked.map((finding, index) => (conclusion.formatFinding ?? formatRankedFinding)(finding, index)).join("\n\n");
   const refuted = verified.filter((finding) => finding.verdict === "REFUTED");
   const resolved = await synthesizeAdvisoryReport(api, conclusion.synthesisPrompt(block, ranked, refuted), ranked, coverage);
   return finishAdvisoryReport({ ...resolved, stats: { ...stats, kept: resolved.findings.length } }, coverage, verified);

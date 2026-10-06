@@ -6,6 +6,7 @@ import {
   concludeLensReview,
   formatEvidence,
   formatLocation,
+  formatRankedFinding,
   runLensVerificationPipeline,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
@@ -87,7 +88,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   return concludeLensReview(api, pipelineResult, verified, {
     files: scope.files.length,
     rank,
-    recommendationLabel: "Validation/fix plan",
+    formatFinding: (finding, index) => formatRankedFinding(finding, index, "Validation/fix plan"),
     empty: {
       summary: "No root-cause hypothesis survived verification.",
       nextSteps: ["Capture the exact failing command and error output.", "Rerun diagnose with a narrower symptom or more evidence."],

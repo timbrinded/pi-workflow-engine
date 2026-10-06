@@ -6,6 +6,7 @@ import {
   concludeLensReview,
   finishAdvisoryReport,
   emptyAdvisoryReport,
+  EMPTY_LENS_REVIEW_STATS,
   formatLocation,
   runLensVerificationPipeline,
   DEFAULT_ADVISORY_TOOL_HINTS,
@@ -57,7 +58,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     return finishAdvisoryReport(emptyAdvisoryReport(
       "No performance-relevant files were identified.",
       ["Provide a slow command, workload, file path, or user-visible latency concern to review."],
-      { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0, refuted: 0 },
+      EMPTY_LENS_REVIEW_STATS,
     ), []);
   }
 
@@ -95,7 +96,6 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   return concludeLensReview(api, pipelineResult, verified, {
     files: scope.files.length,
     rank,
-    recommendationLabel: "Recommendation",
     empty: {
       summary: "No performance finding survived verification.",
       nextSteps: ["Add or run a focused measurement for the target workload before optimizing.", "Rerun perf-review with benchmark output or a narrower slow path."],

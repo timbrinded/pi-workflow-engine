@@ -6,7 +6,9 @@ import {
   concludeLensReview,
   finishAdvisoryReport,
   emptyAdvisoryReport,
+  EMPTY_LENS_REVIEW_STATS,
   formatLocation,
+  formatRankedFinding,
   runLensVerificationPipeline,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
@@ -56,7 +58,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     return finishAdvisoryReport(emptyAdvisoryReport(
       "No files were identified for refactor scouting.",
       ["Provide a target path, module, or subsystem to scout for refactor opportunities."],
-      { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0, refuted: 0 },
+      EMPTY_LENS_REVIEW_STATS,
     ), []);
   }
 
@@ -92,7 +94,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   return concludeLensReview(api, pipelineResult, verified, {
     files: scope.files.length,
     rank,
-    recommendationLabel: "Safe first step",
+    formatFinding: (finding, index) => formatRankedFinding(finding, index, "Safe first step"),
     empty: {
       summary: "No refactor opportunities survived verification.",
       nextSteps: ["Leave the scoped code unchanged unless a human reviewer has additional context."],

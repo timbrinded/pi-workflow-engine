@@ -160,7 +160,7 @@ test("code-review returns the empty report when scope has no files", async () =>
 
   assert.equal(result.summary, "No changes found to review.");
   assert.deepEqual(result.findings, []);
-  assert.deepEqual(result.stats, { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0 });
+  assert.deepEqual(result.stats, { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0, refuted: 0 });
 });
 
 test("code-review trusts the captured diff over the scope's file list and skips finders when it is empty", async () => {

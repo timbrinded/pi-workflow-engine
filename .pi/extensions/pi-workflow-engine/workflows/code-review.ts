@@ -3,12 +3,13 @@ import { Type } from "typebox";
 import {
   type AdvisoryVerified,
   type AdvisoryLens,
-  synthesizeAdvisoryReport,
+  concludeLensReview,
+  emptyAdvisoryReport,
   finishAdvisoryReport,
   formatEvidence,
   formatLocation,
-  publishVerifiedKeptProgress,
   runLensVerificationPipeline,
+  EMPTY_LENS_REVIEW_STATS,
   verdictConfidence,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
@@ -17,7 +18,7 @@ import { formatReviewDiffTarget, parseAllowedDiffCommand } from "../src/review-d
 import { changedLines, diffAnchor } from "../src/review/review-diff-lines.ts";
 import type { ReviewContext } from "../src/review/review-report.ts";
 import { captureReviewMaterial } from "../src/review/review-snapshot.ts";
-import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
+import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
   name: "code-review",
@@ -77,17 +78,6 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   const { agent, phase, log, progress, args, cwd, signal } = api;
   const challengeConfig = parseChallengeArgs(args);
   const target = challengeConfig.args.trim();
-  let fileCount = 0;
-  let rawCandidateCount = 0;
-  let droppedCandidateCount = 0;
-  const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
-    files: fileCount,
-    candidates: rawCandidateCount,
-    verified,
-    kept,
-    dropped: droppedCandidateCount,
-  });
-  const noChanges = (summary: string) => ({ summary, findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) });
 
   // ─── Phase 0: Scope ───
   phase("Scope");
@@ -111,7 +101,6 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
-  fileCount = scope.files.length;
   progress({ type: "summary", key: "files", value: scope.files.join(", ") || "(none)" });
   const diffTarget = parseAllowedDiffCommand(scope.diffCommand);
   if ("error" in diffTarget) {
@@ -119,7 +108,12 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   }
   const diffCommand = formatReviewDiffTarget(diffTarget);
   progress({ type: "summary", key: "diffCommand", value: diffCommand });
-  progress({ type: "counter", key: "files", label: "files", value: fileCount });
+  progress({ type: "counter", key: "files", label: "files", value: scope.files.length });
+  const noChanges = (summary: string) => finishAdvisoryReport(emptyAdvisoryReport(
+    summary,
+    ["Provide a PR, ref range, or changed files to review."],
+    { ...EMPTY_LENS_REVIEW_STATS, files: scope.files.length },
+  ), []);
 
   if (scope.files.length === 0) return noChanges("No changes found to review.");
 
@@ -184,35 +178,23 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       "Run the diff command, read the relevant file(s), and return exactly one verdict (CONFIRMED / PLAUSIBLE / NOT_SUBSTANTIATED / REFUTED) " +
       "with evidence quoting the line(s). Use NOT_SUBSTANTIATED when evidence is insufficient; use REFUTED only for concrete disproof. Structured output only.",
   });
-  rawCandidateCount += pipelineResult.rawCandidates;
-  droppedCandidateCount += pipelineResult.dropped;
-  const { coverage } = pipelineResult;
-  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
-  const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
-  const stats = makeStats(verified.length, surviving.length);
-  publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
-
-  if (surviving.length === 0) {
-    return finishAdvisoryReport({ summary: "No findings survived verification.", findings: [], nextSteps: ["No code-review action is recommended from this workflow run."], stats, reviewContext }, coverage, verified);
-  }
-
-  // ─── Synthesize: rank, merge, report ───
-  const rank = (finding: AdvisoryVerified): number => (finding.category === "cleanup" ? 2 : 0) + (finding.verdict !== "CONFIRMED" ? 1 : 0);
-  const ranked = [...surviving].sort((a, b) => rank(a) - rank(b));
-  const block = ranked
-    .map(
-      (finding, index) =>
-        `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}${finding.category === "cleanup" ? ", cleanup" : ""})\n` +
-        `Category: ${finding.category}\nConfidence: ${verdictConfidence(finding.verdict)}\n` +
-        `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}`,
-    )
-    .join("\n\n");
-
-  const resolved = await synthesizeAdvisoryReport(api,
-    `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
+  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, pipelineResult.coverage);
+  const report = await concludeLensReview(api, pipelineResult, verified, {
+    files: scope.files.length,
+    rank,
+    formatFinding: (finding, index) =>
+      `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}${finding.category === "cleanup" ? ", cleanup" : ""})\n` +
+      `Category: ${finding.category}\nConfidence: ${verdictConfidence(finding.verdict)}\n` +
+      `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}`,
+    empty: { summary: "No findings survived verification.", nextSteps: ["No code-review action is recommended from this workflow run."] },
+    synthesisPrompt: (block, ranked) =>
+      `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
       "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final advisory report. " +
       "Return summary, ID selections with severity (low/medium/high) and advisory recommendation, and nextSteps. Evidence and confidence are reconstructed from verified records. Structured output only.",
-    ranked, coverage,
-  );
-  return finishAdvisoryReport({ ...resolved, stats: { ...stats, kept: resolved.findings.length }, reviewContext }, coverage, verified);
+  });
+  return { ...report, reviewContext };
+}
+
+function rank(finding: AdvisoryVerified): number {
+  return (finding.category === "cleanup" ? 2 : 0) + (finding.verdict !== "CONFIRMED" ? 1 : 0);
 }
