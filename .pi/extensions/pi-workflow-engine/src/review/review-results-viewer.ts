@@ -1,6 +1,6 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { decodeKittyPrintable, matchesKey, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
-import { renderFindingDetail, renderFindingRow, sortIssuesForDisplay } from "./review-format.ts";
+import { findingPathColumn, renderFindingDetail, renderFindingRow, sortIssuesForDisplay } from "./review-format.ts";
 import { dot, fit, frame, GLYPH, keyHints, overlayHeight, scrollHint } from "../ui/kit.ts";
 import { isCommentableIssue, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../ui/workflow-viewer-layout.ts";
@@ -133,7 +133,7 @@ export class ReviewResultsViewer implements Component {
   private renderRow(issue: ReviewIssue, index: number, width: number): string {
     const cursor = index === this.cursor ? this.theme.fg("accent", GLYPH.cursor) : " ";
     const mark = this.selected.has(issue.id) ? this.theme.fg("success", GLYPH.running) : this.theme.fg("dim", GLYPH.queued);
-    return `${cursor} ${mark} ${renderFindingRow(issue, Math.max(1, width - PREFIX_WIDTH), this.theme)}`;
+    return `${cursor} ${mark} ${renderFindingRow(issue, Math.max(1, width - PREFIX_WIDTH), this.theme, findingPathColumn(this.issues))}`;
   }
 
   private renderDetail(width: number, height: number): string[] {

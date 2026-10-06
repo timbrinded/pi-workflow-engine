@@ -31,7 +31,7 @@ export function renderFindingRow(issue: ReviewIssue, width: number, theme: Theme
 }
 
 function maxPathWidth(room: number): number {
-  return Math.min(Math.max(12, Math.floor(room * 0.32)), 34);
+  return Math.min(Math.max(16, Math.floor(room * 0.38)), 34);
 }
 
 /** A location column as wide as the longest listed path, never below 12 columns. */
