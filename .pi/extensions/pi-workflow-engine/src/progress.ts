@@ -6,16 +6,6 @@ import { unknownErrorMessage } from "./unknown-error.ts";
 import { statusTextFromCounts, type WorkflowStatusCounts } from "./ui/workflow-format.ts";
 import { renderWorkflowWidgetLines } from "./ui/workflow-widget.ts";
 
-export type {
-  AgentRowSnapshot,
-  AgentRowStatus,
-  PhaseSnapshot,
-  WorkflowCounterSnapshot,
-  WorkflowLaneItemSnapshot,
-  WorkflowLaneItemStatus,
-  WorkflowProgressSnapshot,
-} from "./progress-types.ts";
-
 interface AgentRow {
   id: number;
   label: string;
@@ -227,10 +217,6 @@ export class ProgressTracker {
   }
 
   statusCounts(): WorkflowStatusCounts {
-    return this.statusCountsSnapshot();
-  }
-
-  private statusCountsSnapshot(): WorkflowStatusCounts {
     return {
       queued: this.agentCounts.queued,
       running: this.agentCounts.running,
@@ -248,7 +234,6 @@ export class ProgressTracker {
   }
 
   private pruneLane(laneName: string, lane: WorkflowLaneItem[]): void {
-    if (this.laneItemLimit <= 0) return;
     while (lane.length > this.laneItemLimit) {
       lane.shift();
       this.laneOverflow.set(laneName, (this.laneOverflow.get(laneName) ?? 0) + 1);
@@ -275,18 +260,19 @@ export class ProgressTracker {
   }
 
   private publish(): void {
-    this.publishSnapshot();
+    const snapshot = this.snapshot();
+    this.onSnapshot?.(snapshot);
     // Agents that outlive a fatal drain still report after done(); record them without reviving live surfaces.
     if (!this.ctx.hasUI || this.doneAt !== undefined) return;
-    this.publishWidget();
+    this.publishWidget(snapshot);
     this.startWidgetRefresh();
     this.publishStatus();
   }
 
-  private publishWidget(): void {
+  private publishWidget(snapshot = this.snapshot()): void {
     this.ctx.ui.setWidget(
       this.surfaceKey,
-      renderWorkflowWidgetLines(this.snapshot(), this.ctx.ui.theme),
+      renderWorkflowWidgetLines(snapshot, this.ctx.ui.theme),
       { placement: "aboveEditor" },
     );
   }
@@ -310,7 +296,7 @@ export class ProgressTracker {
         currentPhase: this.currentPhase,
         counters: [...this.counters.values()].map((counter) => ({ ...counter })),
       },
-      this.statusCountsSnapshot(),
+      this.statusCounts(),
       this.ctx.ui.theme,
     );
     const usage = formatWorkflowUsageLine(this.usageSnapshot);
@@ -324,15 +310,11 @@ export class ProgressTracker {
   done(): void {
     this.doneAt = Date.now();
     this.stopWidgetRefresh();
-    this.publishSnapshot();
+    this.onSnapshot?.(this.snapshot());
     if (!this.ctx.hasUI) return;
     this.ctx.ui.setWidget(this.surfaceKey, undefined);
     this.ctx.ui.setStatus(this.surfaceKey, undefined);
     this.lastStatusText = undefined;
-  }
-
-  private publishSnapshot(): void {
-    this.onSnapshot?.(this.snapshot());
   }
 }
 
