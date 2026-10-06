@@ -200,6 +200,8 @@ test("research preserves citation context through verification and filters rejec
   assert.doesNotMatch(synthesis?.prompt ?? "", /A rejected claim/);
   assert.ok(api.calls.every((call) => call.options?.profile === "small" || call.options?.profile === "medium"));
   assert.ok(api.calls.every((call) => call.options?.resume === "off"));
+  // Web-derived prompt text must never select skills (or grant the read tool that skills need).
+  for (const call of [gather, verifier, synthesis]) assert.deepEqual(call?.options?.skills, [], call?.options?.label);
   assert.deepEqual(result.sources, [{ title: "Official specification", url: "https://example.com/spec" }]);
   assert.deepEqual(result.supportedClaims[0]?.citations, [{ title: "Official specification", url: "https://example.com/spec" }]);
 });

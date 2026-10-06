@@ -131,10 +131,7 @@ function verificationSources(
   return byClaim;
 }
 
-export function fallbackResearchReport(
-  verifications: readonly ResearchVerification[],
-  limitation: string,
-): ResearchReport {
+export function fallbackResearchReport(verifications: readonly ResearchVerification[]): ResearchReport {
   const entry = (verification: ResearchVerification): ResearchReportEntry => ({
     claim: verification.claim,
     explanation: verification.explanation,
@@ -147,7 +144,7 @@ export function fallbackResearchReport(
     uncertainties: verifications.filter((item) => item.verdict === "UNCERTAIN").map(entry),
     inferences: verifications.filter((item) => item.verdict === "INFERENCE").map(entry),
     sources: dedupeSources(verifications.flatMap((verification) => verification.sources)),
-    limitations: [limitation],
+    limitations: ["The synthesis stage failed; verified claims are listed without a narrative answer."],
     nextSteps: ["Review the verified claim groups and rerun synthesis if a narrative answer is required."],
   };
 }

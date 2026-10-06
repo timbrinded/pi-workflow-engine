@@ -16,6 +16,7 @@ import {
   unavailableResearchReport,
   unavailableVerification,
 } from "../src/research-evidence.ts";
+import { isFatalWorkflowError } from "../src/cancellation.ts";
 import { WorkflowToolHintUnavailableError } from "../src/tool-capabilities.ts";
 import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
@@ -29,7 +30,7 @@ const EXTERNAL_TOOLS: string[] = [];
 const EXTERNAL_TOOL_HINTS = ["external-search"] as const;
 
 export default async function run(api: WorkflowApi): Promise<ResearchReport> {
-  const { agent, parallel, phase, log, progress, args } = api;
+  const { agent, parallel, phase, log, progress, args, signal } = api;
   const question = args.trim();
   if (!question) return unavailableResearchReport("empty-question");
 
@@ -81,6 +82,8 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
           tools: EXTERNAL_TOOLS,
           toolHints: EXTERNAL_TOOL_HINTS,
           requireToolHints: true,
+          // The prompt embeds lane text planned by a web-enabled agent; never infer skills (and the read tool) from it.
+          skills: [],
           profile: "small",
           resume: "off",
           schema: ResearchLaneResultSchema,
@@ -116,6 +119,8 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
         tools: EXTERNAL_TOOLS,
         toolHints: EXTERNAL_TOOL_HINTS,
         requireToolHints: true,
+        // The prompt embeds web-derived evidence; never infer skills (and the read tool) from it.
+        skills: [],
         profile: "medium",
         resume: "off",
         schema: ResearchVerificationSchema,
@@ -130,31 +135,33 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
   const synthesisInputs = verifications.filter((verification) => verification.verdict !== "REJECTED");
 
   phase("Synthesize");
-  // parallel() turns a recoverable synthesis failure into null, so verified claims still reach the fallback.
-  const [synthesis] = await parallel([() => agent(
-    `Answer the research question using only the independently verified handoff below.\n\n` +
-      `Question: ${question}\nScope constraints: ${plan.scopeConstraints.join("; ") || "(none)"}\n\n` +
-      `Verified claims JSON:\n${JSON.stringify(synthesisInputs)}\n\n` +
-      "Keep SUPPORTED claims, CONFLICTED evidence, UNCERTAIN claims, and model INFERENCE in their separate fields. Exclude REJECTED claims. " +
-      "Copy each verified claim string exactly so its citations remain bound to that claim during validation. " +
-      "Every supported or conflicting claim must cite exact title/URL objects from its verification; do not add URLs, cite search-results pages, or turn inference into fact. " +
-      "Answer concisely, disclose limited coverage, and provide useful next steps. Structured output only.",
-    {
-      phase: "Synthesize",
-      label: "synthesize",
-      tools: [],
-      // The prompt embeds web-derived claims; never infer skills (and the read tool) from them.
-      skills: [],
-      profile: "medium",
-      resume: "off",
-      schema: ResearchReportSchema,
-    },
-  )]);
+  let synthesis: ResearchReport;
+  try {
+    synthesis = await agent(
+      `Answer the research question using only the independently verified handoff below.\n\n` +
+        `Question: ${question}\nScope constraints: ${plan.scopeConstraints.join("; ") || "(none)"}\n\n` +
+        `Verified claims JSON:\n${JSON.stringify(synthesisInputs)}\n\n` +
+        "Keep SUPPORTED claims, CONFLICTED evidence, UNCERTAIN claims, and model INFERENCE in their separate fields. Exclude REJECTED claims. " +
+        "Copy each verified claim string exactly so its citations remain bound to that claim during validation. " +
+        "Every supported or conflicting claim must cite exact title/URL objects from its verification; do not add URLs, cite search-results pages, or turn inference into fact. " +
+        "Answer concisely, disclose limited coverage, and provide useful next steps. Structured output only.",
+      {
+        phase: "Synthesize",
+        label: "synthesize",
+        tools: [],
+        // The prompt embeds web-derived claims; never infer skills (and the read tool) from them.
+        skills: [],
+        profile: "medium",
+        resume: "off",
+        schema: ResearchReportSchema,
+      },
+    );
+  } catch (error) {
+    if (isFatalWorkflowError(error, signal)) throw error;
+    synthesis = fallbackResearchReport(synthesisInputs);
+  }
 
-  const report = sanitizeResearchReport(
-    synthesis ?? fallbackResearchReport(synthesisInputs, "The synthesis stage failed; verified claims are listed without a narrative answer."),
-    synthesisInputs,
-  );
+  const report = sanitizeResearchReport(synthesis, synthesisInputs);
   if (failedLanes.length === 0) return report;
   const laneGap = `${failedLanes.length} of ${lanes.length} research lane(s) failed (${failedLanes.map((lane) => lane.title).join(", ")}); coverage is incomplete.`;
   return { ...report, limitations: [...report.limitations, laneGap] };
