@@ -248,7 +248,7 @@ test("refactor-scout runs all finder agents before verifier agents", async () =>
     emptyCandidates(),
     emptyCandidates(),
     emptyCandidates(),
-    { verdict: "PLAUSIBLE", evidence: ["Two duplicated branches."], confidence: "medium" },
+    { verdict: "PLAUSIBLE", evidence: ["Two duplicated branches."] },
     report("One refactor opportunity.", [{ ...finding("extract duplicate helper", "duplication", "medium"), sourceCandidateIds: identifyCandidates([opportunity], "duplication")[0]!.sourceCandidateIds }]),
   ]);
 
@@ -278,8 +278,8 @@ test("diagnose keeps refuted hypotheses out of final findings", async () => {
     emptyCandidates(),
     emptyCandidates(),
     emptyCandidates(),
-    { verdict: "REFUTED", evidence: ["Fixture is current."], confidence: "low" },
-    { verdict: "CONFIRMED", evidence: ["Condition is inverted."], confidence: "high" },
+    { verdict: "REFUTED", evidence: ["Fixture is current."] },
+    { verdict: "CONFIRMED", evidence: ["Condition is inverted."] },
     report("One root cause.", [{ ...finding("wrong branch condition", "root-cause"), sourceCandidateIds: identifyCandidates([refuted, confirmed], "recent-change")[1]!.sourceCandidateIds }]),
   ]);
 
@@ -353,7 +353,7 @@ test("perf-review keeps weak measurement findings advisory", async () => {
     emptyCandidates(),
     emptyCandidates(),
     { candidates: [measurementGap] },
-    { verdict: "PLAUSIBLE", evidence: ["No benchmark output is checked in."], confidence: "low" },
+    { verdict: "PLAUSIBLE", evidence: ["No benchmark output is checked in."] },
     report("Measurement gap only.", [{ ...measurementFinding, sourceCandidateIds: identifyCandidates([measurementGap], "measurement")[0]!.sourceCandidateIds }]),
   ]);
 

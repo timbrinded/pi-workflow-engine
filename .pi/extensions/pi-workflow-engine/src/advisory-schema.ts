@@ -36,7 +36,6 @@ export const AdvisoryCandidatesSchema = Type.Object({
 export const AdvisoryVerdictSchema = Type.Object({
   verdict: AdvisoryVerifierVerdictSchema,
   evidence: Type.Array(Type.String({ description: "Quoted or cited evidence supporting the verdict." })),
-  confidence: Type.Optional(AdvisoryConfidenceSchema),
 });
 
 export const AdvisoryFindingSchema = Type.Object({

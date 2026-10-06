@@ -1,4 +1,4 @@
-import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
+import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
 import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "./types.ts";
 
@@ -11,7 +11,6 @@ export interface AdvisoryLens {
 export type AdvisoryVerified = IdentifiedAdvisoryCandidate & {
   verdict: AdvisoryVerdict["verdict"];
   evidence: string[];
-  confidence?: AdvisoryVerdict["confidence"];
   challenge?: import("./advisory-challenge.ts").ChallengeRecord;
 };
 
@@ -106,7 +105,7 @@ export async function runLensVerificationPipeline(
         profile: "small", schema: AdvisoryVerdictSchema,
       });
       recordVerdictProgress(api.progress, candidate, judged);
-      return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, confidence: judged.confidence };
+      return { ...candidate, verdict: judged.verdict, evidence: judged.evidence };
     },
   })), coverage);
   return { verified, rawCandidates, dropped, coverage };
@@ -206,7 +205,7 @@ const VERDICT_PRESENTATION = {
   NOT_SUBSTANTIATED: { lane: "Unresolved", status: "warning", confidence: "medium" },
   REFUTED: { lane: "Refuted", status: "error", confidence: "low" },
 } satisfies Record<AdvisoryVerdict["verdict"], {
-  lane: string; status: "success" | "warning" | "error"; confidence: NonNullable<AdvisoryVerdict["confidence"]>;
+  lane: string; status: "success" | "warning" | "error"; confidence: AdvisoryFinding["confidence"];
 }>;
 
 export function verdictConfidence(verdict: AdvisoryVerdict["verdict"]): "high" | "medium" | "low" {
