@@ -44,15 +44,37 @@ export function workflowRunsUsage(): string {
   return `Usage: /workflow:runs [${WORKFLOW_RUN_ACTIONS.map((action) => action.value).join("|")} <run-id>]`;
 }
 
+/** What a run's lifecycle actions depend on beyond its own record. */
+export interface WorkflowRunActionContext {
+  /** Runs this session is executing in the background. */
+  readonly activeRunIds: ReadonlySet<string>;
+  /** Resumed runs, keyed to the run that resumed them; see {@link supersedingRuns}. */
+  readonly resumedAs: ReadonlyMap<string, string>;
+}
+
+/**
+ * Maps each run to a stored run that resumed it and is queued, running, paused or completed, so
+ * resuming it again would replay its journal a second time. A run whose every resume failed or
+ * was stopped is absent, which leaves manual resume as the way back to its journal.
+ */
+export function supersedingRuns(records: readonly WorkflowRunRecord[]): ReadonlyMap<string, string> {
+  const resumedAs = new Map<string, string>();
+  for (const record of records) {
+    const source = record.options.resumeFromRunId;
+    if (source !== undefined && record.state !== "failed" && record.state !== "stopped") resumedAs.set(source, record.runId);
+  }
+  return resumedAs;
+}
+
 export function availableWorkflowRunActions(
   record: WorkflowRunRecord,
-  active: boolean,
+  runs: WorkflowRunActionContext,
 ): readonly WorkflowRunLifecycleAction[] {
   const actions: WorkflowRunLifecycleAction[] = ["inspect"];
-  if ((record.state === "queued" || record.state === "running") && active) actions.push("stop");
+  if ((record.state === "queued" || record.state === "running") && runs.activeRunIds.has(record.runId)) actions.push("stop");
   if (record.state === "paused") {
     actions.push("stop");
-    if (canRelaunchWorkflowRun(record)) actions.push("resume");
+    if (!runs.resumedAs.has(record.runId) && canRelaunchWorkflowRun(record)) actions.push("resume");
   }
   if (
     (record.state === "completed" || record.state === "failed" || record.state === "stopped")
@@ -71,30 +93,31 @@ export function canRelaunchWorkflowRun(record: WorkflowRunRecord): boolean {
 
 export function formatWorkflowRunHistory(
   records: readonly WorkflowRunRecord[],
-  activeRunIds: ReadonlySet<string>,
+  runs: WorkflowRunActionContext,
   now = Date.now(),
 ): string {
   if (records.length === 0) return "No durable workflow runs are available for this project.";
   const lines = ["Recent workflow runs:"];
   for (const record of records) {
-    lines.push(`- ${formatWorkflowRunSummary(record, activeRunIds.has(record.runId), now)}`);
+    lines.push(`- ${formatWorkflowRunSummary(record, runs, now)}`);
   }
   return lines.join("\n");
 }
 
 export function formatWorkflowRunSummary(
   record: WorkflowRunRecord,
-  active: boolean,
+  runs: WorkflowRunActionContext,
   now = Date.now(),
 ): string {
   const usage = formatWorkflowUsageLine(record.usage);
-  const actions = availableWorkflowRunActions(record, active).filter((action) => action !== "inspect");
-  return `${record.state.toUpperCase()} ${record.workflow.name} · age ${formatDuration(Math.max(0, now - record.createdAt))} · duration ${formatWorkflowRunDuration(record, now)}${usage ? ` · ${usage}` : ""} · ${record.runId}${actions.length > 0 ? ` · actions ${actions.join(", ")}` : ""}`;
+  const resumedAs = runs.resumedAs.get(record.runId);
+  const actions = availableWorkflowRunActions(record, runs).filter((action) => action !== "inspect");
+  return `${record.state.toUpperCase()} ${record.workflow.name} · age ${formatDuration(Math.max(0, now - record.createdAt))} · duration ${formatWorkflowRunDuration(record, now)}${usage ? ` · ${usage}` : ""} · ${record.runId}${resumedAs ? ` · resumed as ${resumedAs}` : ""}${actions.length > 0 ? ` · actions ${actions.join(", ")}` : ""}`;
 }
 
 export function formatWorkflowRunDetails(
   record: WorkflowRunRecord,
-  active: boolean,
+  runs: WorkflowRunActionContext,
   now = Date.now(),
 ): string {
   const agents = record.progress.phases.flatMap((phase) =>
@@ -109,8 +132,10 @@ export function formatWorkflowRunDetails(
     `Age: ${formatDuration(Math.max(0, now - record.createdAt))}`,
     `Duration: ${formatWorkflowRunDuration(record, now)}`,
     `Phase: ${record.progress.currentPhase}`,
-    `Actions: ${availableWorkflowRunActions(record, active).join(", ")}`,
+    `Actions: ${availableWorkflowRunActions(record, runs).join(", ")}`,
   ];
+  const resumedAs = runs.resumedAs.get(record.runId);
+  if (resumedAs) lines.push(`Resumed as: ${resumedAs}`);
   if (usage) lines.push(usage);
   if (record.options.resumeEditedWorkflow) lines.push("Edited-workflow resume: enabled");
   const cachedAgents = record.progress.counters.find((counter) => counter.key === "resume.cached")?.value ?? 0;

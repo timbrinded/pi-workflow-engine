@@ -18,8 +18,10 @@ import {
   isWorkflowRunLifecycleAction,
   parseWorkflowRunsCommand,
   retainedWorkflowRunOutcome,
+  supersedingRuns,
   WORKFLOW_RUN_ACTIONS,
   WORKFLOW_RUN_HISTORY_LIMIT,
+  type WorkflowRunActionContext,
   type WorkflowRunLifecycleAction,
 } from "./workflow-run-history.ts";
 import { stopWorkflowRunRecord, type WorkflowRunRecord } from "./workflow-run-record.ts";
@@ -102,8 +104,8 @@ export class WorkflowRunController {
       return;
     }
     if (!ctx.hasUI) {
-      const records = await this.listRecent(ctx.cwd);
-      ctx.ui.notify(formatWorkflowRunHistory(records, this.background.activeRunIds(ctx)), "info");
+      const { records, runs } = await this.history(ctx);
+      ctx.ui.notify(formatWorkflowRunHistory(records, runs), "info");
       return;
     }
     await this.openRunSelector(ctx);
@@ -118,15 +120,12 @@ export class WorkflowRunController {
 
   private async openRunSelector(ctx: ExtensionCommandContext): Promise<void> {
     while (true) {
-      const records = await this.listRecent(ctx.cwd);
-      const active = this.background.activeRunIds(ctx);
+      const { records, runs } = await this.history(ctx);
       if (records.length === 0) {
-        ctx.ui.notify(formatWorkflowRunHistory(records, active), "info");
+        ctx.ui.notify(formatWorkflowRunHistory(records, runs), "info");
         return;
       }
-      const options = records.map((record) =>
-        formatWorkflowRunSummary(record, active.has(record.runId))
-      );
+      const options = records.map((record) => formatWorkflowRunSummary(record, runs));
       const selected = await ctx.ui.select("Workflow Runs", options);
       if (!selected) return;
       const selectedIndex = options.indexOf(selected);
@@ -136,7 +135,7 @@ export class WorkflowRunController {
         ctx.ui.notify("The selected workflow run is no longer available.", "warning");
         continue;
       }
-      const actions = availableWorkflowRunActions(record, active.has(record.runId));
+      const actions = availableWorkflowRunActions(record, runs);
       const selectedAction = await ctx.ui.select(
         `${record.workflow.name} · ${record.runId}`,
         [...actions],
@@ -150,10 +149,7 @@ export class WorkflowRunController {
 
   private async inspect(record: WorkflowRunRecord, ctx: ExtensionContext): Promise<void> {
     if (!ctx.hasUI || ctx.mode !== "tui") {
-      ctx.ui.notify(
-        formatWorkflowRunDetails(record, this.background.activeRunIds(ctx).has(record.runId)),
-        "info",
-      );
+      ctx.ui.notify(formatWorkflowRunDetails(record, (await this.history(ctx)).runs), "info");
       return;
     }
     await ctx.ui.custom<void>(
@@ -182,12 +178,15 @@ export class WorkflowRunController {
       await this.inspect(record, ctx);
       return;
     }
-    const available = availableWorkflowRunActions(
-      record,
-      this.background.activeRunIds(ctx).has(record.runId),
-    );
-    if (!available.includes(action)) {
-      ctx.ui.notify(`Action ${action} is not available for ${record.state} run ${runId}.`, "warning");
+    const { runs } = await this.history(ctx);
+    if (!availableWorkflowRunActions(record, runs).includes(action)) {
+      const resumedAs = record.state === "paused" && action === "resume" ? runs.resumedAs.get(runId) : undefined;
+      ctx.ui.notify(
+        resumedAs
+          ? `Workflow run ${runId} was already resumed as ${resumedAs}.`
+          : `Action ${action} is not available for ${record.state} run ${runId}.`,
+        "warning",
+      );
       return;
     }
 
@@ -284,11 +283,17 @@ export class WorkflowRunController {
     return await this.storeForCwd(cwd).load(runId);
   }
 
-  private async listRecent(cwd: string): Promise<WorkflowRunRecord[]> {
-    const records = await this.storeForCwd(cwd).list();
-    return records
-      .sort((left, right) => right.createdAt - left.createdAt)
-      .slice(0, WORKFLOW_RUN_HISTORY_LIMIT);
+  /** The most recent runs and what their actions depend on, from one store listing. */
+  private async history(
+    ctx: WorkflowRunCompletionContext,
+  ): Promise<{ readonly records: WorkflowRunRecord[]; readonly runs: WorkflowRunActionContext }> {
+    const records = await this.storeForCwd(ctx.cwd).list();
+    return {
+      records: [...records]
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .slice(0, WORKFLOW_RUN_HISTORY_LIMIT),
+      runs: { activeRunIds: this.background.activeRunIds(ctx), resumedAs: supersedingRuns(records) },
+    };
   }
 
   async argumentCompletions(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
@@ -300,12 +305,11 @@ export class WorkflowRunController {
     if (parts.completed.length !== 1 || !ctx) return null;
     const action = parts.completed[0];
     if (!action || !isWorkflowRunLifecycleAction(action)) return null;
-    const records = await this.listRecent(ctx.cwd);
-    const active = this.background.activeRunIds(ctx);
+    const { records, runs } = await this.history(ctx);
     return completeCurrentArgument(
       argumentPrefix,
       records
-        .filter((record) => availableWorkflowRunActions(record, active.has(record.runId)).includes(action))
+        .filter((record) => availableWorkflowRunActions(record, runs).includes(action))
         .map((record) => ({
           value: record.runId,
           description: `${record.state} · ${record.workflow.name}`,
@@ -317,7 +321,7 @@ export class WorkflowRunController {
     const ctx = this.completionContext;
     const parts = splitArgumentPrefix(argumentPrefix);
     if (parts.completed.length > 0) return null;
-    const records = ctx ? await this.listRecent(ctx.cwd) : [];
+    const records = ctx ? (await this.history(ctx)).records : [];
     return completeCurrentArgument(argumentPrefix, [
       { value: "last", description: "Inspect the current or most recent in-session workflow" },
       ...records.map((record) => ({
@@ -328,7 +332,12 @@ export class WorkflowRunController {
   }
 }
 
-/** A resumed run keeps its paused record; a later run naming it as its resume source supersedes it. */
+/**
+ * Runs that any stored run resumed, whatever that resume's outcome. A resumed run keeps its paused
+ * record and pause attempt, so automatic resume treats the pause as spent: re-arming it after a
+ * failed or stopped resume would relaunch it on every session start. Manual resume instead uses
+ * `supersedingRuns`, which frees a run whose every resume failed or was stopped.
+ */
 function resumedRunIds(records: readonly WorkflowRunRecord[]): ReadonlySet<string> {
   return new Set(records.flatMap((record) => record.options.resumeFromRunId ?? []));
 }
