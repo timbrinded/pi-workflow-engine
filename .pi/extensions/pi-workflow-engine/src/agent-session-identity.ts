@@ -9,7 +9,6 @@ import {
   nonEmptyString,
   type EffectiveToolSourceIdentity,
   type EffectiveToolSourceInfoLike,
-  type ToolSourceFingerprintCache,
   type ToolSourceIdentityOptions,
 } from "./tool-source-identity.ts";
 
@@ -98,7 +97,13 @@ export async function captureEffectiveAgentSessionIdentity(
     const model = captureModel(session.model);
     const activeToolNames = captureActiveToolNames(session.getActiveToolNames());
     const toolInfoByName = indexToolInfo(session.getAllTools());
-    const cache: ToolSourceFingerprintCache = new Map();
+    const toolSourceOptions: ToolSourceIdentityOptions = {
+      runtimeVersion,
+      signal: options.signal,
+      sessionCwd,
+      cache: new Map(),
+      workspaceRoot,
+    };
     const tools: EffectiveToolIdentity[] = [];
 
     for (const name of activeToolNames) {
@@ -107,15 +112,7 @@ export async function captureEffectiveAgentSessionIdentity(
       if (!info) throw new Error(`active tool "${name}" is absent from the tool registry`);
       const definition = session.getToolDefinition(name);
       if (!definition) throw new Error(`active tool "${name}" has no executable definition`);
-      tools.push(
-        await captureToolIdentity(name, info, definition, {
-          runtimeVersion,
-          signal: options.signal,
-          sessionCwd,
-          cache,
-          workspaceRoot,
-        }),
-      );
+      tools.push(await captureToolIdentity(name, info, definition, toolSourceOptions));
     }
 
     const components = {

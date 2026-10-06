@@ -62,12 +62,13 @@ export function resolveAgentSkillRequest(prompt: string, explicitSkills: unknown
 }
 
 export function extractSkillSelectorsFromText(text: string): string[] {
-  return uniqueSelectors([
+  const selectors = [
     ...Array.from(text.matchAll(SLASH_SKILL_PATTERN), (match) => match[1] ?? ""),
     ...[...text.matchAll(SKILLS_FIELD_PATTERN), ...text.matchAll(VERB_SKILL_LIST_PATTERN)]
       .flatMap((match) => parseSkillList(match[1] ?? "")),
     ...Array.from(text.matchAll(VERB_NAMED_SKILL_PATTERN), (match) => match[2] ?? ""),
-  ]);
+  ].map(normalizeSkillSelector);
+  return [...new Set(selectors.filter((value) => value && !isGenericSkillWord(value)))];
 }
 
 export function normalizeSkillSelector(value: string): string {
@@ -210,11 +211,6 @@ function logSkillDiagnostics(log: ((message: string) => void) | undefined, diagn
     const where = diagnostic.path ? ` (${diagnostic.path})` : "";
     log(`skill ${diagnostic.type}: ${diagnostic.message}${where}`);
   }
-}
-
-function uniqueSelectors(values: readonly string[]): string[] {
-  const normalized = values.map(normalizeSkillSelector).filter((value) => value && !isGenericSkillWord(value));
-  return [...new Set(normalized)];
 }
 
 function isGenericSkillWord(value: string): boolean {
