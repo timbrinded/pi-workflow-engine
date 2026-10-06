@@ -62,11 +62,8 @@ export interface AgentResumeBaseContext {
   readonly workflow: WorkflowResumeContext;
 }
 
-export interface VerifiedAgentResumeBaseContext {
+export interface AgentResumeContext {
   readonly workflow: VerifiedWorkflowResumeContext;
-}
-
-export interface AgentResumeContext extends VerifiedAgentResumeBaseContext {
   readonly repository: VerifiedRepositoryResumeContext;
   readonly session: EffectiveAgentSessionIdentity;
   readonly skills: readonly ResolvedSkillIdentity[];
@@ -97,10 +94,6 @@ const GIT_VISIBLE_PATHS = [
   ":(exclude).pi/.workflow-runs/**",
   ":(glob,exclude)**/.pi/.workflow-runs/**",
 ] as const;
-
-export function unverifiableRepositoryResumeContext(reason: string): RepositoryResumeContext {
-  return { kind: "unverifiable", reason };
-}
 
 export function unverifiableWorkflowResumeContext(name: string, reason: string): WorkflowResumeContext {
   return { kind: "unverifiable", name, reason };
@@ -188,7 +181,7 @@ async function captureNonGitRepositoryContext(
   const capture = await captureRepositoryInputs(cwd, inputs, signal);
   return capture.kind === "verified"
     ? { kind: "verified", state: "non-git", workingTreeFingerprint: capture.fingerprint }
-    : unverifiableRepositoryResumeContext(capture.reason);
+    : capture;
 }
 
 async function captureRepositoryInputs(
@@ -282,57 +275,50 @@ async function captureGitVisibleState(
   signal: AbortSignal | undefined,
 ): Promise<FingerprintCapture> {
   try {
-    return await captureGitVisibleStateUnchecked(cwd, signal);
+    const diffFlags = [
+      "--binary",
+      "--full-index",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--ignore-submodules=none",
+    ] as const;
+    const [unstaged, unstagedRaw, staged, untrackedPaths, indexEntries, trackedFlags] = await Promise.all([
+      runGit(cwd, ["diff", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
+      runGit(cwd, ["diff", "--raw", "-z", "--no-abbrev", "--no-renames", ...diffFlags.slice(2), "--", ...GIT_VISIBLE_PATHS], signal),
+      runGit(cwd, ["diff", "--cached", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
+      runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--", ...GIT_VISIBLE_PATHS], signal),
+      runGit(cwd, ["ls-files", "--stage", "--full-name", "-z"], signal),
+      runGit(cwd, ["ls-files", "-v", "--full-name", "-z"], signal),
+    ]);
+    throwIfAborted(signal);
+
+    const validated = validateGitVisibleOutputs({ unstaged, unstagedRaw, staged, untrackedPaths, indexEntries, trackedFlags });
+    if (!validated.ok) return { kind: "unverifiable", reason: validated.reason };
+
+    const untracked = await captureDeclaredInputFingerprint({
+      root: cwd,
+      inputs: validated.untrackedPaths.filter((path) => !isExcludedDeclaredInput(path, FINGERPRINT_EXCLUDED_RELATIVE_PATHS)),
+      excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+      maxBytes: CONTENT_FINGERPRINT_MAX_BYTES,
+      maxEntries: GIT_UNTRACKED_MAX_ENTRIES,
+      signal,
+    });
+    if (untracked.kind === "unverifiable") return untracked;
+
+    return {
+      kind: "verified",
+      fingerprint: combineFingerprints([
+        ["unstaged", validated.unstaged],
+        ["staged", validated.staged],
+        ["index", validated.indexEntries],
+        ["untracked", untracked.fingerprint],
+      ]),
+    };
   } catch (error) {
     throwIfAborted(signal);
     return { kind: "unverifiable", reason: unknownErrorMessage(error) };
   }
-}
-
-async function captureGitVisibleStateUnchecked(
-  cwd: string,
-  signal: AbortSignal | undefined,
-): Promise<FingerprintCapture> {
-  const diffFlags = [
-    "--binary",
-    "--full-index",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--no-color",
-    "--ignore-submodules=none",
-  ] as const;
-  const [unstaged, unstagedRaw, staged, untrackedPaths, indexEntries, trackedFlags] = await Promise.all([
-    runGit(cwd, ["diff", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
-    runGit(cwd, ["diff", "--raw", "-z", "--no-abbrev", "--no-renames", ...diffFlags.slice(2), "--", ...GIT_VISIBLE_PATHS], signal),
-    runGit(cwd, ["diff", "--cached", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
-    runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--", ...GIT_VISIBLE_PATHS], signal),
-    runGit(cwd, ["ls-files", "--stage", "--full-name", "-z"], signal),
-    runGit(cwd, ["ls-files", "-v", "--full-name", "-z"], signal),
-  ]);
-  throwIfAborted(signal);
-
-  const validated = validateGitVisibleOutputs({ unstaged, unstagedRaw, staged, untrackedPaths, indexEntries, trackedFlags });
-  if (!validated.ok) return { kind: "unverifiable", reason: validated.reason };
-
-  const untracked = await captureDeclaredInputFingerprint({
-    root: cwd,
-    inputs: validated.untrackedPaths.filter((path) => !isExcludedDeclaredInput(path, FINGERPRINT_EXCLUDED_RELATIVE_PATHS)),
-    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-    maxBytes: CONTENT_FINGERPRINT_MAX_BYTES,
-    maxEntries: GIT_UNTRACKED_MAX_ENTRIES,
-    signal,
-  });
-  if (untracked.kind === "unverifiable") return untracked;
-
-  return {
-    kind: "verified",
-    fingerprint: combineFingerprints([
-      ["unstaged", validated.unstaged],
-      ["staged", validated.staged],
-      ["index", validated.indexEntries],
-      ["untracked", untracked.fingerprint],
-    ]),
-  };
 }
 
 interface GitVisibleProcessOutputs {
@@ -483,18 +469,20 @@ export async function captureWorkflowResumeContext(
   return { kind: "verified", name: mod.meta.name, sourceFingerprint: mod.source.fingerprint };
 }
 
-export function createAgentResumeContext(
-  base: VerifiedAgentResumeBaseContext,
-  repository: VerifiedRepositoryResumeContext,
-  session: EffectiveAgentSessionIdentity,
-  skills: readonly ResolvedSkillIdentity[],
-): AgentResumeContext {
-  return {
-    ...base,
-    repository,
-    session,
-    skills: [...skills],
-  };
+export function repositoryMismatchReason(
+  stored: VerifiedRepositoryResumeContext,
+  current: VerifiedRepositoryResumeContext,
+): string | undefined {
+  if (stored.state !== current.state) return "repository state changed";
+  if (
+    (stored.state === "git" || stored.state === "isolated") &&
+    (current.state === "git" || current.state === "isolated") &&
+    stored.head !== current.head
+  ) {
+    return stored.state === "git" ? "repository HEAD changed" : "isolated baseline changed";
+  }
+  if (stored.workingTreeFingerprint !== current.workingTreeFingerprint) return "working tree contents changed";
+  return undefined;
 }
 
 export function resumeContextMismatchReason(
@@ -502,17 +490,8 @@ export function resumeContextMismatchReason(
   current: AgentResumeContext,
   options: ResumeContextComparisonOptions = {},
 ): string | undefined {
-  if (stored.repository.state !== current.repository.state) return "repository state changed";
-  if (
-    (stored.repository.state === "git" || stored.repository.state === "isolated") &&
-    (current.repository.state === "git" || current.repository.state === "isolated") &&
-    stored.repository.head !== current.repository.head
-  ) {
-    return stored.repository.state === "git" ? "repository HEAD changed" : "isolated baseline changed";
-  }
-  if (stored.repository.workingTreeFingerprint !== current.repository.workingTreeFingerprint) {
-    return "working tree contents changed";
-  }
+  const repository = repositoryMismatchReason(stored.repository, current.repository);
+  if (repository) return repository;
   if (stored.workflow.name !== current.workflow.name) return "workflow name changed";
   if (
     !options.allowWorkflowSourceMismatch

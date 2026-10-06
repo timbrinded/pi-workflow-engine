@@ -8,8 +8,8 @@ import {
   captureIsolatedRepositoryContext,
   captureRepositoryResumeContext,
   captureWorkflowResumeContext,
-  createAgentResumeContext,
   resumeContextMismatchReason,
+  type AgentResumeContext,
 } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import {
@@ -573,7 +573,7 @@ test("tree fingerprints and file validation reject symlinks and the root directo
   }
 });
 
-test("agent resume identity preserves ordered skills and effective tools", () => {
+test("agent resume identity treats skill and tool order as significant", () => {
   const base = {
     workflow: { kind: "verified", name: "review", sourceFingerprint: "workflow" },
   } as const;
@@ -604,9 +604,7 @@ test("agent resume identity preserves ordered skills and effective tools", () =>
     thinkingLevel: "low",
     tools,
   } as const;
-  const ordered = createAgentResumeContext(base, repository, session, skills);
-  assert.deepEqual(ordered.skills.map((skill) => skill.name), ["beta", "alpha"]);
-  assert.deepEqual(ordered.session.tools.map((tool) => tool.name), ["write", "read"]);
+  const ordered: AgentResumeContext = { ...base, repository, session, skills };
   assert.equal(
     resumeContextMismatchReason(ordered, { ...ordered, skills: [...ordered.skills].reverse() }),
     "resolved skills changed",

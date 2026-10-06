@@ -11,7 +11,7 @@ import {
   captureRepositoryMutationGuard,
   captureIsolatedRepositoryContext,
   captureRepositoryResumeContext,
-  createAgentResumeContext,
+  repositoryMismatchReason,
   resumeContextMismatchReason,
   type AgentResumeBaseContext,
   type AgentResumeContext,
@@ -236,12 +236,12 @@ async function captureVerifiedReplayIdentity(input: {
   }
   return {
     kind: "verified",
-    identity: createAgentResumeContext(
-      { workflow: input.workflow },
-      input.repository,
-      effectiveSession.identity,
-      skills.skills,
-    ),
+    identity: {
+      workflow: input.workflow,
+      repository: input.repository,
+      session: effectiveSession.identity,
+      skills: skills.skills,
+    },
   };
 }
 
@@ -303,39 +303,24 @@ async function validateRepositoryAfterCleanup(
   replay: Extract<AgentReplayPlan, { readonly kind: "shared" | "isolated" }>,
   evidence: AgentReplayEvidence,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
-  if (replay.kind === "isolated") {
-    return evidence.kind === "isolated"
-      ? await validateReplayEvidence(rc, evidence)
-      : { ok: false, reason: "isolated replay omitted its main-workspace mutation guard" };
-  }
+  if (replay.kind === "isolated") return await validateReplayEvidence(rc, evidence);
 
   const repository = identity.repository.state === "inaccessible"
     ? INACCESSIBLE_REPOSITORY_CONTEXT
     : await captureRepositoryResumeContext(rc.cwd, replay.additionalInputs, rc.signal);
   if (repository.kind === "unverifiable") return { ok: false, reason: repository.reason };
-  const mismatch = resumeContextMismatchReason(identity, { ...identity, repository });
-  if (mismatch) return { ok: false, reason: mismatch };
-  return evidence.kind === "shared"
-    ? { ok: true }
-    : { ok: false, reason: "shared replay carried isolated mutation evidence" };
+  const mismatch = repositoryMismatchReason(identity.repository, repository);
+  return mismatch ? { ok: false, reason: mismatch } : { ok: true };
 }
 
 export async function validateReplayEvidence(
   rc: RunContext,
   evidence: AgentReplayEvidence,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
-  return evidence.kind === "shared"
-    ? { ok: true }
-    : await validateRepositoryMutationGuard(rc, evidence.mutationGuard);
-}
-
-export async function validateRepositoryMutationGuard(
-  rc: RunContext,
-  expected: string,
-): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
+  if (evidence.kind === "shared") return { ok: true };
   const current = await captureRepositoryMutationGuard(rc.cwd, rc.signal);
   if (current.kind === "unverifiable") return { ok: false, reason: current.reason };
-  return current.fingerprint === expected
+  return current.fingerprint === evidence.mutationGuard
     ? { ok: true }
     : { ok: false, reason: "main workspace changed outside the isolated worktree" };
 }
