@@ -36,7 +36,7 @@ Useful flags:
 /workflow code-review --concurrency=4    # cap concurrent subagents
 /workflow code-review --max-agents=20    # cap total live agent calls in the run
 /workflow code-review --agent-timeout-ms=600000 # abort one live agent after 10 minutes
-/workflow code-review --agent-retries=2  # retry classified transient provider failures
+/workflow code-review --agent-retries=2  # restart agents whose in-session retries are exhausted
 /workflow code-review --budget=50000     # output-token ceiling for subagents
 /workflow code-review --resume <run-id>  # replay matching completed agent calls
 /workflow code-review --resume <run-id> --resume-edited # reuse unchanged calls after a workflow edit
@@ -517,7 +517,7 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 | `--parallel-limit=N` / `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` | Limit eager `parallel()` submission. |
 | `--max-agents=N` / `PI_WORKFLOW_MAX_AGENTS=N` | Cap live model calls across the complete run, including sub-workflows. Default `64`; values are clamped to `1`–`10000`. Replay hits do not consume the cap. The `workflow` tool field is `maxAgents`. |
 | `--agent-timeout-ms=N` / `PI_WORKFLOW_AGENT_TIMEOUT_MS=N` | Abort one live agent after this duration. Default `1800000` (30 minutes); values are clamped to `1000`–`86400000`. The session is aborted and its isolated worktree is cleaned up. The `workflow` tool field is `agentTimeoutMs`. |
-| `--agent-retries=N` / `PI_WORKFLOW_AGENT_RETRIES=N` | Retry terminal assistant failures that pi classifies as transient provider or transport errors. Default `0`; values are clamped to `0`–`10`. Backoff starts at one second, doubles, and caps at 30 seconds. The `workflow` tool field is `agentRetries`. |
+| `--agent-retries=N` / `PI_WORKFLOW_AGENT_RETRIES=N` | Restart the whole agent after a transient provider or transport failure that pi's in-session turn retry could not recover. Default `0`; values are clamped to `0`–`10`. Backoff starts at one second, doubles, and caps at 30 seconds. The `workflow` tool field is `agentRetries`. |
 | `--budget=N` / `PI_WORKFLOW_BUDGET=N` | Set an output-token ceiling across recorded subagent attempts, including failed provider attempts. `agent()` throws `WorkflowBudgetExceededError` before starting another model request once the ceiling is reached; agents already running may overshoot because the engine does not reserve per-agent estimates. |
 | `--perf` / `PI_WORKFLOW_PERF=1` | Include internal timing aggregates. Usage/cost totals are reported separately from perf. |
 | `PI_WORKFLOW_LANE_ITEM_LIMIT=N` | Cap retained progress lane items. |
@@ -525,16 +525,28 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 These controls bound different dimensions: concurrency limits how many agents
 are active together, `max-agents` limits how many live model calls the run may
 start in total, `agent-timeout-ms` bounds one active call (including retry
-backoff), and `budget` limits recorded output tokens. Every retry consumes
+backoff), and `budget` limits recorded output tokens. Every agent restart consumes
 another live-agent admission and remains inside the original timeout, budget,
 and abort scope. Usage from failed attempts is retained, so it can exhaust the
 budget before the next retry begins. Host cancellation takes precedence over
 limit and timeout failures.
 
-Workflow subagents disable pi's session-level automatic retry so this run-level
-policy is authoritative and visible in the existing agent progress row. Invalid
+Transient provider failures are retried in two layers. First, each subagent
+inherits pi's session-level automatic retry from your pi `retry` settings
+(enabled by default: 3 retries with 2s, 4s, 8s backoff). It retries the failed
+turn in place, keeping the agent's earlier tool work; each attempt is logged in
+the workflow progress log, and usage from failed attempts is still recorded.
+Like the agent's other turns, these in-place retries are not budget-checked, and
+a retryable rate-limit or usage-limit error is retried in-session before a
+background run's usage-limit pause takes effect. Only when those retries are
+exhausted does `--agent-retries` restart the agent from scratch. Invalid
 models, schema-contract failures, exhausted budgets, agent limits, worktree
 failures, timeouts, and host aborts are never provider-retried.
+
+pi-workflow-engine 0.12.0 and 0.13.0 wrote `"retry": {"enabled": false}` into
+`~/.pi/agent/settings.json` whenever a workflow ran, which disables automatic
+retry for the host session and every subagent. Workflow runs log a warning while
+that setting is in effect; remove it unless you disabled retry on purpose.
 
 ## Common fixes
 

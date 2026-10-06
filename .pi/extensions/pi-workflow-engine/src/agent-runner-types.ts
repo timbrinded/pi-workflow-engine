@@ -29,7 +29,6 @@ export type AgentRunnerSession = Pick<
   | "getActiveToolNames"
   | "getToolDefinition"
   | "setActiveToolsByName"
-  | "setAutoRetryEnabled"
   | "getLastAssistantText"
 >;
 

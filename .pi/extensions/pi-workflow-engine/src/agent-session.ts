@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
@@ -12,6 +12,7 @@ import {
 import { prepareAgentSkillResources } from "./agent-skills.ts";
 import type {
   AgentExecutionOptions,
+  AgentProgress,
   AgentRunTags,
   AgentRunnerSession,
   RunContext,
@@ -32,6 +33,12 @@ const SCHEMA_REPROMPT =
   `You ended your turn without calling the ${FINAL_TOOL} tool, so no result was recorded. ` +
   `Call ${FINAL_TOOL} now with your final answer as its arguments. Do not reply with plain text.`;
 const DEFAULT_SEARCH_BASE_TOOLS = ["read", "bash", "grep", "find", "ls"];
+const RETRY_REASON_CHARS = 160;
+const RETRY_DISABLED_WARNING =
+  "pi auto-retry is disabled (retry.enabled: false in pi settings), so subagents will not retry failed provider turns. " +
+  "pi-workflow-engine 0.12.0 and 0.13.0 wrote that setting into ~/.pi/agent/settings.json; remove it unless you disabled retry on purpose.";
+/** Runs (keyed by their shared progress sink) already warned about disabled pi auto-retry. */
+const retryDisabledWarnedRuns = new WeakSet<AgentProgress>();
 
 export interface ResolvedAgentModelRequest {
   readonly ref: string;
@@ -113,7 +120,6 @@ export async function openAgentSession(input: {
         tags,
       )
     ).session;
-    session.setAutoRetryEnabled(false);
     const matchedToolHints = toolSelection.toolHints.length === 0
       ? new Set<AgentToolHint>()
       : applyDynamicToolHints(session, toolSelection);
@@ -149,9 +155,24 @@ export async function promptAgentSession(input: {
 }): Promise<unknown> {
   const { rc, handle, prompt, opts, label, rowId, tags } = input;
   const { session } = handle;
+  // pi drops a retried turn's failed message from session.messages; keep it so usage covers every attempt.
+  const retriedFailures: AssistantMessage[] = [];
+  let lastFailure: AssistantMessage | undefined;
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start" && event.toolName !== undefined && event.toolName !== FINAL_TOOL) {
       rc.progress.agentTool(label, event.toolName, rowId);
+    } else if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error") {
+      lastFailure = event.message;
+    } else if (event.type === "auto_retry_start") {
+      if (lastFailure) retriedFailures.push(lastFailure);
+      lastFailure = undefined;
+      const reason = event.errorMessage.length > RETRY_REASON_CHARS
+        ? `${event.errorMessage.slice(0, RETRY_REASON_CHARS)}…`
+        : event.errorMessage;
+      rc.progress.log(
+        `${label}: transient provider failure (${reason}); retrying turn ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms`,
+      );
+      rc.perf.counter("agent.turn_retry", 1, tags);
     }
   });
 
@@ -198,7 +219,7 @@ export async function promptAgentSession(input: {
           tags,
         );
       } finally {
-        rc.usage.recordAgentSession({ label, phase: tags.phase, messages: session.messages });
+        rc.usage.recordAgentSession({ label, phase: tags.phase, messages: [...retriedFailures, ...session.messages] });
       }
     } finally {
       unlinkPromptAbort();
@@ -281,6 +302,10 @@ async function prepareAgentSessionResources(input: {
   });
   for (const diagnostic of services.diagnostics) {
     rc.progress.log(`${label}: session ${diagnostic.type}: ${diagnostic.message}`);
+  }
+  if (!services.settingsManager.getRetryEnabled() && !retryDisabledWarnedRuns.has(rc.progress)) {
+    retryDisabledWarnedRuns.add(rc.progress);
+    rc.progress.log(RETRY_DISABLED_WARNING);
   }
   const selectedSkills = preparedSkills.resolve(services.resourceLoader);
   return {

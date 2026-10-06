@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -7,6 +7,7 @@ import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
   ModelRegistry,
   ModelRuntime,
+  SettingsManager,
   type ProviderConfig,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -69,10 +70,12 @@ test("provider synchronization preserves isolated-cwd providers but removes shar
   assert.equal(childRuntime.getRegisteredProviderConfig("target-only"), undefined);
 });
 
-test("production session services load skills, tools, and host runtime providers", async () => {
+test("production session services load skills, tools, and host runtime providers, and inherit user retry settings without writing them", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-workflow-session-services-"));
   const cwd = join(root, "project");
   const agentDir = join(root, "agent");
+  const userSettingsPath = join(agentDir, "settings.json");
+  const userRetry = { enabled: true, maxRetries: 5 };
   const skillDir = join(cwd, ".pi", "skills", "runtime-fixture");
   const skillPath = join(skillDir, "SKILL.md");
   const extensionDir = join(cwd, ".pi", "extensions");
@@ -117,6 +120,7 @@ test("production session services load skills, tools, and host runtime providers
     await mkdir(skillDir, { recursive: true });
     await mkdir(extensionDir, { recursive: true });
     await mkdir(agentDir, { recursive: true });
+    await writeFile(userSettingsPath, JSON.stringify({ retry: userRetry }), "utf8");
     await writeFile(
       skillPath,
       "---\nname: runtime-fixture\ndescription: Verifies production session service wiring.\n---\n\n# Runtime fixture\n",
@@ -165,6 +169,7 @@ test("production session services load skills, tools, and host runtime providers
     assert.ok(oauthModel);
     assert.equal(hostRegistry.isUsingOAuth(oauthModel), true);
     const usage = createWorkflowUsageRecorder();
+    const progress = createProgress();
     const rc: RunContext = {
       cwd,
       hostModel: model,
@@ -175,7 +180,7 @@ test("production session services load skills, tools, and host runtime providers
       agentRetries: DEFAULT_WORKFLOW_AGENT_RETRIES,
       retryScheduler: defaultAgentRetryScheduler,
       modelProfiles: hostWorkflowModelProfiles(model),
-      progress: createProgress(),
+      progress,
       signal: undefined,
       perf: new PerfRecorder(),
       usage,
@@ -220,6 +225,15 @@ test("production session services load skills, tools, and host runtime providers
     assert.equal(session.modelRuntime.getRegisteredProviderConfig("removed-provider"), undefined);
     assert.equal(session.modelRuntime.getProviderAuthStatus("runtime-only").source, "runtime");
     assert.equal((await session.modelRuntime.getAuth(model))?.auth.apiKey, "runtime-only-key");
+    // Subagents inherit the user's pi retry settings and never write retry changes back to them.
+    assert.ok("settingsManager" in session);
+    assert.ok(session.settingsManager instanceof SettingsManager);
+    assert.deepEqual(
+      { enabled: session.settingsManager.getRetryEnabled(), maxRetries: session.settingsManager.getRetrySettings().maxRetries },
+      userRetry,
+    );
+    await session.settingsManager.flush();
+    assert.deepEqual(JSON.parse(await readFile(userSettingsPath, "utf8")).retry, userRetry);
 
     const storedHandle = await openSession(storedModel, "stored-session-services");
     const storedSession = storedHandle.session;
@@ -233,6 +247,13 @@ test("production session services load skills, tools, and host runtime providers
       () => openSession(oauthModel, "oauth-session-services"),
       /cannot inherit OAuth credentials for "openai-codex" from a host-only credential store/,
     );
+
+    const retryDisabledWarnings = () => progress.events.filter((event) => event.startsWith("log:pi auto-retry is disabled"));
+    assert.deepEqual(retryDisabledWarnings(), []);
+    await writeFile(userSettingsPath, JSON.stringify({ retry: { enabled: false } }), "utf8");
+    sessions.push((await openSession(model, "retry-disabled-1")).session);
+    sessions.push((await openSession(model, "retry-disabled-2")).session);
+    assert.equal(retryDisabledWarnings().length, 1);
   } finally {
     for (const session of sessions) session.dispose();
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

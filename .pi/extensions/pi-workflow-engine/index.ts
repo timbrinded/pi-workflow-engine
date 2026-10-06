@@ -147,7 +147,7 @@ const WORKFLOW_OPTION_COMPLETIONS = [
   { value: "--parallel-limit=", description: "Set the parallel submission limit" },
   { value: "--max-agents=", description: "Set the maximum admitted live agents" },
   { value: "--agent-timeout-ms=", description: "Set the timeout for each agent attempt" },
-  { value: "--agent-retries=", description: "Set retries for each agent call" },
+  { value: "--agent-retries=", description: "Restart an agent after pi's in-session turn retries are exhausted" },
   { value: "--budget=", description: "Set the workflow output-token budget" },
   { value: "--resume=", description: "Resume from a retained workflow run ID" },
 ] as const;
@@ -780,7 +780,7 @@ function registerWorkflowTool(
       ),
       agentRetries: Type.Optional(
         Type.Integer({
-          description: `Retries per agent for classified transient provider failures; clamped to ${WORKFLOW_AGENT_RETRIES_MIN}-${WORKFLOW_AGENT_RETRIES_MAX}`,
+          description: `Whole-agent restarts after a transient provider failure that pi's in-session turn retry (the user's pi retry settings) could not recover; clamped to ${WORKFLOW_AGENT_RETRIES_MIN}-${WORKFLOW_AGENT_RETRIES_MAX}`,
         }),
       ),
       autoResumeOnUsageLimit: Type.Optional(

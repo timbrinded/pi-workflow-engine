@@ -218,7 +218,6 @@ export function createAgentRunnerSession(
     getActiveToolNames: () => [],
     getToolDefinition: () => undefined,
     setActiveToolsByName() {},
-    setAutoRetryEnabled() {},
     getLastAssistantText: () => undefined,
     ...overrides,
   };

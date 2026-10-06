@@ -1,6 +1,11 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, KeyId } from "@earendil-works/pi-tui";
 import workflowEngine from "../.pi/extensions/pi-workflow-engine/index.ts";
+
+// Read extension module state through this module's binding. pi's DefaultResourceLoader (jiti) can evict
+// index.ts from Bun's shared module cache, so a later direct import may get a fresh instance that the
+// captured tool never writes to.
+export { getLastWorkflowInspection } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import {
   DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
   DEFAULT_REVIEW_RESULTS_SHORTCUT,
