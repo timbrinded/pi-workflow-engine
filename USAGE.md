@@ -534,11 +534,19 @@ limit and timeout failures.
 Transient provider failures are retried in two layers. First, each subagent
 inherits pi's session-level automatic retry from your pi `retry` settings
 (enabled by default: 3 retries with 2s, 4s, 8s backoff). It retries the failed
-turn in place, keeping the agent's earlier tool work, and each attempt is logged
-in the agent's progress row. Only when those retries are exhausted does
-`--agent-retries` restart the agent from scratch. Invalid
+turn in place, keeping the agent's earlier tool work; each attempt is logged in
+the workflow progress log, and usage from failed attempts is still recorded.
+Like the agent's other turns, these in-place retries are not budget-checked, and
+a retryable rate-limit or usage-limit error is retried in-session before a
+background run's usage-limit pause takes effect. Only when those retries are
+exhausted does `--agent-retries` restart the agent from scratch. Invalid
 models, schema-contract failures, exhausted budgets, agent limits, worktree
 failures, timeouts, and host aborts are never provider-retried.
+
+pi-workflow-engine 0.12.0 and 0.13.0 wrote `"retry": {"enabled": false}` into
+`~/.pi/agent/settings.json` whenever a workflow ran, which disables automatic
+retry for the host session and every subagent. Workflow runs log a warning while
+that setting is in effect; remove it unless you disabled retry on purpose.
 
 ## Common fixes
 

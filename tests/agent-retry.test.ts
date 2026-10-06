@@ -202,22 +202,31 @@ test("runAgent retries a transient provider failure in the same progress row", a
   assert.equal(usage.snapshot().totals.output, 6);
 });
 
-test("runAgent reports pi's in-session turn retries in the agent's progress row", async () => {
+test("runAgent logs pi's in-session turn retries and records the dropped failed attempt's usage", async () => {
+  const failed = assistantMessage({ stopReason: "error", errorMessage: "404 Provider returned error", outputTokens: 4 });
   const sessions = scriptedSessions([
     {
-      events: [{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2_000, errorMessage: "404 Provider returned error" }],
-      messages: [assistantMessage({ text: "recovered" })],
+      // pi removes a retried turn's failed message from session.messages before retrying it.
+      events: [
+        { type: "message_end", message: failed },
+        { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2_000, errorMessage: "404 Provider returned error" },
+      ],
+      messages: [assistantMessage({ text: "recovered", outputTokens: 2 })],
     },
   ]);
   const progress = createProgress();
+  const usage = createWorkflowUsageRecorder();
   const result = await runAgent(
-    createRunContext({ createSession: sessions.createSession, progress }),
+    createRunContext({ createSession: sessions.createSession, progress, usage }),
     "hello",
     { label: "turn-retry", phase: "Find" },
   );
 
   assert.equal(result, "recovered");
-  assert.ok(progress.events.includes("log:turn-retry: transient provider failure; retrying turn 1/3 in 2000ms"));
+  assert.ok(progress.events.includes(
+    "log:turn-retry: transient provider failure (404 Provider returned error); retrying turn 1/3 in 2000ms",
+  ));
+  assert.equal(usage.snapshot().totals.output, 6);
 });
 
 test("runAgent surfaces the final typed provider failure after retry exhaustion", async () => {
