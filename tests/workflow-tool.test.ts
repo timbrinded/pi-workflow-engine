@@ -725,18 +725,29 @@ test("the inspector shortcut opens the active workflow inspector while the workf
 export const meta = { name: "inspect-live-shortcut-probe", description: "Live inspector shortcut probe" };
 export default async function run({ phase }) {
   phase("Shortcut Live");
-  await new Promise((resolve) => setTimeout(resolve, 75));
+  await globalThis["__piWorkflowShortcutLiveGate"];
   return { ok: true };
 }
 `;
+  // Hold the run open so the shortcut can only find the active inspection: a completed
+  // snapshot is recorded only when the run finishes.
+  const runtime = globalThis as typeof globalThis & { __piWorkflowShortcutLiveGate?: Promise<void> };
+  const gate = Promise.withResolvers<void>();
+  runtime.__piWorkflowShortcutLiveGate = gate.promise;
 
-  const running = tool.execute("call-3", { script }, undefined, () => {}, ctx);
-  await waitUntil(() => customCalls() >= 1, "initial live inspector");
+  try {
+    const running = tool.execute("call-3", { script }, undefined, () => {}, ctx);
+    await waitUntil(() => customCalls() >= 1, "initial live inspector");
 
-  await shortcut.handler(ctx);
+    await shortcut.handler(ctx);
 
-  assert.equal(customCalls(), 2);
-  assert.deepEqual(customOptions().at(-1), WORKFLOW_VIEWER_OVERLAY_OPTIONS);
-  assert.match(customRenders().at(-1)?.join("\n") ?? "", /inspect-live-shortcut-probe/);
-  await running;
+    assert.equal(customCalls(), 2);
+    assert.deepEqual(customOptions().at(-1), WORKFLOW_VIEWER_OVERLAY_OPTIONS);
+    assert.match(customRenders().at(-1)?.join("\n") ?? "", /inspect-live-shortcut-probe/);
+    gate.resolve();
+    await running;
+  } finally {
+    gate.resolve();
+    delete runtime.__piWorkflowShortcutLiveGate;
+  }
 });
