@@ -8,7 +8,7 @@ import type {
   EffectiveAgentSessionIdentity,
   EffectiveToolIdentity,
 } from "./agent-session-identity.ts";
-import { runBoundedProcess, type BoundedProcessResult } from "./process-runner.ts";
+import { runBoundedProcess, scrubbedGitEnv, type BoundedProcessResult } from "./process-runner.ts";
 import {
   BoundedFingerprint,
   captureDeclaredInputFingerprint,
@@ -537,7 +537,7 @@ async function runGit(cwd: string, args: readonly string[], signal: AbortSignal 
     file: "git",
     args,
     cwd,
-    env: { ...process.env, GIT_EXTERNAL_DIFF: "", GIT_DIFF_OPTS: "" },
+    env: scrubbedGitEnv(),
     signal,
     timeoutMs: GIT_CONTEXT_TIMEOUT_MS,
     maxBufferBytes: GIT_CONTEXT_MAX_BYTES,
