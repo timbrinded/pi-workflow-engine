@@ -146,7 +146,7 @@ Sticky mode and inspector shortcut:
 
 The workflow inspector and code-review results viewer are also registered as first-class shortcuts shown by `/hotkeys`. The defaults are `ctrl+shift+m` for the inspector and `ctrl+shift+r` for the latest review results. `ctrl+o` is intentionally not used because pi already uses it for tool-output expansion and tree filtering.
 
-When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives the workflow permission reminder, stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. The footer status states the mode compactly: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its prompt, and `◆ dynamax · this turn` while that run is active; off mode clears it. A running workflow names itself in its own status next to it.
+When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives a `<dynamax>` system prompt section that permits the workflow tool (pi appends it as a section patch, so the cached prompt head is kept), stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. The footer status states the mode compactly: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its prompt, and `◆ dynamax · this turn` while that run is active; off mode clears it. A running workflow names itself in its own status next to it.
 
 ### Prompt editor cue
 

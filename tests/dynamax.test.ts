@@ -24,11 +24,12 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import {
   ADAPTIVE_WORKFLOW_GUIDANCE,
-  appendDynamaxSystemReminder,
+  applyDynamaxPromptSection,
   clearDynamax,
   createDynamaxRuntime,
   createDynamaxState,
   DYNAMAX_REMINDER,
+  DYNAMAX_SECTION,
   DYNAMAX_STATUS_KEY,
   type DynamaxRegistrationOptions,
   type DynamaxRuntimeStore,
@@ -41,7 +42,6 @@ import {
   registerDynamax,
   updateDynamaxSurfaces,
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
-import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { sessionKey } from "../.pi/extensions/pi-workflow-engine/src/session-identity.ts";
 import {
   decorateDynamaxEditor,
@@ -527,15 +527,18 @@ test("Dynamax command completes native on, off, and status arguments", async () 
   assert.deepEqual(completions?.map((item) => item.value), ["on", "off"]);
 });
 
-test("dynamax one-shot state is consumed by system reminder", () => {
+test("dynamax one-shot state is consumed by the prompt section", () => {
   const state = createDynamaxState();
   markDynamaxOneShot(state);
 
-  const prompted = appendDynamaxSystemReminder("base", state);
+  const sections: Record<string, string> = {};
+  assert.equal(applyDynamaxPromptSection(sections, state), true);
 
-  assert.match(prompted, /dynamax workflow opt-in/);
+  assert.equal(sections[DYNAMAX_SECTION], DYNAMAX_REMINDER);
   assert.equal(state.oneShotPending, false);
-  assert.equal(appendDynamaxSystemReminder("base", state), "base");
+  const nextRun: Record<string, string> = {};
+  assert.equal(applyDynamaxPromptSection(nextRun, state), false);
+  assert.deepEqual(nextRun, {});
 });
 
 test("dynamax reminder teaches optional adaptive multi-pass workflows", () => {
@@ -544,8 +547,9 @@ test("dynamax reminder teaches optional adaptive multi-pass workflows", () => {
   assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /ordinary TypeScript conditionals or bounded loops/);
   assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /only when gaps exist/);
   assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /Do not generate a second pass when the first pass is sufficient/);
-  assert.ok(DYNAMAX_REMINDER.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
-  assert.match(DYNAMAX_REMINDER, /profile to "small", "medium", or "big"/);
+  // The reminder carries only the opt-in; the workflow tool's guidelines carry the authoring rules.
+  assert.ok(!DYNAMAX_REMINDER.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
+  assert.match(DYNAMAX_REMINDER, /workflow tool is permitted/);
 });
 
 test("dynamax sticky mode remains active until cleared", () => {
@@ -553,7 +557,9 @@ test("dynamax sticky mode remains active until cleared", () => {
   enableDynamaxSticky(state);
 
   assert.equal(isDynamaxActive(state), true);
-  assert.match(appendDynamaxSystemReminder("base", state), /workflow tool is permitted/);
+  const sections: Record<string, string> = {};
+  applyDynamaxPromptSection(sections, state);
+  assert.match(sections[DYNAMAX_SECTION] ?? "", /workflow tool is permitted/);
   assert.equal(state.sticky, true);
   assert.equal(isDynamaxActive(state), true);
 
@@ -650,7 +656,7 @@ test("dynamax status states only the mode: sticky, armed for the next prompt, or
 
   const turn = createDynamaxState();
   markDynamaxOneShot(turn);
-  appendDynamaxSystemReminder("base", turn);
+  applyDynamaxPromptSection({}, turn);
   assert.equal(dynamaxStatusText(turn, theme), "◆ dynamax · this turn");
 });
 
@@ -665,8 +671,11 @@ test("one-shot Dynamax status remains visible for the active turn", async () => 
   await input({ source: "interactive", text: "dynamax inspect this branch" }, ctx);
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax · next prompt");
 
-  const result = await beforeAgentStart({ systemPrompt: "base" }, ctx);
-  assert.match(isRecord(result) && typeof result.systemPrompt === "string" ? result.systemPrompt : "", /dynamax workflow opt-in/);
+  const sections: Record<string, string> = {};
+  const result = await beforeAgentStart({ systemPrompt: "base", systemPromptOptions: { sections } }, ctx);
+  // A section patch keeps pi's cached prompt head; returning systemPrompt would force a full replacement.
+  assert.equal(result, undefined);
+  assert.equal(sections[DYNAMAX_SECTION], DYNAMAX_REMINDER);
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax · this turn");
 
   await agentEnd({ messages: [] }, ctx);

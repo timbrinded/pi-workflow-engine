@@ -239,15 +239,16 @@ test("RPC command and inspector surfaces use native selection and text instead o
   assert.match(notifications.at(-1) ?? "", /Workflow inspector: rpc-inspection/);
 });
 
-test("temporary authoring, tool, and documentation guidance teach adaptive follow-up", () => {
+test("tool and documentation guidance teach adaptive follow-up; the authoring prompt defers to them", () => {
   const temporaryPrompt = buildTemporaryWorkflowAuthorPrompt("investigate the parser");
   const toolGuidance = captureWorkflowTool().promptGuidelines?.join("\n");
   assert.ok(toolGuidance, "expected the registered workflow tool to provide prompt guidelines");
   const usage = readFileSync(new URL("../USAGE.md", import.meta.url), "utf8");
 
-  assert.ok(temporaryPrompt.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
+  // The authoring prompt defers to the tool's guidelines instead of repeating them.
+  assert.ok(!temporaryPrompt.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
   assert.ok(toolGuidance.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
-  for (const text of [temporaryPrompt, toolGuidance, usage]) {
+  for (const text of [toolGuidance, usage]) {
     assert.match(text, /first.pass/i);
     assert.match(text, /structured gap.analysis/i);
     assert.match(text, /follow.up/i);

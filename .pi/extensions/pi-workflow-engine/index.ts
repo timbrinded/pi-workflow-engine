@@ -195,15 +195,7 @@ export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {
 User brief:
 ${brief.trim()}
 
-Use the workflow tool with a script argument, not a saved workflow name.
-The script must start with export const meta = { ... } and default-export an async workflow function.
-Use the injected Type object for schemas. Do not import anything or use dynamic import().
-Set profile to "small", "medium", or "big" on each agent() call; use explicit model/thinkingLevel only for an intentional override.
-Always pass a plain string as the first api.agent() argument; build prompts with template strings before calling agent().
-If using \`isolation: "worktree"\`, remember api.agent() returns \`{ result, patch, changed }\`; read \`.result\` for the agent answer and \`.patch\` for the diff.
-When the run is budgeted, guard expensive loops with \`while (api.budget.total && api.budget.remaining() > N) { ... }\`; api.agent() throws once the budget is spent.
-Subagents receive no skills by default. When the brief asks for a skill or a stage clearly benefits from one, pass \`skills: ["skill-name"]\` on that agent call only.
-${ADAPTIVE_WORKFLOW_GUIDANCE}
+Use the workflow tool with a script argument, not a saved workflow name, and follow its guidelines for inline scripts.
 Do not edit files unless the user explicitly requested edits.`;
 }
 

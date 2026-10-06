@@ -68,20 +68,13 @@ Adaptive multi-pass workflows are optional. Use a simple single-pass fan-out whe
 - synthesize the first-pass and follow-up results together.
 Do not generate a second pass when the first pass is sufficient, and do not invent iteration, quorum, graph, reduction, or retry primitives for this pattern.`;
 
-export const DYNAMAX_REMINDER = `
-## dynamax workflow opt-in
+/** System prompt section pi wraps as `<dynamax>`; adding or dropping it appends a section patch instead of rewriting the prompt. */
+export const DYNAMAX_SECTION = "dynamax";
 
-The user has opted into dynamax multi-agent orchestration. The workflow tool is permitted for this task. You may either run an existing named workflow or author a new inline workflow script when that best serves the user's request.
-
-Inline workflow rules:
-- Use the injected Type object for schemas, for example Type.Object({ ok: Type.Boolean() }); do not import typebox.
-- Do not use import statements or dynamic import() in inline workflow scripts.
-- Set profile to "small", "medium", or "big" on each agent() call so routing remains explicit; use model/thinkingLevel only for an intentional override.
-- Subagents receive no skills by default. Add \`skills: ["skill-name"]\` per agent only when that stage should load that skill; grant the smallest useful set.
-- Provide exactly one of workflow.name or workflow.script.
-
-${ADAPTIVE_WORKFLOW_GUIDANCE}
-`;
+/** Only the opt-in itself: the authoring rules already reach the model as the workflow tool's guidelines. */
+export const DYNAMAX_REMINDER =
+  "The user opted into dynamax multi-agent orchestration for this request, so the workflow tool is permitted. " +
+  "Run a registered workflow by name, or author an inline workflow script when none fits, following the workflow tool's guidelines.";
 
 export function createDynamaxState(): DynamaxState {
   return { sticky: false, oneShotPending: false, turnActive: false };
@@ -140,11 +133,16 @@ export function dynamaxStatusText(state: DynamaxState, theme: Theme): string {
   return mode ? `${label}${dot(theme)}${theme.fg("muted", mode)}` : label;
 }
 
-export function appendDynamaxSystemReminder(systemPrompt: string, state: DynamaxState): string {
-  if (!state.sticky && !state.oneShotPending) return systemPrompt;
+/**
+ * Add the opt-in section for this run and consume a pending one-shot. pi rebuilds `sections` for every
+ * run, so an inactive run simply leaves it out and pi records the removal as a patch.
+ */
+export function applyDynamaxPromptSection(sections: Record<string, string>, state: DynamaxState): boolean {
+  if (!state.sticky && !state.oneShotPending) return false;
   state.oneShotPending = false;
   state.turnActive = true;
-  return `${systemPrompt}\n\n${DYNAMAX_REMINDER.trim()}`;
+  sections[DYNAMAX_SECTION] = DYNAMAX_REMINDER;
+  return true;
 }
 
 export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, options: DynamaxRegistrationOptions): DynamaxHandle {
@@ -238,10 +236,7 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
 
   pi.on("before_agent_start", (event, ctx) => {
     const runtime = getDynamaxRuntime(runtimes, ctx);
-    const systemPrompt = appendDynamaxSystemReminder(event.systemPrompt, runtime.state);
-    if (systemPrompt === event.systemPrompt) return undefined;
-    updateDynamaxSurfaces(ctx, runtime);
-    return { systemPrompt };
+    if (applyDynamaxPromptSection(event.systemPromptOptions.sections, runtime.state)) updateDynamaxSurfaces(ctx, runtime);
   });
 
   pi.on("agent_end", (_event, ctx) => {
