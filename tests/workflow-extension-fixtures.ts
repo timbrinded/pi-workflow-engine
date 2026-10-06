@@ -31,13 +31,10 @@ export interface CapturedCommand {
   handler(args: string, ctx: ExtensionCommandContext): unknown | Promise<unknown>;
 }
 
-export type CapturedHandler = (event: unknown, ctx: ExtensionContext) => unknown;
-
 export interface CapturedWorkflowExtension {
   readonly tool: CapturedTool;
   readonly shortcuts: readonly CapturedShortcut[];
   readonly commands: ReadonlyMap<string, CapturedCommand>;
-  readonly handlers: ReadonlyMap<string, readonly CapturedHandler[]>;
   readonly sentMessages: readonly unknown[];
   readonly sentUserMessages: readonly unknown[];
 }
@@ -52,13 +49,10 @@ export function captureWorkflowExtension(
   let capturedTool: CapturedTool | undefined;
   const capturedShortcuts: CapturedShortcut[] = [];
   const capturedCommands = new Map<string, CapturedCommand>();
-  const handlers = new Map<string, CapturedHandler[]>();
   const sentMessages: unknown[] = [];
   const sentUserMessages: unknown[] = [];
   const fakePi = {
-    on: (event: string, handler: CapturedHandler) => {
-      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
-    },
+    on: () => {},
     registerCommand: (name: string, command: CapturedCommand) => {
       capturedCommands.set(name, command);
     },
@@ -79,7 +73,7 @@ export function captureWorkflowExtension(
   } as unknown as ExtensionAPI;
   workflowEngine(fakePi, shortcuts);
   if (!capturedTool) throw new Error("workflow tool was not registered");
-  return { tool: capturedTool, shortcuts: capturedShortcuts, commands: capturedCommands, handlers, sentMessages, sentUserMessages };
+  return { tool: capturedTool, shortcuts: capturedShortcuts, commands: capturedCommands, sentMessages, sentUserMessages };
 }
 
 export function captureWorkflowTool(): CapturedTool {

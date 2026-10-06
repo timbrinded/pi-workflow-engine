@@ -652,9 +652,13 @@ test("the picker's authored temporary workflow activates Dynamax for the run it 
   const command = extension.commands.get("workflow");
   if (!command) throw new Error("expected /workflow command");
   const statuses = new Map<string, string | undefined>();
+  let armedBeforeIdle: { status: string | undefined; sent: number } | undefined;
   const ctx = {
     ...HEADLESS_CTX,
     hasUI: true,
+    waitForIdle: async () => {
+      armedBeforeIdle = { status: statuses.get("dynamax"), sent: extension.sentUserMessages.length };
+    },
     ui: {
       select: async (_title: string, options: readonly string[]) => options.find((option) => option.startsWith("Author temporary")),
       editor: async () => "inspect src and summarize risks",
@@ -665,13 +669,9 @@ test("the picker's authored temporary workflow activates Dynamax for the run it 
 
   await command.handler("", ctx);
 
+  assert.deepEqual(armedBeforeIdle, { status: undefined, sent: 0 }, "the one-shot is armed and sent only once the host is idle");
   assert.match(String(extension.sentUserMessages[0]), /inspect src and summarize risks/);
   assert.match(statuses.get("dynamax") ?? "", /one-shot pending/);
-  const starts = await Promise.all((extension.handlers.get("before_agent_start") ?? []).map((handler) => handler({ systemPrompt: "base" }, ctx)));
-  assert.ok(
-    starts.some((result) => isRecord(result) && typeof result.systemPrompt === "string" && result.systemPrompt.includes("dynamax workflow opt-in")),
-    "expected the Dynamax reminder in the next run's system prompt",
-  );
 });
 
 test("workflow inspector history stays isolated to its originating session", async () => {

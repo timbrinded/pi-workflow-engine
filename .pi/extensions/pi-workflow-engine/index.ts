@@ -626,6 +626,8 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
       }
 
       if (invocation.authorBrief) {
+        // A send while the agent streams is rejected, which would leave the one-shot armed for an unrelated prompt.
+        await ctx.waitForIdle();
         dynamax.markOneShot(ctx);
         pi.sendUserMessage(buildTemporaryWorkflowAuthorPrompt(invocation.authorBrief));
         return;
