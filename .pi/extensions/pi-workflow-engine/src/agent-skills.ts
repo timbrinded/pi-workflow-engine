@@ -62,12 +62,12 @@ export function resolveAgentSkillRequest(prompt: string, explicitSkills: unknown
 }
 
 export function extractSkillSelectorsFromText(text: string): string[] {
-  const selectors: string[] = [];
-  collectPatternMatches(text, SLASH_SKILL_PATTERN, selectors, 1);
-  collectListPatternMatches(text, SKILLS_FIELD_PATTERN, selectors);
-  collectListPatternMatches(text, VERB_SKILL_LIST_PATTERN, selectors);
-  collectPatternMatches(text, VERB_NAMED_SKILL_PATTERN, selectors, 2);
-  return uniqueSelectors(selectors);
+  return uniqueSelectors([
+    ...Array.from(text.matchAll(SLASH_SKILL_PATTERN), (match) => match[1] ?? ""),
+    ...[...text.matchAll(SKILLS_FIELD_PATTERN), ...text.matchAll(VERB_SKILL_LIST_PATTERN)]
+      .flatMap((match) => parseSkillList(match[1] ?? "")),
+    ...Array.from(text.matchAll(VERB_NAMED_SKILL_PATTERN), (match) => match[2] ?? ""),
+  ]);
 }
 
 export function normalizeSkillSelector(value: string): string {
@@ -179,23 +179,6 @@ export async function captureAgentSkillIdentities(
   return { kind: "verified", skills: identities };
 }
 
-function collectPatternMatches(text: string, pattern: RegExp, selectors: string[], captureIndex: number): void {
-  pattern.lastIndex = 0;
-  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
-    const value = match[captureIndex];
-    if (value !== undefined) selectors.push(value);
-  }
-}
-
-function collectListPatternMatches(text: string, pattern: RegExp, selectors: string[]): void {
-  pattern.lastIndex = 0;
-  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
-    const value = match[1];
-    if (value === undefined) continue;
-    selectors.push(...parseSkillList(value));
-  }
-}
-
 function parseSkillList(fragment: string): string[] {
   const scoped = fragment.replace(PURPOSE_BOUNDARY_PATTERN, "");
   return scoped
@@ -208,9 +191,7 @@ function normalizeExplicitSkillSelectors(value: unknown): string[] {
   if (!Array.isArray(value)) {
     throw new Error("Invalid subagent skills option: expected an array of skill names.");
   }
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const item of value) {
+  const selectors = value.map((item: unknown) => {
     if (typeof item !== "string") {
       throw new Error("Invalid subagent skills option: every skill name must be a string.");
     }
@@ -218,11 +199,9 @@ function normalizeExplicitSkillSelectors(value: unknown): string[] {
     if (!normalized || isGenericSkillWord(normalized)) {
       throw new Error(`Invalid subagent skills option: \"${item}\" is not a valid skill name.`);
     }
-    if (seen.has(normalized)) continue;
-    seen.add(normalized);
-    result.push(normalized);
-  }
-  return result;
+    return normalized;
+  });
+  return [...new Set(selectors)];
 }
 
 function logSkillDiagnostics(log: ((message: string) => void) | undefined, diagnostics: readonly ResourceDiagnostic[], requested: boolean): void {
@@ -233,16 +212,9 @@ function logSkillDiagnostics(log: ((message: string) => void) | undefined, diagn
   }
 }
 
-function uniqueSelectors(values: Iterable<string>): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    const normalized = normalizeSkillSelector(value);
-    if (!normalized || isGenericSkillWord(normalized) || seen.has(normalized)) continue;
-    seen.add(normalized);
-    result.push(normalized);
-  }
-  return result;
+function uniqueSelectors(values: readonly string[]): string[] {
+  const normalized = values.map(normalizeSkillSelector).filter((value) => value && !isGenericSkillWord(value));
+  return [...new Set(normalized)];
 }
 
 function isGenericSkillWord(value: string): boolean {
