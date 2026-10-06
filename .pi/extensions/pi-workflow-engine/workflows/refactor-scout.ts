@@ -42,7 +42,7 @@ const PER_LENS = 5;
 export default async function run(api: WorkflowApi): Promise<unknown> {
   const { agent, phase, log, progress, args } = api;
   const challengeConfig = parseChallengeArgs(args);
-  const target = challengeConfig.args.trim() || ".";
+  const target = challengeConfig.args || ".";
   let fileCount = 0;
   let rawCandidateCount = 0;
   let droppedCandidateCount = 0;
@@ -82,7 +82,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
   const scopeBlock =
     `## Target\n${scope.target}\n\n## Files in scope\n${scope.files.map((file) => `- ${file}`).join("\n")}\n\n` +
     `## Summary\n${scope.summary}\n\n## Conventions\n${scope.conventions ?? "(none noted)"}\n` +
-    (args.trim() ? `\n## User instructions (verbatim)\n${args.trim()}\n` : "");
+    (challengeConfig.args ? `\n## User instructions (verbatim)\n${challengeConfig.args}\n` : "");
 
   const pipelineResult = await runLensVerificationPipeline({
     api,

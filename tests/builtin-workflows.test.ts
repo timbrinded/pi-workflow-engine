@@ -347,3 +347,14 @@ test("perf-review keeps weak measurement findings advisory", async () => {
   assert.match(synthesize?.prompt ?? "", /PLAUSIBLE, measurement/);
   assert.match(synthesize?.prompt ?? "", /Prefer measurement recommendations before optimization recommendations/);
 });
+
+test("perf-review and refactor-scout keep the --challenge flag out of the user instructions", async () => {
+  const scope = { target: "src/engine.ts", files: ["src/engine.ts"], commands: [], summary: "Engine module." };
+  for (const workflow of [perfReview, refactorScout]) {
+    const api = createScriptedApi([scope], "--challenge=0 src/engine.ts");
+    await workflow(api);
+    const finder = api.calls.find((call) => call.label?.startsWith("find:"))?.prompt ?? "";
+    assert.match(finder, /## User instructions \(verbatim\)\nsrc\/engine\.ts\n/);
+    assert.doesNotMatch(finder, /--challenge/);
+  }
+});
