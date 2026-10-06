@@ -110,7 +110,7 @@ function renderSeparator(): string {
   return [ID_WIDTH, SEVERITY_WIDTH, CONFIDENCE_WIDTH, CATEGORY_WIDTH, LOCATION_WIDTH, SUMMARY_WIDTH].map((width) => "─".repeat(width)).join("─┼─");
 }
 
-function severityColor(severity: ReviewIssue["finding"]["severity"]): WorkflowThemeColor {
+export function severityColor(severity: ReviewIssue["finding"]["severity"]): WorkflowThemeColor {
   switch (severity) {
     case "high":
       return "error";

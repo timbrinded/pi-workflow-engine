@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
-import { renderIssueDetailLines } from "./review-format.ts";
+import { renderIssueDetailLines, severityColor } from "./review-format.ts";
 import { formatIssueLocation, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
 import { truncateDisplay } from "../ui/workflow-format.ts";
 import { fitWorkflowViewerRow, fitWorkflowViewerRows, workflowViewerHeight } from "../ui/workflow-viewer-layout.ts";
@@ -56,7 +56,7 @@ export class ReviewResultsViewer implements Component {
       this.moveCursor(1);
       return;
     }
-    if (matchesKey(data, "space") || data === " ") {
+    if (matchesKey(data, "space")) {
       this.toggleCurrent();
       return;
     }
@@ -64,7 +64,7 @@ export class ReviewResultsViewer implements Component {
       this.toggleAllVisible();
       return;
     }
-    if (matchesKey(data, "enter") || matchesKey(data, "return") || data === "\r") {
+    if (matchesKey(data, "enter")) {
       this.detailsExpanded = !this.detailsExpanded;
       this.detailScroll = 0;
       this.warning = undefined;
@@ -87,7 +87,7 @@ export class ReviewResultsViewer implements Component {
       this.finishSelected("comment");
       return;
     }
-    if (data === "q" || matchesKey(data, "escape") || matchesKey(data, "esc")) {
+    if (data === "q" || matchesKey(data, "escape")) {
       this.done({ action: "close", issueIds: this.selectedIssueIds() });
     }
   }
@@ -297,15 +297,4 @@ function scrollArrows(hasAbove: boolean, hasBelow: boolean): string {
 
 function digitJumpIndex(data: string): number | undefined {
   return data.length === 1 && data >= "1" && data <= "9" ? Number(data) - 1 : undefined;
-}
-
-function severityColor(severity: ReviewIssue["finding"]["severity"]): Parameters<Theme["fg"]>[0] {
-  switch (severity) {
-    case "high":
-      return "error";
-    case "medium":
-      return "warning";
-    case "low":
-      return "muted";
-  }
 }
