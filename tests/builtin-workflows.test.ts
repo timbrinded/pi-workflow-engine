@@ -163,17 +163,36 @@ test("code-review returns the empty report when scope has no files", async () =>
   assert.deepEqual(result.stats, { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0, refuted: 0 });
 });
 
-test("code-review trusts the captured diff over the scope's file list and skips finders when it is empty", async () => {
-  const api = createScriptedApi([{ diffCommand: "git diff main...HEAD", files: ["src/merged.ts"], summary: "Already merged." }]);
+for (const { when, diff, summary, nextSteps } of [
+  {
+    when: "is empty",
+    diff: "",
+    summary: "No changes found to review: `git diff --no-ext-diff main...HEAD` has no added or modified files.",
+    nextSteps: ["Provide a PR, ref range, or changed files to review."],
+  },
+  {
+    when: "only deletes, renames, changes modes or touches binary files",
+    diff: "diff --git a/old.ts b/new.ts\nsimilarity index 100%\nrename from old.ts\nrename to new.ts\n" +
+      "diff --git a/gone.ts b/gone.ts\ndeleted file mode 100644\n--- a/gone.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-export const gone = true;\n" +
+      "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n" +
+      "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n",
+    summary: "Nothing to review line by line: `git diff --no-ext-diff main...HEAD` only deletes or renames files, changes file modes, or touches binary files; there are no added lines to anchor findings on.",
+    nextSteps: ["Inspect the deleted, renamed, mode-changed or binary files directly; code-review anchors findings on added lines only."],
+  },
+]) {
+  test(`code-review trusts the captured diff over the scope's file list and skips finders when it ${when}`, async () => {
+    const api = createScriptedApi([{ diffCommand: "git diff main...HEAD", files: ["src/merged.ts"], summary: "Already merged." }]);
 
-  const result = asReportResult(await codeReview(api, {
-    captureReviewMaterial: async () => ({ ok: true, diff: "", snapshot: { status: "unavailable", reason: "fixture" } }),
-  }));
+    const result = asReportResult(await codeReview(api, {
+      captureReviewMaterial: async () => ({ ok: true, diff, snapshot: { status: "unavailable", reason: "fixture" } }),
+    }));
 
-  assert.equal(result.summary, "No changes found to review: `git diff --no-ext-diff main...HEAD` has no added or modified files.");
-  assert.deepEqual(result.findings, []);
-  assert.deepEqual(api.calls.map((call) => call.label), ["scope"]);
-});
+    assert.equal(result.summary, summary);
+    assert.deepEqual(result.nextSteps, nextSteps);
+    assert.deepEqual(result.findings, []);
+    assert.deepEqual(api.calls.map((call) => call.label), ["scope"]);
+  });
+}
 
 test("code-review verifies one candidate and passes evidence into synthesis", async () => {
   const surviving = candidate("confirmed bug", "bug");

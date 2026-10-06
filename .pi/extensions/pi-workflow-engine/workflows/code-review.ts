@@ -109,11 +109,8 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   const diffCommand = formatReviewDiffTarget(diffTarget);
   progress({ type: "summary", key: "diffCommand", value: diffCommand });
   progress({ type: "counter", key: "files", label: "files", value: scope.files.length });
-  const noChanges = (summary: string) => finishAdvisoryReport(emptyAdvisoryReport(
-    summary,
-    ["Provide a PR, ref range, or changed files to review."],
-    { ...EMPTY_LENS_REVIEW_STATS, files: scope.files.length },
-  ), []);
+  const noChanges = (summary: string, nextSteps = ["Provide a PR, ref range, or changed files to review."]) =>
+    finishAdvisoryReport(emptyAdvisoryReport(summary, nextSteps, { ...EMPTY_LENS_REVIEW_STATS, files: scope.files.length }), []);
 
   if (scope.files.length === 0) return noChanges("No changes found to review.");
 
@@ -127,8 +124,14 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   const diffText = reviewMaterial.diff;
   const changed = changedLines(diffText);
   progress({ type: "summary", key: "diffBytes", value: Buffer.byteLength(diffText) });
-  // No finding can anchor without an added or modified file, so skip the finder fan-out.
-  if (changed.size === 0) return noChanges(`No changes found to review: \`${diffCommand}\` has no added or modified files.`);
+  // Findings anchor only on files with a new-side text hunk; without one, skip the finder fan-out.
+  if (changed.size === 0) {
+    if (!diffText.trim()) return noChanges(`No changes found to review: \`${diffCommand}\` has no added or modified files.`);
+    return noChanges(
+      `Nothing to review line by line: \`${diffCommand}\` only deletes or renames files, changes file modes, or touches binary files; there are no added lines to anchor findings on.`,
+      ["Inspect the deleted, renamed, mode-changed or binary files directly; code-review anchors findings on added lines only."],
+    );
+  }
   if (reviewMaterial.snapshot.status === "unavailable") {
     log(`review snapshot unavailable (${reviewMaterial.snapshot.reason}) — patch previews will be unavailable`);
   }
