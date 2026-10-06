@@ -7,7 +7,9 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
+  Theme,
 } from "@earendil-works/pi-coding-agent";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
   BackgroundWorkflowCoordinator,
   backgroundOrigin,
@@ -26,8 +28,10 @@ import {
   type WorkflowRunRecord,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-record.ts";
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { WorkflowRunsBrowser } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-runs-browser.ts";
+import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
 import type { WorkflowUsageLimitSchedulerClock } from "../.pi/extensions/pi-workflow-engine/src/workflow-usage-limit-scheduler.ts";
-import { createTestTheme } from "./fixtures/theme.ts";
+import { createTestTheme, plain } from "./fixtures/theme.ts";
 
 interface Notification {
   readonly message: string;
@@ -293,6 +297,68 @@ test("workflow run history uses Pi's native RPC selectors instead of a custom na
     ]);
     assert.match(notifications.at(-1)?.message ?? "", /Workflow run rpc-selector-run/);
     assert.match(notifications.at(-1)?.message ?? "", /retained headless result/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("TUI workflow runs open the runs browser and return to it on the same run after inspecting", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-tui-"));
+  const notifications: Notification[] = [];
+  const base = context(cwd, notifications, "tui");
+  const opened: string[] = [];
+  const cursorRows: string[] = [];
+  const ctx = {
+    ...base,
+    hasUI: true,
+    ui: {
+      ...base.ui,
+      theme: createTestTheme(),
+      setStatus() {},
+      setWidget() {},
+      select: async () => {
+        throw new Error("the TUI must not fall back to native selects");
+      },
+      custom: async <T>(
+        factory: (tui: TUI, theme: Theme, keybindings: never, done: (value: T) => void) => Component,
+        options?: unknown,
+      ): Promise<T> => {
+        assert.deepEqual(options, WORKFLOW_VIEWER_OVERLAY_OPTIONS);
+        let result: T | undefined;
+        const tui = { requestRender() {}, terminal: { rows: 40, columns: 120 } } as unknown as TUI;
+        const component = factory(tui, createTestTheme(), undefined as never, (value) => {
+          result = value;
+        });
+        if (component instanceof WorkflowRunsBrowser) {
+          opened.push("browser");
+          const first = opened.length === 1;
+          if (first) component.handleInput("\u001b[B");
+          cursorRows.push(component.render(100).map(plain).find((line) => line.startsWith("│ ›")) ?? "");
+          component.handleInput(first ? "\r" : "q");
+        } else {
+          opened.push("inspector");
+          component.handleInput?.("q");
+        }
+        return result as T;
+      },
+    },
+  } as unknown as ExtensionCommandContext;
+  const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => undefined,
+    execute: async () => {},
+  });
+  try {
+    await runWorkflow(ctx as ExtensionContext, workflow(), "", { runId: "tui-older-run", background: backgroundOrigin(ctx, 1) });
+    await runWorkflow(ctx as ExtensionContext, workflow(), "", { runId: "tui-browser-run", background: backgroundOrigin(ctx, 2) });
+
+    await controller.handleCommand("", ctx);
+
+    assert.deepEqual(opened, ["browser", "inspector", "browser"]);
+    assert.equal(cursorRows.length, 2);
+    assert.match(cursorRows[0] ?? "", /tui-(brow|olde)/);
+    assert.equal(cursorRows[1], cursorRows[0], "the browser reopens on the inspected (second) run");
+    assert.deepEqual(notifications, []);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

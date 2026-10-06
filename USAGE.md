@@ -281,7 +281,7 @@ A graceful pi session shutdown aborts active background work and records it as `
 
 ### Recent runs and lifecycle actions
 
-`/workflow:runs` opens pi's native selection UI with a bounded list of recent project runs. Each option includes an accessible state label, workflow name, age, duration, usage summary, and full run ID. Choose a run, then choose one of the lifecycle actions currently valid for it: inspect, stop, resume, or restart. The background activity line is present only while this session owns active background work.
+`/workflow:runs` opens a runs browser in the TUI: one aligned row per recent project run (state glyph and word, workflow, duration, age, cost when known, short run ID) above a details pane for the selected run with its wall-clock times, phases, agent and token counts, resume lineage, pause details, outcome, and why a relaunch is unavailable when it is. Keys act on the selected run: `enter` or `i` inspect, `r` resume, `s` stop (press twice), `R` restart; only the actions currently valid for that run are listed in the footer, and the others explain why they are unavailable. The browser refreshes while a run is active and reopens on the same run after an action. RPC sessions keep pi's native two-step selection (run, then action). The background activity line is present only while this session owns active background work.
 
 The same operations are available without the selection UI:
 

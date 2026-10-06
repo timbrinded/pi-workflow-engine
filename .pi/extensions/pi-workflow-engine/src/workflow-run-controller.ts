@@ -32,6 +32,7 @@ import {
   type WorkflowUsageLimitSchedulerClock,
 } from "./workflow-usage-limit-scheduler.ts";
 import { WorkflowInspector } from "./ui/workflow-inspector.ts";
+import { WorkflowRunsBrowser, type WorkflowRunsBrowserChoice } from "./ui/workflow-runs-browser.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./ui/workflow-viewer-layout.ts";
 import { completeCurrentArgument, splitArgumentPrefix } from "./command-completions.ts";
 
@@ -108,7 +109,8 @@ export class WorkflowRunController {
       ctx.ui.notify(formatWorkflowRunHistory(records, runs), "info");
       return;
     }
-    await this.openRunSelector(ctx);
+    if (ctx.mode === "tui") await this.openRunsBrowser(ctx);
+    else await this.openRunSelector(ctx);
   }
 
   async inspectStoredRun(ctx: ExtensionContext, runId: string): Promise<boolean> {
@@ -118,6 +120,27 @@ export class WorkflowRunController {
     return true;
   }
 
+  /** The TUI runs overlay; it reopens on the same run after each action until closed. */
+  private async openRunsBrowser(ctx: ExtensionCommandContext): Promise<void> {
+    let initialRunId: string | undefined;
+    while (true) {
+      const { records, runs } = await this.history(ctx);
+      if (records.length === 0) {
+        ctx.ui.notify(formatWorkflowRunHistory(records, runs), "info");
+        return;
+      }
+      const choice = await ctx.ui.custom<WorkflowRunsBrowserChoice | undefined>(
+        (...[tui, theme, , done]) =>
+          new WorkflowRunsBrowser({ records, runs }, tui, theme, done, { initialRunId, refresh: () => this.history(ctx) }),
+        WORKFLOW_VIEWER_OVERLAY_OPTIONS,
+      );
+      if (!choice) return;
+      initialRunId = choice.runId;
+      await this.perform(choice.action, choice.runId, ctx);
+    }
+  }
+
+  /** Two native selects (run, then action) for UI hosts that cannot show custom components, such as RPC. */
   private async openRunSelector(ctx: ExtensionCommandContext): Promise<void> {
     while (true) {
       const { records, runs } = await this.history(ctx);
