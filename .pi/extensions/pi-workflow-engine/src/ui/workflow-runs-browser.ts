@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { decodeKittyPrintable, matchesKey, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { isRecord } from "../guards.ts";
-import { formatCount } from "../text.ts";
+import { formatCount, truncateText } from "../text.ts";
 import {
   availableWorkflowRunActions,
   canRelaunchWorkflowRun,
@@ -69,6 +69,7 @@ const NAME_MAX = 28;
 const NAME_MIN = 10;
 const LABEL_WIDTH = 10;
 const OUTCOME_LINES = 3;
+const OUTCOME_CHARS = 600;
 const LIST_MIN = 3;
 const REFRESH_MS = 1_000;
 
@@ -415,7 +416,21 @@ function clockTime(at: number, now: number): string {
   return `${date.toLocaleString("en", { month: "short" })} ${date.getDate()} ${time}`;
 }
 
+const outcomes = new WeakMap<WorkflowRunRecord, string | undefined>();
+
+/**
+ * A short outcome line, memoised per record and bounded before wrapping: a stored result can be large,
+ * and every run's details are measured on each render to keep the overlay height stable.
+ */
 function runOutcome(record: WorkflowRunRecord): string | undefined {
+  if (!outcomes.has(record)) {
+    const outcome = describeOutcome(record);
+    outcomes.set(record, outcome === undefined ? undefined : truncateText(outcome, OUTCOME_CHARS));
+  }
+  return outcomes.get(record);
+}
+
+function describeOutcome(record: WorkflowRunRecord): string | undefined {
   if (record.state === "failed" || record.state === "stopped" || record.state === "paused") return record.message;
   if (record.state !== "completed") return undefined;
   if (record.result.kind === "unavailable") return `result unavailable: ${record.result.reason}`;

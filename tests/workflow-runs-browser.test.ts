@@ -67,6 +67,17 @@ test("the details pane adds facts the row does not show and explains unavailable
   assert.match(render(browser, 112).join("\n"), /Restart\s+unavailable · its arguments were not retained/);
 });
 
+test("a long outcome wraps to at most three detail lines", () => {
+  const failed = record(FAILED_ID, "code-review", "failed", NOW - 300_000, false, "provider error ".repeat(400));
+  const tui = { requestRender() {}, terminal: { rows: 45, columns: 140 } } as Pick<TUI, "requestRender" | "terminal">;
+  const browser = new WorkflowRunsBrowser({ records: [failed], runs: { activeRunIds: new Set(), resumedAs: new Map() } }, tui, createTestTheme(), () => {}, { now: () => NOW });
+
+  const lines = render(browser, 90);
+  const outcome = lines.findIndex((line) => line.startsWith("│ Outcome"));
+  assert.ok(outcome > 0);
+  assert.equal(lines.slice(outcome + 1).filter((line) => /^│ {11}\S/.test(line)).length, 2);
+});
+
 test("the overlay keeps one height while the cursor moves between runs", () => {
   const { browser } = createBrowser();
   const heights = [browser.render(112).length];
@@ -219,6 +230,7 @@ function record(
   state: "completed" | "failed" | "running" | "paused" | "stopped",
   createdAt: number,
   argumentsPresent = false,
+  failure = "injected failure for error-paths",
 ): WorkflowRunRecord {
   const workflow: LoadedWorkflow = {
     meta: { name, description: name },
@@ -293,7 +305,7 @@ function record(
     state,
     progress: progress(),
     usage: { ...usage, totals: emptyWorkflowUsageTotals() },
-    error: new Error("injected failure for error-paths"),
+    error: new Error(failure),
     at: createdAt + 135,
   });
 }
