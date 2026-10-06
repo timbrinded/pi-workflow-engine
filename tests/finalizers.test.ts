@@ -9,7 +9,7 @@ test("runFinalizers executes every finalizer and reports best-effort failures wi
   const calls: string[] = [];
   const reported: string[] = [];
 
-  const failures = await runFinalizers(
+  await runFinalizers(
     [
       {
         name: "first",
@@ -39,7 +39,6 @@ test("runFinalizers executes every finalizer and reports best-effort failures wi
 
   assert.deepEqual(calls, ["first", "observer", "last"]);
   assert.deepEqual(reported, ["observer"]);
-  assert.deepEqual(failures.map((failure) => failure.name), ["observer"]);
 });
 
 test("runFinalizers aggregates required failures after running every finalizer", async () => {
@@ -94,7 +93,8 @@ test("runFinalizers aggregates required failures after running every finalizer",
 });
 
 test("runFinalizers ignores failures from the best-effort failure observer", async () => {
-  const failures = await runFinalizers(
+  const observed: string[] = [];
+  await runFinalizers(
     [
       {
         name: "advisory",
@@ -105,11 +105,12 @@ test("runFinalizers ignores failures from the best-effort failure observer", asy
       },
     ],
     {
-      onBestEffortFailure() {
+      onBestEffortFailure(failure) {
+        observed.push(failure.name);
         throw new Error("observer failed");
       },
     },
   );
 
-  assert.deepEqual(failures.map((failure) => failure.name), ["advisory"]);
+  assert.deepEqual(observed, ["advisory"]);
 });

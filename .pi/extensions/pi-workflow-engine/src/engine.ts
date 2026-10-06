@@ -206,20 +206,25 @@ export async function runResolvedWorkflow(
     }),
   );
 
-  if (workflowOutcome.ok && finalizationOutcome.ok) {
+  const outcome: Outcome<unknown> = !workflowOutcome.ok
+    ? {
+        ok: false,
+        error: finalizationOutcome.ok
+          ? workflowOutcome.error
+          : combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error),
+      }
+    : finalizationOutcome.ok
+      ? workflowOutcome
+      : finalizationOutcome;
+  if (outcome.ok) {
     durableRun.transition({
       state: "completed",
       progress: progress.snapshot(),
       usage: usage.snapshot(),
-      result: workflowOutcome.value,
+      result: outcome.value,
     });
-  } else if (!workflowOutcome.ok) {
-    const error = finalizationOutcome.ok
-      ? workflowOutcome.error
-      : combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error);
-    persistTerminalWorkflowError(error);
-  } else if (!finalizationOutcome.ok) {
-    persistTerminalWorkflowError(finalizationOutcome.error);
+  } else {
+    persistTerminalWorkflowError(outcome.error);
   }
   await durableRun.flush().catch(() => undefined);
 
@@ -227,15 +232,6 @@ export async function runResolvedWorkflow(
     const pauseError = backgroundPauseError(error, ctx.signal, resolvedOptions.signal);
     if (pauseError) {
       if (pauseError instanceof WorkflowProviderUsageLimitError) {
-        if (resolvedOptions.background === undefined) {
-          durableRun.transition({
-            state: "failed",
-            progress: progress.snapshot(),
-            usage: usage.snapshot(),
-            error: pauseError,
-          });
-          return;
-        }
         const providerPause = createProviderUsageLimitPauseRecord(
           pauseError,
           resolvedOptions,
@@ -263,12 +259,8 @@ export async function runResolvedWorkflow(
     });
   }
 
-  if (workflowOutcome.ok) {
-    if (finalizationOutcome.ok) return workflowOutcome.value;
-    throw finalizationOutcome.error;
-  }
-  if (finalizationOutcome.ok) throw workflowOutcome.error;
-  throw combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error);
+  if (outcome.ok) return outcome.value;
+  throw outcome.error;
 }
 
 function backgroundPauseError(error: unknown, ...signals: Array<AbortSignal | undefined>): unknown {
@@ -343,13 +335,7 @@ async function finalizeWorkflowRun(input: WorkflowFinalizationInput): Promise<vo
       },
     ],
     {
-      onBestEffortFailure: (failure) => {
-        try {
-          input.progress.log(`${failure.name} failed: ${unknownErrorMessage(failure.error)}`);
-        } catch {
-          // Observer failures must never replace the workflow outcome.
-        }
-      },
+      onBestEffortFailure: (failure) => input.progress.log(`${failure.name} failed: ${unknownErrorMessage(failure.error)}`),
     },
   );
 }
@@ -491,13 +477,11 @@ function createWorkflowScope(progress: WorkflowProgress, prefix: string, namespa
 function namespaceProgressEvent(namespace: string, event: WorkflowProgressEvent): WorkflowProgressEvent {
   switch (event.type) {
     case "counter":
-      return { ...event, key: `${namespace}.${event.key}` };
     case "counter_delta":
+    case "summary":
       return { ...event, key: `${namespace}.${event.key}` };
     case "lane_item":
       return { ...event, lane: `${namespace} ▸ ${event.lane}` };
-    case "summary":
-      return { ...event, key: `${namespace}.${event.key}` };
   }
 }
 
