@@ -490,6 +490,8 @@ async function createUnbornRepoSnapshot(options: {
   await cp(sourceRoot, options.path, {
     recursive: true,
     force: true,
+    // Keep link targets as stored, like a git checkout; resolved targets would point into the source repo.
+    verbatimSymlinks: true,
     filter: (source) => {
       const resolvedSource = resolve(source);
       if (resolvedSource === targetRoot || resolvedSource.startsWith(`${targetRoot}${sep}`)) return false;

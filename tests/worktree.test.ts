@@ -295,6 +295,7 @@ test("addWorktree falls back to a committed snapshot for unborn repositories", a
   await writeFile(join(repo, "nested", "workflow", "entry.txt"), "nested\n");
   await writeFile(join(repo, "ignored", "secret.txt"), "secret\n");
   await writeFile(join(repo, ".pi", ".workflow-runs", "run.jsonl"), "journal\n");
+  await symlink("nested", join(repo, "nested-link"));
   let added: Awaited<ReturnType<typeof addWorktree>> | undefined;
   let repeated: Awaited<ReturnType<typeof addWorktree>> | undefined;
   try {
@@ -304,6 +305,8 @@ test("addWorktree falls back to a committed snapshot for unborn repositories", a
     const worktreePath = added.path;
     assert.equal(await readFile(join(worktreePath, "README.md"), "utf8"), "hello\n");
     assert.equal(await readFile(join(worktreePath, "nested", "workflow", "entry.txt"), "utf8"), "nested\n");
+    // A rewritten absolute target would let edits through the link escape into the source checkout.
+    assert.equal(await readlink(join(worktreePath, "nested-link")), "nested");
     await assert.rejects(() => stat(join(worktreePath, "ignored")));
     await assert.rejects(() => stat(join(worktreePath, ".pi", ".workflow-runs")));
     await assert.rejects(() => stat(join(worktreePath, "empty")));
