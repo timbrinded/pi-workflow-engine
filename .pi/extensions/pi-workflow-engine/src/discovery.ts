@@ -1,12 +1,12 @@
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import type { PerfSink } from "./perf.ts";
 import { loadWorkflow, parseWorkflowModule } from "./workflow-module.ts";
 import { BUILTIN_SOURCE_ROOT, BUILTIN_WORKFLOW_DEFINITIONS, BUILTIN_WORKFLOW_FILES } from "./workflows.ts";
-import { captureSourceTreeFingerprint } from "./tree-fingerprint.ts";
+import { captureSourceTreeFingerprint, type FingerprintCapture } from "./tree-fingerprint.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 export interface DiscoverWorkflowsOptions {
@@ -21,7 +21,7 @@ async function loadDir(
   dir: string,
   sourceIdentity: (path: string) => WorkflowSourceIdentity,
   excludeFiles: ReadonlySet<string> = new Set(),
-  provenanceRoot?: string,
+  captureProvenance?: () => Promise<FingerprintCapture>,
 ): Promise<LoadedWorkflow[]> {
   let entries: string[];
   try {
@@ -35,7 +35,7 @@ async function loadDir(
   // The shipped workflows/ dir holds only excluded built-ins; skip the tree hash when nothing will be imported.
   if (candidates.length === 0) return [];
 
-  const before = provenanceRoot ? await captureSourceTreeFingerprint(provenanceRoot) : undefined;
+  const before = await captureProvenance?.();
   const modules: Array<{ readonly path: string; readonly module: Parameters<typeof loadWorkflow>[0] }> = [];
   for (const name of candidates) {
     try {
@@ -88,6 +88,9 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
     }
 
     const repoWorkflowDir = join(repoDir, "workflows");
+    // The shipped extension dir is both the built-in root and the drop-in root; hash that tree once.
+    const repoProvenance =
+      resolve(repoDir) === resolve(BUILTIN_SOURCE_ROOT) ? async () => builtinSource : () => captureSourceTreeFingerprint(repoDir);
     const [repoDynamic, userDynamic] = await Promise.all([
       timed(options.perf, "discovery.repo_dir_ms", () =>
         loadDir(
@@ -97,7 +100,7 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
             reason: "dynamic workflow module graphs are not loaded from an immutable source snapshot",
           }),
           BUILTIN_WORKFLOW_FILES,
-          repoDir,
+          repoProvenance,
         ),
       ),
       timed(options.perf, "discovery.user_dir_ms", () =>
