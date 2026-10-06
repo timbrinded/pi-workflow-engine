@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
-import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
+import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./src/ui/workflow-viewer-layout.ts";
 import type { PerfSink } from "./src/perf.ts";
@@ -13,8 +13,7 @@ import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-sh
 import { ReviewSessionCoordinator } from "./src/review/review-session-coordinator.ts";
 import { isWorkflowResult, renderWorkflowResult } from "./src/ui/workflow-result-renderer.ts";
 import {
-  parseWorkflowBudgetString,
-  parseWorkflowIntegerString,
+  parseWorkflowInvocation,
   resolveWorkflowRunOptions,
   type ResolvedWorkflowRunOptions,
   WORKFLOW_AGENT_TIMEOUT_MAX_MS,
@@ -189,120 +188,6 @@ function bindActiveWorkflowInspection(name: string, args: string, source: Workfl
   return { name, args, startedAt: Date.now(), snapshot: () => source.snapshot() };
 }
 
-export interface WorkflowInvocation {
-  name: string;
-  args: string;
-  options: WorkflowRunOptions;
-  refreshDiscovery?: boolean;
-  optionErrors?: string[];
-  authorBrief?: string;
-}
-
-export function parseWorkflowInvocation(input: string): WorkflowInvocation {
-  const trimmed = input.trim();
-  const space = trimmed.indexOf(" ");
-  const name = space === -1 ? trimmed : trimmed.slice(0, space);
-  const rest = space === -1 ? "" : trimmed.slice(space + 1).trim();
-  return { name, ...parseWorkflowOptions(rest) };
-}
-
-const INVALID_RESUME_OPTION = "--resume requires a workflow run id";
-const INVALID_EDITED_RESUME_OPTION = "--resume-edited requires --resume <run-id>";
-
-interface NumericOptionFlag {
-  readonly flag: string;
-  readonly key: "concurrency" | "parallelSubmissionLimit" | "maxAgents" | "agentTimeoutMs" | "agentRetries" | "budget";
-  readonly parse: (value: string | undefined) => number | undefined;
-  readonly error: string;
-}
-
-/** `--flag=N` or `--flag N`; the next token is consumed only when it parses, so a following flag or argument survives. */
-const NUMERIC_OPTION_FLAGS: readonly NumericOptionFlag[] = [
-  { flag: "--concurrency", key: "concurrency", parse: parseWorkflowIntegerString, error: "--concurrency requires an integer" },
-  { flag: "--parallel-limit", key: "parallelSubmissionLimit", parse: parseWorkflowIntegerString, error: "--parallel-limit requires an integer" },
-  { flag: "--max-agents", key: "maxAgents", parse: parseWorkflowIntegerString, error: "--max-agents requires an integer" },
-  { flag: "--agent-timeout-ms", key: "agentTimeoutMs", parse: parseWorkflowIntegerString, error: "--agent-timeout-ms requires an integer" },
-  { flag: "--agent-retries", key: "agentRetries", parse: parseWorkflowIntegerString, error: "--agent-retries requires an integer" },
-  { flag: "--budget", key: "budget", parse: parseWorkflowBudgetString, error: "--budget requires a positive integer output-token count" },
-];
-
-function parseWorkflowOptions(input: string): Omit<WorkflowInvocation, "name" | "authorBrief"> {
-  const tokens = input.split(/\s+/).filter(Boolean);
-  const kept: string[] = [];
-  const options: WorkflowRunOptions = {};
-  const optionErrors: string[] = [];
-  let refreshDiscovery = false;
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (token === "--inspect") {
-      options.inspect = true;
-      continue;
-    }
-    if (token === "--refresh") {
-      refreshDiscovery = true;
-      continue;
-    }
-    if (token === "--perf") {
-      options.perf = true;
-      continue;
-    }
-    if (token === "--resume-edited") {
-      options.resumeEditedWorkflow = true;
-      continue;
-    }
-    if (token === "--result-viewer" || token === "--review-viewer") {
-      options.resultViewer = "open";
-      continue;
-    }
-    if (token === "--no-result-viewer" || token === "--no-review-viewer") {
-      options.resultViewer = "skip";
-      continue;
-    }
-    const numeric = NUMERIC_OPTION_FLAGS.find(({ flag }) => token === flag || token.startsWith(`${flag}=`));
-    if (numeric) {
-      const inline = token !== numeric.flag;
-      const parsed = numeric.parse(inline ? token.slice(numeric.flag.length + 1) : tokens[i + 1]);
-      if (parsed === undefined) {
-        optionErrors.push(numeric.error);
-      } else {
-        options[numeric.key] = parsed;
-        if (!inline) i++;
-      }
-      continue;
-    }
-    if (token.startsWith("--resume=")) {
-      const value = token.slice("--resume=".length).trim();
-      if (value === "") optionErrors.push(INVALID_RESUME_OPTION);
-      else options.resumeFromRunId = value;
-      continue;
-    }
-    if (token === "--resume") {
-      const next = tokens[i + 1];
-      if (next === undefined || next.startsWith("--")) {
-        optionErrors.push(INVALID_RESUME_OPTION);
-      } else {
-        options.resumeFromRunId = next;
-        i++;
-      }
-      continue;
-    }
-    kept.push(token);
-  }
-  if (options.resumeEditedWorkflow && !options.resumeFromRunId) optionErrors.push(INVALID_EDITED_RESUME_OPTION);
-  return {
-    args: kept.join(" ").trim(),
-    options,
-    ...(refreshDiscovery ? { refreshDiscovery } : {}),
-    ...(optionErrors.length > 0 ? { optionErrors } : {}),
-  };
-}
-
-function compactInlinePreview(script: string | undefined): string {
-  if (!script) return "";
-  const compact = script.replace(/\s+/g, " ").trim();
-  return truncateText(compact, 60);
-}
-
 export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {
   return `dynamax author and run a temporary one-shot inline workflow.
 
@@ -357,10 +242,14 @@ export function inlineCompileErrorResult(message: string): WorkflowToolErrorResu
   return { content: [{ type: "text", text: `Inline workflow did not compile: ${message}` }], details: { error: "inline_compile_error", message } };
 }
 
+export type WorkflowPickerSelection =
+  | { readonly kind: "run"; readonly name: string; readonly args: string }
+  | { readonly kind: "author"; readonly brief: string };
+
 export async function pickWorkflow(
   workflows: ReadonlyMap<string, WorkflowModule>,
   ctx: ExtensionCommandContext,
-): Promise<WorkflowInvocation | undefined> {
+): Promise<WorkflowPickerSelection | undefined> {
   const name = await selectWorkflowValue(workflows, ctx);
   if (!name) return undefined;
 
@@ -370,14 +259,13 @@ export async function pickWorkflow(
       "Goal:\n\nAgents to run:\n- \n\nFinal output should include:\n- summary\n- findings\n- next steps\n",
     );
     const trimmed = brief?.trim();
-    if (!trimmed) return undefined;
-    return { name: "", args: "", options: {}, authorBrief: trimmed };
+    return trimmed ? { kind: "author", brief: trimmed } : undefined;
   }
 
-  if (name !== "code-review") return { name, args: "", options: {} };
+  if (name !== "code-review") return { kind: "run", name, args: "" };
   // Escape resolves undefined and cancels; only a submitted blank target means auto-detect.
   const target = await ctx.ui.input("Code-review target/instructions", "Blank = auto-detect diff");
-  return target === undefined ? undefined : { name, args: target.trim(), options: {} };
+  return target === undefined ? undefined : { kind: "run", name, args: target.trim() };
 }
 
 export async function sendWorkflowResult(
@@ -531,39 +419,40 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     description: "Run a multi-agent workflow: /workflow <name> [args]",
     getArgumentCompletions: workflowArgumentCompletions,
     handler: async (args: string, ctx: ExtensionCommandContext) => {
-      const direct = parseWorkflowInvocation(args);
-      if (direct.optionErrors?.length) {
-        ctx.ui.notify(`Invalid workflow option: ${direct.optionErrors.join("; ")}`, "warning");
+      const invocation = parseWorkflowInvocation(args);
+      if (invocation.optionErrors.length > 0) {
+        ctx.ui.notify(`Invalid workflow option: ${invocation.optionErrors.join("; ")}`, "warning");
         return;
       }
-      const directOptions = resolveWorkflowRunOptions(direct.options);
-      const perfRecorder = await createInvocationPerf(directOptions);
+      const options = resolveWorkflowRunOptions(invocation.options);
+      const perfRecorder = await createInvocationPerf(options);
       const { discoverWorkflows } = await loadDiscovery();
-      const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: direct.refreshDiscovery, perf: perfRecorder });
+      const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: invocation.refreshDiscovery, perf: perfRecorder });
       const available = [...workflows.keys()].join(", ") || "(none)";
-      const invocation = direct.name ? direct : ctx.hasUI ? await pickWorkflow(workflows, ctx) : undefined;
+      const selection: WorkflowPickerSelection | undefined = invocation.name
+        ? { kind: "run", name: invocation.name, args: invocation.args }
+        : ctx.hasUI ? await pickWorkflow(workflows, ctx) : undefined;
 
-      if (!invocation) {
+      if (!selection) {
         ctx.ui.notify(`Usage: /workflow <name> [args]. Available: ${available}`, "warning");
         return;
       }
 
-      if (invocation.authorBrief) {
+      if (selection.kind === "author") {
         // A send while the agent streams is rejected, which would leave the one-shot armed for an unrelated prompt.
         await ctx.waitForIdle();
         dynamax.markOneShot(ctx);
-        pi.sendUserMessage(buildTemporaryWorkflowAuthorPrompt(invocation.authorBrief));
+        pi.sendUserMessage(buildTemporaryWorkflowAuthorPrompt(selection.brief));
         return;
       }
 
-      const mod = workflows.get(invocation.name);
+      const mod = workflows.get(selection.name);
       if (!mod) {
-        ctx.ui.notify(`Unknown workflow "${invocation.name}". Available: ${available}`, "error");
+        ctx.ui.notify(`Unknown workflow "${selection.name}". Available: ${available}`, "error");
         return;
       }
 
-      // A picked invocation only exists for a blank command line, so its options equal the already-resolved defaults.
-      await sendWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, directOptions, perfRecorder, reviewSessions);
+      await sendWorkflowResult(pi, ctx, selection.name, mod, selection.args, options, perfRecorder, reviewSessions);
     },
   });
 
@@ -657,7 +546,7 @@ function registerWorkflowTool(
       if (args.name?.trim()) {
         return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", args.name.trim())}${background}${suffix}`, 0, 0);
       }
-      const preview = compactInlinePreview(args.script);
+      const preview = truncateText((args.script ?? "").replace(/\s+/g, " ").trim(), 60);
       const previewSuffix = preview ? ` ${theme.fg("dim", preview)}` : "";
       return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", "inline")}${background}${suffix}${previewSuffix}`, 0, 0);
     },

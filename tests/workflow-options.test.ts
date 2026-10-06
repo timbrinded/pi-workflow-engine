@@ -8,10 +8,11 @@ import {
   DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS,
   DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS,
   defaultConcurrency,
+  parseWorkflowInvocation,
   resolveWorkflowRunOptions,
 } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import type { WorkflowModule } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
-import { buildTemporaryWorkflowAuthorPrompt, parseWorkflowInvocation, pickWorkflow } from "../.pi/extensions/pi-workflow-engine";
+import { buildTemporaryWorkflowAuthorPrompt, pickWorkflow } from "../.pi/extensions/pi-workflow-engine";
 
 test("defaultConcurrency preserves existing formula", () => {
   assert.equal(defaultConcurrency(1), 2);
@@ -232,7 +233,7 @@ test("pickWorkflow does not prompt for inspector by default", async () => {
   const invocation = await pickWorkflow(workflows, ctx);
 
   assert.equal(confirmCalls, 0);
-  assert.deepEqual(invocation, { name: "code-review", args: "review src", options: {} });
+  assert.deepEqual(invocation, { kind: "run", name: "code-review", args: "review src" });
 });
 
 test("pickWorkflow cancels when the code-review target prompt is dismissed", async () => {
@@ -290,7 +291,7 @@ test("pickWorkflow maps Pi's native selection label back to the workflow name", 
   const invocation = await pickWorkflow(workflows, ctx);
 
   assert.match(offered.join("\n"), /refactor-scout — Advisory-only refactor scout/);
-  assert.deepEqual(invocation, { name: "refactor-scout", args: "", options: {} });
+  assert.deepEqual(invocation, { kind: "run", name: "refactor-scout", args: "" });
 });
 
 test("buildTemporaryWorkflowAuthorPrompt asks for an inline one-shot workflow", () => {
