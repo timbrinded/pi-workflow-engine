@@ -87,6 +87,9 @@ function formatAdvisoryReportForContext(name: string, report: AdvisoryReport): s
       );
     }
   }
+  if (report.gaps && report.gaps.length > 0) {
+    lines.push("", "Coverage gaps:", ...report.gaps.map((gap) => `- ${gap}`));
+  }
   if (report.nextSteps.length > 0) {
     lines.push("", "Next steps:", ...report.nextSteps.map((step) => `- ${step}`));
   }
