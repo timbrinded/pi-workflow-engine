@@ -6,11 +6,12 @@ import { normalizeWorkspaceReferences } from "./replay-path-identity.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
   captureEffectiveToolSourceIdentity,
+  nonEmptyString,
   type EffectiveToolSourceIdentity,
   type EffectiveToolSourceInfoLike,
   type ToolSourceFingerprintCache,
+  type ToolSourceIdentityOptions,
 } from "./tool-source-identity.ts";
-export type { EffectiveToolSourceIdentity, EffectiveToolSourceInfoLike } from "./tool-source-identity.ts";
 
 export interface EffectiveAgentModelLike {
   readonly provider: string;
@@ -78,14 +79,6 @@ export interface EffectiveAgentSessionIdentityOptions {
   readonly signal?: AbortSignal;
 }
 
-interface IdentityComponents {
-  readonly runtimeVersion: string;
-  readonly systemPromptFingerprint: string;
-  readonly model: EffectiveAgentModelLike;
-  readonly thinkingLevel: string;
-  readonly tools: readonly EffectiveToolIdentity[];
-}
-
 /**
  * Capture the post-creation AgentSession state that determines whether a cached
  * agent result is safe to replay. Any missing or opaque executable identity
@@ -105,7 +98,7 @@ export async function captureEffectiveAgentSessionIdentity(
     const model = captureModel(session.model);
     const activeToolNames = captureActiveToolNames(session.getActiveToolNames());
     const toolInfoByName = indexToolInfo(session.getAllTools());
-    const sourceCaptures: ToolSourceFingerprintCache = new Map();
+    const cache: ToolSourceFingerprintCache = new Map();
     const tools: EffectiveToolIdentity[] = [];
 
     for (const name of activeToolNames) {
@@ -119,13 +112,13 @@ export async function captureEffectiveAgentSessionIdentity(
           runtimeVersion,
           signal: options.signal,
           sessionCwd,
-          sourceCaptures,
+          cache,
           workspaceRoot,
         }),
       );
     }
 
-    const components: IdentityComponents = {
+    const components = {
       runtimeVersion,
       systemPromptFingerprint: hashIdentity(
         normalizeWorkspaceReferences(systemPrompt, { sessionCwd, workspaceRoot }),
@@ -147,19 +140,11 @@ export async function captureEffectiveAgentSessionIdentity(
   }
 }
 
-interface ToolCaptureOptions {
-  readonly runtimeVersion: string;
-  readonly sessionCwd: string;
-  readonly workspaceRoot: string;
-  readonly sourceCaptures: ToolSourceFingerprintCache;
-  readonly signal?: AbortSignal;
-}
-
 async function captureToolIdentity(
   name: string,
   info: EffectiveToolInfoLike,
   definition: EffectiveToolDefinitionLike,
-  options: ToolCaptureOptions,
+  options: ToolSourceIdentityOptions,
 ): Promise<EffectiveToolIdentity> {
   if (nonEmptyString(info.name, `registry name for active tool "${name}"`) !== name) {
     throw new Error(`tool registry returned a mismatched definition for "${name}"`);
@@ -175,13 +160,7 @@ async function captureToolIdentity(
     definition.prepareArguments === undefined
       ? null
       : inspectableFunctionSource(definition.prepareArguments, `argument-preparation handler for active tool "${name}"`);
-  const source = await captureEffectiveToolSourceIdentity(info.sourceInfo, {
-    runtimeVersion: options.runtimeVersion,
-    sessionCwd: options.sessionCwd,
-    workspaceRoot: options.workspaceRoot,
-    cache: options.sourceCaptures,
-    signal: options.signal,
-  });
+  const source = await captureEffectiveToolSourceIdentity(info.sourceInfo, options);
 
   return {
     name,
@@ -242,12 +221,6 @@ function stringArray(value: readonly string[], label: string): readonly string[]
 function optionalString(value: string | undefined, label: string): string | null {
   if (value === undefined) return null;
   return stringValue(value, label);
-}
-
-function nonEmptyString(value: string, label: string): string {
-  const result = stringValue(value, label);
-  if (result.length === 0) throw new Error(`${label} is empty`);
-  return result;
 }
 
 function stringValue(value: string, label: string): string {

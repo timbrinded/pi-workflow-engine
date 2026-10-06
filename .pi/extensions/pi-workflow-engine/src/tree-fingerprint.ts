@@ -47,8 +47,6 @@ export interface DeclaredInputFingerprintOptions {
   readonly excludedRelativePaths?: ReadonlySet<string>;
   readonly maxBytes: number;
   readonly maxEntries: number;
-  /** Record direct directory identity without recursively walking descendants. */
-  readonly shallowDirectories?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -249,11 +247,6 @@ export async function captureDeclaredInputFingerprint(
         return true;
       }
       if (!info.isDirectory()) throw new Error(`declared input contains an unsupported entry: ${relativePath}`);
-
-      if (options.shallowDirectories === true) {
-        recordEntry(relativePath, "directory", info.mode);
-        return true;
-      }
 
       const entries = await readdir(path, { withFileTypes: true });
       entries.sort((left, right) => left.name.localeCompare(right.name));

@@ -61,7 +61,7 @@ export async function captureEffectiveToolSourceIdentity(
     };
   }
 
-  const baseDir = declaredBaseDir === undefined ? undefined : resolveDeclaredPath(declaredBaseDir, options.sessionCwd);
+  const baseDir = declaredBaseDir === undefined ? undefined : resolve(options.sessionCwd, declaredBaseDir);
   const sourcePath = await resolveExistingSourcePath(path, baseDir, options.sessionCwd, options.workspaceRoot);
   const sourceRoot = baseDir && isPathWithin(baseDir, sourcePath) ? baseDir : dirname(sourcePath);
   const validation = await validateTreeFile({
@@ -100,11 +100,11 @@ async function resolveExistingSourcePath(
 ): Promise<string> {
   const candidates = isAbsolute(path)
     ? [resolve(path)]
-    : uniquePaths([
+    : [...new Set([
         ...(baseDir ? [resolve(baseDir, path), resolve(baseDir, path.split(/[\\/]/).at(-1) ?? path)] : []),
         resolve(sessionCwd, path),
         resolve(workspaceRoot, path),
-      ]);
+      ])];
 
   for (const candidate of candidates) {
     try {
@@ -116,13 +116,8 @@ async function resolveExistingSourcePath(
   throw new Error(`tool source path does not identify a regular file: ${path}`);
 }
 
-function resolveDeclaredPath(path: string, sessionCwd: string): string {
-  return isAbsolute(path) ? resolve(path) : resolve(sessionCwd, path);
-}
-
 function normalizeUnresolvedBaseDir(path: string, sessionCwd: string, workspaceRoot: string): string {
-  const resolvedPath = resolveDeclaredPath(path, sessionCwd);
-  return logicalWorkspacePath(resolvedPath, { sessionCwd, workspaceRoot }) ?? "source-root:.";
+  return logicalWorkspacePath(resolve(sessionCwd, path), { sessionCwd, workspaceRoot }) ?? "source-root:.";
 }
 
 function logicalSourcePath(path: string, sourceRoot: string, sessionCwd: string, workspaceRoot: string): string {
@@ -136,11 +131,7 @@ function isSyntheticSource(path: string, source: string): boolean {
   return (path.startsWith("<") && path.endsWith(">")) || source === "builtin" || source === "sdk" || /^(?:builtin|sdk):/.test(path);
 }
 
-function uniquePaths(paths: readonly string[]): readonly string[] {
-  return [...new Set(paths)];
-}
-
-function nonEmptyString(value: string, label: string): string {
+export function nonEmptyString(value: string, label: string): string {
   if (typeof value !== "string") throw new Error(`${label} is not a string`);
   if (value.length === 0) throw new Error(`${label} is empty`);
   return value;
