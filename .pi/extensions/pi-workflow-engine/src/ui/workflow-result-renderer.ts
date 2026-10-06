@@ -4,11 +4,10 @@ import { isAdvisoryReport, type AdvisoryReportWithStats } from "../advisory-sche
 import { isRecord } from "../guards.ts";
 import { renderIssueDetailLines, renderIssuesTable } from "../review/review-format.ts";
 import { toReviewIssues } from "../review/review-issues.ts";
-import { formatCount } from "../text.ts";
+import { formatCount, prettyJson } from "../text.ts";
 import { formatPerfSummary } from "../perf.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
 import { workflowResultSummary, type WorkflowPerfDetails } from "../workflow-execution.ts";
-import { unknownErrorMessage } from "../unknown-error.ts";
 
 /** What the result renderers read. Persisted message details are unvalidated, so `usage` stays `unknown`. */
 export interface WorkflowResultView {
@@ -78,7 +77,7 @@ function renderGenericWorkflowResult(view: WorkflowResultView, expanded: boolean
   const summary = workflowResultSummary(view.result);
   if (summary) lines.push(theme.fg("muted", summary));
   pushWorkflowDetailLines(lines, theme, view);
-  if (expanded) lines.push(theme.fg("dim", safeJson(view.result)));
+  if (expanded) lines.push(theme.fg("dim", prettyJson(view.result) ?? String(view.result)));
   else if (!summary) lines.push(theme.fg("dim", "Result available in expanded view."));
   return lines.join("\n");
 }
@@ -112,12 +111,4 @@ function statsLine(stats: Record<string, string | number> | undefined, theme: Th
   });
   if (parts.length === 0) return undefined;
   return theme.fg("dim", parts.join(" · "));
-}
-
-function safeJson(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2) ?? String(value);
-  } catch (error) {
-    return unknownErrorMessage(error);
-  }
 }

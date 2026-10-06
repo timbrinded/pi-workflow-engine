@@ -1,4 +1,4 @@
-import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
+import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, formatAdvisoryLocation, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
 import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "./types.ts";
 
@@ -188,10 +188,7 @@ export function primaryLocation(candidate: Pick<AdvisoryCandidate, "locations">)
 }
 
 export function formatLocation(candidate: Pick<AdvisoryCandidate, "locations">): string {
-  const location = primaryLocation(candidate);
-  const line = location.line != null ? `:${location.line}` : "";
-  const symbol = location.symbol ? ` (${location.symbol})` : "";
-  return `${location.file}${line}${symbol}`;
+  return formatAdvisoryLocation(primaryLocation(candidate));
 }
 
 export function formatEvidence(evidence: readonly string[]): string {

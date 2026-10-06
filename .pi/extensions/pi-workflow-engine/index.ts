@@ -2,8 +2,6 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
-import { isAdvisoryReport, type AdvisoryFinding, type AdvisoryLocation, type AdvisoryReport } from "./src/advisory-schema.ts";
-import { isRecord } from "./src/guards.ts";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
@@ -12,13 +10,8 @@ import type { PerfSink } from "./src/perf.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
-import { toReviewIssues } from "./src/review/review-issues.ts";
 import { ReviewSessionCoordinator } from "./src/review/review-session-coordinator.ts";
-import {
-  formatWorkflowDetailLines,
-  isWorkflowResult,
-  renderWorkflowResult,
-} from "./src/ui/workflow-result-renderer.ts";
+import { isWorkflowResult, renderWorkflowResult } from "./src/ui/workflow-result-renderer.ts";
 import {
   parseWorkflowBudgetString,
   parseWorkflowIntegerString,
@@ -37,7 +30,8 @@ import {
   WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS,
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
 } from "./src/options.ts";
-import { executeWorkflowInvocation, workflowResultSummary, type WorkflowResultEnvelope } from "./src/workflow-execution.ts";
+import { executeWorkflowInvocation, type WorkflowResultEnvelope } from "./src/workflow-execution.ts";
+import { formatWorkflowResultForContext } from "./src/workflow-result-context.ts";
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
 import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
@@ -49,77 +43,6 @@ import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/w
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
-
-/** Cap on the result JSON copied into the host agent's context; the run record keeps the full value. */
-const MAX_CONTEXT_RESULT_JSON_CHARS = 20_000;
-
-function formatMessageContent(envelope: WorkflowResultEnvelope): string {
-  const details = formatWorkflowDetailLines(envelope);
-  return `## Workflow: ${envelope.name}\n\n${formatResultForContext(envelope.result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
-}
-
-/** The host model only sees this text, never the envelope `details`, so it carries every result field. */
-function formatResultForContext(result: unknown): string {
-  if (typeof result === "string") return result;
-  if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(result);
-  const summary = workflowResultSummary(result);
-  if (summary !== undefined && isRecord(result) && Object.keys(result).length === 1) return summary;
-  const json = formatResultJson(result);
-  if (json === undefined) return summary ?? "Workflow finished.";
-  return summary === undefined ? json : `${summary}\n\n${json}`;
-}
-
-function formatAdvisoryReportForContext(report: AdvisoryReport): string {
-  const lines = [report.summary];
-  const issues = toReviewIssues(report);
-  if (issues.length > 0) {
-    lines.push("", "Findings:");
-    for (const { id, finding } of issues) {
-      lines.push(
-        `\n### ${id}: ${finding.summary}`,
-        `- Severity: ${finding.severity}`,
-        `- Confidence: ${finding.confidence}`,
-        `- Category: ${finding.category}`,
-        `- Location: ${formatFindingLocations(finding)}`,
-        `- Impact: ${finding.impact}`,
-        `- Evidence: ${finding.evidence.length > 0 ? finding.evidence.join("; ") : "(none cited)"}`,
-        `- Recommendation: ${finding.recommendation}`,
-      );
-    }
-  }
-  if (report.gaps && report.gaps.length > 0) {
-    lines.push("", "Coverage gaps:", ...report.gaps.map((gap) => `- ${gap}`));
-  }
-  if (report.nextSteps.length > 0) {
-    lines.push("", "Next steps:", ...report.nextSteps.map((step) => `- ${step}`));
-  }
-  return lines.join("\n");
-}
-
-function formatResultJson(result: unknown): string | undefined {
-  if (result === null || result === undefined) return undefined;
-  let json: string | undefined;
-  try {
-    json = JSON.stringify(result, null, 2);
-  } catch {
-    return undefined;
-  }
-  if (json === undefined) return undefined;
-  if (json.length <= MAX_CONTEXT_RESULT_JSON_CHARS) return `Result:\n\`\`\`json\n${json}\n\`\`\``;
-  return `Result (first ${MAX_CONTEXT_RESULT_JSON_CHARS} of ${json.length} characters; truncated, the run record holds the full value):\n\`\`\`json\n${json.slice(0, MAX_CONTEXT_RESULT_JSON_CHARS)}\n\`\`\``;
-}
-
-/** The review anchor that the findings viewer and PR comments cite comes first, then every other cited location. */
-function formatFindingLocations(finding: AdvisoryFinding): string {
-  const locations = finding.reviewAnchor ? [finding.reviewAnchor, ...finding.locations] : finding.locations;
-  return [...new Set(locations.map(formatFindingLocation))].join(", ");
-}
-
-function formatFindingLocation(location: AdvisoryLocation): string {
-  const line = location.line === undefined ? "" : `:${location.line}`;
-  const symbol = location.symbol === undefined ? "" : ` (${location.symbol})`;
-  return `${location.file}${line}${symbol}`;
-}
 
 type DiscoveryModule = typeof import("./src/discovery.ts");
 type EngineModule = typeof import("./src/engine.ts");
@@ -513,7 +436,7 @@ function publishWorkflowResult(pi: ExtensionAPI, envelope: WorkflowResultEnvelop
   pi.sendMessage(
     {
       customType: "workflow-result",
-      content: formatMessageContent(envelope),
+      content: formatWorkflowResultForContext(envelope),
       display: true,
       details: envelope,
     },
@@ -835,7 +758,7 @@ function registerWorkflowTool(
       const envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
       reviewSessions.remember(ctx, envelope, runOptions);
       return {
-        content: [{ type: "text", text: formatMessageContent(envelope) }],
+        content: [{ type: "text", text: formatWorkflowResultForContext(envelope) }],
         details: envelope,
       };
     },

@@ -3,6 +3,15 @@ export function truncateText(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
 }
 
+/** Pretty-printed JSON, or undefined when the value has no JSON form or cannot be serialized (cycles, BigInt). */
+export function prettyJson(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Compact count for display: 999, 1.2k, 12.3k, 123k, 1.2M. */
 export function formatCount(n: number): string {
   if (!Number.isFinite(n)) return "0";

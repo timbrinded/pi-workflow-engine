@@ -80,3 +80,10 @@ export type AdvisoryReportWithStats = Static<typeof AdvisoryReportWithStatsSchem
 export function isAdvisoryReport(value: unknown): value is AdvisoryReportWithStats {
   return Value.Check(AdvisoryReportWithStatsSchema, value);
 }
+
+/** `file:line (symbol)`, omitting whichever of line and symbol is unknown. */
+export function formatAdvisoryLocation(location: AdvisoryLocation): string {
+  const line = location.line != null ? `:${location.line}` : "";
+  const symbol = location.symbol ? ` (${location.symbol})` : "";
+  return `${location.file}${line}${symbol}`;
+}

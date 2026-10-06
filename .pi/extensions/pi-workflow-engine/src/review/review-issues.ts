@@ -1,4 +1,4 @@
-import type { AdvisoryFinding, AdvisoryReport } from "../advisory-schema.ts";
+import { formatAdvisoryLocation, type AdvisoryFinding, type AdvisoryReport } from "../advisory-schema.ts";
 import { isFiniteNumber } from "../guards.ts";
 
 export type ReviewIssueAction = "fix" | "comment" | "close";
@@ -49,9 +49,7 @@ export function toReviewIssues(report: Pick<AdvisoryReport, "findings">): Review
 
 export function formatIssueLocation(issue: ReviewIssue): string {
   if (!issue.file) return "(no location)";
-  const line = issue.line != null ? `:${issue.line}` : "";
-  const symbol = issue.symbol ? ` (${issue.symbol})` : "";
-  return `${issue.file}${line}${symbol}`;
+  return formatAdvisoryLocation({ file: issue.file, line: issue.line, symbol: issue.symbol });
 }
 
 export function serializeReviewIssue(issue: ReviewIssue): SerializedReviewIssue {
