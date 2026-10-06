@@ -23,7 +23,7 @@ Instructions:
 - Do not edit files or make code changes.
 - Prefer installed GitHub MCP/tools if present; otherwise use the GitHub CLI (gh).
 - Before posting, resolve the current PR head and require it to equal the verified reviewed head \`${verifiedHead}\`; stop if it differs.
-- With gh, resolve the PR using \`gh pr view\` and \`gh repo view\`, then call \`gh api repos/{owner}/{repo}/pulls/{number}/comments\` with \`commit_id\`, \`path\`, \`line\`, and \`side=RIGHT\`.
+- With gh, resolve the PR using \`gh pr view <context.diffTarget.number> --json headRefOid,url\` and take owner/repo from the PR \`url\` (the base repository, so fork PRs are commented upstream), then call \`gh api repos/{owner}/{repo}/pulls/{number}/comments\` with \`commit_id\`, \`path\`, \`line\`, and \`side=RIGHT\`.
 - Do not post duplicate comments.
 - Do not post line-less findings as inline comments.
 - Ask the user if the upstream PR cannot be identified.
