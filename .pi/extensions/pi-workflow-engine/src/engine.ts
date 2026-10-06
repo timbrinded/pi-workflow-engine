@@ -15,8 +15,7 @@ import {
   type ResolvedWorkflowRunOptions,
 } from "./options.ts";
 import type { AgentOptions, IsolatedAgentResult, LoadedWorkflow, WorkflowApi, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
-import { WorkflowInspector } from "./ui/workflow-inspector.ts";
-import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./ui/workflow-viewer-layout.ts";
+import { showWorkflowInspector } from "./ui/workflow-inspector.ts";
 import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
 import { WorktreeRegistry } from "./worktree.ts";
 import { runFinalizers } from "./finalizers.ts";
@@ -98,7 +97,6 @@ export async function runResolvedWorkflow(
   const runId = resolvedOptions.runId ?? createWorkflowRunId();
   let durableProgress: DurableWorkflowRun | undefined;
   const progress = new ProgressTracker(ctx, mod.meta.name, runId, (snapshot) => durableProgress?.updateProgress(snapshot));
-  const progressSource = { snapshot: () => progress.snapshot() };
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
   const usage = createWorkflowUsageRecorder((snapshot) => progress.updateUsage(snapshot));
   const budget = createBudget(resolvedOptions.budget, usage);
@@ -122,6 +120,7 @@ export async function runResolvedWorkflow(
     },
   );
   durableProgress = durableRun;
+  const progressSource = { snapshot: () => progress.snapshot(), state: () => durableRun.state };
   const worktrees = dependencies.worktrees ?? new WorktreeRegistry(ctx.cwd);
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
@@ -129,11 +128,7 @@ export async function runResolvedWorkflow(
   const workflowOutcome = await captureOutcome(async () => {
     await notifyLifecycleObserver(progress, "progress source callback", () => resolvedOptions.onProgressSource?.(progressSource));
     if (resolvedOptions.inspect && ctx.hasUI && ctx.mode === "tui") {
-      void ctx.ui
-        .custom<void>(
-          (tui, theme, _keybindings, done) => new WorkflowInspector(() => progress.snapshot(), tui, theme, () => done(undefined)),
-          WORKFLOW_VIEWER_OVERLAY_OPTIONS,
-        )
+      void showWorkflowInspector(ctx.ui, progressSource.snapshot, () => ({ state: progressSource.state() }))
         .catch((error: unknown) => {
           try {
             progress.log(`inspector failed: ${unknownErrorMessage(error)}`);

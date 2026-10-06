@@ -10,6 +10,7 @@ import type { WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "./progres
 import type { WorkflowUsageSnapshot } from "./usage.ts";
 import type { WorktreeBaseline } from "./worktree.ts";
 import type { WorkflowModelProfileName } from "./model-profiles.ts";
+import type { WorkflowRunState } from "./workflow-run-record.ts";
 
 export type { WorkflowLaneItemStatus } from "./progress-types.ts";
 
@@ -94,6 +95,8 @@ export interface WorkflowRunOptions {
 
 export interface WorkflowProgressSource {
   snapshot(): WorkflowProgressSnapshot;
+  /** Durable lifecycle state of the run, so a finished snapshot can tell completed from failed. */
+  readonly state?: () => WorkflowRunState;
 }
 
 /** Options for a single `agent()` call. */

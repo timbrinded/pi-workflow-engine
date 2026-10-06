@@ -31,7 +31,7 @@ import {
   WorkflowUsageLimitScheduler,
   type WorkflowUsageLimitSchedulerClock,
 } from "./workflow-usage-limit-scheduler.ts";
-import { WorkflowInspector } from "./ui/workflow-inspector.ts";
+import { showWorkflowInspector } from "./ui/workflow-inspector.ts";
 import { WorkflowRunsBrowser, type WorkflowRunsBrowserChoice } from "./ui/workflow-runs-browser.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./ui/workflow-viewer-layout.ts";
 import { completeCurrentArgument, splitArgumentPrefix } from "./command-completions.ts";
@@ -175,16 +175,7 @@ export class WorkflowRunController {
       ctx.ui.notify(formatWorkflowRunDetails(record, (await this.history(ctx)).runs), "info");
       return;
     }
-    await ctx.ui.custom<void>(
-      (tui, theme, _keybindings, done) => new WorkflowInspector(
-        () => record.progress,
-        tui,
-        theme,
-        () => done(undefined),
-        { label: `${record.state.toUpperCase()} outcome`, text: retainedWorkflowRunOutcome(record) },
-      ),
-      WORKFLOW_VIEWER_OVERLAY_OPTIONS,
-    );
+    await showWorkflowInspector(ctx.ui, () => record.progress, { text: retainedWorkflowRunOutcome(record), state: record.state });
   }
 
   private async perform(

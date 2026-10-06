@@ -3,10 +3,10 @@ import { Type } from "typebox";
 import { getSelectListTheme, keyText, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, SelectItem } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
+import type { WorkflowRunState } from "./src/workflow-run-record.ts";
 import { WORKFLOW_TOOL_NAME, type LoadedWorkflow, type WorkflowModule, type WorkflowProgressSource, type WorkflowRef } from "./src/types.ts";
-import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
+import { showWorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import { WorkflowPicker } from "./src/ui/workflow-picker.ts";
-import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./src/ui/workflow-viewer-layout.ts";
 import type { PerfSink } from "./src/perf.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
@@ -140,6 +140,7 @@ export interface LastWorkflowInspection {
   readonly args: string;
   readonly completedAt: number;
   readonly snapshot: WorkflowProgressSnapshot;
+  readonly state?: () => WorkflowRunState;
 }
 
 export interface ActiveWorkflowInspection {
@@ -147,6 +148,7 @@ export interface ActiveWorkflowInspection {
   readonly args: string;
   readonly startedAt: number;
   readonly snapshot: () => WorkflowProgressSnapshot;
+  readonly state?: () => WorkflowRunState;
 }
 
 interface SessionWorkflowInspections {
@@ -161,10 +163,7 @@ export async function openWorkflowInspector(ctx: ExtensionContext, inspection: L
     ctx.ui.notify(formatWorkflowInspection(inspection), "info");
     return;
   }
-  await ctx.ui.custom<void>(
-    (tui, theme, _keybindings, done) => new WorkflowInspector(() => workflowInspectionSnapshot(inspection), tui, theme, () => done(undefined)),
-    WORKFLOW_VIEWER_OVERLAY_OPTIONS,
-  );
+  await showWorkflowInspector(ctx.ui, () => workflowInspectionSnapshot(inspection), () => ({ state: inspection.state?.() }));
 }
 
 function workflowInspectionState(pi: ExtensionAPI, ctx: ExtensionContext): SessionWorkflowInspections {
@@ -187,7 +186,7 @@ async function openAvailableWorkflowInspector(pi: ExtensionAPI, ctx: ExtensionCo
 }
 
 function bindActiveWorkflowInspection(name: string, args: string, source: WorkflowProgressSource): ActiveWorkflowInspection {
-  return { name, args, startedAt: Date.now(), snapshot: () => source.snapshot() };
+  return { name, args, startedAt: Date.now(), snapshot: () => source.snapshot(), state: source.state };
 }
 
 export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {
@@ -317,7 +316,8 @@ async function executeResolvedWorkflow(
       }
     },
     onProgressSnapshot(snapshot) {
-      inspections.last = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
+      // The durable state settles after this final snapshot; keep reading it from the live source.
+      inspections.last = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot, state: liveInspection?.state };
     },
   });
 }

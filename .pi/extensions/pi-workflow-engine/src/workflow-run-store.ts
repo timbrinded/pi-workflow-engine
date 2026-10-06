@@ -8,6 +8,7 @@ import {
   transitionWorkflowRun,
   updateWorkflowRunProgress,
   type WorkflowRunRecord,
+  type WorkflowRunState,
   type WorkflowRunTransition,
 } from "./workflow-run-record.ts";
 
@@ -99,6 +100,10 @@ export class DurableWorkflowRun {
   ) {
     this.record = initial;
     this.queue(initial);
+  }
+
+  get state(): WorkflowRunState {
+    return this.record.state;
   }
 
   updateProgress(progress: WorkflowProgressSnapshot, at = Date.now()): void {

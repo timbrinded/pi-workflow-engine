@@ -18,7 +18,7 @@ import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extens
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
-import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
+import { WORKFLOW_INSPECTOR_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import { captureWorkflowExtension, captureWorkflowTool } from "./workflow-extension-fixtures.ts";
 
 const WORKFLOW_TOOL_TEST_CWD = mkdtempSync(join(tmpdir(), "pi-workflow-tool-tests-"));
@@ -525,8 +525,27 @@ export default async function run({ phase }) {
   await tool.execute("call-2", { script }, undefined, () => {}, ctx);
 
   assert.equal(customCalls(), 1);
-  assert.deepEqual(customOptions()[0], WORKFLOW_VIEWER_OVERLAY_OPTIONS);
+  assert.deepEqual(customOptions()[0], WORKFLOW_INSPECTOR_OVERLAY_OPTIONS);
   assert.match(customRenders()[0]?.join("\n") ?? "", /inspect-live-probe/);
+});
+
+test("the reopened inspector reports a failed tool-invoked run as failed", async () => {
+  const extension = captureWorkflowExtension();
+  const inspector = extension.commands.get("workflow:inspector");
+  if (!inspector) throw new Error("expected /workflow:inspector command");
+  const { ctx, customRenders } = createTuiContext(undefined, "inspector-failed-state");
+  const script = `
+export const meta = { name: "failed-state-probe", description: "Failed state probe" };
+export default async function run({ phase }) {
+  phase("Doomed");
+  throw new Error("boom");
+}
+`;
+
+  await assert.rejects(() => extension.tool.execute("call-failed-state", { script }, undefined, () => {}, ctx), /boom/);
+  await inspector.handler("", ctx as ExtensionCommandContext);
+
+  assert.match(customRenders().at(-1)?.[0] ?? "", /failed-state-probe.*✗ failed/);
 });
 
 test("the results command and shortcut reopen the last code-review findings without rerunning it", async () => {
@@ -700,7 +719,7 @@ export default async function run({ phase }) {
   const reopenedA = createTuiContext(undefined, "inspector-session-a");
   await command.handler("", reopenedA.ctx as ExtensionCommandContext);
   assert.equal(reopenedA.customCalls(), 1);
-  assert.deepEqual(reopenedA.customOptions()[0], WORKFLOW_VIEWER_OVERLAY_OPTIONS);
+  assert.deepEqual(reopenedA.customOptions()[0], WORKFLOW_INSPECTOR_OVERLAY_OPTIONS);
   assert.match(reopenedA.customRenders().at(-1)?.join("\n") ?? "", /inspector-session-probe/);
 });
 
@@ -730,7 +749,7 @@ export default async function run({ phase }) {
     await shortcut.handler(ctx);
 
     assert.equal(customCalls(), 2);
-    assert.deepEqual(customOptions().at(-1), WORKFLOW_VIEWER_OVERLAY_OPTIONS);
+    assert.deepEqual(customOptions().at(-1), WORKFLOW_INSPECTOR_OVERLAY_OPTIONS);
     assert.match(customRenders().at(-1)?.join("\n") ?? "", /inspect-live-shortcut-probe/);
     gate.resolve();
     await running;
