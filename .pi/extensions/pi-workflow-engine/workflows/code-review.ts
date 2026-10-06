@@ -17,7 +17,7 @@ import {
 import { formatReviewDiffTarget, parseAllowedDiffCommand } from "../src/review-diff-target.ts";
 import { buildCodeReviewScopeBlock } from "../src/review/code-review-orchestration.ts";
 import type { ReviewContext } from "../src/review/review-report.ts";
-import { captureReviewMaterial, type ReviewMaterialCaptureResult } from "../src/review/review-snapshot.ts";
+import { captureReviewMaterial } from "../src/review/review-snapshot.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
@@ -97,11 +97,7 @@ export function diffAnchor(changed: ReadonlyMap<string, ReadonlySet<number>>, lo
 }
 
 export interface CodeReviewDependencies {
-  readonly captureReviewMaterial?: (
-    target: Parameters<typeof captureReviewMaterial>[0],
-    cwd: string,
-    signal?: AbortSignal,
-  ) => Promise<ReviewMaterialCaptureResult>;
+  readonly captureReviewMaterial?: typeof captureReviewMaterial;
 }
 
 export default async function run(api: WorkflowApi, dependencies: CodeReviewDependencies = {}): Promise<unknown> {
@@ -118,6 +114,7 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     kept,
     dropped: droppedCandidateCount,
   });
+  const noChanges = (summary: string) => ({ summary, findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) });
 
   // ─── Phase 0: Scope ───
   phase("Scope");
@@ -141,10 +138,6 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
-  if (!scope) {
-    return { summary: "No changes found to review.", findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) };
-  }
-
   fileCount = scope.files.length;
   progress({ type: "summary", key: "files", value: scope.files.join(", ") || "(none)" });
   const diffTarget = parseAllowedDiffCommand(scope.diffCommand);
@@ -155,9 +148,7 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   progress({ type: "summary", key: "diffCommand", value: diffCommand });
   progress({ type: "counter", key: "files", label: "files", value: fileCount });
 
-  if (scope.files.length === 0) {
-    return { summary: "No changes found to review.", findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) };
-  }
+  if (scope.files.length === 0) return noChanges("No changes found to review.");
 
   log(`${scope.files.length} changed files`);
 
@@ -169,6 +160,8 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   const diffText = reviewMaterial.diff;
   const changed = changedLines(diffText);
   progress({ type: "summary", key: "diffBytes", value: Buffer.byteLength(diffText) });
+  // No finding can anchor without an added or modified file, so skip the finder fan-out.
+  if (changed.size === 0) return noChanges(`No changes found to review: \`${diffCommand}\` has no added or modified files.`);
   if (reviewMaterial.snapshot.status === "unavailable") {
     log(`review snapshot unavailable (${reviewMaterial.snapshot.reason}) — patch previews will be unavailable`);
   }

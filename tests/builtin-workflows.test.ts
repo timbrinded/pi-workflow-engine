@@ -114,8 +114,10 @@ function emptyCandidates(): { candidates: AdvisoryCandidate[] } {
 const EXPECTED_ADVISORY_TOOLS = ["read", "bash", "grep", "find", "ls"];
 const EXPECTED_ADVISORY_TOOL_HINTS = ["search"];
 
+const NO_FILES_SCOPE = { diffCommand: "git diff --no-color HEAD", files: [], summary: "No changed files." };
+
 test("built-in advisory workflows request dynamic search-like tools", async () => {
-  const codeReviewApi = createScriptedApi([null]);
+  const codeReviewApi = createScriptedApi([NO_FILES_SCOPE]);
   await codeReview(codeReviewApi);
   assert.deepEqual(codeReviewApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
   assert.deepEqual(codeReviewApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
@@ -140,18 +142,8 @@ test("built-in advisory workflows request dynamic search-like tools", async () =
   assert.equal(perfApi.calls[0]?.profile, "medium");
 });
 
-test("code-review returns the empty report when scope is unavailable", async () => {
-  const api = createScriptedApi([null]);
-
-  const result = asReportResult(await codeReview(api));
-
-  assert.equal(result.summary, "No changes found to review.");
-  assert.deepEqual(result.findings, []);
-  assert.deepEqual(result.stats, { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0 });
-});
-
 test("code-review scope teaches parser-safe path and revision diff syntax", async () => {
-  const api = createScriptedApi([null], "review src/a.ts and src/b.ts");
+  const api = createScriptedApi([NO_FILES_SCOPE], "review src/a.ts and src/b.ts");
 
   await codeReview(api);
 
@@ -162,19 +154,25 @@ test("code-review scope teaches parser-safe path and revision diff syntax", asyn
 });
 
 test("code-review returns the empty report when scope has no files", async () => {
-  const api = createScriptedApi([
-    {
-      diffCommand: "git diff --no-color HEAD",
-      files: [],
-      summary: "No changed files.",
-    },
-  ]);
+  const api = createScriptedApi([NO_FILES_SCOPE]);
 
   const result = asReportResult(await codeReview(api));
 
   assert.equal(result.summary, "No changes found to review.");
   assert.deepEqual(result.findings, []);
-  assert.equal(result.stats.files, 0);
+  assert.deepEqual(result.stats, { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0 });
+});
+
+test("code-review trusts the captured diff over the scope's file list and skips finders when it is empty", async () => {
+  const api = createScriptedApi([{ diffCommand: "git diff main...HEAD", files: ["src/merged.ts"], summary: "Already merged." }]);
+
+  const result = asReportResult(await codeReview(api, {
+    captureReviewMaterial: async () => ({ ok: true, diff: "", snapshot: { status: "unavailable", reason: "fixture" } }),
+  }));
+
+  assert.equal(result.summary, "No changes found to review: `git diff --no-ext-diff main...HEAD` has no added or modified files.");
+  assert.deepEqual(result.findings, []);
+  assert.deepEqual(api.calls.map((call) => call.label), ["scope"]);
 });
 
 test("code-review verifies one candidate and passes evidence into synthesis", async () => {
