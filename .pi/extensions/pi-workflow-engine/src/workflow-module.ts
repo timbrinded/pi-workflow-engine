@@ -7,17 +7,6 @@ import type {
 import type { WorktreeBaseline } from "./worktree.ts";
 import { isRecord } from "./guards.ts";
 
-type WorkflowMetaCandidate = {
-  readonly name?: unknown;
-  readonly description?: unknown;
-  readonly phases?: unknown;
-};
-
-type WorkflowModuleCandidate = {
-  readonly meta?: unknown;
-  readonly default?: unknown;
-};
-
 /** Validate and normalize workflow metadata without executing workflow code. */
 export function parseWorkflowMeta(value: unknown): { meta: WorkflowMeta } | { reason: string } {
   if (!isRecord(value)) return { reason: "meta export must be an object" };
@@ -26,15 +15,14 @@ export function parseWorkflowMeta(value: unknown): { meta: WorkflowMeta } | { re
 
 export function parseWorkflowModule(value: unknown): { module: WorkflowModule } | { reason: string } {
   if (!isRecord(value)) return { reason: "module export is not an object" };
-  const candidate = value as WorkflowModuleCandidate;
-  const meta = candidate.meta;
+  const meta = value.meta;
   if (!isRecord(meta)) return { reason: "missing meta export" };
 
   const parsedMeta = parseWorkflowMetaObject(meta);
   if ("reason" in parsedMeta) return parsedMeta;
-  if (!isWorkflowRun(candidate.default)) return { reason: "default export must be a function" };
+  if (!isWorkflowRun(value.default)) return { reason: "default export must be a function" };
 
-  return { module: { meta: parsedMeta.meta, default: candidate.default } };
+  return { module: { meta: parsedMeta.meta, default: value.default } };
 }
 
 /** Attach engine-owned source provenance after an authored module has been validated. */
@@ -49,7 +37,7 @@ export function loadWorkflow(
     : { ...loaded, isolatedWorktreeBaseline };
 }
 
-function parseWorkflowMetaObject(meta: WorkflowMetaCandidate): { meta: WorkflowMeta } | { reason: string } {
+function parseWorkflowMetaObject(meta: Record<string, unknown>): { meta: WorkflowMeta } | { reason: string } {
   if (typeof meta.name !== "string") return { reason: "meta.name must be a string" };
 
   const description = meta.description;
