@@ -148,6 +148,9 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
   const agent = (async (_prompt: string, opts?: AgentOptions) => (opts?.schema ? { ok: true } : "agent text")) as WorkflowApi["agent"];
   return {
     agent,
+    classify: async () => {
+      throw new Error("no classifier is configured in this test");
+    },
     workflow: async () => {
       throw new Error("sub-workflows are not enabled in this context");
     },

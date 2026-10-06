@@ -15,7 +15,10 @@ const candidate: AdvisoryCandidate = { summary: "Wrong condition", category: "bu
 function apiFor(handler: (prompt: string, options: AgentOptions) => unknown): WorkflowApi {
   return { agent: (async (prompt: string, options: AgentOptions = {}) => handler(prompt, options)) as WorkflowApi["agent"],
     parallel: bindParallel({}), pipeline, phase() {}, log() {}, progress() {}, args: "", cwd: process.cwd(), signal: undefined,
-    budget: { total: null, spent: () => 0, remaining: () => Infinity }, workflow: async () => undefined };
+    budget: { total: null, spent: () => 0, remaining: () => Infinity }, workflow: async () => undefined,
+    classify: async () => {
+      throw new Error("no classifier is configured in this test");
+    } };
 }
 const material = async () => ({ ok: true as const, diff: "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1,2 @@\n old\n+new\n", snapshot: { status: "unavailable" as const, reason: "test" } });
 const workflows = [

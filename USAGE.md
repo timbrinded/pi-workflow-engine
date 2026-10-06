@@ -109,7 +109,9 @@ command instead of selecting another model.
 as external web search, browsing, or HTTP(S) page extraction. Local grep/find
 tools do not satisfy this check. The workflow does not bundle a scraper or a
 paid API; install or enable the web capability you prefer, then restart or
-reload pi so subagent sessions can see it.
+reload pi so subagent sessions can see it. An MCP web search server also
+qualifies when the host agent runs `research` through the `workflow` tool,
+because only those runs can reach the host's MCP tools.
 
 The workflow bounds decomposition to four lanes and verification to twelve
 claims, while the engine's concurrency, total-agent, timeout, cancellation, and
@@ -465,6 +467,25 @@ export default async function run({ workflow }: WorkflowApi) {
 ```
 
 Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name. Inside `parallel()` or `pipeline()`, recoverable branch errors become `null` results, so filter nulls before synthesis; a genuine run abort still rejects.
+
+### Classify between stages
+
+`classify(context, opts?)` answers typed `choice`, `score`, or `bool` questions about JSON `state` with one of pi's classifier models (for example TypeSafe Jev or Cloudflare Clef), using the host's credentials and no chat session. It suits cheap gates between stages, such as deduplicating findings or deciding which items need a follow-up agent.
+
+```ts
+const answers = await api.classify(
+  {
+    state: { finding },
+    questions: {
+      followUp: { type: "bool", instructions: "Does this finding need verification?", criteria: { true: "Plausible but unproven", false: "Clearly settled" } },
+    },
+  },
+  { label: `triage:${finding.id}` },
+);
+if (answers.followUp?.type === "bool" && answers.followUp.probability > 0.5) { /* verify it */ }
+```
+
+Without `opts.model` ("provider/id"), the first classifier with working credentials is used. Calls share the run's concurrency cap, count toward usage and the budget, and are not journaled, so a resumed run classifies again. When no classifier is configured the call rejects with a recoverable error, so guard it or let `parallel()` turn it into `null`.
 
 ### Where workflows live
 

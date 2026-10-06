@@ -502,6 +502,7 @@ function registerWorkflowTool(
       "When using `isolation: \"worktree\"`, `api.agent()` returns `{ result, patch, changed }`; use `.result` for the answer and `.patch` for the isolated diff.",
       "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
       "Add \"codemode\" to an inline agent's `tools` when it should batch or filter many tool calls in one script; its scripts can call only that agent's other allowed tools.",
+      "`api.classify({ state, questions }, { label })` answers typed choice/score/bool questions with a classifier model and no chat session; use it for cheap gates such as dedup or triage, and handle its rejection when no classifier is configured.",
       "Host MCP tools reach subagents only in synchronous workflow tool runs: name them in `tools` (e.g. `mcp__server__tool`), or use `toolHints: [\"external-search\"]` to pick up MCP web research tools.",
       "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
       ADAPTIVE_WORKFLOW_GUIDANCE,

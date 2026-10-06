@@ -42,6 +42,9 @@ function scriptedApi(responses: readonly unknown[], args: string): ScriptedApi {
     phases,
     events,
     agent,
+    classify: async () => {
+      throw new Error("no classifier is configured in this test");
+    },
     workflow: async () => {
       throw new Error("sub-workflows are disabled in this fixture");
     },

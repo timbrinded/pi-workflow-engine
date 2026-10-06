@@ -1,4 +1,5 @@
 import type { Static, TSchema } from "typebox";
+import type { ClassifierAnswer, ClassifierContext } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { WorkflowBudget } from "./budget.ts";
 import type { Pipeline, WorkflowParallel } from "./concurrency.ts";
@@ -188,6 +189,16 @@ export interface AgentOptions<S extends TSchema = TSchema> {
   schema?: S;
 }
 
+/** Options for `api.classify()`. */
+export interface ClassifyOptions {
+  /** Classifier model as "provider/id". Default: the first classifier model with working credentials. */
+  model?: string;
+  /** Label for usage reporting. Default: `classify:<provider>/<id>`. */
+  label?: string;
+  /** Phase to attribute usage to. Default: the current phase. */
+  phase?: string;
+}
+
 /**
  * The primitives injected into every workflow run. A workflow is any module that
  * exports `meta` plus a default `async (api: WorkflowApi) => result`.
@@ -204,6 +215,13 @@ export interface WorkflowApi {
   agent<S extends TSchema>(prompt: string, opts: AgentOptions<S> & { schema: S }): Promise<Static<S>>;
   /** Run a subagent and return its final assistant text. */
   agent(prompt: string, opts?: AgentOptions): Promise<string>;
+  /**
+   * Answer typed `choice`/`score`/`bool` questions about JSON `state` with a classifier model, without
+   * starting a chat session: a cheap gate for triage, deduplication, or routing between stages. Answers
+   * are keyed by question id. Rejects with a recoverable error when no classifier is configured or the
+   * call fails; results are not journaled, so a resumed run classifies again.
+   */
+  classify(context: ClassifierContext, opts?: ClassifyOptions): Promise<Record<string, ClassifierAnswer>>;
   /**
    * Run another registered workflow inline as a sub-step and return its result. The child shares
    * this run's concurrency cap, abort signal, and perf sink. Nests one level only: calling
