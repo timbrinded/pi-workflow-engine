@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { ProgressTracker } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
 import {
   resolveAgentModel,
   type CreateAgentSession,
@@ -118,6 +120,19 @@ test("runAgent fails fast on unknown explicit model refs before creating a subag
 
   assert.equal(createSessionCalls, 0);
   assert.ok(progress.events.some((event) => event.includes('failed:strict:Error: Agent model "openai/missing" not found')));
+});
+
+test("a model routing failure gets its own failed row instead of failing a same-label sibling", async () => {
+  const tracker = new ProgressTracker({ hasUI: false } as unknown as ExtensionContext, "routing", "routing-run");
+  const rc = createRunContext({ createSession: async () => createTextSession(), progress: tracker });
+
+  assert.equal(await runAgent(rc, "first", {}), "done");
+  await assert.rejects(() => runAgent(rc, "second", { model: "openai/missing" }), /Agent model "openai\/missing" not found/);
+
+  const rows = tracker.snapshot().phases.flatMap((phase) => phase.agents);
+  assert.deepEqual(rows.map((row) => [row.label, row.status]), [["agent", "done"], ["agent", "failed"]]);
+  assert.match(rows[1]?.error ?? "", /openai\/missing/);
+  assert.deepEqual(tracker.statusCounts(), { queued: 0, running: 0, done: 1, failed: 1, total: 2 });
 });
 
 test("runAgent refuses to start once the run is over budget", async () => {

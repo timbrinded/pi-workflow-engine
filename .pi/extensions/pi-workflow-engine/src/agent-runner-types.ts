@@ -34,12 +34,13 @@ export type AgentRunnerSession = Pick<
 
 export type CreateAgentSession = (options: CreateAgentSessionOptions) => Promise<{ session: AgentRunnerSession }>;
 
+/** Every row update after `agentQueued` addresses that row by its id; labels are display text, not unique keys. */
 export interface AgentProgress {
   agentQueued(phase: string | undefined, label: string): number;
-  agentStart(phase: string | undefined, label: string, id?: number): void;
-  agentTool(label: string, tool: string, id?: number): void;
-  agentDone(label: string, id?: number): void;
-  agentFailed(label: string, error: unknown, id?: number): void;
+  agentStart(phase: string | undefined, label: string, id: number): void;
+  agentTool(label: string, tool: string, id: number): void;
+  agentDone(label: string, id: number): void;
+  agentFailed(label: string, error: unknown, id: number): void;
   event(event: WorkflowProgressEvent): void;
   log(message: string): void;
 }

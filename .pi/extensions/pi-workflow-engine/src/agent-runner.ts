@@ -180,7 +180,8 @@ function resolveAgentRouting(
       },
     );
   } catch (error) {
-    rc.progress.agentFailed(label, error);
+    // Routing runs before the call has a row; give the failure its own so it cannot land on a same-label sibling.
+    rc.progress.agentFailed(label, error, rc.progress.agentQueued(opts.phase, label));
     throw error;
   }
 }
