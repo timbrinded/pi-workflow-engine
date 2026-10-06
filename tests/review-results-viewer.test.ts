@@ -7,10 +7,10 @@ import { toReviewIssues, type ReviewIssueSelection } from "../.pi/extensions/pi-
 import { createReviewReportFixture, createTestTheme } from "./fixtures/theme.ts";
 
 test("viewer toggles selections and returns fix action", () => {
-  const issues = toReviewIssues("code-review", createReviewReportFixture());
+  const issues = toReviewIssues(createReviewReportFixture());
   let renders = 0;
   let result: ReviewIssueSelection | undefined;
-  const viewer = new ReviewResultsViewer(issues, "code-review", createTui(40, () => renders++), createTestTheme(), (value) => {
+  const viewer = new ReviewResultsViewer(issues, createTui(40, () => renders++), createTestTheme(), (value) => {
     result = value;
   });
 
@@ -27,7 +27,7 @@ test("viewer toggles selections and returns fix action", () => {
 });
 
 test("viewer digit keys jump to findings and show expanded formatted details", () => {
-  const issues = toReviewIssues("code-review", createReviewReportFixture());
+  const issues = toReviewIssues(createReviewReportFixture());
   const viewer = createViewer(issues).viewer;
 
   viewer.handleInput("2");
@@ -42,7 +42,7 @@ test("viewer digit keys jump to findings and show expanded formatted details", (
 });
 
 test("viewer keyboard paths cover select all close fix and comment outcomes", () => {
-  const issues = toReviewIssues("code-review", createReviewReportFixture());
+  const issues = toReviewIssues(createReviewReportFixture());
 
   const closeViewer = createViewer(issues);
   closeViewer.viewer.handleInput(" ");
@@ -63,10 +63,10 @@ test("viewer keyboard paths cover select all close fix and comment outcomes", ()
 });
 
 test("viewer fills a proportional viewport with a complete centred-modal border", () => {
-  const issues = toReviewIssues("code-review", createReviewReportFixture());
+  const issues = toReviewIssues(createReviewReportFixture());
   const terminal = { rows: 40, columns: 160 };
   const tui = createTui(terminal);
-  const viewer = new ReviewResultsViewer(issues, "code-review", tui, createTestTheme(), () => {});
+  const viewer = new ReviewResultsViewer(issues, tui, createTestTheme(), () => {});
 
   const rendered = viewer.render(120);
   const plain = rendered.map(stripVTControlCharacters);
@@ -91,8 +91,8 @@ test("viewer keeps long finding lists visible and shows list and detail scroll r
     ...template,
     summary: `Finding ${index + 1} ${"with enough detail to wrap ".repeat(30)}`,
   }));
-  const issues = toReviewIssues("code-review", { ...report, findings: manyFindings });
-  const viewer = new ReviewResultsViewer(issues, "code-review", createTui(24), createTestTheme(), () => {});
+  const issues = toReviewIssues({ ...report, findings: manyFindings });
+  const viewer = new ReviewResultsViewer(issues, createTui(24), createTestTheme(), () => {});
 
   for (let index = 0; index < 12; index++) viewer.handleInput("\u001b[B");
   const listScrolled = stripVTControlCharacters(viewer.render(120).join("\n"));
@@ -106,9 +106,9 @@ test("viewer keeps long finding lists visible and shows list and detail scroll r
 });
 
 test("viewer preserves its border and selected finding in short terminal viewports", () => {
-  const issues = toReviewIssues("code-review", createReviewReportFixture());
+  const issues = toReviewIssues(createReviewReportFixture());
   const terminal = { rows: 11, columns: 90 };
-  const viewer = new ReviewResultsViewer(issues, "code-review", createTui(terminal), createTestTheme(), () => {});
+  const viewer = new ReviewResultsViewer(issues, createTui(terminal), createTestTheme(), () => {});
 
   for (let rows = 11; rows <= 18; rows++) {
     terminal.rows = rows;
@@ -127,7 +127,7 @@ test("viewer preserves its border and selected finding in short terminal viewpor
 function createViewer(issues: ReturnType<typeof toReviewIssues>): { readonly viewer: ReviewResultsViewer; readonly result: ReviewIssueSelection | undefined } {
   let result: ReviewIssueSelection | undefined;
   return {
-    viewer: new ReviewResultsViewer(issues, "code-review", createTui(), createTestTheme(), (value) => {
+    viewer: new ReviewResultsViewer(issues, createTui(), createTestTheme(), (value) => {
       result = value;
     }),
     get result() {

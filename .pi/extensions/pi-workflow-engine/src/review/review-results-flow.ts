@@ -38,7 +38,7 @@ export function decideReviewResultsPresentation(input: ReviewResultsDecisionInpu
 
   if (input.resultViewer !== "open") return { kind: "send", reason: "not-requested" };
 
-  return { kind: "open", issues: toReviewIssues(input.workflowName, report) };
+  return { kind: "open", issues: toReviewIssues(report) };
 }
 
 export async function showReviewResultsViewer(
@@ -46,7 +46,7 @@ export async function showReviewResultsViewer(
   issues: readonly ReviewIssue[],
 ): Promise<ReviewIssueSelection> {
   return await ctx.ui.custom<ReviewIssueSelection>(
-    (tui, theme, _keybindings, done) => new ReviewResultsViewer(issues, "code-review", tui, theme, done),
+    (tui, theme, _keybindings, done) => new ReviewResultsViewer(issues, tui, theme, done),
     WORKFLOW_VIEWER_OVERLAY_OPTIONS,
   );
 }

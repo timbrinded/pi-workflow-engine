@@ -22,7 +22,6 @@ export class ReviewResultsViewer implements Component {
 
   constructor(
     private readonly issues: readonly ReviewIssue[],
-    private readonly workflowName: string,
     private readonly tui: ViewerTui,
     private readonly theme: Theme,
     private readonly done: (result: ReviewIssueSelection) => void,
@@ -205,7 +204,7 @@ export class ReviewResultsViewer implements Component {
     const count = `${this.issues.length} finding${this.issues.length === 1 ? "" : "s"}`;
     const selected = `${this.selected.size} selected`;
     return truncateDisplay(
-      `${this.theme.fg("accent", this.theme.bold("Review results"))} ${this.theme.fg("muted", this.workflowName)} ${this.theme.fg("dim", `· ${count} · ${selected}`)}`,
+      `${this.theme.fg("accent", this.theme.bold("Review results"))} ${this.theme.fg("muted", "code-review")} ${this.theme.fg("dim", `· ${count} · ${selected}`)}`,
       width,
     );
   }

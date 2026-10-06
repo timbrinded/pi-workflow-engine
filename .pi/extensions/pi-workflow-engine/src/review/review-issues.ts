@@ -9,8 +9,6 @@ export interface ReviewIssueSelection {
 
 export interface ReviewIssue {
   readonly id: string;
-  readonly index: number;
-  readonly workflowName: string;
   readonly file?: string;
   readonly line?: number;
   readonly symbol?: string;
@@ -35,13 +33,11 @@ export interface SerializedReviewIssue {
   readonly recommendation: string;
 }
 
-export function toReviewIssues(name: string, report: Pick<AdvisoryReport, "findings">): ReviewIssue[] {
+export function toReviewIssues(report: Pick<AdvisoryReport, "findings">): ReviewIssue[] {
   return report.findings.map((finding, index) => {
     const location = finding.reviewAnchor ?? finding.locations[0];
     return {
       id: formatIssueId(index),
-      index,
-      workflowName: name,
       file: location?.file,
       line: location?.line,
       symbol: location?.symbol,

@@ -92,7 +92,7 @@ export class ReviewSessionCoordinator {
       return;
     }
 
-    await this.openAndHandle(ctx, retained, toReviewIssues("code-review", retained.report));
+    await this.openAndHandle(ctx, retained, toReviewIssues(retained.report));
   }
 
   dispose(ctx: ExtensionContext): void {

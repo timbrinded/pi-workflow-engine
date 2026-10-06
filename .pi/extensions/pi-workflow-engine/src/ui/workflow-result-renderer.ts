@@ -55,7 +55,7 @@ function renderAdvisoryResult(view: WorkflowResultView, result: AdvisoryReportWi
     return lines.join("\n");
   }
 
-  const issues = toReviewIssues(view.name, result);
+  const issues = toReviewIssues(result);
   lines.push(theme.fg("dim", "Findings:"));
   lines.push(renderIssuesTable(issues, theme, { maxRows: expanded ? issues.length : 12 }));
   if (expanded) {

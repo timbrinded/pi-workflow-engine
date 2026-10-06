@@ -7,10 +7,9 @@ import { createReviewReportFixture, createTestTheme } from "./fixtures/theme.ts"
 
 test("normalizes advisory findings into stable review issues", () => {
   const report = createReport();
-  const issues = toReviewIssues("code-review", report);
+  const issues = toReviewIssues(report);
 
   assert.deepEqual(issues.map((issue) => issue.id), ["R001", "R002"]);
-  assert.equal(issues[0]?.workflowName, "code-review");
   assert.equal(issues[0]?.file, "src/app.ts");
   assert.equal(issues[0]?.line, 10);
   assert.equal(issues[0]?.symbol, "retry");
@@ -25,7 +24,7 @@ test("normalizes advisory findings into stable review issues", () => {
 test("renders compact advisory findings table", () => {
   const report = createReport();
   report.findings[0]!.summary = "A very long review summary that should be truncated instead of overflowing the fixed table width.";
-  const table = renderIssuesTable(toReviewIssues("code-review", report), createTestTheme(), { maxRows: 1 });
+  const table = renderIssuesTable(toReviewIssues(report), createTestTheme(), { maxRows: 1 });
 
   assert.match(table, /ID/);
   assert.match(table, /Sev/);
@@ -41,7 +40,7 @@ test("renders compact advisory findings table", () => {
 });
 
 test("renders fixture severities and truncates long summaries", () => {
-  const table = renderIssuesTable(toReviewIssues("code-review", createReviewReportFixture()), createTestTheme(), { maxRows: 3 });
+  const table = renderIssuesTable(toReviewIssues(createReviewReportFixture()), createTestTheme(), { maxRows: 3 });
 
   assert.match(table, /high/);
   assert.match(table, /medium/);

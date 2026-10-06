@@ -48,7 +48,7 @@ test("posts inline comments through gh api with path line and head sha", async (
     url: "https://github.com/acme/widgets/pull/123",
   });
 
-  const statuses = await postInlineComments(exec, "/repo", resolved.context, toReviewIssues("code-review", createReport()));
+  const statuses = await postInlineComments(exec, "/repo", resolved.context, toReviewIssues(createReport()));
   assert.deepEqual(statuses, [{ issueId: "R001", status: "posted", url: "https://github.com/acme/widgets/pull/123#discussion_r1" }]);
 
   const apiCall = calls.find((call) => call.args.some((arg) => arg.startsWith("body=")));
@@ -103,7 +103,7 @@ test("posts forked PR inline comments to the base repository", async () => {
     url: "https://github.com/acme/widgets/pull/456",
   });
 
-  const statuses = await postInlineComments(exec, "/repo", resolved.context, toReviewIssues("code-review", createReport()));
+  const statuses = await postInlineComments(exec, "/repo", resolved.context, toReviewIssues(createReport()));
   assert.deepEqual(statuses, [{ issueId: "R001", status: "posted", url: "https://github.com/acme/widgets/pull/456#discussion_r2" }]);
 
   const apiCall = calls.find((call) => call.args.some((arg) => arg.startsWith("body=")));
@@ -113,7 +113,7 @@ test("posts forked PR inline comments to the base repository", async () => {
 });
 
 test("skips an identical inline comment already present on the reviewed PR head", async () => {
-  const issue = toReviewIssues("code-review", createReport())[0];
+  const issue = toReviewIssues(createReport())[0];
   if (!issue) throw new Error("expected review issue");
   let postCalls = 0;
   const exec: ExecLike = async (_command, args) => {
@@ -143,7 +143,7 @@ test("skips an identical inline comment already present on the reviewed PR head"
 test("passes abort signals to gh and stops before later comment writes", async () => {
   const report = createReport();
   report.findings.push({ ...report.findings[0]!, summary: "Second finding", locations: [{ file: "src/other.ts", line: 20 }] });
-  const issues = toReviewIssues("code-review", report);
+  const issues = toReviewIssues(report);
   const controller = new AbortController();
   let postCalls = 0;
   const exec: ExecLike = async (_command, args, options) => {

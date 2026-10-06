@@ -87,7 +87,7 @@ test("fix workflow uses a fresh evaluator, retains rejected patches, and cannot 
   const repo = await fixture();
   const registry = new WorktreeRegistry(repo.cwd);
   const paths: string[] = [];
-  const issues = toReviewIssues("code-review", { findings: [{ summary: "Wrong value", category: "bug", severity: "high", confidence: "high", locations: [{ file: "value.txt", line: 1 }], evidence: ["broken value"], impact: "request failure", recommendation: "repair" }] });
+  const issues = toReviewIssues({ findings: [{ summary: "Wrong value", category: "bug", severity: "high", confidence: "high", locations: [{ file: "value.txt", line: 1 }], evidence: ["broken value"], impact: "request failure", recommendation: "repair" }] });
   try {
     const agent = (async (_prompt: string, options: AgentOptions) => {
       const workspace = await createAgentWorkspace({ cwd: repo.cwd, worktrees: registry, signal: undefined, progress: { log() {} } }, { ...options, worktreeBaseline: repo.baseline }, options.label!);
@@ -141,7 +141,7 @@ test("evaluator reconstruction includes the reviewed dirty snapshot", async () =
 
 test("evaluator workspace byproducts block the candidate instead of rejecting the repair", async () => {
   const baseline = { ref: "a".repeat(40) };
-  const issues = toReviewIssues("code-review", { findings: [{ summary: "bug", category: "bug", severity: "high", confidence: "high", locations: [], evidence: [], impact: "impact", recommendation: "repair" }] });
+  const issues = toReviewIssues({ findings: [{ summary: "bug", category: "bug", severity: "high", confidence: "high", locations: [], evidence: [], impact: "impact", recommendation: "repair" }] });
   const agent = (async (_prompt: string, options: AgentOptions) => options.label?.startsWith("fix:")
     ? { result: "done", patch: "candidate", changed: true, baselineOid: baseline.ref }
     : { result: accepted, patch: "candidate\n+__pycache__/app.pyc", changed: true, baselineOid: baseline.ref }) as WorkflowApi["agent"];
@@ -159,7 +159,7 @@ test("evaluator workspace byproducts block the candidate instead of rejecting th
 test("fatal evaluator cancellation aborts the fix workflow instead of becoming blocked", async () => {
   const { WorkflowAbortError } = await import("../.pi/extensions/pi-workflow-engine/src/cancellation.ts");
   const baseline = { ref: "a".repeat(40) };
-  const issues = toReviewIssues("code-review", { findings: [{ summary: "bug", category: "bug", severity: "high", confidence: "high", locations: [], evidence: [], impact: "impact", recommendation: "repair" }] });
+  const issues = toReviewIssues({ findings: [{ summary: "bug", category: "bug", severity: "high", confidence: "high", locations: [], evidence: [], impact: "impact", recommendation: "repair" }] });
   const agent = (async (_prompt: string, options: AgentOptions) => {
     if (options.label?.startsWith("fix:")) return { result: "done", patch: "candidate", changed: true, baselineOid: baseline.ref };
     throw new WorkflowAbortError("evaluator cancelled");
@@ -180,7 +180,7 @@ for (const status of ["verified", "rejected", "blocked"] as const) {
         required: true,
       }],
     };
-    const issues = toReviewIssues("code-review", { findings: [{ summary: "Wrong value", category: "bug", severity: "high", confidence: "high", locations: [], evidence: [], impact: "failure", recommendation: "repair" }] });
+    const issues = toReviewIssues({ findings: [{ summary: "Wrong value", category: "bug", severity: "high", confidence: "high", locations: [], evidence: [], impact: "failure", recommendation: "repair" }] });
     const agent = (async (_prompt: string, options: AgentOptions) => ({
       result: options.label?.startsWith("fix:") ? "Implementation complete" : evaluation,
       patch: repo.patch, changed: true, baselineOid: repo.baselineOid,
