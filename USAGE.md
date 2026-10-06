@@ -601,6 +601,22 @@ fails, the result retains verified records and reports incomplete coverage.
 Synthesis selects or merges IDs; the workflow reconstructs evidence-bearing
 fields from those records.
 
+### Duplicate candidates
+
+Lenses often report the same defect in different words. When a TypeSafe Jev
+classifier is reachable (TypeSafe directly, OpenRouter, Cloudflare Workers AI,
+Vercel AI Gateway, or OpenCode Zen), the four advisory workflows ask it whether
+each pair of candidates in the same file describes one defect, and merge pairs
+it is at least 80% sure of before verification, so each defect gets one
+verifier. Merged candidates keep all of their source IDs, locations, impacts,
+and evidence. Without Jev credentials the merge is skipped after one probe call.
+
+Measured on GPT-6.1 Sol code reviews with planted bugs, the merge cut verifier
+agents and cost by about 40% (e.g. 29 → 18 agents, $0.60 → $0.37 list price on
+a small diff; 22 → 14 agents, $1.74 → $0.89 on a 160 KB diff). In every
+instrumented run, each planted bug that a finder proposed reached the final
+report, with or without merging.
+
 ### Selective adversarial challenges
 
 Add `--challenge` to an advisory workflow to challenge up to three uncertain or

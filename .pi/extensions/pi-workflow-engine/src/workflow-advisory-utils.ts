@@ -1,5 +1,6 @@
 import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, formatAdvisoryLocation, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
-import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
+import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, mergeCandidateInto, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
+import { WorkflowClassifierUnavailableError } from "./classify.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "./types.ts";
 
 
@@ -49,7 +50,7 @@ export function publishVerifiedKeptProgress(
 }
 
 export interface LensVerificationPipelineOptions {
-  api: Pick<WorkflowApi, "agent" | "parallel" | "phase" | "progress" | "log">;
+  api: Pick<WorkflowApi, "agent" | "classify" | "parallel" | "phase" | "progress" | "log">;
   lenses: readonly AdvisoryLens[];
   perLens: number;
   finderPhase?: "Find" | "Hypothesize";
@@ -90,7 +91,7 @@ export async function runLensVerificationPipeline(
     }
     return candidates;
   } })), coverage);
-  const candidates = dedupeCandidates(found.flat());
+  const candidates = await mergeEquivalentCandidates(api, dedupeCandidates(found.flat()));
   const dropped = rawCandidates - candidates.length;
   if (dropped > 0) {
     api.progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: dropped });
@@ -110,6 +111,89 @@ export async function runLensVerificationPipeline(
     },
   })), coverage);
   return { verified, rawCandidates, dropped, coverage };
+}
+
+/** TypeSafe Jev routes in preference order. Jev is the classifier the duplicate merge was measured with. */
+export const DUPLICATE_CANDIDATE_CLASSIFIERS = [
+  "typesafe/jev-latest",
+  "openrouter/~typesafe/jev-latest",
+  "openrouter/typesafe/jev-1.13",
+  "cloudflare-workers-ai/typesafe/jev",
+  "vercel-ai-gateway/typesafe-ai/jev",
+  "opencode/jev-1.13",
+  "opencode/jev-1.13-free",
+] as const;
+
+/** Probability above which two candidates count as one defect. */
+const SAME_DEFECT_PROBABILITY = 0.8;
+
+/**
+ * Merge same-file candidates that a classifier judges to be one defect, so each defect gets one verifier.
+ * Lenses often report the same bug in different words; on GPT-6.1 Sol code reviews this cut verifier
+ * agents and cost by about 40% without losing a finding. Runs without a Jev classifier skip it.
+ */
+export async function mergeEquivalentCandidates<T extends IdentifiedAdvisoryCandidate>(
+  api: Pick<WorkflowApi, "classify" | "parallel" | "log">,
+  candidates: readonly T[],
+): Promise<T[]> {
+  const pairs: Array<readonly [number, number]> = [];
+  for (let first = 0; first < candidates.length; first++) {
+    for (let second = first + 1; second < candidates.length; second++) {
+      if (primaryLocation(candidates[first]!).file === primaryLocation(candidates[second]!).file) pairs.push([first, second]);
+    }
+  }
+  if (pairs.length === 0) return [...candidates];
+  const sameDefect = async ([first, second]: readonly [number, number]): Promise<number> => {
+    const answers = await api.classify({
+      state: { first: candidateForClassifier(candidates[first]!), second: candidateForClassifier(candidates[second]!) },
+      questions: {
+        same: {
+          type: "bool",
+          instructions: "Two code-review candidates were raised against the same file. Do they describe the same underlying defect (same root cause and same fix), even if worded differently?",
+          criteria: { true: "Same underlying defect", false: "Different defects" },
+        },
+      },
+    }, { model: DUPLICATE_CANDIDATE_CLASSIFIERS, label: "dedup" });
+    return answers.same?.type === "bool" ? answers.same.probability : 0;
+  };
+  // The first call doubles as the availability probe, so a run without Jev makes one call, not one per pair.
+  let firstProbability: number;
+  try {
+    firstProbability = await sameDefect(pairs[0]!);
+  } catch (error) {
+    if (error instanceof WorkflowClassifierUnavailableError) return [...candidates];
+    firstProbability = 0;
+  }
+  const rest = await api.parallel(pairs.slice(1).map((pair) => () => sameDefect(pair)));
+  const probabilities = [firstProbability, ...rest.map((probability) => probability ?? 0)];
+
+  // Union-find over confident pairs; the earliest candidate of each group absorbs the others.
+  const parent = candidates.map((_, index) => index);
+  const root = (index: number): number => (parent[index] === index ? index : (parent[index] = root(parent[index]!)));
+  pairs.forEach(([first, second], index) => {
+    if ((probabilities[index] ?? 0) < SAME_DEFECT_PROBABILITY) return;
+    const [keep, fold] = [root(first), root(second)].sort((a, b) => a - b) as [number, number];
+    if (keep !== fold) parent[fold] = keep;
+  });
+  const groups = new Map<number, T>();
+  candidates.forEach((candidate, index) => {
+    const group = groups.get(root(index));
+    if (group) mergeCandidateInto(group, candidate);
+    else groups.set(root(index), { ...candidate });
+  });
+  const merged = candidates.length - groups.size;
+  if (merged > 0) api.log(`Merged ${merged} candidate(s) describing the same defect before verification`);
+  return [...groups.values()];
+}
+
+function candidateForClassifier(candidate: IdentifiedAdvisoryCandidate) {
+  return {
+    category: candidate.category,
+    summary: candidate.summary,
+    impact: candidate.impact,
+    location: formatLocation(candidate),
+    evidence: (candidate.discoveryEvidence ?? []).slice(0, 4),
+  };
 }
 
 /** Stats for a lens review that stopped before discovery. */

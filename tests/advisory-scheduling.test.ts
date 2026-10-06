@@ -4,6 +4,12 @@ import type { AdvisoryCandidate } from "../.pi/extensions/pi-workflow-engine/src
 import { bindParallel } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { runLensVerificationPipeline, type AdvisoryLens } from "../.pi/extensions/pi-workflow-engine/src/workflow-advisory-utils.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import { WorkflowClassifierUnavailableError } from "../.pi/extensions/pi-workflow-engine/src/classify.ts";
+
+/** A host without a classifier: the pipeline skips merging equivalent candidates. */
+const noClassifier: WorkflowApi["classify"] = async () => {
+  throw new WorkflowClassifierUnavailableError("no classifier in this test");
+};
 
 const lenses: AdvisoryLens[] = [
   { label: "alpha", category: "bug", text: "alpha lens" },
@@ -25,6 +31,7 @@ test("finder-barrier scheduling starts all finders before verifiers", async () =
   const result = await runLensVerificationPipeline({
     api: {
       agent,
+      classify: noClassifier,
       parallel: bindParallel({ limit: 10 }),
       phase() {},
       progress() {},
@@ -63,7 +70,7 @@ test("verifier output cannot replace discovery identities or evidence fields", a
     };
   }) as WorkflowApi["agent"];
   const result = await runLensVerificationPipeline({
-    api: { agent, parallel: bindParallel({}), phase() {}, progress() {}, log() {} },
+    api: { agent, classify: noClassifier, parallel: bindParallel({}), phase() {}, progress() {}, log() {} },
     lenses: lenses.slice(0, 1), perLens: 1,
     finderPrompt: () => "find", verifierPrompt: () => "verify",
   });
