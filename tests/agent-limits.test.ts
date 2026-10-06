@@ -38,7 +38,6 @@ function textSession(input: {
       getActiveToolNames: () => [],
       getToolDefinition: () => undefined,
       setActiveToolsByName() {},
-      setAutoRetryEnabled() {},
     },
   };
 }

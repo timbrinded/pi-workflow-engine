@@ -113,7 +113,8 @@ export async function openAgentSession(input: {
         tags,
       )
     ).session;
-    session.setAutoRetryEnabled(false);
+    // Leave pi's in-session auto-retry (the user's `retry` settings) in charge of retrying a failed
+    // turn in place. Never toggle it here: setAutoRetryEnabled persists to the user's global settings.
     const matchedToolHints = toolSelection.toolHints.length === 0
       ? new Set<AgentToolHint>()
       : applyDynamicToolHints(session, toolSelection);
@@ -152,6 +153,11 @@ export async function promptAgentSession(input: {
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start" && event.toolName !== undefined && event.toolName !== FINAL_TOOL) {
       rc.progress.agentTool(label, event.toolName, rowId);
+    } else if (event.type === "auto_retry_start") {
+      rc.progress.log(
+        `${label}: transient provider failure; retrying turn ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms`,
+      );
+      rc.perf.counter("agent.turn_retry", 1, tags);
     }
   });
 

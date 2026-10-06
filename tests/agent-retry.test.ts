@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { AssistantMessage, StopReason } from "@earendil-works/pi-ai";
+import type { AgentSessionEvent, AgentSessionEventListener } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   WorkflowAgentLimitError,
@@ -28,6 +29,7 @@ import {
 
 interface SessionScript {
   readonly messages: readonly AssistantMessage[];
+  readonly events?: readonly AgentSessionEvent[];
   readonly onPrompt?: () => void;
 }
 
@@ -36,7 +38,6 @@ interface ScriptedSessions {
   readonly sessionsCreated: () => number;
   readonly promptCalls: () => number;
   readonly disposeCalls: () => number;
-  readonly autoRetrySettings: readonly boolean[];
 }
 
 function assistantMessage(input: {
@@ -72,12 +73,12 @@ function scriptedSessions(scripts: readonly SessionScript[]): ScriptedSessions {
   let sessionsCreated = 0;
   let promptCalls = 0;
   let disposeCalls = 0;
-  const autoRetrySettings: boolean[] = [];
   const createSession: CreateAgentSession = async () => {
     const script = scripts[sessionsCreated];
     if (!script) throw new Error(`Missing session script ${sessionsCreated + 1}.`);
     sessionsCreated++;
     let messages: AssistantMessage[] = [];
+    const listeners = new Set<AgentSessionEventListener>();
     const session: AgentRunnerSession = {
       get messages() {
         return messages;
@@ -88,6 +89,7 @@ function scriptedSessions(scripts: readonly SessionScript[]): ScriptedSessions {
       async prompt() {
         promptCalls++;
         script.onPrompt?.();
+        for (const event of script.events ?? []) for (const listener of listeners) listener(event);
         messages = [...script.messages];
       },
       getLastAssistantText() {
@@ -98,8 +100,9 @@ function scriptedSessions(scripts: readonly SessionScript[]): ScriptedSessions {
           .map((part) => part.text)
           .join("") || undefined;
       },
-      subscribe() {
-        return () => {};
+      subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
       },
       dispose() {
         disposeCalls++;
@@ -109,9 +112,6 @@ function scriptedSessions(scripts: readonly SessionScript[]): ScriptedSessions {
       getActiveToolNames: () => [],
       getToolDefinition: () => undefined,
       setActiveToolsByName() {},
-      setAutoRetryEnabled(enabled) {
-        autoRetrySettings.push(enabled);
-      },
     };
     return { session };
   };
@@ -120,7 +120,6 @@ function scriptedSessions(scripts: readonly SessionScript[]): ScriptedSessions {
     sessionsCreated: () => sessionsCreated,
     promptCalls: () => promptCalls,
     disposeCalls: () => disposeCalls,
-    autoRetrySettings,
   };
 }
 
@@ -194,7 +193,6 @@ test("runAgent retries a transient provider failure in the same progress row", a
   assert.equal(sessions.sessionsCreated(), 2);
   assert.equal(sessions.promptCalls(), 2);
   assert.equal(sessions.disposeCalls(), 2);
-  assert.deepEqual(sessions.autoRetrySettings, [false, false]);
   assert.equal(progress.events.filter((event) => event === "queued:retrying").length, 1);
   assert.equal(progress.events.filter((event) => event === "start:retrying").length, 1);
   assert.equal(progress.events.filter((event) => event === "done:retrying").length, 1);
@@ -202,6 +200,24 @@ test("runAgent retries a transient provider failure in the same progress row", a
   assert.equal(progress.events.some((event) => event.includes("retry 1/1 in 1000ms")), true);
   assert.equal(usage.snapshot().agents.length, 2);
   assert.equal(usage.snapshot().totals.output, 6);
+});
+
+test("runAgent reports pi's in-session turn retries in the agent's progress row", async () => {
+  const sessions = scriptedSessions([
+    {
+      events: [{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2_000, errorMessage: "404 Provider returned error" }],
+      messages: [assistantMessage({ text: "recovered" })],
+    },
+  ]);
+  const progress = createProgress();
+  const result = await runAgent(
+    createRunContext({ createSession: sessions.createSession, progress }),
+    "hello",
+    { label: "turn-retry", phase: "Find" },
+  );
+
+  assert.equal(result, "recovered");
+  assert.ok(progress.events.includes("log:turn-retry: transient provider failure; retrying turn 1/3 in 2000ms"));
 });
 
 test("runAgent surfaces the final typed provider failure after retry exhaustion", async () => {

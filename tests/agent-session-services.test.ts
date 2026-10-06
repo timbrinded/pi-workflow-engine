@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
   ModelRegistry,
   ModelRuntime,
+  SettingsManager,
   type ProviderConfig,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -69,7 +71,7 @@ test("provider synchronization preserves isolated-cwd providers but removes shar
   assert.equal(childRuntime.getRegisteredProviderConfig("target-only"), undefined);
 });
 
-test("production session services load skills, tools, and host runtime providers", async () => {
+test("production session services load skills, tools, and host runtime providers without writing user settings", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-workflow-session-services-"));
   const cwd = join(root, "project");
   const agentDir = join(root, "agent");
@@ -220,6 +222,12 @@ test("production session services load skills, tools, and host runtime providers
     assert.equal(session.modelRuntime.getRegisteredProviderConfig("removed-provider"), undefined);
     assert.equal(session.modelRuntime.getProviderAuthStatus("runtime-only").source, "runtime");
     assert.equal((await session.modelRuntime.getAuth(model))?.auth.apiKey, "runtime-only-key");
+    // Subagents inherit pi's turn-level auto-retry and must not persist retry changes globally.
+    assert.ok("settingsManager" in session);
+    assert.ok(session.settingsManager instanceof SettingsManager);
+    assert.equal(session.settingsManager.getRetryEnabled(), true);
+    await session.settingsManager.flush();
+    assert.equal(existsSync(join(agentDir, "settings.json")), false);
 
     const storedHandle = await openSession(storedModel, "stored-session-services");
     const storedSession = storedHandle.session;
