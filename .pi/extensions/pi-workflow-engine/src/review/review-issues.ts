@@ -72,9 +72,9 @@ export function serializeReviewIssue(issue: ReviewIssue): SerializedReviewIssue 
   };
 }
 
-export function isCommentableIssue(
-  issue: ReviewIssue,
-): issue is ReviewIssue & { readonly file: string; readonly line: number } {
+export type CommentableReviewIssue = ReviewIssue & { readonly file: string; readonly line: number };
+
+export function isCommentableIssue(issue: ReviewIssue): issue is CommentableReviewIssue {
   return typeof issue.file === "string" && issue.file.trim().length > 0 && typeof issue.line === "number" && Number.isFinite(issue.line);
 }
 
