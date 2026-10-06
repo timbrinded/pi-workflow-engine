@@ -117,3 +117,11 @@ test("a stalled classifier gives its concurrency slot back at the per-agent time
 
   await assert.rejects(() => runClassifier(stalled.rc, CONTEXT, { label: "slow" }), /slow: classifier timed out after 20ms/);
 });
+
+test("a model preference list uses the first ref with working credentials", async () => {
+  const run = classifierRun({ available: [CLEF] });
+  await runClassifier(run.rc, CONTEXT, { model: ["typesafe/jev-latest", "cloudflare-workers-ai/@cf/cloudflare/clef"] });
+  assert.deepEqual(run.classified, [CLEF]);
+
+  await assert.rejects(() => runClassifier(classifierRun({ available: [] }).rc, CONTEXT, { model: ["typesafe/jev-latest"] }), WorkflowClassifierUnavailableError);
+});

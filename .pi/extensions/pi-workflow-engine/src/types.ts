@@ -191,8 +191,11 @@ export interface AgentOptions<S extends TSchema = TSchema> {
 
 /** Options for `api.classify()`. */
 export interface ClassifyOptions {
-  /** Classifier model as "provider/id". Default: the first classifier model with working credentials. */
-  model?: string;
+  /**
+   * Classifier model as "provider/id", or refs in preference order of which the first with working
+   * credentials is used. Default: the first classifier model with working credentials.
+   */
+  model?: string | readonly string[];
   /** Label for usage reporting. Default: `classify:<provider>/<id>`. */
   label?: string;
   /** Phase to attribute usage to. Default: the current phase. */

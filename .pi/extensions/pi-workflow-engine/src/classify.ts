@@ -1,7 +1,7 @@
 import type { ClassifierAnswer, ClassifierApi, ClassifierContext, ClassifierModel } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { RunContext } from "./agent-runner-types.ts";
-import { parseAgentModelRef } from "./agent-session.ts";
+import { parseAgentModelRef } from "./model-ref.ts";
 import { assertWorkflowBudgetAvailable } from "./budget.ts";
 import { throwIfAborted } from "./cancellation.ts";
 import type { ClassifyOptions } from "./types.ts";
@@ -64,7 +64,18 @@ export async function runClassifier(
   }, { signal: rc.signal });
 }
 
-async function resolveClassifierModel(registry: ClassifierRegistry, ref: string | undefined): Promise<ClassifierModel<ClassifierApi>> {
+async function resolveClassifierModel(
+  registry: ClassifierRegistry,
+  ref: string | readonly string[] | undefined,
+): Promise<ClassifierModel<ClassifierApi>> {
+  if (ref !== undefined && typeof ref !== "string") {
+    const available = await registry.getAvailableOfType("classifier");
+    const preferred = ref.map((candidate) => parseAgentModelRef(candidate))
+      .map(({ provider, id }) => available.find((model) => model.provider === provider && model.id === id))
+      .find((model) => model !== undefined);
+    if (!preferred) throw new WorkflowClassifierUnavailableError(`None of the classifier models ${ref.join(", ")} has working credentials.`);
+    return preferred;
+  }
   if (ref === undefined) {
     const [available] = await registry.getAvailableOfType("classifier");
     if (!available) {
