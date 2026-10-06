@@ -400,6 +400,34 @@ test("runAgent dynamically enables installed search-like tools", async () => {
   assert.deepEqual(activatedTools, ["read", "bash", "grep", "find", "ls", "final_answer", "ffgrep", "mgrep", "ast-grep"]);
 });
 
+test("subagents cannot start nested workflows unless their allowlist names the workflow tool", async () => {
+  const activations: Array<readonly string[]> = [];
+  const createSession: CreateAgentSession = async () => ({
+    session: createAgentRunnerSession({
+      messages: [assistantTextMessage("done")],
+      async prompt() {},
+      subscribe() {
+        return () => {};
+      },
+      dispose() {},
+      async abort() {},
+      getActiveToolNames() {
+        return ["read", "bash", "workflow", "ast-grep"];
+      },
+      setActiveToolsByName(toolNames) {
+        activations.push(toolNames);
+      },
+    }),
+  });
+
+  await runAgent(createRunContext({ createSession }), "hello", { label: "default-tools" });
+  assert.deepEqual(activations, [["read", "bash", "ast-grep"]]);
+
+  activations.length = 0;
+  await runAgent(createRunContext({ createSession }), "hello", { label: "nested-allowed", tools: ["read", "workflow"] });
+  assert.ok(activations.every((tools) => tools.includes("workflow")));
+});
+
 test("external-search tool hints select web capabilities but exclude local and mutating search tools", async () => {
   const cases = [
     ["web_search", "Search the internet and return webpage URLs", true],

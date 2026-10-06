@@ -3,6 +3,9 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { WorkflowBudget } from "./budget.ts";
 import type { Pipeline, WorkflowParallel } from "./concurrency.ts";
 import type { PerfSink, PerfSnapshot } from "./perf.ts";
+
+/** The host-facing tool this extension registers; subagents also load extensions, so it is withheld from them. */
+export const WORKFLOW_TOOL_NAME = "workflow";
 import type { WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "./progress-types.ts";
 import type { WorkflowUsageSnapshot } from "./usage.ts";
 import type { WorktreeBaseline } from "./worktree.ts";

@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
-import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef } from "./src/types.ts";
+import { WORKFLOW_TOOL_NAME, type LoadedWorkflow, type WorkflowModule, type WorkflowProgressSource, type WorkflowRef } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./src/ui/workflow-viewer-layout.ts";
 import type { PerfSink } from "./src/perf.ts";
@@ -466,7 +466,7 @@ function registerWorkflowTool(
   backgroundWorkflows: BackgroundWorkflowCoordinator,
 ): void {
   pi.registerTool({
-    name: "workflow",
+    name: WORKFLOW_TOOL_NAME,
     label: "Workflow",
     description:
       "ONLY call workflow when the user opted into multi-agent orchestration via the literal token `dynamax`, sticky `/workflow:dynamax on`, an explicit request to run or author a workflow, or a command/skill instruction. Runs either a registered named workflow or an inline one-off workflow script (fan-out → verify → synthesize), synchronously by default or explicitly in the background.",

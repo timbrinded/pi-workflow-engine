@@ -25,7 +25,7 @@ import { providerErrorFromMessages } from "./agent-retry.ts";
 import { synchronizeWorkflowModelRuntime } from "./agent-session-providers.ts";
 import { matchesAgentToolHint, WorkflowToolHintUnavailableError } from "./tool-capabilities.ts";
 import { truncateText } from "./text.ts";
-import type { AgentToolHint } from "./types.ts";
+import { WORKFLOW_TOOL_NAME, type AgentToolHint } from "./types.ts";
 
 export const FINAL_TOOL = "final_answer";
 
@@ -101,6 +101,8 @@ export async function openAgentSession(input: {
     const matchedToolHints = toolSelection.toolHints.length === 0
       ? new Set<AgentToolHint>()
       : applyDynamicToolHints(session, toolSelection);
+    // A nested run would get its own concurrency cap and budget, so subagents may start one only when allowlisted.
+    if (!opts.tools?.includes(WORKFLOW_TOOL_NAME)) withholdWorkflowTool(session);
     if (opts.requireToolHints) {
       const missing = toolSelection.toolHints.filter((hint) => !matchedToolHints.has(hint));
       if (missing.length > 0) throw new WorkflowToolHintUnavailableError(missing);
@@ -334,6 +336,11 @@ function buildToolList(
   if (skillsEnabled && !allow.includes("read")) allow.push("read");
   if (opts.schema && !allow.includes(FINAL_TOOL)) allow.push(FINAL_TOOL);
   return allow;
+}
+
+function withholdWorkflowTool(session: AgentRunnerSession): void {
+  const active = session.getActiveToolNames();
+  if (active.includes(WORKFLOW_TOOL_NAME)) session.setActiveToolsByName(active.filter((name) => name !== WORKFLOW_TOOL_NAME));
 }
 
 function applyDynamicToolHints(
