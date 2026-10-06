@@ -17,6 +17,7 @@ import {
   type WorktreeGitCommandResult,
   type WorktreeGitRunner,
 } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import { gitCommit } from "./resume-fixtures.ts";
 
 function fakeRunner(
   handler: (options: WorktreeGitCommandOptions) => WorktreeGitCommandResult | Promise<WorktreeGitCommandResult>,
@@ -348,11 +349,7 @@ test("addWorktree uses real git worktrees for repositories with commits", async 
   try {
     await writeFile(join(repo, "README.md"), "hello\n");
     assert.equal(spawnSync("git", ["add", "README.md"], { cwd: repo }).status, 0);
-    const commit = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], {
-      cwd: repo,
-      encoding: "utf8",
-    });
-    assert.equal(commit.status, 0, commit.stderr);
+    gitCommit(repo, "initial");
 
     added = await addWorktree({ repoCwd: repo });
     assert.ok(!("error" in added));
@@ -373,12 +370,7 @@ test("captured patches retain committed isolated edits and reconstruct from the 
   try {
     await writeFile(join(repo, "app.ts"), "before\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    const initialCommit = spawnSync(
-      "git",
-      ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"],
-      { cwd: repo, encoding: "utf8" },
-    );
-    assert.equal(initialCommit.status, 0, initialCommit.stderr);
+    gitCommit(repo, "initial");
 
     const changed = await registry.add();
     assert.ok(!("error" in changed));
@@ -427,11 +419,7 @@ test("captured patches reconstruct binary, new, symlink, mode, and deletion chan
     await writeFile(join(repo, "target-new.txt"), "new target\n");
     await symlink("target-old.txt", join(repo, "linked.txt"));
     assert.equal(spawnSync("git", ["add", "-A"], { cwd: repo }).status, 0);
-    const commit = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], {
-      cwd: repo,
-      encoding: "utf8",
-    });
-    assert.equal(commit.status, 0, commit.stderr);
+    gitCommit(repo, "initial");
 
     const changed = await registry.add();
     assert.ok(!("error" in changed));
@@ -490,10 +478,7 @@ test("a reviewed-snapshot baseline is excluded from the returned fix patch", asy
   try {
     await writeFile(join(repo, "app.ts"), "before\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
+    gitCommit(repo, "initial");
     const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
     const reviewedPatch = "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-before\n+reviewed\n";
 
@@ -524,10 +509,7 @@ test("reviewed-snapshot preparation bypasses repository commit hooks and signing
   try {
     await writeFile(join(repo, "app.ts"), "before\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
+    gitCommit(repo, "initial");
     const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
     await writeFile(join(repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n");
     await chmod(join(repo, ".git", "hooks", "pre-commit"), 0o755);

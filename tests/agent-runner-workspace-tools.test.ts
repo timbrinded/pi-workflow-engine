@@ -28,7 +28,7 @@ import {
   executeTestFinalAnswer,
   runAgent,
 } from "./agent-runner-fixtures.ts";
-import { createGitRepo, runGit } from "./resume-fixtures.ts";
+import { createGitRepo, gitCommit, runGit } from "./resume-fixtures.ts";
 
 test("runAgent with worktree isolation creates an isolated cwd and returns a patch wrapper", async () => {
   const repoCwd = "/repo";
@@ -280,13 +280,13 @@ test("isolated replay binds to prepared contents and same-tree commit identity",
     assert.equal(promptCalls, 2);
 
     runGit(repoCwd, ["add", "source.txt"]);
-    runGit(repoCwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "first committed baseline"]);
+    gitCommit(repoCwd, "first committed baseline");
     await run();
     assert.equal(promptCalls, 3);
     const firstCommitIdentity = stored?.identity.repository;
     assert.equal(firstCommitIdentity?.state, "isolated");
 
-    runGit(repoCwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "same tree, different history"]);
+    gitCommit(repoCwd, "same tree, different history", ["--allow-empty"]);
     await run();
     assert.equal(promptCalls, 4);
     const secondCommitIdentity = stored?.identity.repository;

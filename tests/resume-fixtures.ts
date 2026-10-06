@@ -11,6 +11,11 @@ export function runGit(cwd: string, args: readonly string[]): string {
   return result.stdout.trim();
 }
 
+/** Commits the index with a fixed identity and signing off, independent of the developer's git config. */
+export function gitCommit(cwd: string, message: string, extraArgs: readonly string[] = []): void {
+  runGit(cwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgSign=false", "commit", ...extraArgs, "-m", message]);
+}
+
 export async function createGitRepo(options: { readonly ignoreJournal?: boolean } = {}): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-resume-context-"));
   runGit(cwd, ["init"]);
@@ -19,7 +24,7 @@ export async function createGitRepo(options: { readonly ignoreJournal?: boolean 
     await writeFile(join(cwd, ".gitignore"), ".pi/.workflow-runs/\n", "utf8");
   }
   runGit(cwd, ["add", "."]);
-  runGit(cwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "baseline"]);
+  gitCommit(cwd, "baseline");
   return cwd;
 }
 

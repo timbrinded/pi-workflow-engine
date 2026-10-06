@@ -21,7 +21,7 @@ import {
   withValidatedFingerprintFile,
   type FingerprintFileOperations,
 } from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
-import { createGitRepo, runGit } from "./resume-fixtures.ts";
+import { createGitRepo, gitCommit, runGit } from "./resume-fixtures.ts";
 
 test("fingerprint file validation rejects a pathname replaced after opening", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-workflow-fingerprint-open-race-"));
@@ -190,7 +190,7 @@ test("repository capture ignores generated trees but binds the full Git-visible 
   try {
     await writeFile(join(cwd, ".gitignore"), ".pi/.workflow-runs/\nnode_modules/\n.artifacts/\n", "utf8");
     runGit(cwd, ["add", ".gitignore"]);
-    runGit(cwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "ignore generated trees"]);
+    gitCommit(cwd, "ignore generated trees");
     await mkdir(join(cwd, "config"), { recursive: true });
     await mkdir(join(cwd, "node_modules", "local-package"), { recursive: true });
     await mkdir(join(cwd, ".artifacts", "pi-e2e", "fix-repo", ".git"), { recursive: true });
@@ -254,7 +254,7 @@ test("repository capture and mutation guards use the Git root from nested workin
     await mkdir(cwd, { recursive: true });
     await writeFile(join(cwd, "entry.txt"), "nested\n", "utf8");
     runGit(root, ["add", "nested/workflow/entry.txt"]);
-    runGit(root, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "nested cwd"]);
+    gitCommit(root, "nested cwd");
 
     const rootContext = await captureRepositoryResumeContext(root, []);
     const nestedContext = await captureRepositoryResumeContext(cwd, []);
@@ -269,7 +269,7 @@ test("repository capture and mutation guards use the Git root from nested workin
     assert.notEqual(dirty.workingTreeFingerprint, nestedContext.workingTreeFingerprint);
 
     runGit(root, ["add", "tracked.txt"]);
-    runGit(root, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "parent change"]);
+    gitCommit(root, "parent change");
     const committedGuard = await captureRepositoryMutationGuard(cwd);
     assert.equal(committedGuard.kind, "verified");
     if (firstGuard.kind !== "verified" || committedGuard.kind !== "verified") assert.fail("expected verified guards");
@@ -292,7 +292,7 @@ test("nested declared inputs capture ignored cwd contents and cannot escape that
     await mkdir(cwd, { recursive: true });
     await writeFile(join(root, ".gitignore"), "nested/workflow/generated/\n", "utf8");
     runGit(root, ["add", ".gitignore"]);
-    runGit(root, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "ignore generated input"]);
+    gitCommit(root, "ignore generated input");
     await mkdir(join(cwd, "generated"));
     await writeFile(join(cwd, "generated", "value.txt"), "one\n", "utf8");
 
@@ -321,7 +321,7 @@ test("isolated mutation guard ignores generated trees but detects worktree and i
   try {
     await writeFile(join(cwd, ".gitignore"), "node_modules/\n", "utf8");
     runGit(cwd, ["add", ".gitignore"]);
-    runGit(cwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "ignore dependencies"]);
+    gitCommit(cwd, "ignore dependencies");
     await mkdir(join(cwd, "node_modules", "dependency"), { recursive: true });
     await mkdir(join(cwd, ".pi", ".workflow-runs"), { recursive: true });
     await writeFile(ignored, "one\n", "utf8");
@@ -357,7 +357,7 @@ test("isolated mutation guard does not reread large clean tracked files", async 
     await writeFile(path, "", "utf8");
     await truncate(path, (32 << 20) + 1);
     runGit(cwd, ["add", "large-clean.bin"]);
-    runGit(cwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "large clean file"]);
+    gitCommit(cwd, "large clean file");
     assert.equal((await captureRepositoryMutationGuard(cwd)).kind, "verified");
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -400,7 +400,7 @@ test("repository capture rejects clean tracked and unstaged replacement symbolic
     await writeFile(target, "outside\n", "utf8");
     await symlink(target, join(cleanRepo, "clean-link.txt"));
     runGit(cleanRepo, ["add", "clean-link.txt"]);
-    runGit(cleanRepo, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "tracked link"]);
+    gitCommit(cleanRepo, "tracked link");
     const clean = await captureRepositoryResumeContext(cleanRepo, []);
     assert.equal(clean.kind, "unverifiable");
     if (clean.kind !== "unverifiable") assert.fail("expected clean tracked symlink rejection");

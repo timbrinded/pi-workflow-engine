@@ -31,7 +31,7 @@ import {
   createRunContext,
   testModel,
 } from "./agent-runner-fixtures.ts";
-import { createGitRepo, runGit } from "./resume-fixtures.ts";
+import { createGitRepo, gitCommit, runGit } from "./resume-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly logs: string[];
@@ -544,7 +544,7 @@ test("resume invalidates cached agents when repository HEAD changes", async () =
       async () => {
         await writeFile(join(cwd, "tracked.txt"), "committed change\n", "utf8");
         runGit(cwd, ["add", "tracked.txt"]);
-        runGit(cwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "change"]);
+        gitCommit(cwd, "change");
       },
       /repository HEAD changed/,
     );
