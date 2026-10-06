@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
-import { isAdvisoryReport, type AdvisoryReport } from "./src/advisory-schema.ts";
+import { isAdvisoryReport, type AdvisoryFinding, type AdvisoryLocation, type AdvisoryReport } from "./src/advisory-schema.ts";
 import { isRecord } from "./src/guards.ts";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
@@ -12,6 +12,7 @@ import type { PerfSink } from "./src/perf.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
+import { toReviewIssues } from "./src/review/review-issues.ts";
 import { ReviewSessionCoordinator } from "./src/review/review-session-coordinator.ts";
 import {
   formatWorkflowDetailLines,
@@ -54,13 +55,13 @@ const MAX_CONTEXT_RESULT_JSON_CHARS = 20_000;
 
 function formatMessageContent(envelope: WorkflowResultEnvelope): string {
   const details = formatWorkflowDetailLines(envelope);
-  return `## Workflow: ${envelope.name}\n\n${formatResultForContext(envelope.result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
+  return `## Workflow: ${envelope.name}\n\n${formatResultForContext(envelope.name, envelope.result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
 }
 
 /** The host model only sees this text, never the envelope `details`, so it carries every result field. */
-function formatResultForContext(result: unknown): string {
+function formatResultForContext(name: string, result: unknown): string {
   if (typeof result === "string") return result;
-  if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(result);
+  if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(name, result);
   const summary = workflowResultSummary(result);
   if (summary !== undefined && isRecord(result) && Object.keys(result).length === 1) return summary;
   const json = formatResultJson(result);
@@ -68,23 +69,23 @@ function formatResultForContext(result: unknown): string {
   return summary === undefined ? json : `${summary}\n\n${json}`;
 }
 
-function formatAdvisoryReportForContext(report: AdvisoryReport): string {
+function formatAdvisoryReportForContext(name: string, report: AdvisoryReport): string {
   const lines = [report.summary];
-  if (report.findings.length > 0) {
+  const issues = toReviewIssues(name, report);
+  if (issues.length > 0) {
     lines.push("", "Findings:");
-    report.findings.forEach((finding, index) => {
-      const id = `R${String(index + 1).padStart(3, "0")}`;
+    for (const { id, finding } of issues) {
       lines.push(
         `\n### ${id}: ${finding.summary}`,
         `- Severity: ${finding.severity}`,
         `- Confidence: ${finding.confidence}`,
         `- Category: ${finding.category}`,
-        `- Location: ${finding.locations.map(formatFindingLocation).join(", ")}`,
+        `- Location: ${formatFindingLocations(finding)}`,
         `- Impact: ${finding.impact}`,
         `- Evidence: ${finding.evidence.length > 0 ? finding.evidence.join("; ") : "(none cited)"}`,
         `- Recommendation: ${finding.recommendation}`,
       );
-    });
+    }
   }
   if (report.nextSteps.length > 0) {
     lines.push("", "Next steps:", ...report.nextSteps.map((step) => `- ${step}`));
@@ -105,7 +106,13 @@ function formatResultJson(result: unknown): string | undefined {
   return `Result (first ${MAX_CONTEXT_RESULT_JSON_CHARS} of ${json.length} characters; truncated, the run record holds the full value):\n\`\`\`json\n${json.slice(0, MAX_CONTEXT_RESULT_JSON_CHARS)}\n\`\`\``;
 }
 
-function formatFindingLocation(location: { readonly file: string; readonly line?: number; readonly symbol?: string }): string {
+/** The review anchor that the findings viewer and PR comments cite comes first, then every other cited location. */
+function formatFindingLocations(finding: AdvisoryFinding): string {
+  const locations = finding.reviewAnchor ? [finding.reviewAnchor, ...finding.locations] : finding.locations;
+  return [...new Set(locations.map(formatFindingLocation))].join(", ");
+}
+
+function formatFindingLocation(location: AdvisoryLocation): string {
   const line = location.line === undefined ? "" : `:${location.line}`;
   const symbol = location.symbol === undefined ? "" : ` (${location.symbol})`;
   return `${location.file}${line}${symbol}`;

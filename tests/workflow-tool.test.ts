@@ -374,6 +374,22 @@ export default async function run() { return ${result}; }`;
   assert.ok(oversized.length < 25_000, `expected a bounded result, got ${oversized.length} characters`);
 });
 
+test("the workflow tool gives the host agent the viewer's finding id and review anchor", async () => {
+  const tool = captureWorkflowTool();
+  const finding = {
+    summary: "Anchored finding.", category: "bug", severity: "high", confidence: "high",
+    locations: [{ file: "src/caller.ts", line: 90 }], reviewAnchor: { file: "src/app.ts", line: 12 },
+    evidence: ["line 12"], impact: "Breaks callers.", recommendation: "Fix the changed line.",
+  };
+  const script = `export const meta = { name: "anchored-review", description: "Anchor probe" };
+export default async function run() { return ${JSON.stringify({ summary: "Review complete.", findings: [finding], nextSteps: [] })}; }`;
+
+  const text = toolResultText(await tool.execute("call-anchored-review", { script }, undefined, () => {}, HEADLESS_CTX));
+
+  assert.match(text, /### R001: Anchored finding\./);
+  assert.match(text, /- Location: src\/app\.ts:12, src\/caller\.ts:90/);
+});
+
 test("inline compile errors are shaped for workflow tool results", () => {
   let result = inlineCompileErrorResult("not compiled");
   try {
