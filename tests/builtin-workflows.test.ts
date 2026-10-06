@@ -208,7 +208,7 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
     emptyCandidates(),
     emptyCandidates(),
     emptyCandidates(),
-    { verdict: "CONFIRMED", evidence: ["src/example.ts:12 proves the bug"], confidence: "high" },
+    { verdict: "CONFIRMED", evidence: ["src/example.ts:12 proves the bug"] },
     report("One confirmed bug.", [{ ...finding("confirmed bug", "bug"), sourceCandidateIds: identifyCandidates([surviving], "logic-bugs")[0]!.sourceCandidateIds }]),
   ]);
 
