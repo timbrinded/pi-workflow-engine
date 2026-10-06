@@ -103,6 +103,23 @@ import order must be sorted.\`);
   assert.deepEqual(prompts, ["Review its x.\nimport order must be sorted.", "Flag every dynamic import (call) site"]);
 });
 
+const acceptedDefaultExports: Array<{ name: string; source: string }> = [
+  { name: "a named async function", source: "export default async function run(api) { return api.args; }" },
+  { name: "an anonymous async function", source: "export default async function (api) { return api.args; }" },
+  { name: "an async arrow", source: "export default async (api) => { return api.args; }" },
+  { name: "destructured arrow parameters", source: "export default async ({ args, parallel }) => { return parallel ? args : 'x'; }" },
+  { name: "destructured function parameters", source: "export default async function run({ args }) { return args; }" },
+  { name: "a trailing semicolon and comment", source: "export default async (api) => { return api.args; };\n// done" },
+  { name: "a regex after an if head", source: "export default async (api) => { if (api.args) /import\\(|[{]/.test(api.args); return api.args; }" },
+];
+
+for (const { name, source } of acceptedDefaultExports) {
+  test(`compileInlineWorkflow accepts ${name}`, async () => {
+    const mod = compileInlineWorkflow(`export const meta = { name: "x" };\n${source}`);
+    assert.equal(await mod.default(createFakeApi({ args: "ok" })), "ok");
+  });
+}
+
 test("compileInlineWorkflow rejects non-literal metadata", () => {
   assert.throws(
     () =>
@@ -134,6 +151,18 @@ const rejectedSources: Array<{ name: string; source: string }> = [
   {
     name: "code after the default export",
     source: 'export const meta = { name: "x" };\nexport default async (api) => { return "x"; };\nconsole.log("after");',
+  },
+  {
+    name: "a comma expression after the default export",
+    source: 'export const meta = { name: "x" };\nexport default async (api) => { return "x"; }, 5',
+  },
+  {
+    name: "an immediate call of the default export on the next line",
+    source: 'export const meta = { name: "x" };\nexport default async function run(api) { await api.agent("x"); }\n(api)',
+  },
+  {
+    name: "an expression-bodied arrow",
+    source: 'export const meta = { name: "x" };\nexport default async (api) => api.agent("x")',
   },
   {
     name: "second export before default",
