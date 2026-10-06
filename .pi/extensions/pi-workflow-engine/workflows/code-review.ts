@@ -1,4 +1,5 @@
 import { challengeFindings, parseChallengeArgs } from "../src/advisory-challenge.ts";
+import type { AdvisoryLocation } from "../src/advisory-schema.ts";
 import { Type } from "typebox";
 import {
   type AdvisoryVerified,
@@ -7,7 +8,6 @@ import {
   finishAdvisoryReport,
   formatEvidence,
   formatLocation,
-  normalizePath,
   publishVerifiedKeptProgress,
   runLensVerificationPipeline,
   verdictConfidence,
@@ -45,6 +45,19 @@ const ANGLES: AdvisoryLens[] = [
 
 const PER_ANGLE = 6;
 
+const C_QUOTE_ESCAPES: Readonly<Record<string, number>> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+
+/** Undo git's C-style quoting of unusual path names, e.g. `"b/caf\303\251.txt"`. */
+function unquoteGitPath(path: string): string {
+  if (path.length < 2 || !path.startsWith('"') || !path.endsWith('"')) return path;
+  const bytes: number[] = [];
+  for (const [, escape, literal] of path.slice(1, -1).matchAll(/\\([0-7]{3}|.)|([^\\]+)/g)) {
+    if (literal !== undefined) bytes.push(...Buffer.from(literal));
+    else if (escape !== undefined) bytes.push(escape.length === 3 ? parseInt(escape, 8) : (C_QUOTE_ESCAPES[escape] ?? escape.charCodeAt(0)));
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
 /** Parse a unified diff into the set of added/changed new-file line numbers per file. */
 export function changedLines(diff: string): Map<string, Set<number>> {
   const byFile = new Map<string, Set<number>>();
@@ -52,8 +65,8 @@ export function changedLines(diff: string): Map<string, Set<number>> {
   let newLine = 0;
   for (const raw of diff.split("\n")) {
     if (raw.startsWith("+++ ")) {
-      const path = raw.slice(4).trim();
-      file = path === "/dev/null" ? null : normalizePath(path);
+      const path = unquoteGitPath(raw.slice(4).trim());
+      file = path === "/dev/null" ? null : path.replace(/^b\//, "");
       if (file && !byFile.has(file)) byFile.set(file, new Set());
     } else if (raw.startsWith("@@")) {
       const match = /\+(\d+)/.exec(raw);
@@ -69,12 +82,18 @@ export function changedLines(diff: string): Map<string, Set<number>> {
   return byFile;
 }
 
-/** Is a finding inside the diff? File-level findings count if the file changed; ±1 line of fuzz. */
-export function inDiff(changed: Map<string, Set<number>>, file: string, line?: number): boolean {
-  const set = changed.get(normalizePath(file));
-  if (!set) return false;
-  if (line == null) return true;
-  return set.has(line) || set.has(line - 1) || set.has(line + 1);
+/**
+ * The location re-keyed to its repo-relative diff path when it is inside the diff, else undefined.
+ * The exact path wins; a stray `./`, `a/` or `b/` prefix is tolerated. File-level locations count
+ * if the file changed; lines get ±1 of fuzz.
+ */
+export function diffAnchor(changed: ReadonlyMap<string, ReadonlySet<number>>, location: AdvisoryLocation): AdvisoryLocation | undefined {
+  const path = location.file.replace(/^\.\//, "");
+  const file = changed.has(path) ? path : path.replace(/^[ab]\//, "");
+  const lines = changed.get(file);
+  if (!lines) return undefined;
+  const { line } = location;
+  return line == null || lines.has(line) || lines.has(line - 1) || lines.has(line + 1) ? { ...location, file } : undefined;
 }
 
 export interface CodeReviewDependencies {
@@ -179,9 +198,10 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     lenses: ANGLES,
     perLens: PER_ANGLE,
     boundCandidate: (candidate, lens) => {
-      const anchor = candidate.reviewAnchor ?? candidate.locations.find((location) => inDiff(changed, location.file, location.line));
-      return anchor && inDiff(changed, anchor.file, anchor.line)
-        ? { ...candidate, category: lens.category, reviewAnchor: anchor } : undefined;
+      const reviewAnchor = candidate.reviewAnchor
+        ? diffAnchor(changed, candidate.reviewAnchor)
+        : candidate.locations.map((location) => diffAnchor(changed, location)).find((anchor) => anchor !== undefined);
+      return reviewAnchor ? { ...candidate, category: lens.category, reviewAnchor } : undefined;
     },
     finderPrompt: (lens) =>
       `## Code-review finder — ${lens.label}\n\n${scopeBlock}\n` +

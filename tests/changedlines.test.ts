@@ -8,7 +8,7 @@ import { test } from "bun:test";
 import { parseAllowedDiffCommand } from "../.pi/extensions/pi-workflow-engine/src/review-diff-target.ts";
 import { captureReviewMaterial } from "../.pi/extensions/pi-workflow-engine/src/review/review-snapshot.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
-import { changedLines, inDiff } from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
+import { changedLines, diffAnchor } from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
 import {
   buildCodeReviewScopeBlock,
 } from "../.pi/extensions/pi-workflow-engine/src/review/code-review-orchestration.ts";
@@ -17,7 +17,7 @@ function lines(map: Map<string, Set<number>>, file: string): number[] {
   return [...(map.get(file) ?? [])].sort((a, b) => a - b);
 }
 
-test("changedLines records single-hunk added lines and inDiff matches them", () => {
+test("changedLines records single-hunk added lines and diffAnchor matches them", () => {
   const diff = `diff --git a/sum.js b/sum.js
 index e0f74bf..54295d7 100644
 --- a/sum.js
@@ -34,11 +34,33 @@ index e0f74bf..54295d7 100644
 
   const changed = changedLines(diff);
   assert.deepEqual(lines(changed, "sum.js"), [3]);
-  assert.equal(inDiff(changed, "sum.js", 3), true);
-  assert.equal(inDiff(changed, "b/sum.js", 4), true);
-  assert.equal(inDiff(changed, "sum.js", 7), false);
-  assert.equal(inDiff(changed, "other.js", 3), false);
-  assert.equal(inDiff(changed, "sum.js"), true);
+  assert.deepEqual(diffAnchor(changed, { file: "sum.js", line: 3 }), { file: "sum.js", line: 3 });
+  assert.deepEqual(diffAnchor(changed, { file: "b/sum.js", line: 4, symbol: "sum" }), { file: "sum.js", line: 4, symbol: "sum" });
+  assert.deepEqual(diffAnchor(changed, { file: "./sum.js", line: 2 }), { file: "sum.js", line: 2 });
+  assert.equal(diffAnchor(changed, { file: "sum.js", line: 7 }), undefined);
+  assert.equal(diffAnchor(changed, { file: "other.js", line: 3 }), undefined);
+  assert.deepEqual(diffAnchor(changed, { file: "sum.js" }), { file: "sum.js" });
+});
+
+test("changedLines keeps real a/ and b/ directories and decodes git-quoted paths", () => {
+  const diff = `diff --git a/a/x.ts b/a/x.ts
+--- a/a/x.ts
++++ b/a/x.ts
+@@ -1 +1 @@
+-old
++new
+diff --git "a/caf\\303\\251 \\"menu\\".txt" "b/caf\\303\\251 \\"menu\\".txt"
+--- "a/caf\\303\\251 \\"menu\\".txt"
++++ "b/caf\\303\\251 \\"menu\\".txt"
+@@ -1 +1 @@
+-old
++new
+`;
+
+  const changed = changedLines(diff);
+  assert.deepEqual([...changed.keys()], ["a/x.ts", 'café "menu".txt']);
+  assert.deepEqual(diffAnchor(changed, { file: "a/x.ts", line: 1 }), { file: "a/x.ts", line: 1 });
+  assert.deepEqual(diffAnchor(changed, { file: 'café "menu".txt', line: 1 }), { file: 'café "menu".txt', line: 1 });
 });
 
 test("code-review scope construction bounds embedded diffs and preserves context", () => {
