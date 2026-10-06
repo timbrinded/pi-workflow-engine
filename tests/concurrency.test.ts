@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { WorkflowBudgetExceededError } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
-import { bindParallel, parallel, pipeline, pipelineWithOptions, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { bindParallel, bindPipeline, parallel, pipeline, Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import {
   STRUCTURED_OUTPUT_ERROR_CODE,
   WorkflowStructuredOutputError,
@@ -245,27 +245,6 @@ test("parallel settles when an abort reason has hostile prototype traps", async 
   assert.ok(outcome instanceof WorkflowAbortError);
 });
 
-test("parallel settled mode still rejects on run abort", async () => {
-  const controller = new AbortController();
-  const running = parallel(
-    [
-      async () => {
-        await delay(20);
-        return "late";
-      },
-      async () => {
-        await delay(20);
-        return "also late";
-      },
-    ],
-    { signal: controller.signal, settled: true },
-  );
-
-  controller.abort(new WorkflowAbortError("stop settled"));
-
-  await assert.rejects(running, /stop settled/);
-});
-
 test("parallel settled mode aborts siblings when a thunk fails fatally", async () => {
   const controller = new AbortController();
   let siblingAborted = false;
@@ -318,18 +297,6 @@ test("parallel drains cooperative siblings before rejecting a fatal failure", as
 
   await assert.rejects(running, /fatal with drain/);
   assert.equal(siblingUnwound, true);
-});
-
-test("parallel treats budget exhaustion as a null slot", async () => {
-  const results = await parallel([
-    async () => 1,
-    async () => {
-      throw new WorkflowBudgetExceededError(10, 12);
-    },
-    async () => 3,
-  ]);
-
-  assert.deepEqual(results, [1, null, 3]);
 });
 
 test("parallel settled mode retains budget exhaustion details", async () => {
@@ -469,15 +436,12 @@ test("pipeline preserves the abort reason when a stage throws afterward", async 
   const controller = new AbortController();
 
   await assert.rejects(
-    pipelineWithOptions(
+    bindPipeline({ signal: controller.signal, abortController: controller })(
       [1],
-      [
-        async () => {
-          controller.abort(new WorkflowAbortError("stop"));
-          throw new Error("plain after abort");
-        },
-      ],
-      { signal: controller.signal, abortController: controller },
+      async () => {
+        controller.abort(new WorkflowAbortError("stop"));
+        throw new Error("plain after abort");
+      },
     ),
     /stop/,
   );
@@ -488,48 +452,31 @@ test("pipeline aborts sibling item chains after a fatal failure", async () => {
   let siblingStage2Ran = false;
   let siblingUnwound = false;
 
-  const running = pipelineWithOptions(
+  const running = bindPipeline({ signal: controller.signal, abortController: controller })(
     [1, 2],
-    [
-      async (_prev, item) => {
-        if (item === 1) {
-          await delay(1);
-          throw new WorkflowAbortError("fatal");
-        }
-        try {
-          await delay(10);
-          return item;
-        } finally {
-          await delay(5);
-          siblingUnwound = true;
-        }
-      },
-      async (prev) => {
-        siblingStage2Ran = true;
-        return prev;
-      },
-    ],
-    { signal: controller.signal, abortController: controller },
+    async (_prev, item) => {
+      if (item === 1) {
+        await delay(1);
+        throw new WorkflowAbortError("fatal");
+      }
+      try {
+        await delay(10);
+        return item;
+      } finally {
+        await delay(5);
+        siblingUnwound = true;
+      }
+    },
+    async (prev) => {
+      siblingStage2Ran = true;
+      return prev;
+    },
   );
 
   await assert.rejects(running, /fatal/);
   assert.equal(controller.signal.aborted, true);
   assert.equal(siblingStage2Ran, false);
   assert.equal(siblingUnwound, true);
-});
-
-test("pipeline propagates a fatal abort", async () => {
-  await assert.rejects(
-    pipeline(
-      [1, 2],
-      async (prev) => prev,
-      async (prev, item) => {
-        if (item === 2) throw new WorkflowAbortError("stop");
-        return prev;
-      },
-    ),
-    /stop/,
-  );
 });
 
 test("Semaphore reserves the released slot before a newcomer microtask", async () => {

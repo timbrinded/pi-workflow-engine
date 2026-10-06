@@ -1,6 +1,12 @@
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
+/**
+ * Pins the git diff output that the engine parses or applies, so user config such as
+ * diff.noprefix, diff.mnemonicPrefix, diff.srcPrefix or color.ui cannot change it.
+ */
+export const GIT_DIFF_MACHINE_FORMAT = ["--no-color", "--src-prefix=a/", "--dst-prefix=b/"] as const;
+
 export type GitDiffBaselineTarget =
   | { readonly kind: "working-tree" }
   | { readonly kind: "index" }
@@ -96,15 +102,16 @@ function isAllowedGitDiffFlag(token: string): boolean {
   return SAFE_GIT_DIFF_FLAGS.has(token) || /^-U\d+$/.test(token) || /^--unified=\d+$/.test(token) || /^--inter-hunk-context=\d+$/.test(token);
 }
 
+/** Executable argv. Git targets gain the machine-format pins, which stay out of the persisted and displayed target. */
 export function reviewDiffCommand(target: ReviewDiffTarget): { readonly file: "git" | "gh"; readonly args: readonly string[] } {
   return target.kind === "pull-request"
     ? { file: "gh", args: ["pr", "diff", String(target.number), "--color=never"] }
-    : { file: "git", args: target.args };
+    : { file: "git", args: ["diff", ...GIT_DIFF_MACHINE_FORMAT, ...target.args.slice(1)] };
 }
 
 /** Canonical display form. Never execute this string directly; use reviewDiffCommand(). */
 export function formatReviewDiffTarget(target: ReviewDiffTarget): string {
-  const command = reviewDiffCommand(target);
+  const command = target.kind === "git" ? { file: "git", args: target.args } : reviewDiffCommand(target);
   return [command.file, ...command.args].join(" ");
 }
 
@@ -115,16 +122,8 @@ export function reviewGitDiffBaseline(target: GitReviewDiffTarget): GitDiffBasel
   return parsed.baseline;
 }
 
-/** Validate persisted targets by round-tripping through the single command allowlist parser. */
-export function isReviewDiffTarget(value: unknown): value is ReviewDiffTarget {
-  if (!Value.Check(ReviewDiffTargetSchema, value)) return false;
-  const parsed = parseAllowedDiffCommand(formatReviewDiffTarget(value));
-  return !("error" in parsed) && sameReviewDiffTarget(parsed, value);
-}
-
-function sameReviewDiffTarget(left: ReviewDiffTarget, right: ReviewDiffTarget): boolean {
-  if (left.kind !== right.kind) return false;
-  if (left.kind === "pull-request") return right.kind === "pull-request" && left.number === right.number;
-  if (right.kind !== "git" || left.args.length !== right.args.length) return false;
-  return left.args.every((arg, index) => arg === right.args[index]);
+/** Validate a schema-checked persisted target by round-tripping it through the single command allowlist parser. */
+export function isAllowedReviewDiffTarget(target: ReviewDiffTarget): boolean {
+  const parsed = parseAllowedDiffCommand(formatReviewDiffTarget(target));
+  return !("error" in parsed) && Value.Equal(parsed, target);
 }

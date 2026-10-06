@@ -1,5 +1,4 @@
 import type { AgentExecutionOptions, AgentProgress } from "./agent-runner-types.ts";
-import { unknownErrorMessage } from "./unknown-error.ts";
 import type { WorktreeRegistry } from "./worktree.ts";
 
 interface AgentWorkspaceBase {
@@ -45,7 +44,7 @@ export async function createAgentWorkspace(
 
   const probe = await rc.worktrees.probe(rc.signal);
   if (!probe.ok) {
-    throw new Error(`Failed to check git worktree availability for isolated agent: ${probe.error ?? "unknown git error"}`);
+    throw new Error(`Failed to check git worktree availability for isolated agent: ${probe.error}`);
   }
   if (!probe.inside) {
     throw new Error("Agent requested worktree isolation, but the workflow cwd is not inside a git work tree.");
@@ -59,11 +58,11 @@ export async function createAgentWorkspace(
       if (opts.candidatePatch.baselineOid !== added.baselineOid) throw new Error("Candidate baseline differs from evaluator baseline");
       if (opts.candidatePatch.patch.trim()) {
         const applied = await rc.worktrees.applyPatch(worktreePath, opts.candidatePatch.patch, rc.signal);
-        if (!applied.ok) throw new Error(`Candidate patch could not be applied: ${applied.error ?? applied.stderr}`);
+        if (!applied.ok) throw new Error(`Candidate patch could not be applied: ${applied.error}`);
       }
     } catch (error) {
       const removed = await rc.worktrees.remove(worktreePath);
-      if (!removed.ok) rc.progress.log(`${label}: evaluator setup cleanup failed: ${removed.error ?? removed.stderr}`);
+      if (!removed.ok) rc.progress.log(`${label}: evaluator setup cleanup failed: ${removed.error}`);
       throw error;
     }
   }
@@ -82,22 +81,9 @@ export async function createAgentWorkspace(
       const removed = await rc.worktrees.remove(worktreePath);
       if (!removed.ok) {
         rc.progress.log(
-          `${label}: failed to remove isolated worktree (${removed.error ?? (removed.stderr.trim() || "unknown error")})`,
+          `${label}: failed to remove isolated worktree (${removed.error})`,
         );
       }
     },
   };
-}
-
-export async function disposeAgentWorkspace(
-  rc: Pick<AgentWorkspaceContext, "progress">,
-  label: string,
-  workspace: AgentWorkspace | undefined,
-): Promise<void> {
-  if (!workspace) return;
-  try {
-    await workspace.dispose();
-  } catch (error) {
-    rc.progress.log(`${label}: failed to dispose isolated workspace (${unknownErrorMessage(error)})`);
-  }
 }

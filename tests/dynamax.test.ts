@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   CustomEditor,
   type ExtensionAPI,
@@ -25,7 +24,6 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import {
   ADAPTIVE_WORKFLOW_GUIDANCE,
-  appendDynamaxContextReminder,
   appendDynamaxSystemReminder,
   clearDynamax,
   createDynamaxRuntime,
@@ -34,7 +32,7 @@ import {
   DYNAMAX_STATUS_KEY,
   type DynamaxRegistrationOptions,
   type DynamaxRuntimeStore,
-  dynamaxWidgetLine,
+  dynamaxStatusText,
   enableDynamaxSticky,
   getDynamaxRuntime,
   hasDynamaxToken,
@@ -43,6 +41,7 @@ import {
   registerDynamax,
   updateDynamaxSurfaces,
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { sessionKey } from "../.pi/extensions/pi-workflow-engine/src/session-identity.ts";
 import {
   decorateDynamaxEditor,
@@ -51,10 +50,6 @@ import {
   resolveDynamaxEffect,
   type DynamaxAnimationScheduler,
 } from "../.pi/extensions/pi-workflow-engine/src/ui/dynamax-editor-decoration.ts";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function createStubEditor(initialText = ""): EditorComponent {
   let text = initialText;
@@ -181,7 +176,7 @@ function captureDynamax(
     events: { on: () => {}, emit: async () => {} },
   } as unknown as ExtensionAPI;
 
-  registerDynamax(fakePi, { inspector: shortcut, results: null }, { effect: "shine", ...registrationOptions, openInspector });
+  registerDynamax(fakePi, { inspector: shortcut, results: null }, { effect: "shine", ...registrationOptions, openInspector: openInspector ?? (() => {}) });
   return { commands, shortcuts, handlers };
 }
 
@@ -566,21 +561,6 @@ test("dynamax sticky mode remains active until cleared", () => {
   assert.equal(isDynamaxActive(state), false);
 });
 
-test("appendDynamaxContextReminder appends a hidden custom message only when sticky", () => {
-  const state = createDynamaxState();
-  const messages: AgentMessage[] = [];
-
-  assert.equal(appendDynamaxContextReminder(messages, state), messages);
-
-  enableDynamaxSticky(state);
-  const appended = appendDynamaxContextReminder(messages, state);
-  assert.equal(appended.length, 1);
-  const reminder = appended[0];
-  assert.equal(isRecord(reminder) ? reminder.role : undefined, "custom");
-  assert.equal(isRecord(reminder) ? reminder.customType : undefined, "workflow-dynamax-reminder");
-  assert.equal(isRecord(reminder) ? reminder.display : undefined, false);
-});
-
 test("resolveDynamaxShortcuts reads configurable workflow UI shortcuts", () => {
   const shortcuts = resolveDynamaxShortcuts(resolve("tests/fixtures/dynamax-shortcuts.json"));
 
@@ -653,19 +633,25 @@ test("dynamax command state stays isolated per session", async () => {
   await command.handler("on", first.ctx);
   await command.handler("status", second.ctx);
 
-  assert.match(first.ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /sticky on/);
+  assert.equal(first.ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax");
   assert.equal(second.ui.notifications.at(-1)?.message, "Dynamax sticky off; one-shot clear");
 });
 
-test("dynamax widget helper describes sticky and one-shot state", () => {
-  const runtime = createDynamaxRuntime();
-  enableDynamaxSticky(runtime.state);
-  markDynamaxOneShot(runtime.state);
+test("dynamax status states only the mode: sticky, armed for the next prompt, or active this turn", () => {
+  const theme = createFakeContext("status-modes").ctx.ui.theme;
+  const sticky = createDynamaxState();
+  enableDynamaxSticky(sticky);
+  markDynamaxOneShot(sticky);
+  assert.equal(dynamaxStatusText(sticky, theme), "◆ dynamax");
 
-  assert.match(dynamaxWidgetLine(runtime.state, "ctrl+shift+x", "inline workflow"), /running inline workflow \+ sticky on \+ one-shot pending/);
-  assert.match(dynamaxWidgetLine(runtime.state, "ctrl+shift+x"), /\/workflow:dynamax on\|off/);
-  assert.match(dynamaxWidgetLine(runtime.state, "ctrl+shift+x"), /ctrl\+shift\+x inspector/);
-  assert.doesNotMatch(dynamaxWidgetLine(runtime.state, "ctrl+shift+x"), /panel/);
+  const armed = createDynamaxState();
+  markDynamaxOneShot(armed);
+  assert.equal(dynamaxStatusText(armed, theme), "◆ dynamax · next prompt");
+
+  const turn = createDynamaxState();
+  markDynamaxOneShot(turn);
+  appendDynamaxSystemReminder("base", turn);
+  assert.equal(dynamaxStatusText(turn, theme), "◆ dynamax · this turn");
 });
 
 test("one-shot Dynamax status remains visible for the active turn", async () => {
@@ -677,55 +663,13 @@ test("one-shot Dynamax status remains visible for the active turn", async () => 
   const { ctx, ui } = createFakeContext("session-a");
 
   await input({ source: "interactive", text: "dynamax inspect this branch" }, ctx);
-  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /one-shot pending/);
+  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax · next prompt");
 
   const result = await beforeAgentStart({ systemPrompt: "base" }, ctx);
   assert.match(isRecord(result) && typeof result.systemPrompt === "string" ? result.systemPrompt : "", /dynamax workflow opt-in/);
-  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /active this turn/);
+  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax · this turn");
 
   await agentEnd({ messages: [] }, ctx);
-  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), undefined);
-});
-
-test("one-shot Dynamax status survives ordinary host tool calls without refresh handlers", async () => {
-  const captured = captureDynamax("ctrl+shift+x");
-  const input = captured.handlers.get("input")?.[0];
-  const beforeAgentStart = captured.handlers.get("before_agent_start")?.[0];
-  const toolStart = captured.handlers.get("tool_execution_start")?.[0];
-  const toolEnd = captured.handlers.get("tool_execution_end")?.[0];
-  const agentEnd = captured.handlers.get("agent_end")?.[0];
-  if (!input || !beforeAgentStart || !toolStart || !toolEnd || !agentEnd) {
-    throw new Error("expected Dynamax lifecycle handlers");
-  }
-  const { ctx, ui } = createFakeContext("session-a");
-
-  await input({ source: "interactive", text: "dynamax inspect this branch" }, ctx);
-  await beforeAgentStart({ systemPrompt: "base" }, ctx);
-
-  await toolStart({ toolName: "read", args: { path: ".pi/extensions/pi-workflow-engine/workflows/code-review.ts" } }, ctx);
-  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /active this turn/);
-  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /\/workflow:dynamax on\|off/);
-
-  await toolEnd({ toolName: "read" }, ctx);
-  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /active this turn/);
-  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /ctrl\+shift\+x inspector/);
-
-  await agentEnd({ messages: [] }, ctx);
-  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), undefined);
-});
-
-test("workflow tool lifecycle updates the Dynamax running label", async () => {
-  const captured = captureDynamax("ctrl+shift+x");
-  const start = captured.handlers.get("tool_execution_start")?.[0];
-  const end = captured.handlers.get("tool_execution_end")?.[0];
-  if (!start || !end) throw new Error("expected workflow tool lifecycle handlers");
-  const { ctx, ui } = createFakeContext("session-a");
-
-  await start({ toolName: "workflow", args: { name: "code-review" } }, ctx);
-  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /running code-review/);
-  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /ctrl\+shift\+x inspector/);
-
-  await end({ toolName: "workflow" }, ctx);
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), undefined);
 });
 
@@ -734,10 +678,10 @@ test("updateDynamaxSurfaces clears inactive UI", () => {
   const { ctx, ui } = createFakeContext("session-a");
 
   enableDynamaxSticky(runtime.state);
-  updateDynamaxSurfaces(ctx, runtime, { inspector: "ctrl+shift+x", results: null });
-  assert.match(ui.statuses.get(DYNAMAX_STATUS_KEY) ?? "", /sticky on/);
+  updateDynamaxSurfaces(ctx, runtime);
+  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax");
 
   clearDynamax(runtime.state);
-  updateDynamaxSurfaces(ctx, runtime, { inspector: "ctrl+shift+x", results: null });
+  updateDynamaxSurfaces(ctx, runtime);
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), undefined);
 });

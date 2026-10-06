@@ -10,39 +10,28 @@ import {
   runWorkflowWithContext,
   type WorkflowContextOptions,
   type WorkflowProgress,
-  type WorkflowRunContext,
 } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import type { AgentProgress, CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
-import { createBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
-import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
-import { defaultAgentRetryScheduler } from "../.pi/extensions/pi-workflow-engine/src/agent-retry.ts";
-import { hostWorkflowModelProfiles } from "../.pi/extensions/pi-workflow-engine/src/model-profiles.ts";
-import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import {
   createWorkflowJournal,
   loadJournalEntries,
   workflowJournalPath,
 } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { workflowRunRecordPath } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
-import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef, WorkflowRunMetadata } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
-import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
-import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
-import {
-  captureRepositoryResumeContext,
-  FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-} from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
-import { captureTreeFingerprint } from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
+import { captureRepositoryResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
+import { captureSourceTreeFingerprint } from "../.pi/extensions/pi-workflow-engine/src/tree-fingerprint.ts";
 import {
   TEST_TOOL,
   TEST_TOOL_DEFINITION,
   assistantTextMessage,
   createAgentRunnerSession,
+  createRunContext,
   testModel,
 } from "./agent-runner-fixtures.ts";
-import { createGitRepo, runGit } from "./resume-fixtures.ts";
+import { createGitRepo, gitCommit, runGit } from "./resume-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly logs: string[];
@@ -81,12 +70,7 @@ function workflowModule(name: string, run: WorkflowModule["default"]): LoadedWor
 }
 
 async function sourceTreeFingerprint(root: string): Promise<string> {
-  const capture = await captureTreeFingerprint({
-    root,
-    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-    maxBytes: 1 << 20,
-    maxFiles: 128,
-  });
+  const capture = await captureSourceTreeFingerprint(root);
   if (capture.kind === "unverifiable") throw new Error(capture.reason);
   return capture.fingerprint;
 }
@@ -226,32 +210,19 @@ async function runWithJournal(input: {
   readonly resumeEditedWorkflow?: boolean;
   readonly onProgress?: (progress: CaptureProgress) => void;
 }): Promise<unknown> {
-  const usage = createWorkflowUsageRecorder();
   const progress = createProgress();
   const journal = await createWorkflowJournal({
     resumePath: input.resumeFrom ? workflowJournalPath(input.cwd, input.resumeFrom) : undefined,
     writePath: workflowJournalPath(input.cwd, input.writeRunId),
   });
-  const rc: WorkflowRunContext = {
+  const rc = createRunContext({
     cwd: input.cwd,
-    hostModel: undefined,
-    modelRegistry: { find: () => undefined },
     semaphore: new Semaphore(4),
-    agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
-    agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
-    agentRetries: 0,
     resumeEditedWorkflow: input.resumeEditedWorkflow,
-    retryScheduler: defaultAgentRetryScheduler,
-    modelProfiles: hostWorkflowModelProfiles(undefined),
     progress,
-    signal: undefined,
-    perf: new NoopPerfRecorder(),
-    usage,
-    budget: createBudget(null, usage),
     journal,
-    worktrees: new WorktreeRegistry(input.cwd),
     createSession: input.createSession,
-  };
+  });
 
   const result = await runWorkflowWithContext(rc, progress, input.mod, "", contextOpts(input.resolveWorkflow));
   input.onProgress?.(progress);
@@ -464,30 +435,17 @@ async function assertRepositoryChangeInvalidates(
 
   const progress = createProgress();
   const livePrompts: string[] = [];
-  const usage = createWorkflowUsageRecorder();
   const journal = await createWorkflowJournal({
     resumePath: workflowJournalPath(cwd, "first-run"),
     writePath: workflowJournalPath(cwd, "second-run"),
   });
-  const rc: WorkflowRunContext = {
+  const rc = createRunContext({
     cwd,
-    hostModel: undefined,
-    modelRegistry: { find: () => undefined },
     semaphore: new Semaphore(4),
-    agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
-    agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
-    agentRetries: 0,
-    retryScheduler: defaultAgentRetryScheduler,
-    modelProfiles: hostWorkflowModelProfiles(undefined),
     progress,
-    signal: undefined,
-    perf: new NoopPerfRecorder(),
-    usage,
-    budget: createBudget(null, usage),
     journal,
-    worktrees: new WorktreeRegistry(cwd),
     createSession: createLiveTextSession((prompt) => livePrompts.push(prompt)),
-  };
+  });
 
   await runWorkflowWithContext(rc, progress, mod, "", contextOpts());
   assert.deepEqual(livePrompts, ["same prompt"]);
@@ -586,7 +544,7 @@ test("resume invalidates cached agents when repository HEAD changes", async () =
       async () => {
         await writeFile(join(cwd, "tracked.txt"), "committed change\n", "utf8");
         runGit(cwd, ["add", "tracked.txt"]);
-        runGit(cwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "change"]);
+        gitCommit(cwd, "change");
       },
       /repository HEAD changed/,
     );

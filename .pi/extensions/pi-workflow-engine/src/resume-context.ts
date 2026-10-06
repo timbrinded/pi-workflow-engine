@@ -3,15 +3,19 @@ import { lstat, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { throwIfAborted } from "./cancellation.ts";
 import { isMissingPathError } from "./filesystem-error.ts";
+import { isGitObjectId, parseGitTopLevel, runGit } from "./git.ts";
+import { isRecord } from "./guards.ts";
 import type {
   EffectiveAgentSessionIdentity,
   EffectiveToolIdentity,
 } from "./agent-session-identity.ts";
-import { runBoundedProcess, type BoundedProcessResult } from "./process-runner.ts";
+import type { BoundedProcessResult } from "./process-runner.ts";
 import {
   BoundedFingerprint,
   captureDeclaredInputFingerprint,
-  captureTreeFingerprint,
+  captureSourceTreeFingerprint,
+  FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+  isExcludedDeclaredInput,
   isPathWithin,
   resolveDeclaredInputPaths,
   validateTreeFile,
@@ -58,11 +62,8 @@ export interface AgentResumeBaseContext {
   readonly workflow: WorkflowResumeContext;
 }
 
-export interface VerifiedAgentResumeBaseContext {
+export interface AgentResumeContext {
   readonly workflow: VerifiedWorkflowResumeContext;
-}
-
-export interface AgentResumeContext extends VerifiedAgentResumeBaseContext {
   readonly repository: VerifiedRepositoryResumeContext;
   readonly session: EffectiveAgentSessionIdentity;
   readonly skills: readonly ResolvedSkillIdentity[];
@@ -86,7 +87,6 @@ type BoundedProcessFailureResult = Extract<BoundedProcessResult, { readonly ok: 
 const GIT_CONTEXT_TIMEOUT_MS = 15_000;
 const GIT_CONTEXT_MAX_BYTES = 32 << 20;
 const CONTENT_FINGERPRINT_MAX_BYTES = 32 << 20;
-const SOURCE_TREE_MAX_FILES = 4096;
 const REPOSITORY_INPUT_MAX_ENTRIES = 4096;
 const GIT_UNTRACKED_MAX_ENTRIES = 32_768;
 const GIT_VISIBLE_PATHS = [
@@ -94,14 +94,6 @@ const GIT_VISIBLE_PATHS = [
   ":(exclude).pi/.workflow-runs/**",
   ":(glob,exclude)**/.pi/.workflow-runs/**",
 ] as const;
-export const FINGERPRINT_EXCLUDED_RELATIVE_PATHS = new Set([
-  ".git",
-  ".pi/.workflow-runs",
-]);
-
-export function unverifiableRepositoryResumeContext(reason: string): RepositoryResumeContext {
-  return { kind: "unverifiable", reason };
-}
 
 export function unverifiableWorkflowResumeContext(name: string, reason: string): WorkflowResumeContext {
   return { kind: "unverifiable", name, reason };
@@ -152,9 +144,9 @@ export async function captureIsolatedRepositoryContext(
       return { kind: "unverifiable", reason: "isolated baseline is not a full commit object ID" };
     }
     const [commit, tree, entries] = await Promise.all([
-      runGit(cwd, ["rev-parse", "--verify", `${baselineOid}^{commit}`], signal),
-      runGit(cwd, ["rev-parse", "--verify", `${baselineOid}^{tree}`], signal),
-      runGit(cwd, ["ls-tree", "-r", "-z", "--full-tree", baselineOid], signal),
+      runContextGit(cwd, ["rev-parse", "--verify", `${baselineOid}^{commit}`], signal),
+      runContextGit(cwd, ["rev-parse", "--verify", `${baselineOid}^{tree}`], signal),
+      runContextGit(cwd, ["ls-tree", "-r", "-z", "--full-tree", baselineOid], signal),
     ]);
     throwIfAborted(signal);
     if (!commit.ok) return { kind: "unverifiable", reason: processFailureReason("isolated baseline commit probe", commit) };
@@ -189,7 +181,7 @@ async function captureNonGitRepositoryContext(
   const capture = await captureRepositoryInputs(cwd, inputs, signal);
   return capture.kind === "verified"
     ? { kind: "verified", state: "non-git", workingTreeFingerprint: capture.fingerprint }
-    : unverifiableRepositoryResumeContext(capture.reason);
+    : capture;
 }
 
 async function captureRepositoryInputs(
@@ -240,7 +232,7 @@ async function inspectRepository(
   signal: AbortSignal | undefined,
 ): Promise<RepositoryInspection> {
   throwIfAborted(signal);
-  const probe = await runGit(cwd, ["rev-parse", "--is-inside-work-tree"], signal);
+  const probe = await runContextGit(cwd, ["rev-parse", "--is-inside-work-tree"], signal);
   throwIfAborted(signal);
   if (!probe.ok) {
     if (probe.failure.kind === "exit") {
@@ -258,8 +250,8 @@ async function inspectRepository(
   }
 
   const [rootResult, headResult] = await Promise.all([
-    runGit(cwd, ["rev-parse", "--show-toplevel"], signal),
-    runGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], signal),
+    runContextGit(cwd, ["rev-parse", "--show-toplevel"], signal),
+    runContextGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], signal),
   ]);
   throwIfAborted(signal);
   if (!rootResult.ok) {
@@ -283,57 +275,50 @@ async function captureGitVisibleState(
   signal: AbortSignal | undefined,
 ): Promise<FingerprintCapture> {
   try {
-    return await captureGitVisibleStateUnchecked(cwd, signal);
+    const diffFlags = [
+      "--binary",
+      "--full-index",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--ignore-submodules=none",
+    ] as const;
+    const [unstaged, unstagedRaw, staged, untrackedPaths, indexEntries, trackedFlags] = await Promise.all([
+      runContextGit(cwd, ["diff", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
+      runContextGit(cwd, ["diff", "--raw", "-z", "--no-abbrev", "--no-renames", ...diffFlags.slice(2), "--", ...GIT_VISIBLE_PATHS], signal),
+      runContextGit(cwd, ["diff", "--cached", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
+      runContextGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--", ...GIT_VISIBLE_PATHS], signal),
+      runContextGit(cwd, ["ls-files", "--stage", "--full-name", "-z"], signal),
+      runContextGit(cwd, ["ls-files", "-v", "--full-name", "-z"], signal),
+    ]);
+    throwIfAborted(signal);
+
+    const validated = validateGitVisibleOutputs({ unstaged, unstagedRaw, staged, untrackedPaths, indexEntries, trackedFlags });
+    if (!validated.ok) return { kind: "unverifiable", reason: validated.reason };
+
+    const untracked = await captureDeclaredInputFingerprint({
+      root: cwd,
+      inputs: validated.untrackedPaths.filter((path) => !isExcludedDeclaredInput(path, FINGERPRINT_EXCLUDED_RELATIVE_PATHS)),
+      excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+      maxBytes: CONTENT_FINGERPRINT_MAX_BYTES,
+      maxEntries: GIT_UNTRACKED_MAX_ENTRIES,
+      signal,
+    });
+    if (untracked.kind === "unverifiable") return untracked;
+
+    return {
+      kind: "verified",
+      fingerprint: combineFingerprints([
+        ["unstaged", validated.unstaged],
+        ["staged", validated.staged],
+        ["index", validated.indexEntries],
+        ["untracked", untracked.fingerprint],
+      ]),
+    };
   } catch (error) {
     throwIfAborted(signal);
     return { kind: "unverifiable", reason: unknownErrorMessage(error) };
   }
-}
-
-async function captureGitVisibleStateUnchecked(
-  cwd: string,
-  signal: AbortSignal | undefined,
-): Promise<FingerprintCapture> {
-  const diffFlags = [
-    "--binary",
-    "--full-index",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--no-color",
-    "--ignore-submodules=none",
-  ] as const;
-  const [unstaged, unstagedRaw, staged, untrackedPaths, indexEntries, trackedFlags] = await Promise.all([
-    runGit(cwd, ["diff", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
-    runGit(cwd, ["diff", "--raw", "-z", "--no-abbrev", "--no-renames", ...diffFlags.slice(2), "--", ...GIT_VISIBLE_PATHS], signal),
-    runGit(cwd, ["diff", "--cached", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
-    runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--", ...GIT_VISIBLE_PATHS], signal),
-    runGit(cwd, ["ls-files", "--stage", "--full-name", "-z"], signal),
-    runGit(cwd, ["ls-files", "-v", "--full-name", "-z"], signal),
-  ]);
-  throwIfAborted(signal);
-
-  const validated = validateGitVisibleOutputs({ unstaged, unstagedRaw, staged, untrackedPaths, indexEntries, trackedFlags });
-  if (!validated.ok) return { kind: "unverifiable", reason: validated.reason };
-
-  const untracked = await captureDeclaredInputFingerprint({
-    root: cwd,
-    inputs: validated.untrackedPaths.filter((path) => !isFingerprintExcludedPath(path)),
-    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-    maxBytes: CONTENT_FINGERPRINT_MAX_BYTES,
-    maxEntries: GIT_UNTRACKED_MAX_ENTRIES,
-    signal,
-  });
-  if (untracked.kind === "unverifiable") return untracked;
-
-  return {
-    kind: "verified",
-    fingerprint: combineFingerprints([
-      ["unstaged", validated.unstaged],
-      ["staged", validated.staged],
-      ["index", validated.indexEntries],
-      ["untracked", untracked.fingerprint],
-    ]),
-  };
 }
 
 interface GitVisibleProcessOutputs {
@@ -474,13 +459,7 @@ export async function captureWorkflowResumeContext(
     return unverifiableWorkflowResumeContext(mod.meta.name, `workflow source file is not part of its source tree: ${validation.reason}`);
   }
 
-  const current = await captureTreeFingerprint({
-    root: sourceRoot,
-    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-    maxBytes: CONTENT_FINGERPRINT_MAX_BYTES,
-    maxFiles: SOURCE_TREE_MAX_FILES,
-    signal,
-  });
+  const current = await captureSourceTreeFingerprint(sourceRoot, signal);
   if (current.kind === "unverifiable") {
     return unverifiableWorkflowResumeContext(mod.meta.name, `workflow source tree could not be verified: ${current.reason}`);
   }
@@ -490,18 +469,20 @@ export async function captureWorkflowResumeContext(
   return { kind: "verified", name: mod.meta.name, sourceFingerprint: mod.source.fingerprint };
 }
 
-export function createAgentResumeContext(
-  base: VerifiedAgentResumeBaseContext,
-  repository: VerifiedRepositoryResumeContext,
-  session: EffectiveAgentSessionIdentity,
-  skills: readonly ResolvedSkillIdentity[],
-): AgentResumeContext {
-  return {
-    ...base,
-    repository,
-    session,
-    skills: [...skills],
-  };
+export function repositoryMismatchReason(
+  stored: VerifiedRepositoryResumeContext,
+  current: VerifiedRepositoryResumeContext,
+): string | undefined {
+  if (stored.state !== current.state) return "repository state changed";
+  if (
+    (stored.state === "git" || stored.state === "isolated") &&
+    (current.state === "git" || current.state === "isolated") &&
+    stored.head !== current.head
+  ) {
+    return stored.state === "git" ? "repository HEAD changed" : "isolated baseline changed";
+  }
+  if (stored.workingTreeFingerprint !== current.workingTreeFingerprint) return "working tree contents changed";
+  return undefined;
 }
 
 export function resumeContextMismatchReason(
@@ -509,17 +490,8 @@ export function resumeContextMismatchReason(
   current: AgentResumeContext,
   options: ResumeContextComparisonOptions = {},
 ): string | undefined {
-  if (stored.repository.state !== current.repository.state) return "repository state changed";
-  if (
-    (stored.repository.state === "git" || stored.repository.state === "isolated") &&
-    (current.repository.state === "git" || current.repository.state === "isolated") &&
-    stored.repository.head !== current.repository.head
-  ) {
-    return stored.repository.state === "git" ? "repository HEAD changed" : "isolated baseline changed";
-  }
-  if (stored.repository.workingTreeFingerprint !== current.repository.workingTreeFingerprint) {
-    return "working tree contents changed";
-  }
+  const repository = repositoryMismatchReason(stored.repository, current.repository);
+  if (repository) return repository;
   if (stored.workflow.name !== current.workflow.name) return "workflow name changed";
   if (
     !options.allowWorkflowSourceMismatch
@@ -560,19 +532,14 @@ export function isAgentResumeContext(value: unknown): value is AgentResumeContex
   );
 }
 
-async function runGit(cwd: string, args: readonly string[], signal: AbortSignal | undefined): Promise<BoundedProcessResult> {
-  return await runBoundedProcess({
-    file: "git",
-    args,
+async function runContextGit(cwd: string, args: readonly string[], signal: AbortSignal | undefined): Promise<BoundedProcessResult> {
+  return await runGit({
     cwd,
-    env: { ...process.env, GIT_EXTERNAL_DIFF: "", GIT_DIFF_OPTS: "" },
+    args,
+    label: "git resume-context capture",
     signal,
     timeoutMs: GIT_CONTEXT_TIMEOUT_MS,
     maxBufferBytes: GIT_CONTEXT_MAX_BYTES,
-    abortError: "git resume-context capture aborted",
-    timeoutError: `git resume-context capture timed out after ${GIT_CONTEXT_TIMEOUT_MS}ms`,
-    maxBufferError: `git resume-context capture exceeded ${GIT_CONTEXT_MAX_BYTES} bytes`,
-    exitError: (stderr, code, exitSignal) => stderr.trim() || `git exited with code ${code ?? `signal ${exitSignal ?? "unknown"}`}`,
   });
 }
 
@@ -713,37 +680,6 @@ function parseNullTerminatedRecords(output: string, operation: string): string[]
   if (output.length === 0) return [];
   if (!output.endsWith("\0")) throw new Error(`${operation} returned unterminated data`);
   return output.slice(0, -1).split("\0");
-}
-
-function parseGitTopLevel(output: string, cwd: string): string | undefined {
-  const withoutLf = output.endsWith("\n") ? output.slice(0, -1) : output;
-  const value = withoutLf.endsWith("\r") ? withoutLf.slice(0, -1) : withoutLf;
-  if (value.length === 0 || value.includes("\n") || value.includes("\0")) return undefined;
-  const root = resolve(cwd, value);
-  return isPathWithin(root, cwd) ? root : undefined;
-}
-
-function isGitObjectId(value: string): boolean {
-  return /^[0-9a-f]{40,64}$/i.test(value);
-}
-
-function isFingerprintExcludedPath(path: string): boolean {
-  const normalized = path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
-  for (const excluded of FINGERPRINT_EXCLUDED_RELATIVE_PATHS) {
-    if (
-      normalized === excluded ||
-      normalized.startsWith(`${excluded}/`) ||
-      normalized.endsWith(`/${excluded}`) ||
-      normalized.includes(`/${excluded}/`)
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function sanitizeProcessMessage(message: string): string {

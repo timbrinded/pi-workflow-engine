@@ -10,7 +10,6 @@ export interface Finalizer {
 
 export interface FinalizerFailure {
   readonly name: string;
-  readonly criticality: FinalizerCriticality;
   readonly error: unknown;
 }
 
@@ -35,24 +34,18 @@ export class RequiredFinalizerError extends AggregateError {
 export async function runFinalizers(
   finalizers: readonly Finalizer[],
   options: RunFinalizersOptions = {},
-): Promise<readonly FinalizerFailure[]> {
+): Promise<void> {
   const requiredFailures: FinalizerFailure[] = [];
-  const bestEffortFailures: FinalizerFailure[] = [];
 
   for (const finalizer of finalizers) {
     try {
       await finalizer.run();
     } catch (error) {
-      const failure: FinalizerFailure = {
-        name: finalizer.name,
-        criticality: finalizer.criticality,
-        error,
-      };
+      const failure: FinalizerFailure = { name: finalizer.name, error };
       if (finalizer.criticality === "required") {
         requiredFailures.push(failure);
         continue;
       }
-      bestEffortFailures.push(failure);
       try {
         options.onBestEffortFailure?.(failure);
       } catch {
@@ -62,5 +55,4 @@ export async function runFinalizers(
   }
 
   if (requiredFailures.length > 0) throw new RequiredFinalizerError(requiredFailures);
-  return bestEffortFailures;
 }

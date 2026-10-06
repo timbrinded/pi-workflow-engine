@@ -13,7 +13,7 @@ interface ScheduledUsageLimitResume {
   readonly handle: unknown;
 }
 
-export const defaultWorkflowUsageLimitSchedulerClock: WorkflowUsageLimitSchedulerClock = {
+const defaultWorkflowUsageLimitSchedulerClock: WorkflowUsageLimitSchedulerClock = {
   now: () => Date.now(),
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -72,9 +72,5 @@ export class WorkflowUsageLimitScheduler {
 
   activateSession(ctx: Pick<ExtensionContext, "sessionManager">): void {
     this.inactiveSessions.delete(ctx.sessionManager.getSessionId());
-  }
-
-  has(runId: string): boolean {
-    return this.scheduled.has(runId);
   }
 }

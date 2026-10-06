@@ -9,13 +9,9 @@ import {
   type AgentAttemptResult,
   type AgentReplayPlan,
 } from "./agent-replay.ts";
-import {
-  resolveAgentModel,
-  type ResolvedAgentModel,
-} from "./agent-session.ts";
+import { resolveAgentModel } from "./agent-session.ts";
 import type {
   AgentExecutionOptions,
-  AgentRunTags,
   RunContext,
 } from "./agent-runner-types.ts";
 import type { AgentResumeBaseContext } from "./resume-context.ts";
@@ -33,8 +29,6 @@ export type {
   CreateAgentSession,
   RunContext,
 } from "./agent-runner-types.ts";
-export { resolveAgentModel } from "./agent-session.ts";
-export type { ResolvedAgentModel, ResolvedAgentModelRequest } from "./agent-session.ts";
 
 /**
  * Run one subagent to completion in an isolated in-memory session.
@@ -54,7 +48,6 @@ export async function runAgent(
 
   const label = opts.label ?? "agent";
   const phase = opts.phase ?? "Workflow";
-  const tags: AgentRunTags = { label, phase };
 
   return await rc.perf.time("agent.total_ms", async () => {
     throwIfAborted(rc.signal);
@@ -73,7 +66,7 @@ export async function runAgent(
           const agentRc: RunContext = { ...rc, signal: liveScope.signal };
           throwIfAborted(agentRc.signal);
           if (!isReplayEnabled(replay)) assertWorkflowBudgetAvailable(agentRc.budget);
-          rc.progress.agentStart(opts.phase, label, rowId);
+          rc.progress.agentStart(rowId);
           if (replay.kind === "disabled") {
             rc.progress.log(`${label}: resume disabled for this call (${replay.reason})`);
           }
@@ -92,7 +85,7 @@ export async function runAgent(
                 replay: attemptPlan,
                 label,
                 rowId,
-                tags,
+                phase,
                 admitLiveAgent: liveScope.admit,
               });
             } catch (error) {
@@ -108,23 +101,23 @@ export async function runAgent(
               providerRetries++;
               const delayMs = agentRetryDelayMs(providerRetries);
               rc.progress.log(`${label}: transient provider failure; retry ${providerRetries}/${agentRc.agentRetries} in ${delayMs}ms`);
-              rc.perf.counter("agent.provider_retry", 1, tags);
-              rc.perf.observe("agent.provider_retry_delay_ms", delayMs, tags);
-              attemptPlan = { kind: "off" };
+              rc.perf.counter("agent.provider_retry");
+              rc.perf.observe("agent.provider_retry_delay_ms", delayMs);
+              // Keep the replay plan: the failed attempt recorded nothing, and the restart recaptures identity.
               await agentRc.retryScheduler.sleep(delayMs, agentRc.signal);
               continue;
             }
-            const settlement = await settleAgentAttempt({ rc: agentRc, label, tags, replay: attemptPlan, outcome });
+            const settlement = await settleAgentAttempt({ rc: agentRc, label, outcome });
             if (settlement.kind === "retry-live") {
               attemptPlan = { kind: "off" };
               continue;
             }
-            rc.progress.agentDone(label, rowId);
+            rc.progress.agentDone(rowId);
             return settlement.result;
           }
         },
         {
-          onQueueWaitMs: (durationMs) => rc.perf.observe("agent.queue_wait_ms", durationMs, tags),
+          onQueueWaitMs: (durationMs) => rc.perf.observe("agent.queue_wait_ms", durationMs),
           signal: rc.signal,
         },
       );
@@ -132,13 +125,13 @@ export async function runAgent(
       let failure = error;
       if (liveScope.signal.aborted) failure = abortReason(liveScope.signal);
       if (rc.signal?.aborted) failure = abortReason(rc.signal);
-      rc.progress.agentFailed(label, failure, rowId);
+      rc.progress.agentFailed(rowId, failure);
       rc.progress.log(`${label} failed: ${unknownErrorMessage(failure)}`);
       throw failure;
     } finally {
       liveScope.dispose();
     }
-  }, tags);
+  });
 }
 
 function createAgentLiveScope(rc: RunContext, label: string) {
@@ -169,18 +162,19 @@ function resolveAgentRouting(
   rc: RunContext,
   opts: AgentExecutionOptions,
   label: string,
-): { readonly model: ResolvedAgentModel["model"]; readonly thinkingLevel: AgentExecutionOptions["thinkingLevel"] } {
+): ReturnType<typeof resolveAgentModelProfile> {
   try {
     return resolveAgentModelProfile(
       {
         request: opts,
         profiles: rc.modelProfiles,
-        resolveExplicitModel: (modelRef) => resolveAgentModel(modelRef, rc.modelRegistry, rc.hostModel).model,
+        resolveExplicitModel: (modelRef) => resolveAgentModel(modelRef, rc.modelRegistry),
         hostModel: rc.hostModel,
       },
     );
   } catch (error) {
-    rc.progress.agentFailed(label, error);
+    // Routing runs before the call has a row; give the failure its own so it cannot land on a same-label sibling.
+    rc.progress.agentFailed(rc.progress.agentQueued(opts.phase, label), error);
     throw error;
   }
 }

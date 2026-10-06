@@ -18,19 +18,21 @@ import {
   isWorkflowRunLifecycleAction,
   parseWorkflowRunsCommand,
   retainedWorkflowRunOutcome,
+  supersedingRuns,
   WORKFLOW_RUN_ACTIONS,
   WORKFLOW_RUN_HISTORY_LIMIT,
+  type WorkflowRunActionContext,
   type WorkflowRunLifecycleAction,
 } from "./workflow-run-history.ts";
-import { transitionWorkflowRun, type WorkflowRunRecord } from "./workflow-run-record.ts";
+import { stopWorkflowRunRecord, type WorkflowRunRecord } from "./workflow-run-record.ts";
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
-import { emptyWorkflowUsageTotals } from "./usage.ts";
 import {
   WorkflowUsageLimitScheduler,
   type WorkflowUsageLimitSchedulerClock,
 } from "./workflow-usage-limit-scheduler.ts";
-import { WorkflowInspector } from "./ui/workflow-inspector.ts";
+import { showWorkflowInspector } from "./ui/workflow-inspector.ts";
+import { WorkflowRunsBrowser, type WorkflowRunsBrowserChoice } from "./ui/workflow-runs-browser.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./ui/workflow-viewer-layout.ts";
 import { completeCurrentArgument, splitArgumentPrefix } from "./command-completions.ts";
 
@@ -77,8 +79,10 @@ export class WorkflowRunController {
     this.completionContext = { cwd: ctx.cwd, sessionManager: ctx.sessionManager };
     this.usageLimitScheduler.activateSession(ctx);
     try {
-      for (const record of await this.storeForCwd(ctx.cwd).list()) {
-        if (canRelaunchWorkflowRun(record)) this.usageLimitScheduler.arm(ctx, record);
+      const records = await this.storeForCwd(ctx.cwd).list();
+      const resumed = resumedRunIds(records);
+      for (const record of records) {
+        if (!resumed.has(record.runId) && canRelaunchWorkflowRun(record)) this.usageLimitScheduler.arm(ctx, record);
       }
     } catch (error) {
       this.log(`[workflow] provider-limit recovery could not load run history: ${unknownErrorMessage(error)}`);
@@ -101,11 +105,12 @@ export class WorkflowRunController {
       return;
     }
     if (!ctx.hasUI) {
-      const records = await this.listRecent(ctx.cwd);
-      ctx.ui.notify(formatWorkflowRunHistory(records, this.background.activeRunIds(ctx)), "info");
+      const { records, runs } = await this.history(ctx);
+      ctx.ui.notify(formatWorkflowRunHistory(records, runs), "info");
       return;
     }
-    await this.openRunSelector(ctx);
+    if (ctx.mode === "tui") await this.openRunsBrowser(ctx);
+    else await this.openRunSelector(ctx);
   }
 
   async inspectStoredRun(ctx: ExtensionContext, runId: string): Promise<boolean> {
@@ -115,17 +120,35 @@ export class WorkflowRunController {
     return true;
   }
 
-  private async openRunSelector(ctx: ExtensionCommandContext): Promise<void> {
+  /** The TUI runs overlay; it reopens on the same run after each action until closed. */
+  private async openRunsBrowser(ctx: ExtensionCommandContext): Promise<void> {
+    let initialRunId: string | undefined;
     while (true) {
-      const records = await this.listRecent(ctx.cwd);
-      const active = this.background.activeRunIds(ctx);
+      const { records, runs } = await this.history(ctx);
       if (records.length === 0) {
-        ctx.ui.notify(formatWorkflowRunHistory(records, active), "info");
+        ctx.ui.notify(formatWorkflowRunHistory(records, runs), "info");
         return;
       }
-      const options = records.map((record) =>
-        formatWorkflowRunSummary(record, active.has(record.runId))
+      const choice = await ctx.ui.custom<WorkflowRunsBrowserChoice | undefined>(
+        (...[tui, theme, , done]) =>
+          new WorkflowRunsBrowser({ records, runs }, tui, theme, done, { initialRunId, refresh: () => this.history(ctx) }),
+        WORKFLOW_VIEWER_OVERLAY_OPTIONS,
       );
+      if (!choice) return;
+      initialRunId = choice.runId;
+      await this.perform(choice.action, choice.runId, ctx);
+    }
+  }
+
+  /** Two native selects (run, then action) for UI hosts that cannot show custom components, such as RPC. */
+  private async openRunSelector(ctx: ExtensionCommandContext): Promise<void> {
+    while (true) {
+      const { records, runs } = await this.history(ctx);
+      if (records.length === 0) {
+        ctx.ui.notify(formatWorkflowRunHistory(records, runs), "info");
+        return;
+      }
+      const options = records.map((record) => formatWorkflowRunSummary(record, runs));
       const selected = await ctx.ui.select("Workflow Runs", options);
       if (!selected) return;
       const selectedIndex = options.indexOf(selected);
@@ -135,7 +158,7 @@ export class WorkflowRunController {
         ctx.ui.notify("The selected workflow run is no longer available.", "warning");
         continue;
       }
-      const actions = availableWorkflowRunActions(record, active.has(record.runId));
+      const actions = availableWorkflowRunActions(record, runs);
       const selectedAction = await ctx.ui.select(
         `${record.workflow.name} · ${record.runId}`,
         [...actions],
@@ -149,22 +172,10 @@ export class WorkflowRunController {
 
   private async inspect(record: WorkflowRunRecord, ctx: ExtensionContext): Promise<void> {
     if (!ctx.hasUI || ctx.mode !== "tui") {
-      ctx.ui.notify(
-        formatWorkflowRunDetails(record, this.background.activeRunIds(ctx).has(record.runId)),
-        "info",
-      );
+      ctx.ui.notify(formatWorkflowRunDetails(record, (await this.history(ctx)).runs), "info");
       return;
     }
-    await ctx.ui.custom<void>(
-      (tui, theme, _keybindings, done) => new WorkflowInspector(
-        () => record.progress,
-        tui,
-        theme,
-        () => done(undefined),
-        { label: `${record.state.toUpperCase()} outcome`, text: retainedWorkflowRunOutcome(record) },
-      ),
-      WORKFLOW_VIEWER_OVERLAY_OPTIONS,
-    );
+    await showWorkflowInspector(ctx.ui, () => record.progress, { text: retainedWorkflowRunOutcome(record), state: record.state });
   }
 
   private async perform(
@@ -181,12 +192,15 @@ export class WorkflowRunController {
       await this.inspect(record, ctx);
       return;
     }
-    const available = availableWorkflowRunActions(
-      record,
-      this.background.activeRunIds(ctx).has(record.runId),
-    );
-    if (!available.includes(action)) {
-      ctx.ui.notify(`Action ${action} is not available for ${record.state} run ${runId}.`, "warning");
+    const { runs } = await this.history(ctx);
+    if (!availableWorkflowRunActions(record, runs).includes(action)) {
+      const resumedAs = record.state === "paused" && action === "resume" ? runs.resumedAs.get(runId) : undefined;
+      ctx.ui.notify(
+        resumedAs
+          ? `Workflow run ${runId} was already resumed as ${resumedAs}.`
+          : `Action ${action} is not available for ${record.state} run ${runId}.`,
+        "warning",
+      );
       return;
     }
 
@@ -194,17 +208,7 @@ export class WorkflowRunController {
       if (action === "stop") {
         if (record.state === "paused") {
           this.usageLimitScheduler.cancel(runId);
-          const stopped = transitionWorkflowRun(record, {
-            state: "stopped",
-            progress: record.progress,
-            usage: record.usage ?? record.progress.usage ?? {
-              agents: [],
-              totals: emptyWorkflowUsageTotals(),
-              assistantMessages: 0,
-            },
-            error: new Error("Workflow stopped by user."),
-          });
-          await this.storeForCwd(ctx.cwd).save(stopped);
+          await this.storeForCwd(ctx.cwd).save(stopWorkflowRunRecord(record));
           await this.background.durableRunSettled(ctx, runId);
           ctx.ui.notify(`Workflow run ${runId} is now stopped.`, "info");
           return;
@@ -227,10 +231,7 @@ export class WorkflowRunController {
     action: "resume" | "restart",
   ): Promise<string> {
     const unavailable = backgroundUnavailableResult(ctx.mode);
-    if (unavailable) {
-      const first = unavailable.content[0];
-      throw new Error(first?.type === "text" ? first.text : "background workflows are unavailable");
-    }
+    if (unavailable) throw new Error(unavailable.content[0].text);
     const workflow = await this.dependencies.resolveWorkflow(record.workflow.name);
     if (!workflow) throw new Error(`registered workflow ${record.workflow.name} is unavailable`);
     if (workflow.source.kind !== "file") {
@@ -243,7 +244,6 @@ export class WorkflowRunController {
       throw new Error("workflow source changed, so journal replay cannot resume safely");
     }
     const options = resolveWorkflowRunOptions({
-      inspect: false,
       perf: record.options.perf,
       concurrency: record.options.concurrency,
       parallelSubmissionLimit: record.options.parallelSubmissionLimit ?? undefined,
@@ -257,7 +257,6 @@ export class WorkflowRunController {
         ? (record.state === "paused" ? record.pause?.attempt : undefined) ?? record.options.usageLimitAttempt
         : 0,
       budget: record.options.budget ?? undefined,
-      resultViewer: "skip",
       resumeFromRunId: action === "resume" ? record.runId : undefined,
     });
     const result = await startBackgroundWorkflowTool({
@@ -268,8 +267,7 @@ export class WorkflowRunController {
       execute: (backgroundCtx, backgroundOptions) =>
         this.dependencies.execute(backgroundCtx, workflow.meta.name, workflow, backgroundOptions),
     });
-    const first = result.content[0];
-    const message = first?.type === "text" ? first.text : `Workflow ${action} started.`;
+    const message = result.content[0].text;
     if (typeof result.details.error === "string") throw new Error(message);
     return message;
   }
@@ -282,6 +280,7 @@ export class WorkflowRunController {
       || !record.pause.autoResume
       || record.pause.attempt !== attempt
       || !canRelaunchWorkflowRun(record)
+      || resumedRunIds(await this.storeForCwd(ctx.cwd).list()).has(runId)
     ) {
       return;
     }
@@ -298,11 +297,17 @@ export class WorkflowRunController {
     return await this.storeForCwd(cwd).load(runId);
   }
 
-  private async listRecent(cwd: string): Promise<WorkflowRunRecord[]> {
-    const records = await this.storeForCwd(cwd).list();
-    return records
-      .sort((left, right) => right.createdAt - left.createdAt)
-      .slice(0, WORKFLOW_RUN_HISTORY_LIMIT);
+  /** The most recent runs and what their actions depend on, from one store listing. */
+  private async history(
+    ctx: WorkflowRunCompletionContext,
+  ): Promise<{ readonly records: WorkflowRunRecord[]; readonly runs: WorkflowRunActionContext }> {
+    const records = await this.storeForCwd(ctx.cwd).list();
+    return {
+      records: [...records]
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .slice(0, WORKFLOW_RUN_HISTORY_LIMIT),
+      runs: { activeRunIds: this.background.activeRunIds(ctx), resumedAs: supersedingRuns(records) },
+    };
   }
 
   async argumentCompletions(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
@@ -314,12 +319,11 @@ export class WorkflowRunController {
     if (parts.completed.length !== 1 || !ctx) return null;
     const action = parts.completed[0];
     if (!action || !isWorkflowRunLifecycleAction(action)) return null;
-    const records = await this.listRecent(ctx.cwd);
-    const active = this.background.activeRunIds(ctx);
+    const { records, runs } = await this.history(ctx);
     return completeCurrentArgument(
       argumentPrefix,
       records
-        .filter((record) => availableWorkflowRunActions(record, active.has(record.runId)).includes(action))
+        .filter((record) => availableWorkflowRunActions(record, runs).includes(action))
         .map((record) => ({
           value: record.runId,
           description: `${record.state} · ${record.workflow.name}`,
@@ -331,7 +335,7 @@ export class WorkflowRunController {
     const ctx = this.completionContext;
     const parts = splitArgumentPrefix(argumentPrefix);
     if (parts.completed.length > 0) return null;
-    const records = ctx ? await this.listRecent(ctx.cwd) : [];
+    const records = ctx ? (await this.history(ctx)).records : [];
     return completeCurrentArgument(argumentPrefix, [
       { value: "last", description: "Inspect the current or most recent in-session workflow" },
       ...records.map((record) => ({
@@ -340,6 +344,16 @@ export class WorkflowRunController {
       })),
     ]);
   }
+}
+
+/**
+ * Runs that any stored run resumed, whatever that resume's outcome. A resumed run keeps its paused
+ * record and pause attempt, so automatic resume treats the pause as spent: re-arming it after a
+ * failed or stopped resume would relaunch it on every session start. Manual resume instead uses
+ * `supersedingRuns`, which frees a run whose every resume failed or was stopped.
+ */
+function resumedRunIds(records: readonly WorkflowRunRecord[]): ReadonlySet<string> {
+  return new Set(records.flatMap((record) => record.options.resumeFromRunId ?? []));
 }
 
 export function registerWorkflowRunCommand(

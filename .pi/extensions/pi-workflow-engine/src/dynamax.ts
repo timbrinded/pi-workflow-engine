@@ -1,10 +1,11 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { EditorComponent, KeyId } from "@earendil-works/pi-tui";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import type { EditorComponent } from "@earendil-works/pi-tui";
 import { completeCurrentArgument } from "./command-completions.ts";
-import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./dynamax-shortcuts.ts";
+import type { DynamaxShortcuts } from "./dynamax-shortcuts.ts";
 import { sessionKey } from "./session-identity.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
+import { dot, GLYPH } from "./ui/kit.ts";
+import { setWorkflowInspectorShortcut } from "./ui/workflow-widget.ts";
 import {
   decorateDynamaxEditor,
   resolveDynamaxEffect,
@@ -21,15 +22,19 @@ export interface DynamaxState {
 
 export interface DynamaxRuntime {
   state: DynamaxState;
-  runningWorkflow?: string;
 }
 
 export type DynamaxRuntimeStore = Map<string, DynamaxRuntime>;
 
 export interface DynamaxRegistrationOptions {
-  openInspector?: (ctx: ExtensionContext) => Promise<void> | void;
+  openInspector: (ctx: ExtensionContext) => Promise<void> | void;
   effect?: DynamaxEffect;
   animationScheduler?: DynamaxAnimationScheduler;
+}
+
+export interface DynamaxHandle {
+  /** Opt the next agent run in. The `input` hook ignores prompts this extension sends (pi tags them `source: "extension"`). */
+  markOneShot(ctx: ExtensionContext): void;
 }
 
 export const DYNAMAX_TOKEN_PATTERN = /(^|[^A-Za-z0-9_])dynamax([^A-Za-z0-9_]|$)/i;
@@ -78,8 +83,6 @@ Inline workflow rules:
 ${ADAPTIVE_WORKFLOW_GUIDANCE}
 `;
 
-const DYNAMAX_CONTEXT_CUSTOM_TYPE = "workflow-dynamax-reminder";
-
 export function createDynamaxState(): DynamaxState {
   return { sticky: false, oneShotPending: false, turnActive: false };
 }
@@ -126,16 +129,15 @@ export function describeDynamaxState(state: DynamaxState): string {
   return `sticky ${sticky}; one-shot ${oneShot}${turn}`;
 }
 
-export function dynamaxWidgetLine(state: DynamaxState, shortcut: KeyId | null, runningWorkflow?: string): string {
-  const modes = [
-    runningWorkflow ? `running ${runningWorkflow}` : undefined,
-    state.sticky ? "sticky on" : undefined,
-    !state.sticky && state.turnActive ? "active this turn" : undefined,
-    state.oneShotPending ? "one-shot pending" : undefined,
-  ].filter((value): value is string => value !== undefined);
-  const mode = modes.join(" + ") || "off";
-  const inspectorHint = shortcut ? `${shortcut} inspector` : "/workflow:inspector";
-  return `dynamax: ${mode} | /workflow:dynamax on|off | ${inspectorHint}`;
+/**
+ * Footer status: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its
+ * prompt, `◆ dynamax · this turn` while that turn runs. A running workflow names itself in its own
+ * status (`◆ repo-scan · Scan 2/3 · 4s`), so this one only states the mode.
+ */
+export function dynamaxStatusText(state: DynamaxState, theme: Theme): string {
+  const mode = state.sticky ? undefined : state.oneShotPending ? "next prompt" : state.turnActive ? "this turn" : undefined;
+  const label = `${theme.fg("accent", GLYPH.workflow)} ${theme.fg("accent", "dynamax")}`;
+  return mode ? `${label}${dot(theme)}${theme.fg("muted", mode)}` : label;
 }
 
 export function appendDynamaxSystemReminder(systemPrompt: string, state: DynamaxState): string {
@@ -145,24 +147,16 @@ export function appendDynamaxSystemReminder(systemPrompt: string, state: Dynamax
   return `${systemPrompt}\n\n${DYNAMAX_REMINDER.trim()}`;
 }
 
-export function appendDynamaxContextReminder(messages: AgentMessage[], state: DynamaxState): AgentMessage[] {
-  if (!state.sticky) return messages;
-  return [...messages, createDynamaxContextMessage()];
-}
-
-export function registerDynamax(
-  pi: ExtensionAPI,
-  shortcuts: DynamaxShortcuts = resolveDynamaxShortcuts(),
-  options: DynamaxRegistrationOptions = {},
-): void {
+export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, options: DynamaxRegistrationOptions): DynamaxHandle {
   const runtimes: DynamaxRuntimeStore = new Map();
   const effect = options.effect ?? resolveDynamaxEffect();
+  setWorkflowInspectorShortcut(shortcuts.inspector);
   let editorInstallation: DynamaxEditorInstallation | undefined;
-  const openInspector =
-    options.openInspector ??
-    ((ctx: ExtensionContext): void => {
-      ctx.ui.notify("No workflow inspector is available yet", "warning");
-    });
+  const markOneShot = (ctx: ExtensionContext): void => {
+    const runtime = getDynamaxRuntime(runtimes, ctx);
+    markDynamaxOneShot(runtime.state);
+    updateDynamaxSurfaces(ctx, runtime);
+  };
   const installEditor = (ctx: ExtensionContext): void => {
     if (ctx.mode !== "tui" || effect === "off") return;
     const previousFactory = ctx.ui.getEditorComponent();
@@ -229,7 +223,7 @@ export function registerDynamax(
 
   pi.on("session_start", (_event, ctx) => {
     installEditor(ctx);
-    updateDynamaxSurfaces(ctx, getDynamaxRuntime(runtimes, ctx), shortcuts);
+    updateDynamaxSurfaces(ctx, getDynamaxRuntime(runtimes, ctx));
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
@@ -238,12 +232,7 @@ export function registerDynamax(
   });
 
   pi.on("input", (event, ctx) => {
-    if (event.source === "extension") return { action: "continue" };
-    const runtime = getDynamaxRuntime(runtimes, ctx);
-    if (hasDynamaxToken(event.text)) {
-      markDynamaxOneShot(runtime.state);
-      updateDynamaxSurfaces(ctx, runtime, shortcuts);
-    }
+    if (event.source !== "extension" && hasDynamaxToken(event.text)) markOneShot(ctx);
     return { action: "continue" };
   });
 
@@ -251,45 +240,21 @@ export function registerDynamax(
     const runtime = getDynamaxRuntime(runtimes, ctx);
     const systemPrompt = appendDynamaxSystemReminder(event.systemPrompt, runtime.state);
     if (systemPrompt === event.systemPrompt) return undefined;
-    updateDynamaxSurfaces(ctx, runtime, shortcuts);
+    updateDynamaxSurfaces(ctx, runtime);
     return { systemPrompt };
   });
 
   pi.on("agent_end", (_event, ctx) => {
     const runtime = getDynamaxRuntime(runtimes, ctx);
-    runtime.runningWorkflow = undefined;
     if (!runtime.state.sticky) runtime.state.turnActive = false;
-    updateDynamaxSurfaces(ctx, runtime, shortcuts);
-  });
-
-  pi.on("tool_execution_start", (event, ctx) => {
-    if (event.toolName !== "workflow") return undefined;
-    const runtime = getDynamaxRuntime(runtimes, ctx);
-    runtime.runningWorkflow = workflowLabel(event.args);
-    updateDynamaxSurfaces(ctx, runtime, shortcuts);
-    return undefined;
-  });
-
-  pi.on("tool_execution_end", (event, ctx) => {
-    if (event.toolName !== "workflow") return undefined;
-    const runtime = getDynamaxRuntime(runtimes, ctx);
-    runtime.runningWorkflow = undefined;
-    updateDynamaxSurfaces(ctx, runtime, shortcuts);
-    return undefined;
-  });
-
-  pi.on("context", (event, ctx) => {
-    const runtime = getDynamaxRuntime(runtimes, ctx);
-    const messages = appendDynamaxContextReminder(event.messages, runtime.state);
-    if (messages === event.messages) return undefined;
-    return { messages };
+    updateDynamaxSurfaces(ctx, runtime);
   });
 
   if (shortcuts.inspector) {
     pi.registerShortcut(shortcuts.inspector, {
       description: "Open workflow inspector",
       handler: async (ctx) => {
-        await openInspector(ctx);
+        await options.openInspector(ctx);
       },
     });
   }
@@ -306,13 +271,13 @@ export function registerDynamax(
       }
       if (action === "on") {
         enableDynamaxSticky(runtime.state);
-        updateDynamaxSurfaces(ctx, runtime, shortcuts);
+        updateDynamaxSurfaces(ctx, runtime);
         ctx.ui.notify("Dynamax workflow orchestration is on for this session", "info");
         return;
       }
       if (action === "off") {
         clearDynamax(runtime.state);
-        updateDynamaxSurfaces(ctx, runtime, shortcuts);
+        updateDynamaxSurfaces(ctx, runtime);
         ctx.ui.notify("Dynamax workflow orchestration is off", "info");
         return;
       }
@@ -323,44 +288,20 @@ export function registerDynamax(
       ctx.ui.notify("Usage: /workflow:dynamax [on|off|status]", "warning");
     },
   });
+
+  return { markOneShot };
 }
 
-export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">, runtime: DynamaxRuntime, shortcuts: DynamaxShortcuts): void {
+export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">, runtime: DynamaxRuntime): void {
   if (!ctx.hasUI) return;
-  if (!isDynamaxActive(runtime.state) && !runtime.runningWorkflow) {
+  if (!isDynamaxActive(runtime.state)) {
     clearDynamaxSurfaces(ctx);
     return;
   }
-
-  const status = dynamaxWidgetLine(runtime.state, shortcuts.inspector, runtime.runningWorkflow);
-  ctx.ui.setStatus(DYNAMAX_STATUS_KEY, status);
+  ctx.ui.setStatus(DYNAMAX_STATUS_KEY, dynamaxStatusText(runtime.state, ctx.ui.theme));
 }
 
 export function clearDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
   if (!ctx.hasUI) return;
   ctx.ui.setStatus(DYNAMAX_STATUS_KEY, undefined);
-}
-
-function workflowLabel(args: unknown): string {
-  if (!isRecord(args)) return "workflow";
-  const name = args.name;
-  if (typeof name === "string" && name.trim()) return name.trim();
-  const script = args.script;
-  if (typeof script === "string" && script.trim()) return "inline workflow";
-  return "workflow";
-}
-
-function createDynamaxContextMessage(): AgentMessage {
-  return {
-    role: "custom",
-    customType: DYNAMAX_CONTEXT_CUSTOM_TYPE,
-    content: DYNAMAX_REMINDER.trim(),
-    display: false,
-    details: { dynamax: true, sticky: true },
-    timestamp: Date.now(),
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

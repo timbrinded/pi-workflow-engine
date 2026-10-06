@@ -8,12 +8,17 @@ type HostProviderRegistry = Pick<
   | "getRegisteredProviderConfig"
   | "getRegisteredProviderIds"
   | "isUsingOAuth"
->;
+> & {
+  /** pi 1.x keeps providers registered as objects (`pi.registerProvider(provider)`) apart from config providers. */
+  getRegisteredNativeProvider?(providerId: string): unknown;
+};
+
+type ChildModelRuntime = ModelRuntime & { registerNativeProvider?(provider: unknown): void };
 
 /** Mirror the host's live provider and selected-model auth state into a child runtime. */
 export async function synchronizeWorkflowModelRuntime(input: {
   readonly host: HostProviderRegistry;
-  readonly child: ModelRuntime;
+  readonly child: ChildModelRuntime;
   readonly selectedModel: Model<Api> | undefined;
   readonly removeChildOnlyProviders: boolean;
 }): Promise<void> {
@@ -28,9 +33,16 @@ export async function synchronizeWorkflowModelRuntime(input: {
 
   for (const providerId of hostProviderIds) {
     const config = host.getRegisteredProviderConfig(providerId);
-    if (!config) continue;
-    child.unregisterProvider(providerId);
-    child.registerProvider(providerId, config);
+    if (config) {
+      child.unregisterProvider(providerId);
+      child.registerProvider(providerId, config);
+      continue;
+    }
+    const native = host.getRegisteredNativeProvider?.(providerId);
+    if (native && child.registerNativeProvider) {
+      child.unregisterProvider(providerId);
+      child.registerNativeProvider(native);
+    }
   }
 
   const selectedProvider = selectedModel?.provider;

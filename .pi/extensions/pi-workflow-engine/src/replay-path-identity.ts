@@ -1,5 +1,5 @@
-import { relative, resolve, sep } from "node:path";
-import { isPathWithin } from "./tree-fingerprint.ts";
+import { resolve } from "node:path";
+import { isPathWithin, portableRelativePath } from "./tree-fingerprint.ts";
 
 export interface ReplayWorkspaceRoots {
   readonly sessionCwd: string;
@@ -18,11 +18,6 @@ export function logicalWorkspacePath(path: string, roots: ReplayWorkspaceRoots):
 export function normalizeWorkspaceReferences(value: string, roots: ReplayWorkspaceRoots): string {
   const paths = [...resolvedWorkspaceRoots(roots)].sort((left, right) => right.length - left.length);
   return paths.reduce((normalized, path) => replacePathPrefix(normalized, path, "<workspace>"), value);
-}
-
-export function portableRelativePath(root: string, path: string): string {
-  const value = relative(root, path).split(sep).join("/");
-  return value.length === 0 ? "." : value;
 }
 
 function resolvedWorkspaceRoots(roots: ReplayWorkspaceRoots): readonly string[] {

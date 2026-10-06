@@ -19,7 +19,7 @@ test("finder-barrier scheduling starts all finders before verifiers", async () =
       await Promise.resolve();
       return { candidates: [candidateFor(label)] };
     }
-    return { verdict: "CONFIRMED", evidence: [`evidence for ${label}`], confidence: "high" };
+    return { verdict: "CONFIRMED", evidence: [`evidence for ${label}`] };
   }) as WorkflowApi["agent"];
 
   const result = await runLensVerificationPipeline({

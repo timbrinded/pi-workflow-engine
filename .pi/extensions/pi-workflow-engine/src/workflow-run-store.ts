@@ -8,6 +8,7 @@ import {
   transitionWorkflowRun,
   updateWorkflowRunProgress,
   type WorkflowRunRecord,
+  type WorkflowRunState,
   type WorkflowRunTransition,
 } from "./workflow-run-record.ts";
 
@@ -37,8 +38,9 @@ export class ProjectWorkflowRunStore implements WorkflowRunStore {
     try {
       await writeFile(temporaryPath, content, { encoding: "utf8", mode: 0o600 });
       await rename(temporaryPath, path);
-    } finally {
+    } catch (error) {
       await rm(temporaryPath, { force: true }).catch(() => undefined);
+      throw error;
     }
   }
 
@@ -47,49 +49,39 @@ export class ProjectWorkflowRunStore implements WorkflowRunStore {
   }
 
   async list(): Promise<WorkflowRunRecord[]> {
-    const dir = join(this.cwd, WORKFLOW_RUNS_DIR);
-    let files: string[];
-    try {
-      files = await readdir(dir);
-    } catch {
-      return [];
-    }
-    const records = await Promise.all(
-      files
-        .filter((file) => file.endsWith(WORKFLOW_RUN_RECORD_SUFFIX))
-        .map((file) => loadWorkflowRunRecord(join(dir, file))),
-    );
+    const records = await Promise.all((await this.recordPaths()).map(loadWorkflowRunRecord));
     return records
       .filter((record): record is WorkflowRunRecord => record !== undefined)
       .sort((left, right) => right.updatedAt - left.updatedAt);
   }
 
   async prune(keep = WORKFLOW_RUN_RECORD_KEEP): Promise<void> {
-    const dir = join(this.cwd, WORKFLOW_RUNS_DIR);
-    let files: string[];
-    try {
-      files = await readdir(dir);
-    } catch {
-      return;
-    }
     const candidates = await Promise.all(
-      files
-        .filter((file) => file.endsWith(WORKFLOW_RUN_RECORD_SUFFIX))
-        .map(async (file) => {
-          const path = join(dir, file);
-          try {
-            const info = await stat(path);
-            return { path, mtimeMs: info.mtimeMs };
-          } catch {
-            return undefined;
-          }
-        }),
+      (await this.recordPaths()).map(async (path) => {
+        try {
+          const info = await stat(path);
+          return { path, mtimeMs: info.mtimeMs };
+        } catch {
+          return undefined;
+        }
+      }),
     );
     const stale = candidates
       .filter((entry): entry is { readonly path: string; readonly mtimeMs: number } => entry !== undefined)
       .sort((left, right) => right.mtimeMs - left.mtimeMs)
       .slice(Math.max(0, keep));
     await Promise.all(stale.map((entry) => rm(entry.path, { force: true }).catch(() => undefined)));
+  }
+
+  /** Record file paths in the runs directory; empty when the directory cannot be read. */
+  private async recordPaths(): Promise<string[]> {
+    const dir = join(this.cwd, WORKFLOW_RUNS_DIR);
+    try {
+      const files = await readdir(dir);
+      return files.filter((file) => file.endsWith(WORKFLOW_RUN_RECORD_SUFFIX)).map((file) => join(dir, file));
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -108,6 +100,10 @@ export class DurableWorkflowRun {
   ) {
     this.record = initial;
     this.queue(initial);
+  }
+
+  get state(): WorkflowRunState {
+    return this.record.state;
   }
 
   updateProgress(progress: WorkflowProgressSnapshot, at = Date.now()): void {

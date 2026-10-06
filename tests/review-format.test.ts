@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
-import { renderIssuesTable } from "../.pi/extensions/pi-workflow-engine/src/review/review-format.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { renderFindingDetail, renderFindingRow, sortIssuesForDisplay } from "../.pi/extensions/pi-workflow-engine/src/review/review-format.ts";
 import { formatIssueLocation, isCommentableIssue, toReviewIssues } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
-import { createReviewReportFixture, createTestTheme } from "./fixtures/theme.ts";
+import { createTestTheme, plain } from "./fixtures/theme.ts";
 
 test("normalizes advisory findings into stable review issues", () => {
   const report = createReport();
-  const issues = toReviewIssues("code-review", report);
+  const issues = toReviewIssues(report);
 
   assert.deepEqual(issues.map((issue) => issue.id), ["R001", "R002"]);
-  assert.equal(issues[0]?.workflowName, "code-review");
   assert.equal(issues[0]?.file, "src/app.ts");
   assert.equal(issues[0]?.line, 10);
   assert.equal(issues[0]?.symbol, "retry");
@@ -22,31 +22,31 @@ test("normalizes advisory findings into stable review issues", () => {
   assert.equal(issues[0]?.finding, report.findings[0]);
 });
 
-test("renders compact advisory findings table", () => {
+test("finding rows align to the requested width and sort most severe first", () => {
+  const theme = createTestTheme();
   const report = createReport();
-  report.findings[0]!.summary = "A very long review summary that should be truncated instead of overflowing the fixed table width.";
-  const table = renderIssuesTable(toReviewIssues("code-review", report), createTestTheme(), { maxRows: 1 });
+  report.findings.reverse();
+  report.findings[0]!.summary = "A very long review summary that would overflow any reasonable terminal width if it were not truncated.";
+  const issues = sortIssuesForDisplay(toReviewIssues(report));
 
-  assert.match(table, /ID/);
-  assert.match(table, /Sev/);
-  assert.match(table, /Conf/);
-  assert.match(table, /Cat/);
-  assert.match(table, /Location/);
-  assert.match(table, /Summary/);
-  assert.match(table, /R001/);
-  assert.match(table, /high/);
-  assert.match(table, /src\/app\.ts:10 \(retry\)/);
-  assert.match(table, /… 1 more finding\(s\)/);
-  assert.doesNotMatch(table, /overflowing the fixed table width\./);
+  assert.deepEqual(issues.map((issue) => issue.finding.severity), ["high", "low"]);
+  for (const width of [40, 80, 120]) {
+    for (const issue of issues) assert.equal(visibleWidth(renderFindingRow(issue, width, theme)), width);
+  }
+  const row = plain(renderFindingRow(issues[0]!, 100, theme));
+  assert.match(row, /HIGH R002  src\/app\.ts:10/);
 });
 
-test("renders fixture severities and truncates long summaries", () => {
-  const table = renderIssuesTable(toReviewIssues("code-review", createReviewReportFixture()), createTestTheme(), { maxRows: 3 });
+test("finding detail wraps every section inside the width and lists evidence as bullets", () => {
+  const theme = createTestTheme();
+  const issue = toReviewIssues(createReport())[0]!;
+  const lines = renderFindingDetail(issue, 50, theme);
 
-  assert.match(table, /high/);
-  assert.match(table, /medium/);
-  assert.match(table, /low/);
-  assert.doesNotMatch(table, /without requiring a real terminal/);
+  assert.ok(lines.every((line) => visibleWidth(line) <= 50), lines.join("\n"));
+  const text = plain(lines.join("\n"));
+  assert.match(text, /Location {2}src\/app\.ts:10 · retry/);
+  assert.match(text, /Evidence {2}• line 10 increments/);
+  assert.match(text, /Fix {7}Change the loop boundary/);
 });
 
 function createReport(): AdvisoryReport {

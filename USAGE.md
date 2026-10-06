@@ -124,7 +124,7 @@ the journal's deterministic replay surface.
 
 Use `dynamax` when the built-in workflows are not specific enough and you want the main pi agent to author a temporary workflow for the current question. It is the fastest path from "this needs multiple angles" to a live fan-out, verifier pass, and synthesized result.
 
-Interactive shortcut: run `/workflow` with no arguments, choose `✍ Author temporary one-shot workflow…`, and type a brief. pi will send that brief back to the host agent as a `dynamax` request so it can author and run an inline workflow with the `workflow` tool's `script` argument.
+Interactive shortcut: run `/workflow` with no arguments, choose `+ author a one-off workflow` (the last row, below the registered workflows), and type a brief. Escape closes the picker without running anything. pi will send that brief back to the host agent as a `dynamax` request so it can author and run an inline workflow with the `workflow` tool's `script` argument.
 
 That inline workflow should investigate, fan out, verify, and summarize. It is **not** where code edits happen. If you want changes made, use the workflow result as evidence and then ask pi to edit separately.
 
@@ -146,7 +146,7 @@ Sticky mode and inspector shortcut:
 
 The workflow inspector and code-review results viewer are also registered as first-class shortcuts shown by `/hotkeys`. The defaults are `ctrl+shift+m` for the inspector and `ctrl+shift+r` for the latest review results. `ctrl+o` is intentionally not used because pi already uses it for tool-output expansion and tree filtering.
 
-When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives the workflow permission reminder, stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. Sticky mode, one-shot pending mode, and active Dynamax workflow runs show compact TUI status with `/workflow:dynamax on|off` and the inspector shortcut; off mode clears that status line.
+When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives the workflow permission reminder, stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. The footer status states the mode compactly: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its prompt, and `◆ dynamax · this turn` while that run is active; off mode clears it. A running workflow names itself in its own status next to it.
 
 ### Prompt editor cue
 
@@ -172,7 +172,7 @@ is used so highlighting is never silently disabled. Pi editor registration is
 still last-writer-wins; the previous editor is restored on shutdown only while
 the Dynamax decorator still owns the registration.
 
-When the host agent calls the `workflow` tool from a TUI session, pi opens the live workflow inspector for that run. The compact workflow widget still shows the latest moving status above the editor, but the inspector is the richer view for phases, agents, findings, and logs.
+When the host agent calls the `workflow` tool, the inspector stays closed so the agent's reply remains in view; the compact workflow widget shows the moving status above the editor. Press the inspector shortcut or run `/workflow:inspector` for the richer view of phases, agents, findings, and logs, live or after the run.
 
 Configure either shortcut by creating `~/.pi/agent/extensions/pi-workflow-engine.json`:
 
@@ -241,9 +241,11 @@ Workflow results are rendered in pi with:
 
 These workflow usage totals are separate from `--perf`, which is internal timing only. They are also separate from pi's built-in footer and `/session` totals, which may still show host-session usage only unless pi core adds a first-class extension usage API. If a model has no pricing configured, token totals can be non-zero while displayed cost remains `$0.000`.
 
-The result, inspector overview, compact widget, and status line all use the same usage summary. Providers with a complete breakdown show `fresh`, `cache read`, `cache write`, and `output` separately. Zero cache components are omitted. If a provider reports only some components, the summary labels mixed-run component totals with `≥` and preserves the provider's aggregate `total`; if it reports no components, the summary falls back to aggregate `tokens`. Costs are summed from provider session totals and are never inferred from local pricing.
+Results, the inspector overview, the runs browser and the live widget header show usage in the compact form `↑34k ↓1.2k · $0.02` (input including cache, output, and cost when known); the footer status line carries no usage. The result text handed to the host agent keeps the full breakdown: providers with a complete breakdown show `fresh`, `cache read`, `cache write`, and `output` separately. Zero cache components are omitted. If a provider reports only some components, the summary labels mixed-run component totals with `≥` and preserves the provider's aggregate `total`; if it reports no components, the summary falls back to aggregate `tokens`. Costs are summed from provider session totals and are never inferred from local pricing.
 
-During a run, pi shows live phases and subagent status. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow:inspector` if you want to bring the last completed inspector back up afterward.
+During a run, a widget above the editor shows the workflow's progress bar, finished/total agents, elapsed time and usage; phases in chronological order, with finished phases collapsed to one line and the active phase listing its running, failed and done agents; the declared phases not reached yet; the workflow's counters; and the inspector shortcut. The footer status line reads `◆ review · Find 6/10 · 12s`. Use `--inspect` if you want a larger live view while the workflow is active, then `/workflow:inspector` if you want to bring the last completed inspector back up afterward.
+
+The inspector has Overview, Agents, Findings, and Logs sections, plus Result for a retained run opened from `/workflow:runs`. Switch sections with `tab`/`shift+tab`, `←`/`→`, or `1`–`5`; move with `↑`/`↓` or `j`/`k`, jump with `g`/`G`, expand an agent or finding with `enter`, and close with `q` or `esc`. Expanded agents show the full error, last tool, model, and token usage.
 
 ### Durable run records
 
@@ -257,7 +259,7 @@ Persistence is intentionally bounded and private by default. Raw workflow args, 
 
 The host-facing `workflow` tool accepts `background: true`. It returns as soon as the run ID and origin metadata are durably recorded, while the normal workflow engine continues in-process with the same concurrency, budget, worktree, progress, usage, and resume rules. Synchronous execution remains the default, and the `/workflow` slash command remains synchronous.
 
-Background runs are detached from the initiating tool-call signal, so the host agent can finish that turn and continue the conversation. When the run completes or fails, the extension waits for the originating session to become idle and inserts one concise `workflow-result` message containing the run ID, terminal state, and summary. Delivery state is stored with the run record; on reload, the extension checks both that state and the session message history before retrying, which suppresses duplicates even if persistence failed immediately after message insertion.
+Background runs are detached from the initiating tool-call signal, so the host agent can finish that turn and continue the conversation. While one runs, it shows a single line above the editor (`◆ background · code-review 56b57550 · Find 6/10 · 12s`) instead of the full live widget. When the run completes or fails, the extension waits for the originating session to become idle and inserts one concise `workflow-result` message containing the run ID, terminal state, and summary. Delivery state is stored with the run record; on reload, the extension checks both that state and the session message history before retrying, which suppresses duplicates even if persistence failed immediately after message insertion.
 
 Provider usage-window continuation is a separate, explicit background option:
 
@@ -281,7 +283,7 @@ A graceful pi session shutdown aborts active background work and records it as `
 
 ### Recent runs and lifecycle actions
 
-`/workflow:runs` opens pi's native selection UI with a bounded list of recent project runs. Each option includes an accessible state label, workflow name, age, duration, usage summary, and full run ID. Choose a run, then choose one of the lifecycle actions currently valid for it: inspect, stop, resume, or restart. The background activity line is present only while this session owns active background work.
+`/workflow:runs` opens a runs browser in the TUI: one aligned row per recent project run (state glyph and word, workflow, duration, age, cost when known, short run ID) above a details pane for the selected run with its wall-clock times, phases, agent and token counts, resume lineage, pause details, outcome, and why a relaunch is unavailable when it is. Keys act on the selected run: `enter` or `i` inspect, `r` resume, `s` stop (press twice), `R` restart; only the actions currently valid for that run are listed in the footer, and the others explain why they are unavailable. The browser refreshes while a run is active and reopens on the same run after an action. RPC sessions keep pi's native two-step selection (run, then action). The background activity line is present only while this session owns active background work.
 
 The same operations are available without the selection UI:
 
@@ -293,9 +295,9 @@ The same operations are available without the selection UI:
 /workflow:inspector <run-id>
 ```
 
-Inspect is always safe. Stop is available for a background run active in the current session and for a retained paused run with a pending resume timer. Resume is limited to paused registered workflows whose source fingerprint is unchanged and whose invocation had no redacted arguments; it starts a new background run ID with `resumeFromRunId` journal replay. Restart is limited to completed, failed, or stopped registered workflows that had no arguments and also creates a new background run ID. Inline workflows and argument-bearing invocations are intentionally not relaunched because their executable input was not persisted. In `print` and `json` modes, list and inspect return formatted text without opening TUI components, while resume/restart report that background execution requires TUI or RPC mode.
+Inspect is always safe. Stop is available for a background run active in the current session and for a retained paused run with a pending resume timer. Resume is limited to paused registered workflows whose source fingerprint is unchanged and whose invocation had no redacted arguments; it starts a new background run ID with `resumeFromRunId` journal replay. A paused run already resumed by a queued, running, paused, or completed run is listed as `resumed as <run-id>` and offers no second resume; once every resume of it has failed or been stopped, manual resume is offered again, while automatic provider-limit resume never fires twice for the same paused run. Restart is limited to completed, failed, or stopped registered workflows that had no arguments and also creates a new background run ID. Inline workflows and argument-bearing invocations are intentionally not relaunched because their executable input was not persisted. In `print` and `json` modes, list and inspect return formatted text without opening TUI components, while resume/restart report that background execution requires TUI or RPC mode.
 
-Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively, press `enter` to expand/collapse the nicely formatted finding text, and use `1`-`9` to jump directly to a visible finding. The viewer is centred, scales to the terminal, and shows the visible finding/detail ranges while scrolling. `/workflow:results` or `ctrl+shift+r` reopens the most recent validated code-review report in the current pi session without rerunning the workflow; selections reset when it reopens.
+Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively. The viewer lists findings most severe first with the selected finding's full detail beside the list (below it in narrow terminals); `space` or `enter` selects a finding, `a` toggles all, `f` generates patch previews and `c` posts PR comments for the selection, and `pgup`/`pgdn` scroll a long detail. The viewer is sized to its content and shows scroll hints only when something is clipped. `/workflow:results` or `ctrl+shift+r` reopens the most recent validated code-review report in the current pi session without rerunning the workflow; selections reset when it reopens.
 
 The Fix action revalidates the exact reviewed PR/ref/index/working-tree snapshot, then runs each selected finding through its own worktree-isolated agent and returns the finding ID, validation summary, patch, and changed status. Failed attempts do not discard successful previews, no patch is applied to your active tree automatically, and a moved or unverifiable review target is rejected rather than patched against the wrong code. The original review and all Fix previews retained in that pi session share one output-token budget. Reopening the viewer does not reset it, finalized preview usage is always deducted, and only one preview can run at a time.
 
@@ -465,12 +467,12 @@ Guaranteed built-ins are statically registered:
 
 1. Add `.pi/extensions/pi-workflow-engine/workflows/<name>.ts`.
 2. Import it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`.
-3. Add it to `BUILTIN_WORKFLOWS`.
+3. Add a `defineBuiltinWorkflow(mod, "<name>.ts")` entry to `BUILTIN_WORKFLOW_DEFINITIONS`.
 
 Drop-in workflows are also discovered best-effort from:
 
-- `.pi/extensions/pi-workflow-engine/workflows/*.ts`
-- `~/.pi/agent/workflows/*.ts`
+- `~/.pi/agent/workflows/*.ts`: the user-level drop-in directory, which survives `pi update`.
+- The extension's own `workflows/*.ts` directory: `.pi/extensions/pi-workflow-engine/workflows/` in a working copy or a project-vendored copy. Files added to an installed package are replaced by `pi update`.
 
 Use `/workflow <name> --refresh` after adding a drop-in file.
 

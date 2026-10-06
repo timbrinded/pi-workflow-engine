@@ -1,6 +1,7 @@
-import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
+import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, formatAdvisoryLocation, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
 import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "./types.ts";
+
 
 export interface AdvisoryLens {
   label: string;
@@ -11,7 +12,6 @@ export interface AdvisoryLens {
 export type AdvisoryVerified = IdentifiedAdvisoryCandidate & {
   verdict: AdvisoryVerdict["verdict"];
   evidence: string[];
-  confidence?: AdvisoryVerdict["confidence"];
   challenge?: import("./advisory-challenge.ts").ChallengeRecord;
 };
 
@@ -19,7 +19,6 @@ export interface LensVerificationPipelineResult {
   verified: AdvisoryVerified[];
   rawCandidates: number;
   dropped: number;
-  refuted: number;
   coverage: AdvisoryStageCoverage[];
 }
 
@@ -71,7 +70,6 @@ export async function runLensVerificationPipeline(
   const { api, lenses, perLens, finderPhase = "Find", finderPrompt, verifierPrompt, boundCandidate } = options;
   const coverage: AdvisoryStageCoverage[] = [];
   let rawCandidates = 0;
-  let refuted = 0;
   api.phase(finderPhase);
   const found = await collectAdvisoryStage(api, "Find", lenses.map((lens) => ({ id: lens.label, run: async () => {
     const result = await api.agent(finderPrompt(lens), {
@@ -107,11 +105,59 @@ export async function runLensVerificationPipeline(
         tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS,
         profile: "small", schema: AdvisoryVerdictSchema,
       });
-      recordVerdictProgress(api.progress, candidate, judged, () => { refuted += 1; });
-      return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, confidence: judged.confidence };
+      recordVerdictProgress(api.progress, candidate, judged);
+      return { ...candidate, verdict: judged.verdict, evidence: judged.evidence };
     },
   })), coverage);
-  return { verified, rawCandidates, dropped, refuted, coverage };
+  return { verified, rawCandidates, dropped, coverage };
+}
+
+/** Stats for a lens review that stopped before discovery. */
+export const EMPTY_LENS_REVIEW_STATS: Readonly<WorkflowRunStats> = Object.freeze({ files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0, refuted: 0 });
+
+export interface LensReviewConclusion {
+  /** Scoped file count reported in stats. */
+  files: number;
+  rank(finding: AdvisoryVerified): number;
+  /** One ranked finding's synthesis-prompt block, headed by the IDs synthesis selects; defaults to {@link formatRankedFinding}. */
+  formatFinding?(finding: AdvisoryVerified, index: number): string;
+  /** Report used when no finding survives verification and challenge. */
+  empty: { summary: string; nextSteps: string[] };
+  synthesisPrompt(block: string, ranked: readonly AdvisoryVerified[], refuted: readonly AdvisoryVerified[]): string;
+}
+
+export function formatRankedFinding(finding: AdvisoryVerified, index: number, recommendationLabel = "Recommendation"): string {
+  return `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
+    `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}\n${recommendationLabel}: ${finding.recommendation ?? "(none supplied)"}`;
+}
+
+/** Rank and synthesize the findings that survived verification and challenge into the final report. */
+export async function concludeLensReview(
+  api: Pick<WorkflowApi, "agent" | "parallel" | "phase" | "progress" | "log">,
+  pipeline: LensVerificationPipelineResult,
+  verified: AdvisoryVerified[],
+  conclusion: LensReviewConclusion,
+) {
+  const { coverage } = pipeline;
+  const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
+  const stats: WorkflowRunStats = {
+    files: conclusion.files,
+    candidates: pipeline.rawCandidates,
+    verified: verified.length,
+    kept: surviving.length,
+    dropped: pipeline.dropped,
+    refuted: verified.length - surviving.length,
+  };
+  publishVerifiedKeptProgress(api, verified.length, surviving.length);
+  if (surviving.length === 0) {
+    return finishAdvisoryReport(emptyAdvisoryReport(conclusion.empty.summary, conclusion.empty.nextSteps, stats), coverage, verified);
+  }
+
+  const ranked = [...surviving].sort((a, b) => conclusion.rank(a) - conclusion.rank(b));
+  const block = ranked.map((finding, index) => (conclusion.formatFinding ?? formatRankedFinding)(finding, index)).join("\n\n");
+  const refuted = verified.filter((finding) => finding.verdict === "REFUTED");
+  const resolved = await synthesizeAdvisoryReport(api, conclusion.synthesisPrompt(block, ranked, refuted), ranked, coverage);
+  return finishAdvisoryReport({ ...resolved, stats: { ...stats, kept: resolved.findings.length } }, coverage, verified);
 }
 
 export async function synthesizeAdvisoryReport(
@@ -123,7 +169,7 @@ export async function synthesizeAdvisoryReport(
   api.phase("Synthesize");
   const [report] = await collectAdvisoryStage(api, "Synthesize", [{ id: "synthesize", run: () => api.agent(
     SYNTHESIS_ID_INSTRUCTIONS + prompt,
-    { phase: "Synthesize", label: "synthesize", tools: [], profile: "medium", resume: "read-only", schema: AdvisorySynthesisSchema },
+    { phase: "Synthesize", label: "synthesize", tools: [], skills: [], profile: "medium", resume: "read-only", schema: AdvisorySynthesisSchema },
   ) }], coverage);
   return resolveAdvisorySynthesis(report, ranked, {
     impact: "Impact not restated by verification.",
@@ -142,18 +188,11 @@ export function primaryLocation(candidate: Pick<AdvisoryCandidate, "locations">)
 }
 
 export function formatLocation(candidate: Pick<AdvisoryCandidate, "locations">): string {
-  const location = primaryLocation(candidate);
-  const line = location.line != null ? `:${location.line}` : "";
-  const symbol = location.symbol ? ` (${location.symbol})` : "";
-  return `${location.file}${line}${symbol}`;
+  return formatAdvisoryLocation(primaryLocation(candidate));
 }
 
 export function formatEvidence(evidence: readonly string[]): string {
   return evidence.join("; ");
-}
-
-export function normalizePath(path: string): string {
-  return path.replace(/^\.\//, "").replace(/^[ab]\//, "");
 }
 
 const VERDICT_PRESENTATION = {
@@ -162,7 +201,7 @@ const VERDICT_PRESENTATION = {
   NOT_SUBSTANTIATED: { lane: "Unresolved", status: "warning", confidence: "medium" },
   REFUTED: { lane: "Refuted", status: "error", confidence: "low" },
 } satisfies Record<AdvisoryVerdict["verdict"], {
-  lane: string; status: "success" | "warning" | "error"; confidence: NonNullable<AdvisoryVerdict["confidence"]>;
+  lane: string; status: "success" | "warning" | "error"; confidence: AdvisoryFinding["confidence"];
 }>;
 
 export function verdictConfidence(verdict: AdvisoryVerdict["verdict"]): "high" | "medium" | "low" {
@@ -173,11 +212,9 @@ export function recordVerdictProgress(
   progress: (event: WorkflowProgressEvent) => void,
   candidate: Pick<AdvisoryCandidate, "locations" | "summary">,
   verdict: Pick<AdvisoryVerdict, "verdict" | "evidence">,
-  onRefuted?: () => void,
 ): void {
   progress({ type: "counter_delta", key: `verdict.${verdict.verdict.toLowerCase()}`, label: verdict.verdict, delta: 1 });
   if (verdict.verdict === "REFUTED") {
-    onRefuted?.();
     progress({ type: "counter_delta", key: "refuted", label: "refuted", delta: 1 });
   }
   progress({

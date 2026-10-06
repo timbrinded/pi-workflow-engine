@@ -1,20 +1,16 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 import type { WorkflowProgressEvent } from "./types.ts";
 import type { AgentRowStatus, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "./progress-types.ts";
-import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./usage.ts";
+import type { WorkflowUsageSnapshot } from "./usage.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { statusTextFromCounts, type WorkflowStatusCounts } from "./ui/workflow-format.ts";
-import { renderWorkflowWidgetLines } from "./ui/workflow-widget.ts";
-
-export type {
-  AgentRowSnapshot,
-  AgentRowStatus,
-  PhaseSnapshot,
-  WorkflowCounterSnapshot,
-  WorkflowLaneItemSnapshot,
-  WorkflowLaneItemStatus,
-  WorkflowProgressSnapshot,
-} from "./progress-types.ts";
+import {
+  renderBackgroundWorkflowLine,
+  renderWorkflowWidget,
+  STRING_WIDGET_WIDTH,
+  WidthAwareWidget,
+} from "./ui/workflow-widget.ts";
 
 interface AgentRow {
   id: number;
@@ -51,6 +47,16 @@ const LOG_LIMIT = 24;
 const WIDGET_REFRESH_INTERVAL_MS = 1_000;
 export const DEFAULT_LANE_ITEM_LIMIT = 200;
 
+export interface ProgressTrackerOptions {
+  /** Phase titles from the workflow's `meta.phases`, shown as upcoming until the run reaches them. */
+  readonly plannedPhases?: readonly string[];
+  /**
+   * `live` (default) draws the full progress widget and a footer status; `background` draws one
+   * summary line per run so a run the user sent to the background never takes over the screen.
+   */
+  readonly display?: "live" | "background";
+}
+
 /**
  * Tracks live workflow state for widgets, footer/status text, result renderers,
  * and headless stderr breadcrumbs.
@@ -73,14 +79,24 @@ export class ProgressTracker {
   private usageSnapshot: WorkflowUsageSnapshot | undefined;
   private widgetRefreshInterval: ReturnType<typeof setInterval> | undefined;
   private readonly surfaceKey: string;
+  private readonly plannedPhases: readonly string[] | undefined;
+  private readonly display: "live" | "background";
+  /** Latest published snapshot; the TUI widget renders it at whatever width the terminal has. */
+  private latest: WorkflowProgressSnapshot | undefined;
+  /** Set once the TUI has instantiated this run's widget component. */
+  private tui: Pick<TUI, "requestRender"> | undefined;
+  private widgetRegistered = false;
 
   constructor(
     private readonly ctx: ExtensionContext,
     private readonly title: string,
     private readonly runId: string,
     private readonly onSnapshot?: (snapshot: WorkflowProgressSnapshot) => void,
+    options: ProgressTrackerOptions = {},
   ) {
     this.surfaceKey = `workflow:${runId}`;
+    this.plannedPhases = options.plannedPhases?.length ? [...options.plannedPhases] : undefined;
+    this.display = options.display ?? "live";
     this.ensurePhase(this.currentPhase);
   }
 
@@ -152,29 +168,18 @@ export class ProgressTracker {
     return id;
   }
 
-  agentStart(phase: string | undefined, label: string, id?: number): void {
-    const row = id === undefined ? undefined : this.findRowById(id);
+  agentStart(id: number): void {
+    const row = this.rowsById.get(id);
     if (row) {
       this.transitionAgentStatus(row, "running");
       row.startedAt = Date.now();
       row.error = undefined;
-    } else {
-      const nextRow = {
-        label,
-        id: this.nextAgentId++,
-        status: "running" as const,
-        startedAt: Date.now(),
-        toolUses: 0,
-      };
-      this.ensurePhase(phase ?? this.currentPhase).agents.push(nextRow);
-      this.rowsById.set(nextRow.id, nextRow);
-      this.agentCounts.running++;
     }
     this.publish();
   }
 
-  agentTool(label: string, tool: string, id?: number): void {
-    const row = this.findRow(label, id);
+  agentTool(id: number, tool: string): void {
+    const row = this.rowsById.get(id);
     if (row) {
       row.lastTool = tool;
       row.toolUses += 1;
@@ -182,8 +187,8 @@ export class ProgressTracker {
     this.publish();
   }
 
-  agentDone(label: string, id?: number): void {
-    const row = this.findRow(label, id);
+  agentDone(id: number): void {
+    const row = this.rowsById.get(id);
     if (row && row.status !== "failed") {
       this.transitionAgentStatus(row, "done");
       row.doneAt = Date.now();
@@ -191,8 +196,8 @@ export class ProgressTracker {
     this.publish();
   }
 
-  agentFailed(label: string, error: unknown, id?: number): void {
-    const row = this.findRow(label, id);
+  agentFailed(id: number, error: unknown): void {
+    const row = this.rowsById.get(id);
     if (row) {
       this.transitionAgentStatus(row, "failed");
       row.doneAt = Date.now();
@@ -213,6 +218,7 @@ export class ProgressTracker {
       startedAt: this.startedAt,
       doneAt: this.doneAt,
       currentPhase: this.currentPhase,
+      plannedPhases: this.plannedPhases,
       phases: this.phases.map((phase) => ({
         title: phase.title,
         agents: phase.agents.map((agent) => ({ ...agent })),
@@ -227,10 +233,6 @@ export class ProgressTracker {
   }
 
   statusCounts(): WorkflowStatusCounts {
-    return this.statusCountsSnapshot();
-  }
-
-  private statusCountsSnapshot(): WorkflowStatusCounts {
     return {
       queued: this.agentCounts.queued,
       running: this.agentCounts.running,
@@ -248,51 +250,59 @@ export class ProgressTracker {
   }
 
   private pruneLane(laneName: string, lane: WorkflowLaneItem[]): void {
-    if (this.laneItemLimit <= 0) return;
     while (lane.length > this.laneItemLimit) {
       lane.shift();
       this.laneOverflow.set(laneName, (this.laneOverflow.get(laneName) ?? 0) + 1);
     }
   }
 
-  private findRow(label: string, id?: number): AgentRow | undefined {
-    if (id !== undefined) return this.findRowById(id);
-    for (let i = this.phases.length - 1; i >= 0; i--) {
-      const running = this.phases[i].agents.find(
-        (agent) => agent.label === label && (agent.status === "running" || agent.status === "queued"),
-      );
-      if (running) return running;
-    }
-    for (let i = this.phases.length - 1; i >= 0; i--) {
-      const matching = this.phases[i].agents.find((agent) => agent.label === label);
-      if (matching) return matching;
-    }
-    return undefined;
-  }
-
-  private findRowById(id: number): AgentRow | undefined {
-    return this.rowsById.get(id);
-  }
-
   private publish(): void {
-    this.publishSnapshot();
-    if (!this.ctx.hasUI) return;
-    this.publishWidget();
+    const snapshot = this.snapshot();
+    this.onSnapshot?.(snapshot);
+    // Agents that outlive a fatal drain still report after done(); record them without reviving live surfaces.
+    if (!this.ctx.hasUI || this.doneAt !== undefined) return;
+    this.latest = snapshot;
+    this.publishWidget(snapshot);
     this.startWidgetRefresh();
-    this.publishStatus();
+    this.publishStatus(snapshot);
   }
 
-  private publishWidget(): void {
+  /**
+   * In the TUI the widget is a width-aware component registered once and redrawn on demand; surfaces
+   * that only take strings (RPC) get lines pre-rendered at a nominal width on every publish.
+   */
+  private publishWidget(snapshot: WorkflowProgressSnapshot): void {
+    if (this.ctx.mode !== "tui") {
+      this.ctx.ui.setWidget(this.surfaceKey, this.renderWidget(snapshot, STRING_WIDGET_WIDTH, this.ctx.ui.theme), { placement: "aboveEditor" });
+      return;
+    }
+    if (this.widgetRegistered) {
+      this.tui?.requestRender();
+      return;
+    }
+    this.widgetRegistered = true;
     this.ctx.ui.setWidget(
       this.surfaceKey,
-      renderWorkflowWidgetLines(this.snapshot(), this.ctx.ui.theme),
+      (tui, theme) => {
+        this.tui = tui;
+        return new WidthAwareWidget((width) => (this.latest ? this.renderWidget(this.latest, width, theme) : []));
+      },
       { placement: "aboveEditor" },
     );
   }
 
+  private renderWidget(snapshot: WorkflowProgressSnapshot, width: number, theme: ExtensionContext["ui"]["theme"]): string[] {
+    return this.display === "background" ? renderBackgroundWorkflowLine(snapshot, width, theme) : renderWorkflowWidget(snapshot, width, theme);
+  }
+
+  /** Elapsed time ticks even when no agent reports, so redraw the widget and status once a second. */
   private startWidgetRefresh(): void {
     if (this.widgetRefreshInterval !== undefined) return;
-    this.widgetRefreshInterval = setInterval(() => this.publishWidget(), WIDGET_REFRESH_INTERVAL_MS);
+    this.widgetRefreshInterval = setInterval(() => {
+      if (!this.latest) return;
+      this.publishWidget(this.latest);
+      this.publishStatus(this.latest);
+    }, WIDGET_REFRESH_INTERVAL_MS);
   }
 
   private stopWidgetRefresh(): void {
@@ -301,19 +311,10 @@ export class ProgressTracker {
     this.widgetRefreshInterval = undefined;
   }
 
-  private publishStatus(): void {
-    const status = statusTextFromCounts(
-      {
-        title: this.title,
-        doneAt: this.doneAt,
-        currentPhase: this.currentPhase,
-        counters: [...this.counters.values()].map((counter) => ({ ...counter })),
-      },
-      this.statusCountsSnapshot(),
-      this.ctx.ui.theme,
-    );
-    const usage = formatWorkflowUsageLine(this.usageSnapshot);
-    const next = usage ? `${status} · ${usage}` : status;
+  /** Background runs are summarised by their widget line alone. */
+  private publishStatus(snapshot: WorkflowProgressSnapshot): void {
+    if (this.display === "background") return;
+    const next = statusTextFromCounts(snapshot, this.statusCounts(), this.ctx.ui.theme);
     if (next === this.lastStatusText) return;
     this.ctx.ui.setStatus(this.surfaceKey, next);
     this.lastStatusText = next;
@@ -323,15 +324,13 @@ export class ProgressTracker {
   done(): void {
     this.doneAt = Date.now();
     this.stopWidgetRefresh();
-    this.publishSnapshot();
+    this.onSnapshot?.(this.snapshot());
     if (!this.ctx.hasUI) return;
     this.ctx.ui.setWidget(this.surfaceKey, undefined);
     this.ctx.ui.setStatus(this.surfaceKey, undefined);
     this.lastStatusText = undefined;
-  }
-
-  private publishSnapshot(): void {
-    this.onSnapshot?.(this.snapshot());
+    this.latest = undefined;
+    this.tui = undefined;
   }
 }
 

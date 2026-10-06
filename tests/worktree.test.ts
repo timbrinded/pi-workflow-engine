@@ -17,6 +17,7 @@ import {
   type WorktreeGitCommandResult,
   type WorktreeGitRunner,
 } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import { gitCommit } from "./resume-fixtures.ts";
 
 function fakeRunner(
   handler: (options: WorktreeGitCommandOptions) => WorktreeGitCommandResult | Promise<WorktreeGitCommandResult>,
@@ -61,7 +62,7 @@ test("isGitWorktree probes the repository cwd", async () => {
   assert.deepEqual(await isGitWorktree({ repoCwd: "/repo", runner: outside }), { ok: true, inside: false });
 
   const failing = fakeRunner(() => ({ ok: false, stdout: "", stderr: "no git", error: "no git" }));
-  assert.deepEqual(await isGitWorktree({ repoCwd: "/repo", runner: failing }), { ok: false, inside: false, error: "no git" });
+  assert.deepEqual(await isGitWorktree({ repoCwd: "/repo", runner: failing }), { ok: false, error: "no git" });
 });
 
 test("addWorktree builds a detached HEAD worktree command", async () => {
@@ -116,24 +117,6 @@ test("WorktreeRegistry registers created worktrees and removes them", async () =
   assert.deepEqual(runner.calls[2]?.args, ["worktree", "remove", "--force", added.path]);
 });
 
-test("WorktreeRegistry attempts cleanup when worktree add fails", async () => {
-  const runner = fakeRunner((options) => {
-    if (options.args[0] === "worktree" && options.args[1] === "add") {
-      return { ok: false, stdout: "", stderr: "add failed", error: "add failed" };
-    }
-    return OK;
-  });
-  const registry = new WorktreeRegistry("/repo", { runner });
-
-  const added = await registry.add();
-
-  assert.ok("error" in added);
-  assert.equal(added.error, "add failed");
-  assert.equal(added.cleanup?.ok, true);
-  assert.equal(registry.size, 0);
-  assert.deepEqual(runner.calls.map((call) => call.args.slice(0, 2).join(" ")), ["worktree add", "worktree remove"]);
-});
-
 test("WorktreeRegistry removeAll retries every registered path", async () => {
   const removed: string[] = [];
   const runner = fakeRunner((options) => {
@@ -183,7 +166,7 @@ test("WorktreeRegistry removeAll tries every path, retains failures, and throws 
     const path = String(options.args[3]);
     removed.push(path);
     if (path === "/tmp/leaked-one") return { ok: false, stdout: "", stderr: "", error: "busy" };
-    if (path === "/tmp/leaked-two") return { ok: false, stdout: "", stderr: "permission denied" };
+    if (path === "/tmp/leaked-two") return { ok: false, stdout: "", stderr: "permission denied", error: "permission denied" };
     return OK;
   });
   const registry = new WorktreeRegistry("/repo", { runner });
@@ -214,23 +197,6 @@ test("WorktreeRegistry removeAll tries every path, retains failures, and throws 
   assert.deepEqual(removed.sort(), ["/tmp/leaked-one", "/tmp/leaked-two"]);
 });
 
-test("WorktreeRegistry can use an injected patch capture", async () => {
-  let capturedBaseline = "";
-  const registry = new WorktreeRegistry("/repo", {
-    runner: fakeRunner(() => OK),
-    patchCapture: async ({ worktreePath, baselineOid }) => {
-      capturedBaseline = baselineOid;
-      return { patch: `diff for ${worktreePath}`, changed: true };
-    },
-  });
-
-  assert.deepEqual(await registry.capturePatch("/tmp/worktree", BASELINE_OID), {
-    patch: "diff for /tmp/worktree",
-    changed: true,
-  });
-  assert.equal(capturedBaseline, BASELINE_OID);
-});
-
 test("captureWorktreePatch reports git add failures before diff capture", async () => {
   const runner = fakeRunner(() => ({ ok: false, stdout: "", stderr: "add failed", error: "add failed" }));
 
@@ -252,7 +218,7 @@ test("captureWorktreePatch captures diff through the injected git runner", async
   });
   assert.deepEqual(runner.calls.map((call) => call.args), [
     ["add", "-N", "."],
-    ["diff", "--binary", "--full-index", "--no-ext-diff", "--no-color", BASELINE_OID, "--"],
+    ["diff", "--binary", "--full-index", "--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", BASELINE_OID, "--"],
   ]);
   assert.equal(runner.calls[1]?.maxBufferBytes, 16 << 20);
 });
@@ -313,6 +279,7 @@ test("addWorktree falls back to a committed snapshot for unborn repositories", a
   await writeFile(join(repo, "nested", "workflow", "entry.txt"), "nested\n");
   await writeFile(join(repo, "ignored", "secret.txt"), "secret\n");
   await writeFile(join(repo, ".pi", ".workflow-runs", "run.jsonl"), "journal\n");
+  await symlink("nested", join(repo, "nested-link"));
   let added: Awaited<ReturnType<typeof addWorktree>> | undefined;
   let repeated: Awaited<ReturnType<typeof addWorktree>> | undefined;
   try {
@@ -322,6 +289,8 @@ test("addWorktree falls back to a committed snapshot for unborn repositories", a
     const worktreePath = added.path;
     assert.equal(await readFile(join(worktreePath, "README.md"), "utf8"), "hello\n");
     assert.equal(await readFile(join(worktreePath, "nested", "workflow", "entry.txt"), "utf8"), "nested\n");
+    // A rewritten absolute target would let edits through the link escape into the source checkout.
+    assert.equal(await readlink(join(worktreePath, "nested-link")), "nested");
     await assert.rejects(() => stat(join(worktreePath, "ignored")));
     await assert.rejects(() => stat(join(worktreePath, ".pi", ".workflow-runs")));
     await assert.rejects(() => stat(join(worktreePath, "empty")));
@@ -343,17 +312,40 @@ test("addWorktree falls back to a committed snapshot for unborn repositories", a
   }
 });
 
+test("WorktreeRegistry removes failed worktrees git created and does not track ones it never created", async () => {
+  const repo = await makeTempGitRepo("pi-workflow-failed-add-");
+  const registry = new WorktreeRegistry(repo);
+  try {
+    await writeFile(join(repo, "app.ts"), "before\n");
+    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
+    gitCommit(repo, "initial");
+
+    const neverCreated = await registry.add(undefined, { ref: "0".repeat(40) });
+    assert.ok("error" in neverCreated);
+    assert.equal(registry.size, 0);
+
+    const created = await registry.add(undefined, {
+      ref: "HEAD",
+      patch: "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-not the baseline\n+reviewed\n",
+    });
+    assert.ok("error" in created);
+    assert.equal(created.cleanup?.ok, true);
+    await assert.rejects(stat(created.path));
+    assert.equal(registry.size, 0);
+
+    assert.deepEqual(await registry.removeAll(), []);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 test("addWorktree uses real git worktrees for repositories with commits", async () => {
   const repo = await makeTempGitRepo("pi-workflow-committed-");
   let added: Awaited<ReturnType<typeof addWorktree>> | undefined;
   try {
     await writeFile(join(repo, "README.md"), "hello\n");
     assert.equal(spawnSync("git", ["add", "README.md"], { cwd: repo }).status, 0);
-    const commit = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], {
-      cwd: repo,
-      encoding: "utf8",
-    });
-    assert.equal(commit.status, 0, commit.stderr);
+    gitCommit(repo, "initial");
 
     added = await addWorktree({ repoCwd: repo });
     assert.ok(!("error" in added));
@@ -374,23 +366,13 @@ test("captured patches retain committed isolated edits and reconstruct from the 
   try {
     await writeFile(join(repo, "app.ts"), "before\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    const initialCommit = spawnSync(
-      "git",
-      ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"],
-      { cwd: repo, encoding: "utf8" },
-    );
-    assert.equal(initialCommit.status, 0, initialCommit.stderr);
+    gitCommit(repo, "initial");
 
     const changed = await registry.add();
     assert.ok(!("error" in changed));
     await writeFile(join(changed.path, "app.ts"), "committed by agent\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: changed.path }).status, 0);
-    const agentCommit = spawnSync(
-      "git",
-      ["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "-m", "agent edit"],
-      { cwd: changed.path, encoding: "utf8" },
-    );
-    assert.equal(agentCommit.status, 0, agentCommit.stderr);
+    gitCommit(changed.path, "agent edit");
     const movedHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: changed.path, encoding: "utf8" }).stdout.trim();
     assert.notEqual(movedHead, changed.baselineOid);
 
@@ -428,11 +410,7 @@ test("captured patches reconstruct binary, new, symlink, mode, and deletion chan
     await writeFile(join(repo, "target-new.txt"), "new target\n");
     await symlink("target-old.txt", join(repo, "linked.txt"));
     assert.equal(spawnSync("git", ["add", "-A"], { cwd: repo }).status, 0);
-    const commit = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], {
-      cwd: repo,
-      encoding: "utf8",
-    });
-    assert.equal(commit.status, 0, commit.stderr);
+    gitCommit(repo, "initial");
 
     const changed = await registry.add();
     assert.ok(!("error" in changed));
@@ -462,7 +440,7 @@ test("captured patches reconstruct binary, new, symlink, mode, and deletion chan
     assert.equal(await readFile(join(baseline.path, "delete.txt"), "utf8"), "delete me\n");
 
     const valid = await registry.validatePatch(baseline.path, captured);
-    assert.equal(valid.ok, true, valid.error ?? valid.stderr);
+    if (!valid.ok) assert.fail(valid.error);
     assert.deepEqual(await readFile(join(baseline.path, "binary.dat")), originalBinary);
     await assert.rejects(readFile(join(baseline.path, "new.txt")));
     assert.equal(await readlink(join(baseline.path, "linked.txt")), "target-old.txt");
@@ -491,10 +469,7 @@ test("a reviewed-snapshot baseline is excluded from the returned fix patch", asy
   try {
     await writeFile(join(repo, "app.ts"), "before\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
+    gitCommit(repo, "initial");
     const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
     const reviewedPatch = "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-before\n+reviewed\n";
 
@@ -525,10 +500,7 @@ test("reviewed-snapshot preparation bypasses repository commit hooks and signing
   try {
     await writeFile(join(repo, "app.ts"), "before\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
+    gitCommit(repo, "initial");
     const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
     await writeFile(join(repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n");
     await chmod(join(repo, ".git", "hooks", "pre-commit"), 0o755);

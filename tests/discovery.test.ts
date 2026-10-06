@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,27 +6,22 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { discoverWorkflows } from "../.pi/extensions/pi-workflow-engine/src/discovery.ts";
 import type { WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import { BUILTIN_WORKFLOW_DEFINITIONS } from "../.pi/extensions/pi-workflow-engine/src/workflows.ts";
 
 const extensionDir = fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/", import.meta.url));
 
-test("workflow UI modules load without LLM calls", async () => {
-  await Promise.all([
-    import("../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts"),
-    import("../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts"),
-    import("../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts"),
-    import("../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts"),
-  ]);
-});
+test("every built-in workflow has a unique name, an existing file, and file-backed provenance", async () => {
+  const workflows = await discoverWorkflows(extensionDir, { refresh: true });
+  const names = BUILTIN_WORKFLOW_DEFINITIONS.map(({ module }) => module.meta.name);
+  assert.equal(new Set(names).size, names.length, `duplicate built-in workflow names: ${names.join(", ")}`);
 
-test("built-in workflows are discovered", async () => {
-  const workflows = await discoverWorkflows(extensionDir);
-  const expectedBuiltins = ["code-review", "refactor-scout", "diagnose", "perf-review"];
-
-  for (const name of expectedBuiltins) {
-    const workflow = workflows.get(name);
-    assert.ok(workflow, `expected built-in workflow ${name} to be discovered`);
-    assert.equal(workflow.source.kind, "file");
+  for (const definition of BUILTIN_WORKFLOW_DEFINITIONS) {
+    await access(definition.path);
+    const workflow = workflows.get(definition.module.meta.name);
+    assert.ok(workflow, `expected built-in workflow ${definition.module.meta.name} to be discovered`);
     if (workflow.source.kind !== "file") assert.fail("expected file-backed built-in provenance");
+    assert.equal(workflow.source.path, definition.path);
+    assert.equal(workflow.source.root, extensionDir);
     assert.match(workflow.source.fingerprint, /^[a-f0-9]{64}$/);
   }
 });

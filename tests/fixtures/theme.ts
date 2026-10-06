@@ -101,3 +101,8 @@ export function createReviewReportFixture(): AdvisoryReport {
     nextSteps: ["Inspect src/app.ts retry loop"],
   };
 }
+
+/** Drops SGR colour/style escapes so assertions can match rendered text. */
+export function plain(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}

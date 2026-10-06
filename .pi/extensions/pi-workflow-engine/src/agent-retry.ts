@@ -1,6 +1,7 @@
 import { isRetryableAssistantError, type AssistantMessage } from "@earendil-works/pi-ai";
 import { abortReason, throwIfAborted } from "./cancellation.ts";
 import {
+  lastAssistantError,
   providerUsageLimitFromMessages,
   type WorkflowProviderUsageLimitError,
 } from "./provider-usage-limit.ts";
@@ -75,42 +76,18 @@ export function providerErrorFromMessages(
   messages: readonly unknown[],
   options: { readonly pauseOnUsageLimit?: boolean } = {},
 ): WorkflowProviderError | WorkflowProviderUsageLimitError | undefined {
-  const usageLimit = providerUsageLimitFromMessages(messages);
-  if (usageLimit && options.pauseOnUsageLimit) return usageLimit;
-  const message = messages.findLast(isAssistantMessage);
-  if (!message || message.stopReason !== "error") return undefined;
-  const errorMessage = typeof message.errorMessage === "string" && message.errorMessage.length > 0
-    ? message.errorMessage
-    : "Provider session ended with an unspecified error.";
-  const retryable = isRetryableAssistantError(message as AssistantMessage);
-  const provider = stringDetail(message.provider);
-  const model = stringDetail(message.model);
-  const api = stringDetail(message.api);
-  return new WorkflowProviderError(errorMessage, {
-    stopReason: "error",
-    retryable,
-    ...(provider ? { provider } : {}),
-    ...(model ? { model } : {}),
-    ...(api ? { api } : {}),
-  });
-}
-
-function isAssistantMessage(value: unknown): value is {
-  readonly role: "assistant";
-  readonly stopReason?: unknown;
-  readonly errorMessage?: unknown;
-  readonly provider?: unknown;
-  readonly model?: unknown;
-  readonly api?: unknown;
-} {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "role" in value &&
-    value.role === "assistant"
+  if (options.pauseOnUsageLimit) {
+    const usageLimit = providerUsageLimitFromMessages(messages);
+    if (usageLimit) return usageLimit;
+  }
+  const failure = lastAssistantError(messages);
+  if (!failure) return undefined;
+  return new WorkflowProviderError(
+    failure.errorMessage || "Provider session ended with an unspecified error.",
+    {
+      stopReason: "error",
+      retryable: isRetryableAssistantError(failure.message as AssistantMessage),
+      ...failure.details,
+    },
   );
-}
-
-function stringDetail(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

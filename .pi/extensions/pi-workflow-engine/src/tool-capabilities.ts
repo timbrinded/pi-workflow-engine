@@ -33,7 +33,8 @@ function isExternalSearchLikeTool(tool: ToolInfo): boolean {
 }
 
 function isSearchLikeTool(tool: ToolInfo): boolean {
-  if (isMutationLikeToolName(tool.name)) return false;
+  // Local code search must not hand repository context to web search tools.
+  if (isMutationLikeToolName(tool.name) || isExternalSearchLikeTool(tool)) return false;
   const name = tool.name.toLowerCase();
   if (name.includes("grep") || name.includes("find") || name.includes("search") || name === "rg" || name.includes("ripgrep")) return true;
   return /\b(?:grep|find|search|ripgrep|rg|structural search|code search)\b/.test(tool.description.toLowerCase());

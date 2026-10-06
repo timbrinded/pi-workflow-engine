@@ -13,16 +13,14 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
 import { DEFAULT_REVIEW_RESULTS_SHORTCUT } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
-import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
-import {
-  captureWorkflowExtension,
-  captureWorkflowTool,
-  getLastWorkflowInspection,
-} from "./workflow-extension-fixtures.ts";
+import { WORKFLOW_INSPECTOR_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
+import { captureWorkflowExtension, captureWorkflowTool } from "./workflow-extension-fixtures.ts";
+import { createTestTheme } from "./fixtures/theme.ts";
 
 const WORKFLOW_TOOL_TEST_CWD = mkdtempSync(join(tmpdir(), "pi-workflow-tool-tests-"));
 process.on("exit", () => rmSync(WORKFLOW_TOOL_TEST_CWD, { recursive: true, force: true }));
@@ -107,17 +105,10 @@ function createSessionManager(sessionId: string): Pick<ExtensionContext["session
   };
 }
 
-function resultUsageAssistantMessages(value: unknown): unknown {
-  if (!isRecord(value)) return undefined;
-  const details = value.details;
-  if (!isRecord(details)) return undefined;
-  const usage = details.usage;
-  if (!isRecord(usage)) return undefined;
-  return usage.assistantMessages;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+function toolResultText(value: unknown): string {
+  if (!isRecord(value) || !Array.isArray(value.content)) return "";
+  const first: unknown = value.content[0];
+  return isRecord(first) && typeof first.text === "string" ? first.text : "";
 }
 
 async function waitUntil(predicate: () => boolean | Promise<boolean>, label: string): Promise<void> {
@@ -223,7 +214,7 @@ test("RPC command and inspector surfaces use native selection and text instead o
   await command.handler("", ctx);
   assert.equal(selectCalls, 1);
   assert.equal(customCalls, 0);
-  assert.match(notifications.at(-1) ?? "", /Usage: \/workflow/);
+  assert.deepEqual(notifications, [], "dismissing the picker is a cancel, not a usage error");
 
   const inspection = {
     name: "rpc-inspection",
@@ -342,6 +333,49 @@ export default async function run({ args, phase }) {
   assert.deepEqual(phases, ["Inline"]);
 });
 
+test("the workflow tool shows the host agent result fields beyond the summary", async () => {
+  const tool = captureWorkflowTool();
+  const run = async (name: string, result: string): Promise<string> => {
+    const script = `export const meta = { name: "${name}", description: "Result content probe" };
+export default async function run() { return ${result}; }`;
+    return toolResultText(await tool.execute(`call-${name}`, { script }, undefined, () => {}, HEADLESS_CTX));
+  };
+
+  const report = await run("research-shaped", `{ answer: "THE-ANSWER", sources: [{ url: "https://example.test/source" }] }`);
+  assert.match(report, /THE-ANSWER/);
+  assert.match(report, /https:\/\/example\.test\/source/);
+  assert.doesNotMatch(report, /Workflow finished\./);
+
+  const patch = await run("summary-and-patch", `{ summary: "Patch ready.", patch: "diff --git a/x b/x" }`);
+  assert.match(patch, /Patch ready\.\n\nResult:/);
+  assert.match(patch, /diff --git a\/x b\/x/);
+
+  const summaryOnly = await run("summary-only", `{ summary: "Just the summary." }`);
+  assert.match(summaryOnly, /Just the summary\./);
+  assert.doesNotMatch(summaryOnly, /Result/);
+
+  const oversized = await run("oversized", `{ blob: "x".repeat(50000) }`);
+  assert.match(oversized, /truncated/);
+  assert.ok(oversized.length < 25_000, `expected a bounded result, got ${oversized.length} characters`);
+});
+
+test("the workflow tool gives the host agent the viewer's finding id, review anchor and coverage gaps", async () => {
+  const tool = captureWorkflowTool();
+  const finding = {
+    summary: "Anchored finding.", category: "bug", severity: "high", confidence: "high",
+    locations: [{ file: "src/caller.ts", line: 90 }], reviewAnchor: { file: "src/app.ts", line: 12 },
+    evidence: ["line 12"], impact: "Breaks callers.", recommendation: "Fix the changed line.",
+  };
+  const script = `export const meta = { name: "anchored-review", description: "Anchor probe" };
+export default async function run() { return ${JSON.stringify({ summary: "Review incomplete.", findings: [finding], nextSteps: [], status: "incomplete", gaps: ["verify/correctness: provider timeout"] })}; }`;
+
+  const text = toolResultText(await tool.execute("call-anchored-review", { script }, undefined, () => {}, HEADLESS_CTX));
+
+  assert.match(text, /### R001: Anchored finding\./);
+  assert.match(text, /- Location: src\/app\.ts:12, src\/caller\.ts:90/);
+  assert.match(text, /Coverage gaps:\n- verify\/correctness: provider timeout/);
+});
+
 test("inline compile errors are shaped for workflow tool results", () => {
   let result = inlineCompileErrorResult("not compiled");
   try {
@@ -454,30 +488,33 @@ export default async function run() {
   assert.match(JSON.stringify(extension.sentMessages[0]), /Detached background completed/);
 });
 
-test("a tool-invoked workflow records an inspector snapshot", async () => {
-  const tool = captureWorkflowTool();
+test("a failed tool-invoked workflow stays available to /workflow:inspector", async () => {
+  const extension = captureWorkflowExtension();
+  const inspector = extension.commands.get("workflow:inspector");
+  if (!inspector) throw new Error("expected /workflow:inspector command");
+  const notifications: string[] = [];
+  const ctx = { ...HEADLESS_CTX, ui: { notify: (message: string) => notifications.push(message) } } as unknown as ExtensionCommandContext;
   const script = `
-export const meta = { name: "inspect-probe", description: "Inspector capture probe" };
-export default async function run({ phase }) {
-  phase("Solo");
-  return { ok: true };
+export const meta = { name: "failing-inspect-probe", description: "Failed inspector probe" };
+export default async function run({ phase, log }) {
+  phase("Doomed");
+  log("failing workflow log");
+  throw new Error("boom");
 }
 `;
 
-  const result = await tool.execute("call-1", { script }, undefined, () => {}, HEADLESS_CTX);
+  await assert.rejects(() => extension.tool.execute("call-failing-inspect", { script }, undefined, () => {}, ctx), /boom/);
+  await inspector.handler("", ctx);
 
-  assert.equal(resultUsageAssistantMessages(result), 0);
-  const inspection = getLastWorkflowInspection();
-  assert.equal(inspection?.name, "inspect-probe");
-  assert.ok(
-    inspection?.snapshot.phases.some((phase) => phase.title === "Solo"),
-    `expected a "Solo" phase in the captured snapshot, got ${JSON.stringify(inspection?.snapshot.phases.map((p) => p.title))}`,
-  );
+  const inspection = notifications.at(-1) ?? "";
+  assert.match(inspection, /Workflow inspector: failing-inspect-probe/);
+  assert.match(inspection, /Phase: Doomed/);
+  assert.match(inspection, /failing workflow log/);
 });
 
-test("a TUI tool-invoked workflow opens the live inspector", async () => {
+test("a TUI tool-invoked workflow leaves the inspector closed so the agent's reply stays in view", async () => {
   const tool = captureWorkflowTool();
-  const { ctx, customCalls, customOptions } = createTuiContext();
+  const { ctx, customCalls } = createTuiContext();
   const script = `
 export const meta = { name: "inspect-live-probe", description: "Live inspector probe" };
 export default async function run({ phase }) {
@@ -488,10 +525,26 @@ export default async function run({ phase }) {
 
   await tool.execute("call-2", { script }, undefined, () => {}, ctx);
 
-  assert.equal(customCalls(), 1);
-  assert.deepEqual(customOptions()[0], WORKFLOW_VIEWER_OVERLAY_OPTIONS);
-  const inspection = getLastWorkflowInspection();
-  assert.equal(inspection?.name, "inspect-live-probe");
+  assert.equal(customCalls(), 0);
+});
+
+test("the reopened inspector reports a failed tool-invoked run as failed", async () => {
+  const extension = captureWorkflowExtension();
+  const inspector = extension.commands.get("workflow:inspector");
+  if (!inspector) throw new Error("expected /workflow:inspector command");
+  const { ctx, customRenders } = createTuiContext(undefined, "inspector-failed-state");
+  const script = `
+export const meta = { name: "failed-state-probe", description: "Failed state probe" };
+export default async function run({ phase }) {
+  phase("Doomed");
+  throw new Error("boom");
+}
+`;
+
+  await assert.rejects(() => extension.tool.execute("call-failed-state", { script }, undefined, () => {}, ctx), /boom/);
+  await inspector.handler("", ctx as ExtensionCommandContext);
+
+  assert.match(customRenders().at(-1)?.[0] ?? "", /failed-state-probe.*✗ failed/);
 });
 
 test("the results command and shortcut reopen the last code-review findings without rerunning it", async () => {
@@ -516,7 +569,7 @@ test("the results command and shortcut reopen the last code-review findings with
     const tui = createTuiContext({ action: "fix", issueIds: ["R001"] });
     await command.handler("", tui.ctx as ExtensionCommandContext);
     assert.equal(tui.customCalls(), 1);
-    assert.match(tui.customRenders()[0]?.join("\n") ?? "", /Review results/);
+    assert.match(tui.customRenders()[0]?.join("\n") ?? "", /Review findings/);
     assert.match(tui.customRenders()[0]?.join("\n") ?? "", /R001/);
     assert.match(tui.notifications().join("\n"), /Verifying the reviewed snapshot/);
     assert.equal(runCounter.__piWorkflowResultsTestRuns, 1);
@@ -612,6 +665,34 @@ test("retained code-review results stay isolated to their originating session", 
   assert.equal(reopenedA.customCalls(), 1);
 });
 
+test("the picker's authored temporary workflow activates Dynamax for the run it starts", async () => {
+  const extension = captureWorkflowExtension();
+  const command = extension.commands.get("workflow");
+  if (!command) throw new Error("expected /workflow command");
+  const statuses = new Map<string, string | undefined>();
+  let armedBeforeIdle: { status: string | undefined; sent: number } | undefined;
+  const ctx = {
+    ...HEADLESS_CTX,
+    hasUI: true,
+    waitForIdle: async () => {
+      armedBeforeIdle = { status: statuses.get("dynamax"), sent: extension.sentUserMessages.length };
+    },
+    ui: {
+      select: async (_title: string, options: readonly string[]) => options.find((option) => option.startsWith("+ author a one-off workflow")),
+      editor: async () => "inspect src and summarize risks",
+      notify: () => {},
+      setStatus: (key: string, value: string | undefined) => statuses.set(key, value),
+      theme: createTestTheme(),
+    },
+  } as unknown as ExtensionCommandContext;
+
+  await command.handler("", ctx);
+
+  assert.deepEqual(armedBeforeIdle, { status: undefined, sent: 0 }, "the one-shot is armed and sent only once the host is idle");
+  assert.match(String(extension.sentUserMessages[0]), /inspect src and summarize risks/);
+  assert.match(statuses.get("dynamax") ?? "", /next prompt/);
+});
+
 test("workflow inspector history stays isolated to its originating session", async () => {
   const extension = captureWorkflowExtension();
   const command = extension.commands.get("workflow:inspector");
@@ -638,7 +719,7 @@ export default async function run({ phase }) {
   const reopenedA = createTuiContext(undefined, "inspector-session-a");
   await command.handler("", reopenedA.ctx as ExtensionCommandContext);
   assert.equal(reopenedA.customCalls(), 1);
-  assert.deepEqual(reopenedA.customOptions()[0], WORKFLOW_VIEWER_OVERLAY_OPTIONS);
+  assert.deepEqual(reopenedA.customOptions()[0], WORKFLOW_INSPECTOR_OVERLAY_OPTIONS);
   assert.match(reopenedA.customRenders().at(-1)?.join("\n") ?? "", /inspector-session-probe/);
 });
 
@@ -651,18 +732,31 @@ test("the inspector shortcut opens the active workflow inspector while the workf
 export const meta = { name: "inspect-live-shortcut-probe", description: "Live inspector shortcut probe" };
 export default async function run({ phase }) {
   phase("Shortcut Live");
-  await new Promise((resolve) => setTimeout(resolve, 75));
+  globalThis["__piWorkflowShortcutLiveStarted"] = true;
+  await globalThis["__piWorkflowShortcutLiveGate"];
   return { ok: true };
 }
 `;
+  // Hold the run open so the shortcut can only find the active inspection: a completed
+  // snapshot is recorded only when the run finishes.
+  const runtime = globalThis as typeof globalThis & { __piWorkflowShortcutLiveGate?: Promise<void>; __piWorkflowShortcutLiveStarted?: boolean };
+  const gate = Promise.withResolvers<void>();
+  runtime.__piWorkflowShortcutLiveGate = gate.promise;
 
-  const running = tool.execute("call-3", { script }, undefined, () => {}, ctx);
-  await waitUntil(() => customCalls() >= 1, "initial live inspector");
+  try {
+    const running = tool.execute("call-3", { script }, undefined, () => {}, ctx);
+    await waitUntil(() => runtime.__piWorkflowShortcutLiveStarted === true, "live workflow body");
 
-  await shortcut.handler(ctx);
+    await shortcut.handler(ctx);
 
-  assert.equal(customCalls(), 2);
-  assert.deepEqual(customOptions().at(-1), WORKFLOW_VIEWER_OVERLAY_OPTIONS);
-  assert.match(customRenders().at(-1)?.join("\n") ?? "", /inspect-live-shortcut-probe/);
-  await running;
+    assert.equal(customCalls(), 1);
+    assert.deepEqual(customOptions().at(-1), WORKFLOW_INSPECTOR_OVERLAY_OPTIONS);
+    assert.match(customRenders().at(-1)?.join("\n") ?? "", /inspect-live-shortcut-probe.*● running · Shortcut Live/);
+    gate.resolve();
+    await running;
+  } finally {
+    gate.resolve();
+    delete runtime.__piWorkflowShortcutLiveGate;
+    delete runtime.__piWorkflowShortcutLiveStarted;
+  }
 });

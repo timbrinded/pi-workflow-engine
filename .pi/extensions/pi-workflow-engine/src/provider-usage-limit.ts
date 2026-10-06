@@ -1,8 +1,10 @@
 import { WorkflowPauseError } from "./cancellation.ts";
+import { isRecord } from "./guards.ts";
 import {
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
   type ResolvedWorkflowRunOptions,
 } from "./options.ts";
+import { truncateText } from "./text.ts";
 import type { WorkflowProviderUsageLimitPause } from "./workflow-run-record.ts";
 
 export const WORKFLOW_PROVIDER_USAGE_LIMIT_CODE = "WORKFLOW_PROVIDER_USAGE_LIMIT";
@@ -43,25 +45,33 @@ export class WorkflowProviderUsageLimitError extends WorkflowPauseError {
   }
 }
 
+/** The last assistant message when it ended its turn with a provider error, its error text ("" if absent), and its non-empty provider metadata. */
+export function lastAssistantError(messages: readonly unknown[]) {
+  const message = messages.findLast(isAssistantMessage);
+  if (!message || message.stopReason !== "error") return undefined;
+  const provider = stringDetail(message.provider);
+  const model = stringDetail(message.model);
+  const api = stringDetail(message.api);
+  return {
+    message,
+    errorMessage: typeof message.errorMessage === "string" ? message.errorMessage : "",
+    details: { ...(provider ? { provider } : {}), ...(model ? { model } : {}), ...(api ? { api } : {}) },
+  };
+}
+
 export function providerUsageLimitFromMessages(
   messages: readonly unknown[],
   now = Date.now(),
 ): WorkflowProviderUsageLimitError | undefined {
-  const message = messages.findLast(isAssistantMessage);
-  if (!message || message.stopReason !== "error") return undefined;
-  const providerMessage = typeof message.errorMessage === "string" ? message.errorMessage.trim() : "";
+  const failure = lastAssistantError(messages);
+  if (!failure) return undefined;
+  const providerMessage = failure.errorMessage.trim();
   if (!providerMessage || !isUsageLimitMessage(providerMessage)) return undefined;
-  const reset = parseProviderResetHint(providerMessage, now);
-  const provider = stringDetail(message.provider);
-  const model = stringDetail(message.model);
-  const api = stringDetail(message.api);
   return new WorkflowProviderUsageLimitError({
     stopReason: "error",
     providerMessage,
-    ...(provider ? { provider } : {}),
-    ...(model ? { model } : {}),
-    ...(api ? { api } : {}),
-    ...reset,
+    ...failure.details,
+    ...parseProviderResetHint(providerMessage, now),
   });
 }
 
@@ -119,8 +129,9 @@ export function parseProviderResetHint(
       : { resetHint: boundedHint(iso) };
   }
 
+  // Units must be whole words on the hint's line ("6m0s" stays compact; "1 month" and "30\nmessage" are not durations).
   const labelled = message.match(
-    /(?:retry[- ]after|try again in|resets? in|available again in|x-ratelimit-reset(?:-[a-z-]+)?)\s*[:=]?\s*((?:\d+(?:\.\d+)?\s*(?:milliseconds?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\s*)+)/i,
+    /(?:retry[- ]after|try again in|resets? in|available again in|x-ratelimit-reset(?:-[a-z-]+)?)\s*[:=]?\s*((?:\d+(?:\.\d+)?[ \t]*(?:milliseconds?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)(?![a-z])[ \t]*)+)/i,
   );
   if (labelled?.[1]) {
     const delayMs = parseDurationMs(labelled[1]);
@@ -150,27 +161,24 @@ function isUsageLimitMessage(message: string): boolean {
     || /\b(?:usage|rate)\s+limit\s+(?:(?:has\s+been|was)\s+)?(?:reached|exceeded)\b/i.test(message);
 }
 
+/** Sum a duration already captured by parseProviderResetHint's labelled grammar. */
 function parseDurationMs(value: string): number | undefined {
   const unitPattern = /(\d+(?:\.\d+)?)\s*(milliseconds?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)/gi;
   let total = 0;
-  let matched = "";
   for (const part of value.matchAll(unitPattern)) {
     const amount = Number(part[1]);
-    const unit = part[2]?.toLowerCase();
-    if (!Number.isFinite(amount) || !unit) return undefined;
-    matched += part[0];
+    const unit = (part[2] ?? "").toLowerCase();
     if (unit === "ms" || unit.startsWith("millisecond")) total += amount;
     else if (unit === "s" || unit.startsWith("sec")) total += amount * 1_000;
     else if (unit === "m" || unit.startsWith("min")) total += amount * 60_000;
     else if (unit === "h" || unit.startsWith("hr") || unit.startsWith("hour")) total += amount * 3_600_000;
     else total += amount * 86_400_000;
   }
-  if (!matched || value.replace(/\s+/g, "") !== matched.replace(/\s+/g, "")) return undefined;
-  return Number.isFinite(total) && total >= 0 ? total : undefined;
+  return Number.isFinite(total) ? total : undefined;
 }
 
 function boundedHint(value: string): string {
-  return value.length <= MAX_RESET_HINT_LENGTH ? value : `${value.slice(0, MAX_RESET_HINT_LENGTH - 1)}…`;
+  return truncateText(value, MAX_RESET_HINT_LENGTH);
 }
 
 function isAssistantMessage(value: unknown): value is {
@@ -181,7 +189,7 @@ function isAssistantMessage(value: unknown): value is {
   readonly model?: unknown;
   readonly api?: unknown;
 } {
-  return typeof value === "object" && value !== null && "role" in value && value.role === "assistant";
+  return isRecord(value) && value.role === "assistant";
 }
 
 function stringDetail(value: unknown): string | undefined {

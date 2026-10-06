@@ -7,8 +7,7 @@ import {
   resolveGitHubPrContext,
   type ExecLike,
 } from "../.pi/extensions/pi-workflow-engine/src/review/github-pr-comments.ts";
-import { toReviewIssues } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
-import type { ReviewContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-report.ts";
+import { isCommentableIssue, toReviewIssues } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
 
 test("posts inline comments through gh api with path line and head sha", async () => {
   const calls: Array<{ command: string; args: readonly string[]; cwd: string | undefined }> = [];
@@ -30,15 +29,7 @@ test("posts inline comments through gh api with path line and head sha", async (
     }
     return { code: 1, stdout: "", stderr: `unexpected args ${args.join(" ")}` };
   };
-  const reviewContext: ReviewContext = {
-    workflowName: "code-review",
-    target: "",
-    diffTarget: { kind: "pull-request", number: 123 },
-    files: ["src/app.ts"],
-    summary: "PR 123",
-  };
-
-  const resolved = await resolveGitHubPrContext(exec, "/repo", reviewContext);
+  const resolved = await resolveGitHubPrContext(exec, "/repo", 123);
   if (!resolved.ok) throw new Error(resolved.reason);
   assert.deepEqual(resolved.context, {
     owner: "acme",
@@ -48,7 +39,7 @@ test("posts inline comments through gh api with path line and head sha", async (
     url: "https://github.com/acme/widgets/pull/123",
   });
 
-  const statuses = await postInlineComments(exec, "/repo", resolved.context, toReviewIssues("code-review", createReport()));
+  const statuses = await postInlineComments(exec, "/repo", resolved.context, toReviewIssues(createReport()).filter(isCommentableIssue));
   assert.deepEqual(statuses, [{ issueId: "R001", status: "posted", url: "https://github.com/acme/widgets/pull/123#discussion_r1" }]);
 
   const apiCall = calls.find((call) => call.args.some((arg) => arg.startsWith("body=")));
@@ -85,15 +76,7 @@ test("posts forked PR inline comments to the base repository", async () => {
     }
     return { code: 1, stdout: "", stderr: `unexpected args ${args.join(" ")}` };
   };
-  const reviewContext: ReviewContext = {
-    workflowName: "code-review",
-    target: "",
-    diffTarget: { kind: "pull-request", number: 456 },
-    files: ["src/app.ts"],
-    summary: "PR 456",
-  };
-
-  const resolved = await resolveGitHubPrContext(exec, "/repo", reviewContext);
+  const resolved = await resolveGitHubPrContext(exec, "/repo", 456);
   if (!resolved.ok) throw new Error(resolved.reason);
   assert.deepEqual(resolved.context, {
     owner: "acme",
@@ -103,7 +86,7 @@ test("posts forked PR inline comments to the base repository", async () => {
     url: "https://github.com/acme/widgets/pull/456",
   });
 
-  const statuses = await postInlineComments(exec, "/repo", resolved.context, toReviewIssues("code-review", createReport()));
+  const statuses = await postInlineComments(exec, "/repo", resolved.context, toReviewIssues(createReport()).filter(isCommentableIssue));
   assert.deepEqual(statuses, [{ issueId: "R001", status: "posted", url: "https://github.com/acme/widgets/pull/456#discussion_r2" }]);
 
   const apiCall = calls.find((call) => call.args.some((arg) => arg.startsWith("body=")));
@@ -113,7 +96,7 @@ test("posts forked PR inline comments to the base repository", async () => {
 });
 
 test("skips an identical inline comment already present on the reviewed PR head", async () => {
-  const issue = toReviewIssues("code-review", createReport())[0];
+  const issue = toReviewIssues(createReport()).filter(isCommentableIssue)[0];
   if (!issue) throw new Error("expected review issue");
   let postCalls = 0;
   const exec: ExecLike = async (_command, args) => {
@@ -143,7 +126,7 @@ test("skips an identical inline comment already present on the reviewed PR head"
 test("passes abort signals to gh and stops before later comment writes", async () => {
   const report = createReport();
   report.findings.push({ ...report.findings[0]!, summary: "Second finding", locations: [{ file: "src/other.ts", line: 20 }] });
-  const issues = toReviewIssues("code-review", report);
+  const issues = toReviewIssues(report).filter(isCommentableIssue);
   const controller = new AbortController();
   let postCalls = 0;
   const exec: ExecLike = async (_command, args, options) => {

@@ -1,133 +1,67 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { truncateDisplay, type WorkflowThemeColor } from "../ui/workflow-format.ts";
-import { formatIssueLocation, type ReviewIssue } from "./review-issues.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { dot, fit, GLYPH, hangingWrap, severityBadge, severityRank, truncatePath } from "../ui/kit.ts";
+import type { ReviewIssue } from "./review-issues.ts";
 
-export interface RenderIssuesTableOptions {
-  readonly maxRows?: number;
+/** Most severe first; report order (and so the stable R-number) breaks ties. */
+export function sortIssuesForDisplay(issues: readonly ReviewIssue[]): ReviewIssue[] {
+  return issues
+    .map((issue, index) => ({ issue, index }))
+    .sort((a, b) => severityRank(a.issue.finding.severity) - severityRank(b.issue.finding.severity) || a.index - b.index)
+    .map(({ issue }) => issue);
 }
 
-const DEFAULT_MAX_ROWS = 12;
-const ID_WIDTH = 4;
-const SEVERITY_WIDTH = 6;
-const CONFIDENCE_WIDTH = 6;
-const CATEGORY_WIDTH = 8;
-const LOCATION_WIDTH = 30;
-const SUMMARY_WIDTH = 58;
-
-export function renderIssuesTable(issues: readonly ReviewIssue[], theme: Theme, options: RenderIssuesTableOptions = {}): string {
-  const maxRows = options.maxRows ?? DEFAULT_MAX_ROWS;
-  const visible = maxRows >= 0 ? issues.slice(0, maxRows) : issues;
-  const lines = [
-    renderRow(["ID", "Sev", "Conf", "Cat", "Location", "Summary"], theme.fg("dim", "│"), theme, true),
-    theme.fg("dim", renderSeparator()),
-  ];
-
-  for (const issue of visible) {
-    lines.push(
-      renderRow(
-        [
-          issue.id,
-          issue.finding.severity,
-          issue.finding.confidence,
-          issue.finding.category,
-          formatIssueLocation(issue),
-          issue.finding.summary,
-        ],
-        theme.fg("dim", "│"),
-        theme,
-        false,
-        issue,
-      ),
-    );
-  }
-
-  if (issues.length > visible.length) {
-    lines.push(theme.fg("dim", `… ${issues.length - visible.length} more finding(s)`));
-  }
-
-  return lines.join("\n");
+/** `src/cache.ts:13`, without the symbol; the detail view shows the symbol on its own. */
+export function issuePath(issue: ReviewIssue): string {
+  if (!issue.file) return "no location";
+  return issue.line === undefined ? issue.file : `${issue.file}:${issue.line}`;
 }
 
-export function renderIssueDetails(issue: ReviewIssue, theme: Theme): string {
-  return renderIssueDetailLines(issue, theme, 120).join("\n");
+/**
+ * One aligned row: `HIGH R003  src/cache.ts:13      The parser accepts an empty value…`.
+ * `pathColumn` (from `findingPathColumn`) narrows the location column to the paths actually listed.
+ */
+export function renderFindingRow(issue: ReviewIssue, width: number, theme: Theme, pathColumn?: number): string {
+  const head = `${severityBadge(issue.finding.severity, theme)} ${theme.fg("dim", issue.id)}`;
+  const room = Math.max(0, width - visibleWidth(head) - 2);
+  const pathWidth = Math.min(pathColumn ?? Number.POSITIVE_INFINITY, maxPathWidth(room));
+  if (room < pathWidth + 10) return fit(`${head}  ${theme.fg("text", issue.finding.summary)}`, width);
+  const path = theme.fg("accent", fit(truncatePath(issuePath(issue), pathWidth), pathWidth));
+  return fit(`${head}  ${path}  ${theme.fg("text", issue.finding.summary)}`, width);
 }
 
-export function renderIssueDetailLines(issue: ReviewIssue, theme: Theme, width: number): string[] {
+function maxPathWidth(room: number): number {
+  return Math.min(Math.max(16, Math.floor(room * 0.38)), 34);
+}
+
+/** A location column as wide as the longest listed path, never below 12 columns. */
+export function findingPathColumn(issues: readonly ReviewIssue[]): number {
+  return Math.max(12, ...issues.map((issue) => visibleWidth(issuePath(issue))));
+}
+
+const LABEL_WIDTH = 10;
+
+/** The full finding: headline, wrapped summary, then aligned Location / Impact / Evidence / Fix sections. */
+export function renderFindingDetail(issue: ReviewIssue, width: number, theme: Theme): string[] {
   const finding = issue.finding;
-  const metadata = `${finding.category} · severity ${finding.severity} · confidence ${finding.confidence}${finding.verdict ? ` · ${finding.verdict}` : ""}`;
-  const lines = [`${theme.fg("accent", issue.id)} ${theme.fg("text", finding.summary)}`];
-  lines.push(...fieldLines("Metadata", metadata, width, theme));
-  if (finding.sourceCandidateIds?.length) lines.push(...fieldLines("Sources", finding.sourceCandidateIds.join(", "), width, theme));
-  lines.push(...fieldLines("Location", formatIssueLocation(issue), width, theme, "accent"));
-  lines.push(...fieldLines("Impact", finding.impact, width, theme));
-  lines.push(...fieldLines("Evidence", finding.evidence.join("; ") || "(none cited)", width, theme));
-  lines.push(...fieldLines("Recommendation", finding.recommendation, width, theme));
-  return lines.flatMap((line) => wrapTextWithAnsi(line, Math.max(10, width)));
-}
-
-function fieldLines(label: string, value: string, width: number, theme: Theme, valueColor: WorkflowThemeColor = "muted"): string[] {
-  const prefix = `  ${theme.fg("dim", `${label}:`)}`;
-  const separator = " ";
-  const valueText = theme.fg(valueColor, value);
-  const available = Math.max(10, width - visibleWidth(`${label}:  `) - 2);
-  const wrapped = wrapTextWithAnsi(valueText, available);
-  if (wrapped.length === 0) return [`${prefix}${separator}`];
-  const continuation = " ".repeat(visibleWidth(`${label}:  `) + 2);
-  return wrapped.map((line, index) => (index === 0 ? `${prefix}${separator}${line}` : `${continuation}${line}`));
-}
-
-function renderRow(
-  cells: readonly [string, string, string, string, string, string],
-  separator: string,
-  theme: Theme,
-  header: boolean,
-  issue?: ReviewIssue,
-): string {
-  const rendered = [
-    cell(cells[0], ID_WIDTH),
-    colorCell(cell(cells[1], SEVERITY_WIDTH), header ? "dim" : severityColor(issue?.finding.severity ?? "low"), theme),
-    colorCell(cell(cells[2], CONFIDENCE_WIDTH), header ? "dim" : confidenceColor(issue?.finding.confidence ?? "low"), theme),
-    cell(cells[3], CATEGORY_WIDTH),
-    cell(cells[4], LOCATION_WIDTH),
-    cell(cells[5], SUMMARY_WIDTH),
+  const meta = [finding.category, `confidence ${finding.confidence}`, finding.verdict?.toLowerCase()].filter(Boolean).join(dot(theme));
+  const lines = [
+    `${severityBadge(finding.severity, theme)} ${theme.fg("accent", theme.bold(issue.id))}${dot(theme)}${theme.fg("muted", meta)}`,
+    ...hangingWrap(theme.bold(finding.summary), width),
+    "",
   ];
-  if (header) {
-    return rendered.map((entry) => theme.fg("dim", entry)).join(` ${separator} `);
-  }
-  return rendered.join(` ${separator} `);
+  const location = [theme.fg("accent", issuePath(issue)), issue.symbol ? theme.fg("muted", issue.symbol) : undefined].filter(Boolean).join(dot(theme));
+  lines.push(...labelledLines("Location", [location], width, theme));
+  lines.push(...labelledLines("Impact", [finding.impact], width, theme));
+  const evidence = finding.evidence.length > 0 ? finding.evidence.map((item) => `${GLYPH.bullet} ${item}`) : [theme.fg("dim", "none cited")];
+  lines.push(...labelledLines("Evidence", evidence, width, theme, "  "));
+  lines.push(...labelledLines("Fix", [finding.recommendation], width, theme));
+  return lines;
 }
 
-function cell(value: string, width: number): string {
-  return truncateDisplay(value, width).padEnd(width, " ");
-}
-
-function colorCell(value: string, color: WorkflowThemeColor, theme: Theme): string {
-  return theme.fg(color, value);
-}
-
-function renderSeparator(): string {
-  return [ID_WIDTH, SEVERITY_WIDTH, CONFIDENCE_WIDTH, CATEGORY_WIDTH, LOCATION_WIDTH, SUMMARY_WIDTH].map((width) => "─".repeat(width)).join("─┼─");
-}
-
-function severityColor(severity: ReviewIssue["finding"]["severity"]): WorkflowThemeColor {
-  switch (severity) {
-    case "high":
-      return "error";
-    case "medium":
-      return "warning";
-    case "low":
-      return "muted";
-  }
-}
-
-function confidenceColor(confidence: ReviewIssue["finding"]["confidence"]): WorkflowThemeColor {
-  switch (confidence) {
-    case "high":
-      return "success";
-    case "medium":
-      return "warning";
-    case "low":
-      return "muted";
-  }
+/** A dim label column (10 wide) with each item wrapped beside it, so result sections align with finding details. */
+export function labelledLines(label: string, items: readonly string[], width: number, theme: Theme, itemIndent = ""): string[] {
+  const first = theme.fg("dim", label.padEnd(LABEL_WIDTH, " "));
+  const rest = " ".repeat(LABEL_WIDTH);
+  return items.flatMap((item, index) => hangingWrap(item, width, index === 0 ? first : rest, rest + itemIndent));
 }

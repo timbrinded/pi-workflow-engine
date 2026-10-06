@@ -6,6 +6,15 @@ import { throwIfAborted } from "./cancellation.ts";
 import { isMissingPathError } from "./filesystem-error.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
+/** Engine-owned paths that are never part of a fingerprinted or snapshotted workspace. */
+export const FINGERPRINT_EXCLUDED_RELATIVE_PATHS: ReadonlySet<string> = new Set([
+  ".git",
+  ".pi/.workflow-runs",
+]);
+
+const SOURCE_TREE_MAX_BYTES = 32 << 20;
+const SOURCE_TREE_MAX_FILES = 4096;
+
 export type FingerprintCapture =
   | { readonly kind: "verified"; readonly fingerprint: string }
   | { readonly kind: "unverifiable"; readonly reason: string };
@@ -38,8 +47,6 @@ export interface DeclaredInputFingerprintOptions {
   readonly excludedRelativePaths?: ReadonlySet<string>;
   readonly maxBytes: number;
   readonly maxEntries: number;
-  /** Record direct directory identity without recursively walking descendants. */
-  readonly shallowDirectories?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -71,9 +78,9 @@ export class BoundedFingerprint {
     this.#hash.update("\0");
   }
 
+  /** File bytes may contain NUL, so they enter the outer hash as a fixed-length digest. */
   async addFileHandle(label: string, handle: FileHandle, signal?: AbortSignal): Promise<void> {
-    this.#hash.update(label);
-    this.#hash.update("\0");
+    const content = createHash("sha256");
     const stream = handle.createReadStream({ autoClose: false, highWaterMark: 64 << 10, signal });
     try {
       for await (const chunk of stream) {
@@ -84,13 +91,13 @@ export class BoundedFingerprint {
           stream.destroy();
           throw new Error(`content fingerprint exceeded ${this.maxBytes} bytes`);
         }
-        this.#hash.update(buffer);
+        content.update(buffer);
       }
     } catch (error) {
       throwIfAborted(signal);
       throw error;
     }
-    this.#hash.update("\0");
+    this.add(label, content.digest("hex"));
   }
 
   digest(): string {
@@ -178,6 +185,20 @@ export async function captureTreeFingerprint(options: TreeFingerprintOptions): P
   }
 }
 
+/**
+ * Fingerprint a workflow or tool source tree. Workflow provenance captured at
+ * load time is revalidated on resume, so both captures must share these bounds.
+ */
+export async function captureSourceTreeFingerprint(root: string, signal?: AbortSignal): Promise<FingerprintCapture> {
+  return await captureTreeFingerprint({
+    root,
+    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+    maxBytes: SOURCE_TREE_MAX_BYTES,
+    maxFiles: SOURCE_TREE_MAX_FILES,
+    signal,
+  });
+}
+
 /** Fingerprint only explicitly declared files/directories under one shared bound. */
 export async function captureDeclaredInputFingerprint(
   options: DeclaredInputFingerprintOptions,
@@ -226,11 +247,6 @@ export async function captureDeclaredInputFingerprint(
         return true;
       }
       if (!info.isDirectory()) throw new Error(`declared input contains an unsupported entry: ${relativePath}`);
-
-      if (options.shallowDirectories === true) {
-        recordEntry(relativePath, "directory", info.mode);
-        return true;
-      }
 
       const entries = await readdir(path, { withFileTypes: true });
       entries.sort((left, right) => left.name.localeCompare(right.name));
@@ -341,6 +357,11 @@ export function isPathWithin(root: string, path: string): boolean {
   return pathFromRoot === "" || (!isAbsolute(pathFromRoot) && pathFromRoot !== ".." && !pathFromRoot.startsWith(`..${sep}`));
 }
 
+export function portableRelativePath(root: string, path: string): string {
+  const value = relative(root, path).split(sep).join("/");
+  return value.length === 0 ? "." : value;
+}
+
 function isExcludedRelativePath(path: string, excluded: ReadonlySet<string> | undefined): boolean {
   if (!excluded || excluded.size === 0) return false;
   const normalized = normalizeRelativePath(path);
@@ -361,8 +382,7 @@ function declaredInputPath(root: string, base: string, input: string): string {
   const path = resolve(base, input);
   if (!isPathWithin(root, path)) throw new Error(`declared input escapes the repository root: ${input}`);
   if (!isPathWithin(base, path)) throw new Error(`declared input escapes the workflow cwd: ${input}`);
-  const relativePath = relative(root, path).split(sep).join("/");
-  return relativePath.length === 0 ? "." : relativePath;
+  return portableRelativePath(root, path);
 }
 
 function rejectExcludedDeclaredInput(path: string, excluded: ReadonlySet<string> | undefined): void {
@@ -370,7 +390,7 @@ function rejectExcludedDeclaredInput(path: string, excluded: ReadonlySet<string>
   throw new Error(`declared input enters excluded path: ${path}`);
 }
 
-function isExcludedDeclaredInput(path: string, excluded: ReadonlySet<string> | undefined): boolean {
+export function isExcludedDeclaredInput(path: string, excluded: ReadonlySet<string> | undefined): boolean {
   if (!excluded) return false;
   const normalized = normalizeRelativePath(path);
   for (const candidate of excluded) {

@@ -1,3 +1,6 @@
+import { isFiniteNumber, isRecord } from "./guards.ts";
+import { formatCount } from "./text.ts";
+
 export interface WorkflowUsageCost {
   readonly input: number;
   readonly output: number;
@@ -94,10 +97,8 @@ export class WorkflowUsageRecorder implements WorkflowUsageSink {
   }
 
   snapshot(): WorkflowUsageSnapshot {
-    const agents = this.agents.map((agent) => ({
-      ...agent,
-      usage: cloneTotals(agent.usage),
-    }));
+    // Recorded entries are never mutated; copying the array keeps each snapshot point-in-time.
+    const agents = [...this.agents];
     return {
       agents,
       totals: sumTotals(agents.map((agent) => agent.usage)),
@@ -118,7 +119,7 @@ export function isWorkflowUsageSnapshot(value: unknown): value is WorkflowUsageS
   if (!isRecord(value)) return false;
   if (!Array.isArray(value.agents) || !value.agents.every(isWorkflowAgentUsage)) return false;
   if (!isWorkflowUsageTotals(value.totals)) return false;
-  return finiteNumber(value.assistantMessages) !== undefined;
+  return isFiniteNumber(value.assistantMessages);
 }
 
 export function hasWorkflowUsage(snapshot: unknown): snapshot is WorkflowUsageSnapshot {
@@ -144,9 +145,9 @@ function formatWorkflowUsageComponents(totals: WorkflowUsageTotals): string[] {
   appendUsageComponent(parts, "output", totals.output, totals.coverage.output);
 
   const knownComponents = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
-  if (parts.length === 0 && totals.totalTokens > 0) parts.push(`tokens ${formatUsageCount(totals.totalTokens)}`);
+  if (parts.length === 0 && totals.totalTokens > 0) parts.push(`tokens ${formatCount(totals.totalTokens)}`);
   else if (!hasCompleteCoverage(totals.coverage) && totals.totalTokens !== knownComponents) {
-    parts.push(`total ${formatUsageCount(totals.totalTokens)}`);
+    parts.push(`total ${formatCount(totals.totalTokens)}`);
   }
   return parts;
 }
@@ -158,7 +159,7 @@ function appendUsageComponent(
   coverage: WorkflowUsageCoverage,
 ): void {
   if (value <= 0 || coverage === "none") return;
-  const count = formatUsageCount(value);
+  const count = formatCount(value);
   parts.push(`${label} ${coverage === "partial" ? `≥${count}` : count}`);
 }
 
@@ -168,17 +169,17 @@ function isWorkflowAgentUsage(value: unknown): value is WorkflowAgentUsage {
   if (value.phase !== undefined && typeof value.phase !== "string") return false;
   if (value.provider !== undefined && typeof value.provider !== "string") return false;
   if (value.model !== undefined && typeof value.model !== "string") return false;
-  if (finiteNumber(value.assistantMessages) === undefined) return false;
+  if (!isFiniteNumber(value.assistantMessages)) return false;
   return isWorkflowUsageTotals(value.usage);
 }
 
 function isWorkflowUsageTotals(value: unknown): value is WorkflowUsageTotals {
   if (!isRecord(value)) return false;
-  if (finiteNumber(value.input) === undefined) return false;
-  if (finiteNumber(value.output) === undefined) return false;
-  if (finiteNumber(value.cacheRead) === undefined) return false;
-  if (finiteNumber(value.cacheWrite) === undefined) return false;
-  if (finiteNumber(value.totalTokens) === undefined) return false;
+  if (!isFiniteNumber(value.input)) return false;
+  if (!isFiniteNumber(value.output)) return false;
+  if (!isFiniteNumber(value.cacheRead)) return false;
+  if (!isFiniteNumber(value.cacheWrite)) return false;
+  if (!isFiniteNumber(value.totalTokens)) return false;
   if (!isWorkflowUsageCoverage(value.coverage)) return false;
   return isWorkflowUsageCost(value.cost);
 }
@@ -196,11 +197,11 @@ function isWorkflowUsageCoverage(value: unknown): value is WorkflowUsageComponen
 function isWorkflowUsageCost(value: unknown): value is WorkflowUsageCost {
   if (!isRecord(value)) return false;
   return (
-    finiteNumber(value.input) !== undefined &&
-    finiteNumber(value.output) !== undefined &&
-    finiteNumber(value.cacheRead) !== undefined &&
-    finiteNumber(value.cacheWrite) !== undefined &&
-    finiteNumber(value.total) !== undefined
+    isFiniteNumber(value.input) &&
+    isFiniteNumber(value.output) &&
+    isFiniteNumber(value.cacheRead) &&
+    isFiniteNumber(value.cacheWrite) &&
+    isFiniteNumber(value.total)
   );
 }
 
@@ -321,18 +322,6 @@ function isCoverageValue(value: unknown): value is WorkflowUsageCoverage {
   return value === "none" || value === "partial" || value === "complete";
 }
 
-function formatUsageCount(count: number): string {
-  if (count < 1000) return count.toString();
-  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1000000) return `${Math.round(count / 1000)}k`;
-  if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-  return `${Math.round(count / 1000000)}M`;
-}
-
 function finiteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return isFiniteNumber(value) ? value : undefined;
 }

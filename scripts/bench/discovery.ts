@@ -3,14 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverWorkflows } from "../../.pi/extensions/pi-workflow-engine/src/discovery.ts";
-import { intFlag, maybeWriteBenchmarkOutput, parseBenchArgs, printBenchmarkOutput, runBenchmark } from "./lib.ts";
+import { parseBenchArgs, runBenchmark, writeBenchmarkOutput } from "./lib.ts";
 
 const options = parseBenchArgs();
 const extensionDir = fileURLToPath(new URL("../../.pi/extensions/pi-workflow-engine/", import.meta.url));
 const tempWorkflowCount = Math.max(0, Math.trunc(Number(options.flags.get("temp-workflows") ?? "0")));
 
+// refresh bypasses the discovery cache so every iteration measures a real scan.
 const cold = await runBenchmark("discovery.cold", options.iterations, async () => {
-  await discoverWorkflows(extensionDir);
+  await discoverWorkflows(extensionDir, { refresh: true });
 });
 const warm = await runBenchmark("discovery.warm", options.iterations, async () => {
   await discoverWorkflows(extensionDir);
@@ -18,7 +19,7 @@ const warm = await runBenchmark("discovery.warm", options.iterations, async () =
 
 let temp: unknown = undefined;
 if (tempWorkflowCount > 0) {
-  temp = await runTempWorkflowBenchmark(tempWorkflowCount, intFlag(options, "iterations", options.iterations));
+  temp = await runTempWorkflowBenchmark(tempWorkflowCount, options.iterations);
 }
 
 const result = {
@@ -31,8 +32,7 @@ const result = {
   temp,
 };
 
-const written = await maybeWriteBenchmarkOutput("discovery", result, options.out);
-printBenchmarkOutput(written ? { ...result, written } : result, options.json);
+await writeBenchmarkOutput("discovery", result, options.out);
 
 async function runTempWorkflowBenchmark(count: number, iterations: number): Promise<unknown> {
   const repo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-bench-"));
@@ -46,7 +46,7 @@ async function runTempWorkflowBenchmark(count: number, iterations: number): Prom
       );
     }
     const timing = await runBenchmark("discovery.temp_workflows", iterations, async () => {
-      await discoverWorkflows(repo);
+      await discoverWorkflows(repo, { refresh: true });
     });
     const workflows = await discoverWorkflows(repo);
     return { count, loaded: workflows.size, timing };

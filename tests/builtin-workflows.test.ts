@@ -114,14 +114,16 @@ function emptyCandidates(): { candidates: AdvisoryCandidate[] } {
 const EXPECTED_ADVISORY_TOOLS = ["read", "bash", "grep", "find", "ls"];
 const EXPECTED_ADVISORY_TOOL_HINTS = ["search"];
 
+const NO_FILES_SCOPE = { diffCommand: "git diff --no-color HEAD", files: [], summary: "No changed files." };
+
 test("built-in advisory workflows request dynamic search-like tools", async () => {
-  const codeReviewApi = createScriptedApi([null]);
+  const codeReviewApi = createScriptedApi([NO_FILES_SCOPE]);
   await codeReview(codeReviewApi);
   assert.deepEqual(codeReviewApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
   assert.deepEqual(codeReviewApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
   assert.equal(codeReviewApi.calls[0]?.profile, "medium");
 
-  const diagnoseApi = createScriptedApi([null], "failing command");
+  const diagnoseApi = createScriptedApi([{ symptom: "failing command", commands: [], files: [], observations: [] }], "failing command");
   await diagnose(diagnoseApi);
   assert.deepEqual(diagnoseApi.calls[0]?.tools, EXPECTED_ADVISORY_TOOLS);
   assert.deepEqual(diagnoseApi.calls[0]?.toolHints, EXPECTED_ADVISORY_TOOL_HINTS);
@@ -140,18 +142,8 @@ test("built-in advisory workflows request dynamic search-like tools", async () =
   assert.equal(perfApi.calls[0]?.profile, "medium");
 });
 
-test("code-review returns the empty report when scope is unavailable", async () => {
-  const api = createScriptedApi([null]);
-
-  const result = asReportResult(await codeReview(api));
-
-  assert.equal(result.summary, "No changes found to review.");
-  assert.deepEqual(result.findings, []);
-  assert.deepEqual(result.stats, { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0 });
-});
-
 test("code-review scope teaches parser-safe path and revision diff syntax", async () => {
-  const api = createScriptedApi([null], "review src/a.ts and src/b.ts");
+  const api = createScriptedApi([NO_FILES_SCOPE], "review src/a.ts and src/b.ts");
 
   await codeReview(api);
 
@@ -162,20 +154,45 @@ test("code-review scope teaches parser-safe path and revision diff syntax", asyn
 });
 
 test("code-review returns the empty report when scope has no files", async () => {
-  const api = createScriptedApi([
-    {
-      diffCommand: "git diff --no-color HEAD",
-      files: [],
-      summary: "No changed files.",
-    },
-  ]);
+  const api = createScriptedApi([NO_FILES_SCOPE]);
 
   const result = asReportResult(await codeReview(api));
 
   assert.equal(result.summary, "No changes found to review.");
   assert.deepEqual(result.findings, []);
-  assert.equal(result.stats.files, 0);
+  assert.deepEqual(result.stats, { files: 0, candidates: 0, verified: 0, kept: 0, dropped: 0, refuted: 0 });
 });
+
+for (const { when, diff, summary, nextSteps } of [
+  {
+    when: "is empty",
+    diff: "",
+    summary: "No changes found to review: `git diff --no-ext-diff main...HEAD` has no added or modified files.",
+    nextSteps: ["Provide a PR, ref range, or changed files to review."],
+  },
+  {
+    when: "only deletes, renames, changes modes or touches binary files",
+    diff: "diff --git a/old.ts b/new.ts\nsimilarity index 100%\nrename from old.ts\nrename to new.ts\n" +
+      "diff --git a/gone.ts b/gone.ts\ndeleted file mode 100644\n--- a/gone.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-export const gone = true;\n" +
+      "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n" +
+      "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n",
+    summary: "Nothing to review line by line: `git diff --no-ext-diff main...HEAD` only deletes or renames files, changes file modes, or touches binary files; there are no added lines to anchor findings on.",
+    nextSteps: ["Inspect the deleted, renamed, mode-changed or binary files directly; code-review anchors findings on added lines only."],
+  },
+]) {
+  test(`code-review trusts the captured diff over the scope's file list and skips finders when it ${when}`, async () => {
+    const api = createScriptedApi([{ diffCommand: "git diff main...HEAD", files: ["src/merged.ts"], summary: "Already merged." }]);
+
+    const result = asReportResult(await codeReview(api, {
+      captureReviewMaterial: async () => ({ ok: true, diff, snapshot: { status: "unavailable", reason: "fixture" } }),
+    }));
+
+    assert.equal(result.summary, summary);
+    assert.deepEqual(result.nextSteps, nextSteps);
+    assert.deepEqual(result.findings, []);
+    assert.deepEqual(api.calls.map((call) => call.label), ["scope"]);
+  });
+}
 
 test("code-review verifies one candidate and passes evidence into synthesis", async () => {
   const surviving = candidate("confirmed bug", "bug");
@@ -191,7 +208,7 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
     emptyCandidates(),
     emptyCandidates(),
     emptyCandidates(),
-    { verdict: "CONFIRMED", evidence: ["src/example.ts:12 proves the bug"], confidence: "high" },
+    { verdict: "CONFIRMED", evidence: ["src/example.ts:12 proves the bug"] },
     report("One confirmed bug.", [{ ...finding("confirmed bug", "bug"), sourceCandidateIds: identifyCandidates([surviving], "logic-bugs")[0]!.sourceCandidateIds }]),
   ]);
 
@@ -248,7 +265,7 @@ test("refactor-scout runs all finder agents before verifier agents", async () =>
     emptyCandidates(),
     emptyCandidates(),
     emptyCandidates(),
-    { verdict: "PLAUSIBLE", evidence: ["Two duplicated branches."], confidence: "medium" },
+    { verdict: "PLAUSIBLE", evidence: ["Two duplicated branches."] },
     report("One refactor opportunity.", [{ ...finding("extract duplicate helper", "duplication", "medium"), sourceCandidateIds: identifyCandidates([opportunity], "duplication")[0]!.sourceCandidateIds }]),
   ]);
 
@@ -261,16 +278,6 @@ test("refactor-scout runs all finder agents before verifier agents", async () =>
   assert.equal(findIndexes.length, 6);
   assert.ok(firstVerifyIndex > -1, `expected verifier call in ${JSON.stringify(labels)}`);
   assert.ok(findIndexes.every(({ index }) => index < firstVerifyIndex), `expected all finders before verify: ${JSON.stringify(labels)}`);
-});
-
-test("diagnose returns the diagnostic empty report when scope is unavailable", async () => {
-  const api = createScriptedApi([null], "failing command");
-
-  const result = asReportResult(await diagnose(api));
-
-  assert.equal(result.summary, "Diagnosis could not establish a scope.");
-  assert.deepEqual(result.findings, []);
-  assert.equal(result.stats.verified, 0);
 });
 
 test("diagnose keeps refuted hypotheses out of final findings", async () => {
@@ -288,8 +295,8 @@ test("diagnose keeps refuted hypotheses out of final findings", async () => {
     emptyCandidates(),
     emptyCandidates(),
     emptyCandidates(),
-    { verdict: "REFUTED", evidence: ["Fixture is current."], confidence: "low" },
-    { verdict: "CONFIRMED", evidence: ["Condition is inverted."], confidence: "high" },
+    { verdict: "REFUTED", evidence: ["Fixture is current."] },
+    { verdict: "CONFIRMED", evidence: ["Condition is inverted."] },
     report("One root cause.", [{ ...finding("wrong branch condition", "root-cause"), sourceCandidateIds: identifyCandidates([refuted, confirmed], "recent-change")[1]!.sourceCandidateIds }]),
   ]);
 
@@ -303,6 +310,26 @@ test("diagnose keeps refuted hypotheses out of final findings", async () => {
     result.findings.map((item) => item.summary),
     ["wrong branch condition"],
   );
+});
+
+test("diagnose counts hypotheses refuted by the challenge stage", async () => {
+  const api = createScriptedApi([
+    { symptom: "test fails", commands: [], files: ["src/example.ts"], observations: [] },
+    { candidates: [candidate("stale cache", "root-cause")] },
+    emptyCandidates(),
+    emptyCandidates(),
+    emptyCandidates(),
+    emptyCandidates(),
+    { verdict: "PLAUSIBLE", evidence: ["The cache is read before refresh."] },
+    { outcome: "counterexample", evidence: ["Refresh runs first."], experiment: "" },
+    { outcome: "refuted", evidence: ["Refresh runs first."], reason: "The cache is refreshed before use." },
+  ], "--challenge test fails");
+
+  const result = asReportResult(await diagnose(api));
+
+  assert.equal(result.stats.verified, 1);
+  assert.equal(result.stats.kept, 0);
+  assert.equal(result.stats.refuted, 1);
 });
 
 test("perf-review returns the empty report when no performance files are scoped", async () => {
@@ -343,7 +370,7 @@ test("perf-review keeps weak measurement findings advisory", async () => {
     emptyCandidates(),
     emptyCandidates(),
     { candidates: [measurementGap] },
-    { verdict: "PLAUSIBLE", evidence: ["No benchmark output is checked in."], confidence: "low" },
+    { verdict: "PLAUSIBLE", evidence: ["No benchmark output is checked in."] },
     report("Measurement gap only.", [{ ...measurementFinding, sourceCandidateIds: identifyCandidates([measurementGap], "measurement")[0]!.sourceCandidateIds }]),
   ]);
 
@@ -356,4 +383,15 @@ test("perf-review keeps weak measurement findings advisory", async () => {
   assert.match(result.findings[0]?.recommendation ?? "", /Measure startup before optimizing/);
   assert.match(synthesize?.prompt ?? "", /PLAUSIBLE, measurement/);
   assert.match(synthesize?.prompt ?? "", /Prefer measurement recommendations before optimization recommendations/);
+});
+
+test("perf-review and refactor-scout keep the --challenge flag out of the user instructions", async () => {
+  const scope = { target: "src/engine.ts", files: ["src/engine.ts"], commands: [], summary: "Engine module." };
+  for (const workflow of [perfReview, refactorScout]) {
+    const api = createScriptedApi([scope], "--challenge=0 src/engine.ts");
+    await workflow(api);
+    const finder = api.calls.find((call) => call.label?.startsWith("find:"))?.prompt ?? "";
+    assert.match(finder, /## User instructions \(verbatim\)\nsrc\/engine\.ts\n/);
+    assert.doesNotMatch(finder, /--challenge/);
+  }
 });

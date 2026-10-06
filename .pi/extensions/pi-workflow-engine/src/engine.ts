@@ -8,15 +8,14 @@ import { abortReason, isWorkflowPauseError, linkAbortSignal, throwIfAborted } fr
 import { createBudget } from "./budget.ts";
 import { runAgent, type AgentExecutionOptions, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
-import { createPerfRecorder, type PerfSink, type PerfSnapshot } from "./perf.ts";
+import { createPerfRecorder, formatPerfSummary, type PerfSink } from "./perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "./usage.ts";
 import {
   resolveWorkflowRunOptions,
   type ResolvedWorkflowRunOptions,
 } from "./options.ts";
 import type { AgentOptions, IsolatedAgentResult, LoadedWorkflow, WorkflowApi, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
-import { WorkflowInspector } from "./ui/workflow-inspector.ts";
-import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./ui/workflow-viewer-layout.ts";
+import { showWorkflowInspector } from "./ui/workflow-inspector.ts";
 import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
 import { WorktreeRegistry } from "./worktree.ts";
 import { runFinalizers } from "./finalizers.ts";
@@ -97,8 +96,10 @@ export async function runResolvedWorkflow(
 ): Promise<unknown> {
   const runId = resolvedOptions.runId ?? createWorkflowRunId();
   let durableProgress: DurableWorkflowRun | undefined;
-  const progress = new ProgressTracker(ctx, mod.meta.name, runId, (snapshot) => durableProgress?.updateProgress(snapshot));
-  const progressSource = { snapshot: () => progress.snapshot() };
+  const progress = new ProgressTracker(ctx, mod.meta.name, runId, (snapshot) => durableProgress?.updateProgress(snapshot), {
+    plannedPhases: mod.meta.phases?.map((phase) => phase.title),
+    display: resolvedOptions.background ? "background" : "live",
+  });
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
   const usage = createWorkflowUsageRecorder((snapshot) => progress.updateUsage(snapshot));
   const budget = createBudget(resolvedOptions.budget, usage);
@@ -122,6 +123,7 @@ export async function runResolvedWorkflow(
     },
   );
   durableProgress = durableRun;
+  const progressSource = { snapshot: () => progress.snapshot(), state: () => durableRun.state };
   const worktrees = dependencies.worktrees ?? new WorktreeRegistry(ctx.cwd);
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
@@ -129,11 +131,7 @@ export async function runResolvedWorkflow(
   const workflowOutcome = await captureOutcome(async () => {
     await notifyLifecycleObserver(progress, "progress source callback", () => resolvedOptions.onProgressSource?.(progressSource));
     if (resolvedOptions.inspect && ctx.hasUI && ctx.mode === "tui") {
-      void ctx.ui
-        .custom<void>(
-          (tui, theme, _keybindings, done) => new WorkflowInspector(() => progress.snapshot(), tui, theme, () => done(undefined)),
-          WORKFLOW_VIEWER_OVERLAY_OPTIONS,
-        )
+      void showWorkflowInspector(ctx.ui, progressSource.snapshot, () => ({ state: progressSource.state() }))
         .catch((error: unknown) => {
           try {
             progress.log(`inspector failed: ${unknownErrorMessage(error)}`);
@@ -206,69 +204,44 @@ export async function runResolvedWorkflow(
     }),
   );
 
-  if (workflowOutcome.ok && finalizationOutcome.ok) {
+  let outcome: Outcome<unknown> = workflowOutcome;
+  if (!finalizationOutcome.ok) {
+    outcome = workflowOutcome.ok
+      ? finalizationOutcome
+      : { ok: false, error: combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error) };
+  }
+  const pauseError = outcome.ok ? undefined : backgroundPauseError(outcome.error, ctx.signal, resolvedOptions.signal);
+  if (outcome.ok) {
     durableRun.transition({
       state: "completed",
       progress: progress.snapshot(),
       usage: usage.snapshot(),
-      result: workflowOutcome.value,
+      result: outcome.value,
     });
-  } else if (!workflowOutcome.ok) {
-    const error = finalizationOutcome.ok
-      ? workflowOutcome.error
-      : combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error);
-    persistTerminalWorkflowError(error);
-  } else if (!finalizationOutcome.ok) {
-    persistTerminalWorkflowError(finalizationOutcome.error);
-  }
-  await durableRun.flush().catch(() => undefined);
-
-  function persistTerminalWorkflowError(error: unknown): void {
-    const pauseError = backgroundPauseError(error, ctx.signal, resolvedOptions.signal);
-    if (pauseError) {
-      if (pauseError instanceof WorkflowProviderUsageLimitError) {
-        if (resolvedOptions.background === undefined) {
-          durableRun.transition({
-            state: "failed",
-            progress: progress.snapshot(),
-            usage: usage.snapshot(),
-            error: pauseError,
-          });
-          return;
-        }
-        const providerPause = createProviderUsageLimitPauseRecord(
-          pauseError,
-          resolvedOptions,
-          mod.source.kind === "file" && args.length === 0,
-        );
-        durableRun.transition({
-          state: "paused",
-          progress: progress.snapshot(),
-          ...providerPause,
-        });
-        return;
-      }
-      durableRun.transition({
-        state: "paused",
-        progress: progress.snapshot(),
-        message: unknownErrorMessage(pauseError),
-      });
-      return;
-    }
+  } else if (pauseError instanceof WorkflowProviderUsageLimitError) {
+    durableRun.transition({
+      state: "paused",
+      progress: progress.snapshot(),
+      ...createProviderUsageLimitPauseRecord(pauseError, resolvedOptions, mod.source.kind === "file" && args.length === 0),
+    });
+  } else if (pauseError) {
+    durableRun.transition({
+      state: "paused",
+      progress: progress.snapshot(),
+      message: unknownErrorMessage(pauseError),
+    });
+  } else {
     durableRun.transition({
       state: ctx.signal?.aborted || resolvedOptions.signal?.aborted ? "stopped" : "failed",
       progress: progress.snapshot(),
       usage: usage.snapshot(),
-      error,
+      error: outcome.error,
     });
   }
+  await durableRun.flush().catch(() => undefined);
 
-  if (workflowOutcome.ok) {
-    if (finalizationOutcome.ok) return workflowOutcome.value;
-    throw finalizationOutcome.error;
-  }
-  if (finalizationOutcome.ok) throw workflowOutcome.error;
-  throw combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error);
+  if (outcome.ok) return outcome.value;
+  throw outcome.error;
 }
 
 function backgroundPauseError(error: unknown, ...signals: Array<AbortSignal | undefined>): unknown {
@@ -315,7 +288,7 @@ async function finalizeWorkflowRun(input: WorkflowFinalizationInput): Promise<vo
           if (!input.options.perf) return;
           const snapshot = input.perf.snapshot();
           await input.options.onPerfSnapshot?.(snapshot);
-          input.progress.log(formatPerfSummary(snapshot));
+          input.progress.log(formatPerfSummary(snapshot.aggregates));
         },
       },
       ...input.unlinkSignals.map((run, index) => ({
@@ -343,13 +316,7 @@ async function finalizeWorkflowRun(input: WorkflowFinalizationInput): Promise<vo
       },
     ],
     {
-      onBestEffortFailure: (failure) => {
-        try {
-          input.progress.log(`${failure.name} failed: ${unknownErrorMessage(failure.error)}`);
-        } catch {
-          // Observer failures must never replace the workflow outcome.
-        }
-      },
+      onBestEffortFailure: (failure) => input.progress.log(`${failure.name} failed: ${unknownErrorMessage(failure.error)}`),
     },
   );
 }
@@ -491,22 +458,12 @@ function createWorkflowScope(progress: WorkflowProgress, prefix: string, namespa
 function namespaceProgressEvent(namespace: string, event: WorkflowProgressEvent): WorkflowProgressEvent {
   switch (event.type) {
     case "counter":
-      return { ...event, key: `${namespace}.${event.key}` };
     case "counter_delta":
+    case "summary":
       return { ...event, key: `${namespace}.${event.key}` };
     case "lane_item":
       return { ...event, lane: `${namespace} ▸ ${event.lane}` };
-    case "summary":
-      return { ...event, key: `${namespace}.${event.key}` };
   }
-}
-
-function formatPerfSummary(snapshot: PerfSnapshot): string {
-  const parts = snapshot.aggregates
-    .filter((aggregate) => aggregate.count > 0)
-    .slice(0, 5)
-    .map((aggregate) => `${aggregate.name} ${Math.round(aggregate.total)}ms`);
-  return parts.length > 0 ? `perf: ${parts.join(", ")}` : "perf: no samples";
 }
 
 async function notifyLifecycleObserver(

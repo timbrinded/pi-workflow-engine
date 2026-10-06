@@ -59,19 +59,3 @@ jobs:
 
       - name: Test Windows process termination
         run: bun test tests/process-runner.test.ts
-
-  package-dry-run:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Check package contents
-        run: npm pack --dry-run

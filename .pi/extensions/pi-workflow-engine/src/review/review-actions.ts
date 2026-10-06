@@ -104,7 +104,7 @@ async function handleCommentAction(
   }
 
   const exec = toExecLike(pi);
-  const resolved = await resolveGitHubPrContext(exec, ctx.cwd, context, ctx.signal);
+  const resolved = await resolveGitHubPrContext(exec, ctx.cwd, context.diffTarget.number, ctx.signal);
   if (!resolved.ok) {
     await queueCommentFallback(pi, ctx, commentable, context, baseline.ref, resolved.reason);
     return;

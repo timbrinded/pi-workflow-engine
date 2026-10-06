@@ -1,5 +1,4 @@
 import {
-  MAX_RESEARCH_LANES,
   MAX_VERIFICATION_CLAIMS,
   type ResearchClaimCandidate,
   type ResearchEvidence,
@@ -22,31 +21,21 @@ export function normalizeResearchLanes(plan: ResearchPlan): ResearchLane[] {
     const id = normalizedText(lane.id);
     const title = normalizedText(lane.title);
     const objective = normalizedText(lane.objective);
-    const queries = dedupeText(lane.queries).slice(0, 4);
+    const queries = dedupeText(lane.queries);
     if (!id || !title || !objective || queries.length === 0 || seen.has(id.toLowerCase())) continue;
     seen.add(id.toLowerCase());
     lanes.push({ id, title, objective, queries });
-    if (lanes.length >= MAX_RESEARCH_LANES) break;
   }
   return lanes;
 }
 
-export function sanitizeLaneResults(results: readonly ResearchLaneResult[]): ResearchLaneResult[] {
-  return results.map((result) => ({
-    laneId: normalizedText(result.laneId),
-    gaps: dedupeText(result.gaps),
-    evidence: dedupeEvidence(result.evidence.map(sanitizeEvidence).filter(isDefined)),
-  }));
-}
-
 export function buildClaimCandidates(results: readonly ResearchLaneResult[]): ResearchClaimCandidate[] {
   const byClaim = new Map<string, { claim: string; importance: ResearchEvidence["importance"]; evidence: ResearchEvidence[] }>();
-  for (const item of results.flatMap((result) => result.evidence)) {
-    const key = normalizedText(item.claim).toLowerCase();
-    if (!key) continue;
+  for (const item of results.flatMap((result) => result.evidence.map(sanitizeEvidence).filter(isDefined))) {
+    const key = item.claim.toLowerCase();
     const current = byClaim.get(key);
     if (!current) {
-      byClaim.set(key, { claim: normalizedText(item.claim), importance: item.importance, evidence: [item] });
+      byClaim.set(key, { claim: item.claim, importance: item.importance, evidence: [item] });
       continue;
     }
     if (IMPORTANCE_RANK[item.importance] < IMPORTANCE_RANK[current.importance]) current.importance = item.importance;
@@ -142,10 +131,7 @@ function verificationSources(
   return byClaim;
 }
 
-export function fallbackResearchReport(
-  verifications: readonly ResearchVerification[],
-  limitation: string,
-): ResearchReport {
+export function fallbackResearchReport(verifications: readonly ResearchVerification[]): ResearchReport {
   const entry = (verification: ResearchVerification): ResearchReportEntry => ({
     claim: verification.claim,
     explanation: verification.explanation,
@@ -158,22 +144,32 @@ export function fallbackResearchReport(
     uncertainties: verifications.filter((item) => item.verdict === "UNCERTAIN").map(entry),
     inferences: verifications.filter((item) => item.verdict === "INFERENCE").map(entry),
     sources: dedupeSources(verifications.flatMap((verification) => verification.sources)),
-    limitations: [limitation],
+    limitations: ["The synthesis stage failed; verified claims are listed without a narrative answer."],
     nextSteps: ["Review the verified claim groups and rerun synthesis if a narrative answer is required."],
   };
 }
 
-export function unavailableResearchReport(reason: "empty-question" | "missing-capability" | "no-evidence"): ResearchReport {
-  const message = reason === "empty-question"
-    ? "No research question was provided."
-    : reason === "missing-capability"
-      ? "Research could not start because pi exposed no installed external web-search or URL-extraction tool."
-      : "Research completed without enough direct-page evidence to support an answer.";
-  const nextStep = reason === "empty-question"
-    ? "Run `/workflow research <question>` and include any source, date, or geography constraints in the arguments."
-    : reason === "missing-capability"
-      ? "Install or enable a pi tool that can search the web or extract HTTP(S) pages, then rerun the workflow."
-      : "Check the installed external-search tool, narrow the question, or provide preferred source domains.";
+const UNAVAILABLE_RESEARCH = {
+  "empty-question": {
+    message: "No research question was provided.",
+    nextStep: "Run `/workflow research <question>` and include any source, date, or geography constraints in the arguments.",
+  },
+  "missing-capability": {
+    message: "Research could not start because pi exposed no installed external web-search or URL-extraction tool.",
+    nextStep: "Install or enable a pi tool that can search the web or extract HTTP(S) pages, then rerun the workflow.",
+  },
+  "lanes-failed": {
+    message: "Research could not gather direct-page evidence because one or more research lanes failed.",
+    nextStep: "Check the installed external-search tool and its provider, then rerun the workflow.",
+  },
+  "no-evidence": {
+    message: "Research completed without enough direct-page evidence to support an answer.",
+    nextStep: "Check the installed external-search tool, narrow the question, or provide preferred source domains.",
+  },
+} as const;
+
+export function unavailableResearchReport(reason: keyof typeof UNAVAILABLE_RESEARCH): ResearchReport {
+  const { message, nextStep } = UNAVAILABLE_RESEARCH[reason];
   return {
     answer: message,
     supportedClaims: [],

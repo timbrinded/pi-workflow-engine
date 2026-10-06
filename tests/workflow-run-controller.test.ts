@@ -7,7 +7,9 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
+  Theme,
 } from "@earendil-works/pi-coding-agent";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
   BackgroundWorkflowCoordinator,
   backgroundOrigin,
@@ -15,11 +17,22 @@ import {
 import { WorkflowPauseError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { WorkflowProviderUsageLimitError } from "../.pi/extensions/pi-workflow-engine/src/provider-usage-limit.ts";
 import { runResolvedWorkflow, runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
+import { resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
+import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import { emptyWorkflowUsageTotals } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { WorkflowRunController } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-controller.ts";
+import {
+  createWorkflowRunRecord,
+  transitionWorkflowRun,
+  type WorkflowRunRecord,
+} from "../.pi/extensions/pi-workflow-engine/src/workflow-run-record.ts";
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { WorkflowRunsBrowser } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-runs-browser.ts";
+import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
+import { WORKFLOW_INSPECTOR_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import type { WorkflowUsageLimitSchedulerClock } from "../.pi/extensions/pi-workflow-engine/src/workflow-usage-limit-scheduler.ts";
-import { createTestTheme } from "./fixtures/theme.ts";
+import { createTestTheme, plain } from "./fixtures/theme.ts";
 
 interface Notification {
   readonly message: string;
@@ -290,6 +303,69 @@ test("workflow run history uses Pi's native RPC selectors instead of a custom na
   }
 });
 
+test("TUI workflow runs open the runs browser and return to it on the same run after inspecting", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-tui-"));
+  const notifications: Notification[] = [];
+  const base = context(cwd, notifications, "tui");
+  const opened: string[] = [];
+  const cursorRows: string[] = [];
+  const ctx = {
+    ...base,
+    hasUI: true,
+    ui: {
+      ...base.ui,
+      theme: createTestTheme(),
+      setStatus() {},
+      setWidget() {},
+      select: async () => {
+        throw new Error("the TUI must not fall back to native selects");
+      },
+      custom: async <T>(
+        factory: (tui: TUI, theme: Theme, keybindings: never, done: (value: T) => void) => Component,
+        options?: unknown,
+      ): Promise<T> => {
+        let result: T | undefined;
+        const tui = { requestRender() {}, terminal: { rows: 40, columns: 120 } } as unknown as TUI;
+        const component = factory(tui, createTestTheme(), undefined as never, (value) => {
+          result = value;
+        });
+        if (component instanceof WorkflowRunsBrowser) {
+          assert.deepEqual(options, WORKFLOW_VIEWER_OVERLAY_OPTIONS);
+          opened.push("browser");
+          const first = opened.length === 1;
+          if (first) component.handleInput("\u001b[B");
+          cursorRows.push(component.render(100).map(plain).find((line) => line.startsWith("│ ›")) ?? "");
+          component.handleInput(first ? "\r" : "q");
+        } else {
+          assert.deepEqual(options, WORKFLOW_INSPECTOR_OVERLAY_OPTIONS);
+          opened.push("inspector");
+          component.handleInput?.("q");
+        }
+        return result as T;
+      },
+    },
+  } as unknown as ExtensionCommandContext;
+  const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => undefined,
+    execute: async () => {},
+  });
+  try {
+    await runWorkflow(ctx as ExtensionContext, workflow(), "", { runId: "tui-older-run", background: backgroundOrigin(ctx, 1) });
+    await runWorkflow(ctx as ExtensionContext, workflow(), "", { runId: "tui-browser-run", background: backgroundOrigin(ctx, 2) });
+
+    await controller.handleCommand("", ctx);
+
+    assert.deepEqual(opened, ["browser", "inspector", "browser"]);
+    assert.equal(cursorRows.length, 2);
+    assert.match(cursorRows[0] ?? "", /tui-(brow|olde)/);
+    assert.equal(cursorRows[1], cursorRows[0], "the browser reopens on the inspected (second) run");
+    assert.deepEqual(notifications, []);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("workflow runs command resumes paused runs and restarts terminal runs with new durable IDs", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-lifecycle-"));
   const notifications: Notification[] = [];
@@ -403,6 +479,11 @@ test("provider-limit timers resume from the journal and manual stop cancels pend
       && record.options.usageLimitAttempt === 1
       && record.state === "completed"
     ));
+    // The source stays paused after its resume; re-entering the session must not resume it again.
+    const scheduledBeforeReentry = clock.delays.length;
+    controller.sessionShutdown(ctx);
+    await controller.sessionStarted(ctx);
+    assert.equal(clock.delays.length, scheduledBeforeReentry);
 
     await assert.rejects(runWorkflow(ctx as ExtensionContext, limited, "", {
       runId: "manual-stop-source",
@@ -421,6 +502,108 @@ test("provider-limit timers resume from the journal and manual stop cancels pend
     controller.sessionShutdown(ctx);
     await background.sessionShutdown(ctx);
     await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a paused run offers no second resume while its resume is live, and again once that resume failed", async () => {
+  const notifications: Notification[] = [];
+  const ctx = context("/project/superseded", notifications, "rpc");
+  const clock = new ManualClock();
+  const records = new Map<string, WorkflowRunRecord>();
+  const store: WorkflowRunStore = {
+    save: async (record) => {
+      records.set(record.runId, record);
+    },
+    load: async (runId) => records.get(runId),
+    list: async () => [...records.values()],
+    prune: async () => {},
+  };
+  const relaunched: string[] = [];
+  const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
+  const controller = new WorkflowRunController(background, {
+    schedulerClock: clock,
+    storeForCwd: () => store,
+    resolveWorkflow: async (name) => {
+      relaunched.push(name);
+      return undefined;
+    },
+    execute: async () => {},
+  });
+  const progress = (runId: string): WorkflowProgressSnapshot => ({
+    runId,
+    title: "registered-history",
+    startedAt: 1,
+    currentPhase: "Workflow",
+    phases: [],
+    counters: [],
+    summary: [],
+    lanes: [],
+    laneOverflow: [],
+    logs: [],
+  });
+  const runningRecord = (runId: string, resumeFromRunId?: string): WorkflowRunRecord => transitionWorkflowRun(
+    createWorkflowRunRecord({
+      runId,
+      workflow: registeredWorkflow(),
+      options: resolveWorkflowRunOptions({
+        background: { sessionId: "history-headless-session", requestedAt: 1 },
+        autoResumeOnUsageLimit: true,
+        resumeFromRunId,
+      }, {}),
+      progress: progress(runId),
+    }),
+    { state: "running", progress: progress(runId), at: 2 },
+  );
+  const source = transitionWorkflowRun(runningRecord("superseded-source"), {
+    state: "paused",
+    progress: progress("superseded-source"),
+    message: "provider usage limit",
+    pause: {
+      kind: "provider_usage_limit",
+      reason: "provider_usage_limit",
+      providerMessage: "rate limit",
+      attempt: 1,
+      nextEligibleAt: 60_000,
+      autoResume: true,
+      maxAttempts: 3,
+    },
+    at: 3,
+  });
+  const resume = runningRecord("superseded-resume", source.runId);
+  records.set(source.runId, source);
+  records.set(resume.runId, resume);
+  try {
+    await controller.sessionStarted(ctx);
+
+    await controller.handleCommand("", ctx);
+    assert.match(notifications.at(-1)?.message ?? "", /superseded-source · resumed as superseded-resume · actions stop$/m);
+    assert.equal(await controller.argumentCompletions("resume "), null);
+    await controller.handleCommand("resume superseded-source", ctx);
+    assert.equal(notifications.at(-1)?.message, "Workflow run superseded-source was already resumed as superseded-resume.");
+    assert.deepEqual(relaunched, []);
+
+    records.set(resume.runId, transitionWorkflowRun(resume, {
+      state: "failed",
+      progress: progress(resume.runId),
+      usage: { agents: [], totals: emptyWorkflowUsageTotals(), assistantMessages: 0 },
+      error: "resume failed",
+      at: 4,
+    }));
+    await controller.handleCommand("", ctx);
+    assert.match(notifications.at(-1)?.message ?? "", /superseded-source · actions stop, resume$/m);
+    assert.deepEqual(
+      (await controller.argumentCompletions("resume "))?.map((item) => item.value),
+      ["resume superseded-source"],
+    );
+    await controller.handleCommand("resume superseded-source", ctx);
+    assert.deepEqual(relaunched, ["registered-history"]);
+
+    // Automatic resume stays spent: re-arming after a failed resume would relaunch on every session start.
+    controller.sessionShutdown(ctx);
+    await controller.sessionStarted(ctx);
+    assert.deepEqual(clock.delays, []);
+  } finally {
+    controller.sessionShutdown(ctx);
   }
 });
 

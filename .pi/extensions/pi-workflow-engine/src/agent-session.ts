@@ -13,7 +13,6 @@ import { prepareAgentSkillResources } from "./agent-skills.ts";
 import type {
   AgentExecutionOptions,
   AgentProgress,
-  AgentRunTags,
   AgentRunnerSession,
   RunContext,
 } from "./agent-runner-types.ts";
@@ -25,7 +24,8 @@ import {
 import { providerErrorFromMessages } from "./agent-retry.ts";
 import { synchronizeWorkflowModelRuntime } from "./agent-session-providers.ts";
 import { matchesAgentToolHint, WorkflowToolHintUnavailableError } from "./tool-capabilities.ts";
-import type { AgentToolHint } from "./types.ts";
+import { truncateText } from "./text.ts";
+import { WORKFLOW_TOOL_NAME, type AgentToolHint } from "./types.ts";
 
 export const FINAL_TOOL = "final_answer";
 
@@ -40,17 +40,6 @@ const RETRY_DISABLED_WARNING =
 /** Runs (keyed by their shared progress sink) already warned about disabled pi auto-retry. */
 const retryDisabledWarnedRuns = new WeakSet<AgentProgress>();
 
-export interface ResolvedAgentModelRequest {
-  readonly ref: string;
-  readonly provider: string;
-  readonly id: string;
-}
-
-export interface ResolvedAgentModel {
-  readonly model: Model<Api> | undefined;
-  readonly requested: ResolvedAgentModelRequest | undefined;
-}
-
 export interface AgentSessionHandle {
   readonly session: AgentRunnerSession;
   readonly selectedSkills: readonly Skill[];
@@ -58,19 +47,14 @@ export interface AgentSessionHandle {
   structuredResult(): unknown;
 }
 
-export function resolveAgentModel(
-  modelRef: string | undefined,
-  modelRegistry: Pick<ModelRegistry, "find">,
-  hostModel: Model<Api> | undefined,
-): ResolvedAgentModel {
-  if (modelRef === undefined) return { model: hostModel, requested: undefined };
-
+/** Resolve an explicit `agent({ model })` ref; unknown refs fail instead of falling back to another model. */
+export function resolveAgentModel(modelRef: string, modelRegistry: Pick<ModelRegistry, "find">): Model<Api> {
   const parsed = parseAgentModelRef(modelRef);
   const found = modelRegistry.find(parsed.provider, parsed.id);
   if (!found) {
     throw new Error(`Agent model "${modelRef}" not found (resolved as ${parsed.provider}/${parsed.id}).`);
   }
-  return { model: found, requested: parsed };
+  return found;
 }
 
 export async function openAgentSession(input: {
@@ -80,9 +64,8 @@ export async function openAgentSession(input: {
   readonly cwd: string;
   readonly model: Model<Api> | undefined;
   readonly label: string;
-  readonly tags: AgentRunTags;
 }): Promise<AgentSessionHandle> {
-  const { rc, prompt, opts, cwd, model, label, tags } = input;
+  const { rc, prompt, opts, cwd, model, label } = input;
   let captured = false;
   let structuredResult: unknown;
   const customTools: ToolDefinition[] = opts.schema
@@ -104,25 +87,22 @@ export async function openAgentSession(input: {
   let session: AgentRunnerSession | undefined;
   try {
     throwIfAborted(rc.signal);
-    const resourceInput = { rc, prompt, opts, cwd, model, customTools, label };
-    const resources = rc.createSession
-      ? await prepareAgentSessionResources(resourceInput)
-      : await rc.perf.time(
-          "agent.session_resources_ms",
-          () => prepareAgentSessionResources(resourceInput),
-          tags,
-        );
+    const resources = await rc.perf.time(
+      "agent.session_resources_ms",
+      () => prepareAgentSessionResources({ rc, prompt, opts, cwd, model, customTools, label }),
+    );
     const toolSelection = buildToolSelection(opts, resources.selectedSkills.length > 0);
     session = (
       await rc.perf.time(
         "agent.create_session_ms",
         () => resources.createSession(toolSelection.sessionOptions),
-        tags,
       )
     ).session;
     const matchedToolHints = toolSelection.toolHints.length === 0
       ? new Set<AgentToolHint>()
       : applyDynamicToolHints(session, toolSelection);
+    // A nested run would get its own concurrency cap and budget, so subagents may start one only when allowlisted.
+    if (!opts.tools?.includes(WORKFLOW_TOOL_NAME)) withholdWorkflowTool(session);
     if (opts.requireToolHints) {
       const missing = toolSelection.toolHints.filter((hint) => !matchedToolHints.has(hint));
       if (missing.length > 0) throw new WorkflowToolHintUnavailableError(missing);
@@ -135,11 +115,8 @@ export async function openAgentSession(input: {
       structuredResult: () => structuredResult,
     };
   } catch (error) {
-    if (session) {
-      const activeSession = session;
-      session = undefined;
-      rc.perf.timeSync("agent.dispose_ms", () => activeSession.dispose(), tags);
-    }
+    const created = session;
+    if (created) rc.perf.timeSync("agent.dispose_ms", () => created.dispose());
     throw error;
   }
 }
@@ -151,85 +128,79 @@ export async function promptAgentSession(input: {
   readonly opts: AgentExecutionOptions;
   readonly label: string;
   readonly rowId: number;
-  readonly tags: AgentRunTags;
+  readonly phase: string;
 }): Promise<unknown> {
-  const { rc, handle, prompt, opts, label, rowId, tags } = input;
+  const { rc, handle, prompt, opts, label, rowId, phase } = input;
   const { session } = handle;
+  throwIfAborted(rc.signal);
   // pi drops a retried turn's failed message from session.messages; keep it so usage covers every attempt.
   const retriedFailures: AssistantMessage[] = [];
   let lastFailure: AssistantMessage | undefined;
   const unsubscribe = session.subscribe((event) => {
-    if (event.type === "tool_execution_start" && event.toolName !== undefined && event.toolName !== FINAL_TOOL) {
-      rc.progress.agentTool(label, event.toolName, rowId);
+    if (event.type === "tool_execution_start" && event.toolName !== FINAL_TOOL) {
+      rc.progress.agentTool(rowId, event.toolName);
     } else if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error") {
       lastFailure = event.message;
     } else if (event.type === "auto_retry_start") {
       if (lastFailure) retriedFailures.push(lastFailure);
       lastFailure = undefined;
-      const reason = event.errorMessage.length > RETRY_REASON_CHARS
-        ? `${event.errorMessage.slice(0, RETRY_REASON_CHARS)}…`
-        : event.errorMessage;
+      const reason = truncateText(event.errorMessage, RETRY_REASON_CHARS);
       rc.progress.log(
         `${label}: transient provider failure (${reason}); retrying turn ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms`,
       );
-      rc.perf.counter("agent.turn_retry", 1, tags);
+      rc.perf.counter("agent.turn_retry");
     }
   });
+  const unlinkPromptAbort = linkSessionAbort(rc.signal, session);
+  const promptSession = async (text: string) => {
+    await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(text), rc.signal));
+    const failure = providerErrorFromMessages(session.messages, {
+      pauseOnUsageLimit: rc.pauseOnProviderUsageLimit,
+    });
+    if (failure) throw failure;
+  };
 
   try {
-    const finalPrompt = opts.schema
-      ? `${prompt}\n\nWhen finished, return your result by calling the ${FINAL_TOOL} tool.`
-      : prompt;
-    throwIfAborted(rc.signal);
-    const unlinkPromptAbort = linkSessionAbort(rc.signal, session);
-    try {
-      try {
-        const promptSession = async (text: string) => {
-          await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(text), rc.signal), tags);
-          const failure = providerErrorFromMessages(session.messages, {
-            pauseOnUsageLimit: rc.pauseOnProviderUsageLimit,
-          });
-          if (failure) throw failure;
-        };
-        await promptSession(finalPrompt);
-        if (opts.schema) {
-          for (let attempt = 0; !handle.hasStructuredResult() && attempt < MAX_SCHEMA_REPAIR_ATTEMPTS; attempt++) {
-            throwIfAborted(rc.signal);
-            session.setActiveToolsByName([FINAL_TOOL]);
-            rc.progress.log(`${label}: no final answer; re-prompting (${attempt + 1}/${MAX_SCHEMA_REPAIR_ATTEMPTS})`);
-            rc.perf.counter("agent.structured_reprompt", 1, tags);
-            await promptSession(SCHEMA_REPROMPT);
-          }
-        }
-
+    await promptSession(
+      opts.schema ? `${prompt}\n\nWhen finished, return your result by calling the ${FINAL_TOOL} tool.` : prompt,
+    );
+    if (opts.schema && !handle.hasStructuredResult()) {
+      const activeTools = session.getActiveToolNames();
+      for (let attempt = 0; !handle.hasStructuredResult() && attempt < MAX_SCHEMA_REPAIR_ATTEMPTS; attempt++) {
         throwIfAborted(rc.signal);
-        return rc.perf.timeSync(
-          "agent.extract_result_ms",
-          () => {
-            if (!opts.schema) {
-              return session.getLastAssistantText() ?? "";
-            }
-            if (!handle.hasStructuredResult()) {
-              rc.progress.log(`${label}: no structured answer returned`);
-              rc.perf.counter("agent.structured_missing", 1, tags);
-              throw new WorkflowStructuredOutputError(label, MAX_SCHEMA_REPAIR_ATTEMPTS);
-            }
-            return handle.structuredResult();
-          },
-          tags,
-        );
-      } finally {
-        rc.usage.recordAgentSession({ label, phase: tags.phase, messages: [...retriedFailures, ...session.messages] });
+        session.setActiveToolsByName([FINAL_TOOL]);
+        rc.progress.log(`${label}: no final answer; re-prompting (${attempt + 1}/${MAX_SCHEMA_REPAIR_ATTEMPTS})`);
+        rc.perf.counter("agent.structured_reprompt");
+        await promptSession(SCHEMA_REPROMPT);
       }
-    } finally {
-      unlinkPromptAbort();
+      // Narrowing also rebuilds pi's system prompt; restore both so replay validation sees the captured identity.
+      session.setActiveToolsByName(activeTools);
     }
+
+    throwIfAborted(rc.signal);
+    return rc.perf.timeSync(
+      "agent.extract_result_ms",
+      () => {
+        if (!opts.schema) {
+          return session.getLastAssistantText() ?? "";
+        }
+        if (!handle.hasStructuredResult()) {
+          rc.progress.log(`${label}: no structured answer returned`);
+          rc.perf.counter("agent.structured_missing");
+          throw new WorkflowStructuredOutputError(label, MAX_SCHEMA_REPAIR_ATTEMPTS);
+        }
+        return handle.structuredResult();
+      },
+    );
   } finally {
+    // Detach first: recording publishes usage to the UI and must not be able to skip listener cleanup.
+    unlinkPromptAbort();
     unsubscribe();
+    rc.usage.recordAgentSession({ label, phase, messages: [...retriedFailures, ...session.messages] });
   }
 }
 
-function parseAgentModelRef(modelRef: string): ResolvedAgentModelRequest {
+function parseAgentModelRef(modelRef: string): { readonly provider: string; readonly id: string } {
   const normalized = modelRef.trim();
   if (normalized.length === 0) {
     throw new Error('Invalid agent model ref: expected a bare model id or "provider/id".');
@@ -239,13 +210,13 @@ function parseAgentModelRef(modelRef: string): ResolvedAgentModelRequest {
   }
 
   const slash = modelRef.indexOf("/");
-  if (slash === -1) return { ref: modelRef, provider: "anthropic", id: modelRef };
+  if (slash === -1) return { provider: "anthropic", id: modelRef };
   const provider = modelRef.slice(0, slash);
   const id = modelRef.slice(slash + 1);
   if (provider.length === 0 || id.length === 0 || id.startsWith("/")) {
     throw new Error(`Invalid agent model ref "${modelRef}": expected "provider/id".`);
   }
-  return { ref: modelRef, provider, id };
+  return { provider, id };
 }
 
 interface AgentSessionResources {
@@ -347,16 +318,8 @@ function buildToolSelection(opts: AgentExecutionOptions, skillsEnabled: boolean)
       ? ["read"]
       : undefined;
   const activeTools = buildToolList(opts, skillsEnabled, fallback);
-  if (toolHints.length === 0) {
-    return {
-      sessionOptions: { tools: activeTools ? [...activeTools] : undefined },
-      activeTools,
-      toolHints,
-    };
-  }
-
   return {
-    sessionOptions: { noTools: "builtin" },
+    sessionOptions: toolHints.length === 0 ? { tools: activeTools } : { noTools: "builtin" },
     activeTools,
     toolHints,
   };
@@ -375,11 +338,16 @@ function buildToolList(
   return allow;
 }
 
+function withholdWorkflowTool(session: AgentRunnerSession): void {
+  const active = session.getActiveToolNames();
+  if (active.includes(WORKFLOW_TOOL_NAME)) session.setActiveToolsByName(active.filter((name) => name !== WORKFLOW_TOOL_NAME));
+}
+
 function applyDynamicToolHints(
   session: AgentRunnerSession,
   selection: ToolSelection,
 ): ReadonlySet<AgentToolHint> {
-  const active = new Set(selection.activeTools ?? []);
+  const active = new Set(selection.activeTools);
   const matched = new Set<AgentToolHint>();
   for (const tool of session.getAllTools()) {
     for (const hint of selection.toolHints) {

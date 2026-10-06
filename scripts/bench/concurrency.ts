@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { parallel, pipeline, Semaphore } from "../../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { PerfRecorder, type PerfAggregate } from "../../.pi/extensions/pi-workflow-engine/src/perf.ts";
-import { intFlag, maybeWriteBenchmarkOutput, parseBenchArgs, printBenchmarkOutput, runBenchmark } from "./lib.ts";
+import { intFlag, parseBenchArgs, runBenchmark, writeBenchmarkOutput } from "./lib.ts";
 
 interface ScenarioResult {
   readonly scenario: string;
@@ -35,8 +35,7 @@ const result = {
   summary: await runBenchmark("concurrency.noop", iterations, () => {}),
 };
 
-const written = await maybeWriteBenchmarkOutput("concurrency", result, options.out);
-printBenchmarkOutput(written ? { ...result, written } : result, options.json);
+await writeBenchmarkOutput("concurrency", result, options.out);
 
 async function runSemaphoreScenario(items: number, concurrencyLimit: number): Promise<ScenarioResult> {
   const perf = new PerfRecorder();

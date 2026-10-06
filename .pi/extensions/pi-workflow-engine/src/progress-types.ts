@@ -40,6 +40,8 @@ export interface WorkflowProgressSnapshot {
   readonly startedAt: number;
   readonly doneAt?: number;
   readonly currentPhase: string;
+  /** Phase titles the workflow declared in `meta.phases`; live surfaces list the ones not reached yet. */
+  readonly plannedPhases?: readonly string[];
   readonly phases: readonly PhaseSnapshot[];
   readonly counters: readonly WorkflowCounterSnapshot[];
   readonly summary: readonly [string, string | number][];

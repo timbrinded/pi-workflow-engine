@@ -12,8 +12,9 @@ import type { WorkflowModule } from "./types.ts";
  * pi's bundled `typebox` / SDK — guaranteeing schema validation works.
  *
  * To add a guaranteed workflow: drop a `.ts` in `workflows/`, import it here, and add
- * it to this array. (Drop-in workflows discovered at runtime are also supported — see
- * discovery.ts — but the static registry is the always-correct path.)
+ * a `defineBuiltinWorkflow(mod, "<name>.ts")` entry to `BUILTIN_WORKFLOW_DEFINITIONS`.
+ * (Drop-in workflows discovered at runtime are also supported — see discovery.ts — but
+ * the static registry is the always-correct path.)
  *
  * Do not replace these built-in imports with dynamic imports unless a dedicated test
  * proves pi's jiti virtual modules preserve the same bundled `typebox` identity for
@@ -26,7 +27,6 @@ export interface BuiltinWorkflowDefinition {
   readonly module: WorkflowModule;
   readonly filename: string;
   readonly path: string;
-  readonly root: string;
 }
 
 export const BUILTIN_WORKFLOW_DEFINITIONS: readonly BuiltinWorkflowDefinition[] = [
@@ -36,15 +36,12 @@ export const BUILTIN_WORKFLOW_DEFINITIONS: readonly BuiltinWorkflowDefinition[] 
   defineBuiltinWorkflow(perfReview, "perf-review.ts"),
   defineBuiltinWorkflow(research, "research.ts"),
 ];
-export const BUILTIN_WORKFLOWS = BUILTIN_WORKFLOW_DEFINITIONS.map(({ module }) => module);
 export const BUILTIN_WORKFLOW_FILES = new Set(BUILTIN_WORKFLOW_DEFINITIONS.map(({ filename }) => filename));
-export const BUILTIN_WORKFLOW_NAMES = BUILTIN_WORKFLOWS.map((mod) => mod.meta.name);
 
 function defineBuiltinWorkflow(module: WorkflowModule, filename: string): BuiltinWorkflowDefinition {
   return {
     module: { meta: module.meta, default: module.default },
     filename,
     path: fileURLToPath(new URL(`../workflows/${filename}`, import.meta.url)),
-    root: BUILTIN_SOURCE_ROOT,
   };
 }

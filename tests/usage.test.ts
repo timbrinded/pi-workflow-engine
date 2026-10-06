@@ -148,7 +148,7 @@ test("formatWorkflowUsageLine separates fresh cached and output tokens", () => {
 
   assert.equal(
     formatWorkflowUsageLine(recorder.snapshot()),
-    "Usage: fresh 12k · cache read 40k · cache write 5.0k · output 1.8k · cost $0.123 · agents 1",
+    "Usage: fresh 12.3k · cache read 40k · cache write 5k · output 1.8k · cost $0.123 · agents 1",
   );
 });
 

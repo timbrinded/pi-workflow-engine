@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
 import { throwIfAborted } from "../cancellation.ts";
-import { captureDiffTarget, type DiffCaptureFailure } from "../diff-capture.ts";
+import { isGitObjectId, runGit } from "../git.ts";
 import {
+  GIT_DIFF_MACHINE_FORMAT,
+  reviewDiffCommand,
   reviewGitDiffBaseline,
   type GitReviewDiffTarget,
   type PullRequestReviewDiffTarget,
   type ReviewDiffTarget,
 } from "../review-diff-target.ts";
-import { runBoundedProcess } from "../process-runner.ts";
+import type { BoundedProcessResult } from "../process-runner.ts";
 import { unknownErrorMessage } from "../unknown-error.ts";
 import type { WorktreeBaseline } from "../worktree.ts";
 import type { ReviewContext, ReviewSnapshotIdentity } from "./review-report.ts";
@@ -39,7 +41,6 @@ export interface CapturedReviewMaterial {
 export interface ReviewMaterialCaptureFailure {
   readonly ok: false;
   readonly error: string;
-  readonly failure: DiffCaptureFailure;
 }
 
 export type ReviewMaterialCaptureResult = CapturedReviewMaterial | ReviewMaterialCaptureFailure;
@@ -64,36 +65,34 @@ export async function captureReviewMaterial(
     if (!before.ok) {
       throwIfAborted(signal);
       return latestDiff === undefined
-        ? { ok: false, error: before.error, failure: before.failure }
+        ? { ok: false, error: before.error }
         : capturedWithoutSnapshot(latestDiff, `review diff could not be recaptured: ${before.error}`);
     }
-    latestDiff = before.diff;
+    latestDiff = before.stdout;
 
     let baseline: WorktreeBaseline;
     try {
       baseline = await captureReviewWorktreeBaseline(target, cwd, signal);
     } catch (error) {
       throwIfAborted(signal);
-      return capturedWithoutSnapshot(before.diff, `review baseline could not be captured: ${unknownErrorMessage(error)}`);
+      return capturedWithoutSnapshot(before.stdout, `review baseline could not be captured: ${unknownErrorMessage(error)}`);
     }
 
     const after = await captureReviewDiff(target, cwd, signal);
     if (!after.ok) {
       throwIfAborted(signal);
-      return capturedWithoutSnapshot(before.diff, `review diff could not be recaptured: ${after.error}`);
+      return capturedWithoutSnapshot(before.stdout, `review diff could not be recaptured: ${after.error}`);
     }
-    latestDiff = after.diff;
+    latestDiff = after.stdout;
 
-    const beforeFingerprint = fingerprintReviewDiff(before.diff);
-    const afterFingerprint = fingerprintReviewDiff(after.diff);
-    if (beforeFingerprint === afterFingerprint) {
+    if (before.stdout === after.stdout) {
       return {
         ok: true,
-        diff: after.diff,
+        diff: after.stdout,
         snapshot: {
           status: "verified",
           identity: {
-            diffFingerprint: afterFingerprint,
+            diffFingerprint: createHash("sha256").update(after.stdout).digest("hex"),
             baselineFingerprint: fingerprintReviewWorktreeBaseline(baseline),
           },
           baseline,
@@ -138,20 +137,15 @@ export function fingerprintReviewWorktreeBaseline(baseline: WorktreeBaseline): s
     .digest("hex");
 }
 
-async function captureReviewDiff(
-  target: ReviewDiffTarget,
-  cwd: string,
-  signal: AbortSignal | undefined,
-): Promise<{ readonly ok: true; readonly diff: string } | { readonly ok: false; readonly error: string; readonly failure: DiffCaptureFailure }> {
-  const captured = await captureDiffTarget(target, {
+function captureReviewDiff(target: ReviewDiffTarget, cwd: string, signal: AbortSignal | undefined): Promise<BoundedProcessResult> {
+  return runGit({
+    ...reviewDiffCommand(target),
     cwd,
+    label: "diff capture",
     signal,
     timeoutMs: REVIEW_SNAPSHOT_TIMEOUT_MS,
     maxBufferBytes: REVIEW_SNAPSHOT_MAX_BYTES,
   });
-  return captured.ok
-    ? { ok: true, diff: captured.stdout }
-    : { ok: false, error: captured.error, failure: captured.failure };
 }
 
 async function captureReviewWorktreeBaseline(
@@ -170,29 +164,31 @@ async function resolvePullRequestBaseline(
   signal: AbortSignal | undefined,
 ): Promise<WorktreeBaseline> {
   const number = String(target.number);
-  const viewed = await runReviewCommand("gh", ["pr", "view", number, "--json", "headRefOid,headRefName,headRepository"], cwd, signal);
+  const viewed = await runReviewCommand("gh", ["pr", "view", number, "--json", "headRefOid,headRefName,headRepository,url"], cwd, signal);
   const details = viewed.ok ? parsePullRequestHead(viewed.stdout) : undefined;
   if (!details) {
-    throw new Error(`pull request head could not be resolved: ${viewed.error ?? (viewed.stderr.trim() || "invalid head commit")}`);
+    throw new Error(`pull request head could not be resolved: ${viewed.ok ? "invalid head commit" : viewed.error}`);
   }
 
   if (!(await commitExists(details.head, cwd, signal))) {
     const fetched = await runReviewCommand(
       "git",
-      ["fetch", "--no-tags", "--quiet", `https://github.com/${details.repository}.git`, details.branch],
+      ["fetch", "--no-tags", "--quiet", `${details.origin}/${details.repository}.git`, details.branch],
       cwd,
       signal,
     );
     if (!fetched.ok || !(await commitExists(details.head, cwd, signal))) {
       throw new Error(
-        `pull request ${number} head ${details.head} is not available locally: ${fetched.error ?? (fetched.stderr.trim() || "fetch did not provide the commit")}`,
+        `pull request ${number} head ${details.head} is not available locally: ${fetched.ok ? "fetch did not provide the commit" : fetched.error}`,
       );
     }
   }
   return { ref: details.head };
 }
 
-function parsePullRequestHead(value: string): { readonly head: string; readonly branch: string; readonly repository: string } | undefined {
+function parsePullRequestHead(
+  value: string,
+): { readonly head: string; readonly branch: string; readonly repository: string; readonly origin: string } | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -204,12 +200,17 @@ function parsePullRequestHead(value: string): { readonly head: string; readonly 
     readonly headRefOid?: unknown;
     readonly headRefName?: unknown;
     readonly headRepository?: { readonly nameWithOwner?: unknown } | null;
+    readonly url?: unknown;
   };
-  if (typeof candidate.headRefOid !== "string" || !/^[0-9a-f]{40,64}$/i.test(candidate.headRefOid)) return undefined;
+  if (typeof candidate.headRefOid !== "string" || !isGitObjectId(candidate.headRefOid)) return undefined;
   if (typeof candidate.headRefName !== "string" || candidate.headRefName.length === 0 || candidate.headRefName.includes("\0")) return undefined;
   const repository = candidate.headRepository?.nameWithOwner;
   if (typeof repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return undefined;
-  return { head: candidate.headRefOid, branch: candidate.headRefName, repository };
+  // The PR URL carries the host gh resolved the PR on, which is not github.com for GitHub Enterprise.
+  if (typeof candidate.url !== "string" || !URL.canParse(candidate.url)) return undefined;
+  const url = new URL(candidate.url);
+  if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+  return { head: candidate.headRefOid, branch: candidate.headRefName, repository, origin: url.origin };
 }
 
 async function resolveGitDiffBaseline(
@@ -236,9 +237,7 @@ async function captureMutableGitBaseline(
   const head = await tryResolveCommit("HEAD", cwd, signal);
   if (!head) throw new Error("the reviewed repository has no committed HEAD baseline");
 
-  const args = staged
-    ? ["diff", "--no-ext-diff", "--binary", "--cached", "HEAD"]
-    : ["diff", "--no-ext-diff", "--binary", "HEAD"];
+  const args = ["diff", "--no-ext-diff", ...GIT_DIFF_MACHINE_FORMAT, "--binary", ...(staged ? ["--cached"] : []), "HEAD"];
   const snapshot = await runReviewCommand("git", args, cwd, signal, REVIEW_SNAPSHOT_MAX_BYTES);
   if (!snapshot.ok) {
     throw new Error(`the reviewed working state could not be captured: ${snapshot.error}`);
@@ -255,7 +254,7 @@ async function resolveCommit(ref: string, cwd: string, signal: AbortSignal | und
 async function tryResolveCommit(ref: string, cwd: string, signal: AbortSignal | undefined): Promise<string | undefined> {
   const result = await runReviewCommand("git", ["rev-parse", "--verify", `${ref}^{commit}`], cwd, signal);
   const commit = result.stdout.trim();
-  return result.ok && /^[0-9a-f]{40,64}$/i.test(commit) ? commit : undefined;
+  return result.ok && isGitObjectId(commit) ? commit : undefined;
 }
 
 async function commitExists(ref: string, cwd: string, signal: AbortSignal | undefined): Promise<boolean> {
@@ -270,25 +269,17 @@ async function runReviewCommand(
   signal: AbortSignal | undefined,
   maxBufferBytes = REVIEW_COMMAND_MAX_BYTES,
 ) {
-  return await runBoundedProcess({
+  return await runGit({
     file,
-    args,
     cwd,
-    env: { ...process.env, GIT_EXTERNAL_DIFF: "", GIT_DIFF_OPTS: "" },
+    args,
+    label: `${file} review snapshot command`,
     signal,
     timeoutMs: REVIEW_SNAPSHOT_TIMEOUT_MS,
     maxBufferBytes,
-    abortError: `${file} review snapshot command aborted`,
-    timeoutError: `${file} review snapshot command timed out after ${REVIEW_SNAPSHOT_TIMEOUT_MS}ms`,
-    maxBufferError: `${file} review snapshot command exceeded output limit`,
-    exitError: (stderr, code, processSignal) => stderr.trim() || `${file} exited with code ${code ?? `signal ${processSignal ?? "unknown"}`}`,
   });
 }
 
 function capturedWithoutSnapshot(diff: string, reason: string): CapturedReviewMaterial {
   return { ok: true, diff, snapshot: { status: "unavailable", reason } };
-}
-
-function fingerprintReviewDiff(diff: string): string {
-  return createHash("sha256").update(diff).digest("hex");
 }

@@ -3,13 +3,7 @@ import { Type, type Static } from "typebox";
 import { AdvisorySeveritySchema, type IdentifiedAdvisoryCandidate, type AdvisoryCandidate, type AdvisoryReport } from "./advisory-schema.ts";
 import type { WorkflowApi } from "./types.ts";
 
-export interface AdvisoryStageCoverage {
-  stage: string;
-  expected: number;
-  completed: number;
-  failed: number;
-  failures: { branch: string; reason: string; candidate?: AdvisoryCandidate }[];
-}
+export type AdvisoryStageCoverage = NonNullable<AdvisoryReport["coverage"]>[number];
 
 /** Settled results are required here: a missing branch is not a negative finding. */
 export async function collectAdvisoryStage<T>(
@@ -36,9 +30,15 @@ function normalizedSummary(summary: string): string {
   return summary.toLowerCase().replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
 }
 
+/** Repo-relative readings of a reported path, most literal first: without a stray `./`, then also without a git `a/`/`b/` prefix. */
+export function repoPathCandidates(path: string): [literal: string, unprefixed: string] {
+  const literal = path.replace(/^\.\//, "");
+  return [literal, literal.replace(/^[ab]\//, "")];
+}
+
 function candidateDedupKey(candidate: AdvisoryCandidate): string {
   const location = candidate.locations[0];
-  return JSON.stringify([candidate.category, location?.file.replace(/^\.\//, "").replace(/^[ab]\//, ""),
+  return JSON.stringify([candidate.category, location && repoPathCandidates(location.file)[1],
     location?.symbol ?? location?.line ?? null, normalizedSummary(candidate.summary)]);
 }
 

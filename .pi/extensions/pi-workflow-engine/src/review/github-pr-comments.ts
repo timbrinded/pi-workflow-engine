@@ -1,6 +1,7 @@
 import { throwIfAborted } from "../cancellation.ts";
-import { isCommentableIssue, type ReviewIssue } from "./review-issues.ts";
-import type { ReviewContext } from "./review-report.ts";
+import { isFiniteNumber, isRecord } from "../guards.ts";
+import type { CommentableReviewIssue, ReviewIssue } from "./review-issues.ts";
+import { unknownErrorMessage } from "../unknown-error.ts";
 
 export interface ExecResultLike {
   readonly stdout: string;
@@ -30,24 +31,16 @@ export type InlineCommentStatus =
   | { readonly issueId: string; readonly status: "skipped"; readonly reason: string }
   | { readonly issueId: string; readonly status: "failed"; readonly reason: string };
 
-const PR_VIEW_JSON_FIELDS = "number,headRefOid,url";
-
 export async function resolveGitHubPrContext(
   exec: ExecLike,
   cwd: string,
-  reviewContext: ReviewContext | undefined,
+  number: number,
   signal?: AbortSignal,
 ): Promise<ResolveGitHubPrContextResult> {
-  const parsedNumber = reviewContext?.diffTarget.kind === "pull-request" ? reviewContext.diffTarget.number : undefined;
-  const prArgs = parsedNumber
-    ? ["pr", "view", String(parsedNumber), "--json", PR_VIEW_JSON_FIELDS]
-    : ["pr", "view", "--json", PR_VIEW_JSON_FIELDS];
-  const prView = await runJson(exec, cwd, prArgs, signal);
+  const prView = await runJson(exec, cwd, ["pr", "view", String(number), "--json", "headRefOid,url"], signal);
   if (!prView.ok) return { ok: false, reason: prView.reason };
 
-  const number = numberField(prView.value, "number") ?? parsedNumber;
   const headSha = stringField(prView.value, "headRefOid");
-  if (number === undefined) return { ok: false, reason: "No GitHub PR number found." };
   if (!headSha) return { ok: false, reason: "GitHub PR head SHA is missing." };
 
   const url = stringField(prView.value, "url");
@@ -82,15 +75,13 @@ ${evidence}
 Recommendation: ${finding.recommendation}`;
 }
 
-export async function postInlineComment(
+async function postInlineComment(
   exec: ExecLike,
   cwd: string,
   prContext: GitHubPrContext,
-  issue: ReviewIssue,
+  issue: CommentableReviewIssue,
   signal?: AbortSignal,
 ): Promise<InlineCommentStatus> {
-  if (!isCommentableIssue(issue)) return { issueId: issue.id, status: "skipped", reason: "Finding has no commentable file/line." };
-
   const result = await runCommand(exec, cwd, [
     "api",
     `repos/${prContext.owner}/${prContext.repo}/pulls/${prContext.number}/comments`,
@@ -113,7 +104,7 @@ export async function postInlineComments(
   exec: ExecLike,
   cwd: string,
   prContext: GitHubPrContext,
-  issues: readonly ReviewIssue[],
+  issues: readonly CommentableReviewIssue[],
   signal?: AbortSignal,
 ): Promise<InlineCommentStatus[]> {
   throwIfAborted(signal);
@@ -125,14 +116,14 @@ export async function postInlineComments(
   const statuses: InlineCommentStatus[] = [];
   for (const issue of issues) {
     throwIfAborted(signal);
-    const key = inlineCommentKey(issue, prContext.headSha);
-    if (key && existing.keys.has(key)) {
+    const key = commentKey(buildInlineCommentBody(issue), issue.file, issue.line, prContext.headSha);
+    if (existing.keys.has(key)) {
       statuses.push({ issueId: issue.id, status: "skipped", reason: "An identical inline comment already exists on this PR head." });
       continue;
     }
     const status = await postInlineComment(exec, cwd, prContext, issue, signal);
     statuses.push(status);
-    if (key && status.status === "posted") existing.keys.add(key);
+    if (status.status === "posted") existing.keys.add(key);
   }
   return statuses;
 }
@@ -161,7 +152,7 @@ async function runJson(
   try {
     return { ok: true, value: JSON.parse(result.stdout) };
   } catch (error) {
-    return { ok: false, reason: error instanceof Error ? `Invalid gh JSON: ${error.message}` : "Invalid gh JSON." };
+    return { ok: false, reason: `Invalid gh JSON: ${unknownErrorMessage(error)}` };
   }
 }
 
@@ -179,7 +170,7 @@ async function runCommand(
     return { ok: true, stdout: result.stdout };
   } catch (error) {
     throwIfAborted(signal);
-    return { ok: false, reason: error instanceof Error ? error.message : "gh command failed." };
+    return { ok: false, reason: unknownErrorMessage(error) };
   }
 }
 
@@ -197,10 +188,6 @@ function parseExistingInlineCommentKeys(value: unknown): Set<string> | undefined
   return keys;
 }
 
-function inlineCommentKey(issue: ReviewIssue, headSha: string): string | undefined {
-  return isCommentableIssue(issue) ? commentKey(buildInlineCommentBody(issue), issue.file, issue.line, headSha) : undefined;
-}
-
 function commentKey(body: string, path: string, line: number, headSha: string): string {
   return JSON.stringify([body, path, line, headSha]);
 }
@@ -208,7 +195,7 @@ function commentKey(body: string, path: string, line: number, headSha: string): 
 function numberField(value: unknown, key: string): number | undefined {
   if (!isRecord(value)) return undefined;
   const field = value[key];
-  return typeof field === "number" && Number.isFinite(field) ? field : undefined;
+  return isFiniteNumber(field) ? field : undefined;
 }
 
 function stringField(value: unknown, key: string): string | undefined {
@@ -242,8 +229,4 @@ function parsePostedCommentUrl(stdout: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

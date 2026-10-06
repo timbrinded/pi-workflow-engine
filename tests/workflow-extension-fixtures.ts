@@ -1,11 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, KeyId } from "@earendil-works/pi-tui";
 import workflowEngine from "../.pi/extensions/pi-workflow-engine/index.ts";
-
-// Read extension module state through this module's binding. pi's DefaultResourceLoader (jiti) can evict
-// index.ts from Bun's shared module cache, so a later direct import may get a fresh instance that the
-// captured tool never writes to.
-export { getLastWorkflowInspection } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import {
   DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
   DEFAULT_REVIEW_RESULTS_SHORTCUT,
@@ -41,6 +36,7 @@ export interface CapturedWorkflowExtension {
   readonly shortcuts: readonly CapturedShortcut[];
   readonly commands: ReadonlyMap<string, CapturedCommand>;
   readonly sentMessages: readonly unknown[];
+  readonly sentUserMessages: readonly unknown[];
 }
 
 /** Register the full extension against a no-op pi host and expose its public surfaces. */
@@ -54,6 +50,7 @@ export function captureWorkflowExtension(
   const capturedShortcuts: CapturedShortcut[] = [];
   const capturedCommands = new Map<string, CapturedCommand>();
   const sentMessages: unknown[] = [];
+  const sentUserMessages: unknown[] = [];
   const fakePi = {
     on: () => {},
     registerCommand: (name: string, command: CapturedCommand) => {
@@ -70,11 +67,13 @@ export function captureWorkflowExtension(
     sendMessage: (message: unknown) => {
       sentMessages.push(message);
     },
-    sendUserMessage: () => {},
+    sendUserMessage: (content: unknown) => {
+      sentUserMessages.push(content);
+    },
   } as unknown as ExtensionAPI;
   workflowEngine(fakePi, shortcuts);
   if (!capturedTool) throw new Error("workflow tool was not registered");
-  return { tool: capturedTool, shortcuts: capturedShortcuts, commands: capturedCommands, sentMessages };
+  return { tool: capturedTool, shortcuts: capturedShortcuts, commands: capturedCommands, sentMessages, sentUserMessages };
 }
 
 export function captureWorkflowTool(): CapturedTool {

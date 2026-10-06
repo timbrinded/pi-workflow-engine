@@ -22,7 +22,6 @@
   },
   "files": [
     ".pi/extensions/pi-workflow-engine",
-    ".pi/settings.json",
     "assets/preview.png",
     "skills",
     "README.md",

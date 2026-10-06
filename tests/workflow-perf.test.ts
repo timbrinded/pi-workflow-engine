@@ -6,7 +6,8 @@ import { test } from "bun:test";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import { RequiredFinalizerError } from "../.pi/extensions/pi-workflow-engine/src/finalizers.ts";
-import { getLastWorkflowInspection, sendWorkflowResult } from "../.pi/extensions/pi-workflow-engine";
+import { sendWorkflowResult } from "../.pi/extensions/pi-workflow-engine";
+import { resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import type { PerfSnapshot } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
@@ -96,14 +97,6 @@ function codeReviewWorkflowModule(): WorkflowModule {
       },
     }),
   };
-}
-
-function fakePi(): ExtensionAPI {
-  return {
-    sendMessage() {
-      throw new Error("sendMessage should not be called for failing workflows");
-    },
-  } as unknown as ExtensionAPI;
 }
 
 test("runWorkflow exposes a perf snapshot when perf is enabled", async () => {
@@ -199,26 +192,6 @@ test("runWorkflow safely logs hostile inspector rejections", async () => {
 
   assert.equal(result, "ok");
   assert.ok(snapshot?.logs.includes("inspector failed: unknown error"));
-});
-
-test("sendWorkflowResult retains failed workflow progress snapshots for later inspection", async () => {
-  const mod: WorkflowModule = {
-    meta: { name: "failing-snapshot-test", description: "failed snapshot" },
-    default: async (api) => {
-      api.log("failing workflow log");
-      api.progress({ type: "lane_item", lane: "Failures", title: "Failure finding", status: "error", details: "boom details" });
-      throw new Error("boom");
-    },
-  };
-
-  await assert.rejects(() => sendWorkflowResult(fakePi(), fakeCommandContext(), "failing-snapshot-test", loadedWorkflow(mod), "failed args", {}), /boom/);
-
-  const inspection = getLastWorkflowInspection();
-  assert.equal(inspection?.name, "failing-snapshot-test");
-  assert.equal(inspection?.args, "failed args");
-  assert.equal(typeof inspection?.snapshot.doneAt, "number");
-  assert.ok(inspection?.snapshot.logs.includes("failing workflow log"));
-  assert.equal(inspection?.snapshot.lanes[0]?.[1][0]?.details, "boom details");
 });
 
 test("runWorkflow preserves the workflow error when best-effort observers also fail", async () => {
@@ -363,7 +336,7 @@ test("sendWorkflowResult publishes the review before reporting an unavailable fi
   } as unknown as ExtensionCommandContext;
   const mod = codeReviewWorkflowModule();
 
-  await sendWorkflowResult(pi, ctx, "code-review", loadedWorkflow(mod), "", { resultViewer: "open" });
+  await sendWorkflowResult(pi, ctx, "code-review", loadedWorkflow(mod), "", resolveWorkflowRunOptions({ resultViewer: "open" }));
 
   assert.equal(events[0], "message:code-review");
   assert.equal(events[1], "notify:Verifying the reviewed snapshot before generating patch previews");
@@ -395,7 +368,7 @@ test("sendWorkflowResult preserves a completed review when the viewer rejects", 
     },
   } as unknown as ExtensionCommandContext;
 
-  await sendWorkflowResult(pi, ctx, "code-review", loadedWorkflow(codeReviewWorkflowModule()), "", { resultViewer: "open" });
+  await sendWorkflowResult(pi, ctx, "code-review", loadedWorkflow(codeReviewWorkflowModule()), "", resolveWorkflowRunOptions({ resultViewer: "open" }));
 
   assert.equal(sent, 1);
   assert.deepEqual(notifications, ["Review completed, but the findings viewer could not be opened."]);

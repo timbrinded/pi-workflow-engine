@@ -1,37 +1,50 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
-import {
-  codeReviewReport,
-  decideReviewResultsPresentation,
-  showReviewResultsViewer,
-  type ReviewResultsViewerContext,
-} from "../.pi/extensions/pi-workflow-engine/src/review/review-results-flow.ts";
-import type { ReviewIssueSelection } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
+import { resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
+import { showReviewResultsViewer, type ReviewResultsViewerContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-results-viewer.ts";
+import { toReviewIssues, type ReviewIssueSelection } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
+import { isReviewReport } from "../.pi/extensions/pi-workflow-engine/src/review/review-report.ts";
+import { ReviewSessionCoordinator } from "../.pi/extensions/pi-workflow-engine/src/review/review-session-coordinator.ts";
 
-test("direct code-review sends results unless viewer is explicitly requested", () => {
-  const notRequested = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true });
-  assert.deepEqual(notRequested, { kind: "send", reason: "not-requested" });
+test("code-review results open the viewer only when it is requested in the TUI", async () => {
+  const cases = [
+    { name: "code-review", result: createReport(), mode: "tui", resultViewer: "open", opens: true },
+    { name: "code-review", result: createReport(), mode: "tui", resultViewer: undefined, opens: false },
+    { name: "code-review", result: createReport(), mode: "tui", resultViewer: "skip", opens: false },
+    { name: "code-review", result: { ...createReport(), findings: [] }, mode: "tui", resultViewer: "open", opens: false },
+    { name: "code-review", result: createReport(), mode: "rpc", resultViewer: "open", opens: false },
+    { name: "refactor-scout", result: createReport(), mode: "tui", resultViewer: "open", opens: false },
+  ] as const;
+  for (const { name, result, mode, resultViewer, opens } of cases) {
+    let opened = 0;
+    const ctx = {
+      mode,
+      hasUI: true,
+      sessionManager: { getSessionFile: () => "/session.jsonl", getSessionId: () => "session" },
+      ui: {
+        async custom() {
+          opened++;
+          return { action: "close", issueIds: [] };
+        },
+        notify() {},
+      },
+    } as unknown as ExtensionContext;
+    const coordinator = new ReviewSessionCoordinator(
+      { sendUserMessage() {}, async exec() { throw new Error("unexpected exec"); } },
+      { async runFollowUp() { throw new Error("unexpected follow-up"); }, publish() {} },
+    );
+    const options = resolveWorkflowRunOptions(resultViewer ? { resultViewer } : {}, {});
 
-  const empty = decideReviewResultsPresentation({ workflowName: "code-review", result: { ...createReport(), findings: [] }, mode: "tui", hasUI: true });
-  assert.deepEqual(empty, { kind: "send", reason: "no-findings" });
+    const retained = coordinator.remember(ctx, { name, result, completedAt: 0 }, options);
+    await coordinator.present(ctx, retained, options);
 
-  const generic = decideReviewResultsPresentation({ workflowName: "refactor-scout", result: createReport(), mode: "tui", hasUI: true });
-  assert.deepEqual(generic, { kind: "send", reason: "not-code-review" });
-
-  const nonTui = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "rpc", hasUI: true });
-  assert.deepEqual(nonTui, { kind: "send", reason: "not-tui" });
+    assert.equal(opened, opens ? 1 : 0, `${name} ${mode} ${resultViewer ?? "default"} ${result.findings.length} finding(s)`);
+  }
 });
 
-test("result viewer options can force open or skip", () => {
-  const open = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true, resultViewer: "open" });
-  assert.equal(open.kind, "open");
-
-  const skip = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true, resultViewer: "skip" });
-  assert.deepEqual(skip, { kind: "send", reason: "disabled" });
-});
-
-test("forced-open direct code-review flow opens the viewer and returns its action", async () => {
+test("the review results viewer opens as an overlay and returns its action", async () => {
   let customCalls = 0;
   let customOptions: unknown;
   const custom: ReviewResultsViewerContext["ui"]["custom"] = async <T>(_factory: unknown, options?: unknown): Promise<T> => {
@@ -39,13 +52,7 @@ test("forced-open direct code-review flow opens the viewer and returns its actio
     customOptions = options;
     return { action: "close", issueIds: ["R001"] } as T;
   };
-  const ctx: ReviewResultsViewerContext = {
-    ui: { custom },
-  };
-  const decision = decideReviewResultsPresentation({ workflowName: "code-review", result: createReport(), mode: "tui", hasUI: true, resultViewer: "open" });
-  assert.equal(decision.kind, "open");
-  if (decision.kind !== "open") assert.fail("expected viewer decision");
-  const action = await showReviewResultsViewer(ctx, decision.issues);
+  const action = await showReviewResultsViewer({ ui: { custom } }, toReviewIssues(createReport()));
 
   assert.equal(customCalls, 1);
   assert.deepEqual(customOptions, {
@@ -74,7 +81,7 @@ test("code-review retention rejects malformed action context", () => {
     },
   ];
   for (const reviewContext of malformedContexts) {
-    assert.equal(codeReviewReport("code-review", { ...createReport(), reviewContext }), undefined);
+    assert.equal(isReviewReport({ ...createReport(), reviewContext }), false);
   }
 });
 

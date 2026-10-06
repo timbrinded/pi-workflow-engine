@@ -1,26 +1,21 @@
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
-import { isAdvisoryReport } from "./src/advisory-schema.ts";
+import { getSelectListTheme, keyText, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem, SelectItem } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
-import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunMetadata, WorkflowRunOptions } from "./src/types.ts";
-import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
-import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./src/ui/workflow-viewer-layout.ts";
+import type { WorkflowRunState } from "./src/workflow-run-record.ts";
+import { WORKFLOW_TOOL_NAME, type LoadedWorkflow, type WorkflowModule, type WorkflowProgressSource, type WorkflowRef } from "./src/types.ts";
+import { showWorkflowInspector } from "./src/ui/workflow-inspector.ts";
+import { WorkflowPicker } from "./src/ui/workflow-picker.ts";
 import type { PerfSink } from "./src/perf.ts";
-import type { WorkflowUsageSnapshot } from "./src/usage.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
 import { ReviewSessionCoordinator } from "./src/review/review-session-coordinator.ts";
+import { isWorkflowResult, renderWorkflowResult, type WorkflowResultHints } from "./src/ui/workflow-result-renderer.ts";
+import { renderWorkflowToolCall, renderWorkflowToolResult } from "./src/ui/workflow-tool-renderer.ts";
 import {
-  formatWorkflowDetailLines,
-  isWorkflowResult,
-  renderWorkflowResult,
-} from "./src/ui/workflow-result-renderer.ts";
-import {
-  parseWorkflowBudgetString,
-  parseWorkflowIntegerString,
+  parseWorkflowInvocation,
   resolveWorkflowRunOptions,
   type ResolvedWorkflowRunOptions,
   WORKFLOW_AGENT_TIMEOUT_MAX_MS,
@@ -36,7 +31,8 @@ import {
   WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS,
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
 } from "./src/options.ts";
-import { executeWorkflowInvocation, type WorkflowExecution, type WorkflowPerfDetails } from "./src/workflow-execution.ts";
+import { executeWorkflowInvocation, type WorkflowResultEnvelope } from "./src/workflow-execution.ts";
+import { formatWorkflowResultForContext } from "./src/workflow-result-context.ts";
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
 import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
@@ -47,54 +43,6 @@ import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/w
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
-
-function summarize(result: unknown): string {
-  if (typeof result === "object" && result !== null && "summary" in result && typeof result.summary === "string") return result.summary;
-  return typeof result === "string" ? result : "Workflow finished.";
-}
-
-function formatMessageContent(
-  name: string,
-  result: unknown,
-  usage?: WorkflowUsageSnapshot,
-  perf?: WorkflowPerfDetails,
-  metadata?: WorkflowRunMetadata,
-): string {
-  const details = formatWorkflowDetailLines({ usage, perf, metadata });
-  return `## Workflow: ${name}\n\n${formatResultForContext(result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
-}
-
-function formatResultForContext(result: unknown): string {
-  if (!isAdvisoryReport(result)) return summarize(result);
-
-  const lines = [result.summary];
-  if (result.findings.length > 0) {
-    lines.push("", "Findings:");
-    result.findings.forEach((finding, index) => {
-      const id = `R${String(index + 1).padStart(3, "0")}`;
-      lines.push(
-        `\n### ${id}: ${finding.summary}`,
-        `- Severity: ${finding.severity}`,
-        `- Confidence: ${finding.confidence}`,
-        `- Category: ${finding.category}`,
-        `- Location: ${finding.locations.map(formatFindingLocation).join(", ")}`,
-        `- Impact: ${finding.impact}`,
-        `- Evidence: ${finding.evidence.length > 0 ? finding.evidence.join("; ") : "(none cited)"}`,
-        `- Recommendation: ${finding.recommendation}`,
-      );
-    });
-  }
-  if (result.nextSteps.length > 0) {
-    lines.push("", "Next steps:", ...result.nextSteps.map((step) => `- ${step}`));
-  }
-  return lines.join("\n");
-}
-
-function formatFindingLocation(location: { readonly file: string; readonly line?: number; readonly symbol?: string }): string {
-  const line = location.line === undefined ? "" : `:${location.line}`;
-  const symbol = location.symbol === undefined ? "" : ` (${location.symbol})`;
-  return `${location.file}${line}${symbol}`;
-}
 
 type DiscoveryModule = typeof import("./src/discovery.ts");
 type EngineModule = typeof import("./src/engine.ts");
@@ -133,7 +81,7 @@ export async function resolveWorkflowRef(ref: WorkflowRef, perf?: PerfSink): Pro
 }
 
 const AUTHOR_TEMP_WORKFLOW_VALUE = "__author-temporary-workflow__";
-const AUTHOR_TEMP_WORKFLOW_LABEL = "Author temporary one-shot workflow";
+const AUTHOR_TEMP_WORKFLOW_LABEL = "+ author a one-off workflow";
 const AUTHOR_TEMP_WORKFLOW_DESCRIPTION = "Ask the host agent to author and run an inline workflow.";
 
 const WORKFLOW_OPTION_COMPLETIONS = [
@@ -168,21 +116,22 @@ async function workflowArgumentCompletions(argumentPrefix: string): Promise<Auto
   return completeCurrentArgument(argumentPrefix, WORKFLOW_OPTION_COMPLETIONS);
 }
 
+/** Registered workflows in discovery order (built-ins first), then the author option. */
 async function selectWorkflowValue(workflows: ReadonlyMap<string, WorkflowModule>, ctx: ExtensionCommandContext): Promise<string | undefined> {
+  const workflowItems: SelectItem[] = [...workflows.values()].map((workflow) => ({
+    value: workflow.meta.name,
+    label: workflow.meta.name,
+    description: workflow.meta.description,
+  }));
+  if (ctx.mode === "tui") {
+    const items = [...workflowItems, { value: AUTHOR_TEMP_WORKFLOW_VALUE, label: AUTHOR_TEMP_WORKFLOW_LABEL }];
+    return await ctx.ui.custom<string | undefined>((...[, theme, , done]) => new WorkflowPicker(items, theme, getSelectListTheme(), done));
+  }
   const choices = [
-    {
-      value: AUTHOR_TEMP_WORKFLOW_VALUE,
-      display: `${AUTHOR_TEMP_WORKFLOW_LABEL} — ${AUTHOR_TEMP_WORKFLOW_DESCRIPTION}`,
-    },
-    ...[...workflows.values()].map((workflow) => ({
-      value: workflow.meta.name,
-      display: `${workflow.meta.name} — ${workflow.meta.description}`,
-    })),
+    ...workflowItems.map((item) => ({ value: item.value, display: `${item.label} — ${item.description}` })),
+    { value: AUTHOR_TEMP_WORKFLOW_VALUE, display: `${AUTHOR_TEMP_WORKFLOW_LABEL} — ${AUTHOR_TEMP_WORKFLOW_DESCRIPTION}` },
   ];
-  const selected = await ctx.ui.select(
-    "Run workflow",
-    choices.map((choice) => choice.display),
-  );
+  const selected = await ctx.ui.select("Run a workflow", choices.map((choice) => choice.display));
   return choices.find((choice) => choice.display === selected)?.value;
 }
 
@@ -191,6 +140,7 @@ export interface LastWorkflowInspection {
   readonly args: string;
   readonly completedAt: number;
   readonly snapshot: WorkflowProgressSnapshot;
+  readonly state?: () => WorkflowRunState;
 }
 
 export interface ActiveWorkflowInspection {
@@ -198,6 +148,7 @@ export interface ActiveWorkflowInspection {
   readonly args: string;
   readonly startedAt: number;
   readonly snapshot: () => WorkflowProgressSnapshot;
+  readonly state?: () => WorkflowRunState;
 }
 
 interface SessionWorkflowInspections {
@@ -206,22 +157,13 @@ interface SessionWorkflowInspections {
 }
 
 const workflowInspections = new WeakMap<ExtensionAPI, Map<string, SessionWorkflowInspections>>();
-let latestWorkflowInspection: LastWorkflowInspection | undefined;
-let latestActiveWorkflowInspection: ActiveWorkflowInspection | undefined;
-
-export function getLastWorkflowInspection(): LastWorkflowInspection | undefined {
-  return latestWorkflowInspection;
-}
 
 export async function openWorkflowInspector(ctx: ExtensionContext, inspection: LastWorkflowInspection | ActiveWorkflowInspection): Promise<void> {
   if (!ctx.hasUI || ctx.mode !== "tui") {
     ctx.ui.notify(formatWorkflowInspection(inspection), "info");
     return;
   }
-  await ctx.ui.custom<void>(
-    (tui, theme, _keybindings, done) => new WorkflowInspector(() => workflowInspectionSnapshot(inspection), tui, theme, () => done(undefined)),
-    WORKFLOW_VIEWER_OVERLAY_OPTIONS,
-  );
+  await showWorkflowInspector(ctx.ui, () => workflowInspectionSnapshot(inspection), () => ({ state: inspection.state?.() }));
 }
 
 function workflowInspectionState(pi: ExtensionAPI, ctx: ExtensionContext): SessionWorkflowInspections {
@@ -244,190 +186,7 @@ async function openAvailableWorkflowInspector(pi: ExtensionAPI, ctx: ExtensionCo
 }
 
 function bindActiveWorkflowInspection(name: string, args: string, source: WorkflowProgressSource): ActiveWorkflowInspection {
-  return { name, args, startedAt: Date.now(), snapshot: () => source.snapshot() };
-}
-
-export interface WorkflowInvocation {
-  name: string;
-  args: string;
-  options: WorkflowRunOptions;
-  refreshDiscovery?: boolean;
-  optionErrors?: string[];
-  authorBrief?: string;
-}
-
-export function parseWorkflowInvocation(input: string): WorkflowInvocation {
-  const trimmed = input.trim();
-  const space = trimmed.indexOf(" ");
-  const name = space === -1 ? trimmed : trimmed.slice(0, space);
-  const rest = space === -1 ? "" : trimmed.slice(space + 1).trim();
-  const { args, options, refreshDiscovery, optionErrors } = parseWorkflowOptions(rest);
-  const invocation: WorkflowInvocation = { name, args, options };
-  if (refreshDiscovery) invocation.refreshDiscovery = refreshDiscovery;
-  if (optionErrors) invocation.optionErrors = optionErrors;
-  return invocation;
-}
-
-const INVALID_BUDGET_OPTION = "--budget requires a positive integer output-token count";
-const INVALID_RESUME_OPTION = "--resume requires a workflow run id";
-const INVALID_MAX_AGENTS_OPTION = "--max-agents requires an integer";
-const INVALID_AGENT_TIMEOUT_OPTION = "--agent-timeout-ms requires an integer";
-const INVALID_AGENT_RETRIES_OPTION = "--agent-retries requires an integer";
-const INVALID_EDITED_RESUME_OPTION = "--resume-edited requires --resume <run-id>";
-
-function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean; optionErrors?: string[] } {
-  const tokens = input.split(/\s+/).filter(Boolean);
-  const kept: string[] = [];
-  const options: WorkflowRunOptions = {};
-  const optionErrors: string[] = [];
-  let refreshDiscovery = false;
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (token === "--inspect") {
-      options.inspect = true;
-      continue;
-    }
-    if (token === "--refresh") {
-      refreshDiscovery = true;
-      continue;
-    }
-    if (token === "--perf") {
-      options.perf = true;
-      continue;
-    }
-    if (token === "--resume-edited") {
-      options.resumeEditedWorkflow = true;
-      continue;
-    }
-    if (token === "--result-viewer" || token === "--review-viewer") {
-      options.resultViewer = "open";
-      continue;
-    }
-    if (token === "--no-result-viewer" || token === "--no-review-viewer") {
-      options.resultViewer = "skip";
-      continue;
-    }
-    if (token.startsWith("--concurrency=")) {
-      options.concurrency = parseNumericOption(token.slice("--concurrency=".length));
-      continue;
-    }
-    if (token === "--concurrency") {
-      const next = tokens[i + 1];
-      options.concurrency = parseNumericOption(next);
-      if (next !== undefined) i++;
-      continue;
-    }
-    if (token.startsWith("--parallel-limit=")) {
-      options.parallelSubmissionLimit = parseNumericOption(token.slice("--parallel-limit=".length));
-      continue;
-    }
-    if (token === "--parallel-limit") {
-      const next = tokens[i + 1];
-      options.parallelSubmissionLimit = parseNumericOption(next);
-      if (next !== undefined) i++;
-      continue;
-    }
-    if (token.startsWith("--max-agents=")) {
-      const parsed = parseWorkflowIntegerString(token.slice("--max-agents=".length));
-      if (parsed === undefined) optionErrors.push(INVALID_MAX_AGENTS_OPTION);
-      else options.maxAgents = parsed;
-      continue;
-    }
-    if (token === "--max-agents") {
-      const next = tokens[i + 1];
-      const parsed = parseWorkflowIntegerString(next);
-      if (parsed === undefined) optionErrors.push(INVALID_MAX_AGENTS_OPTION);
-      else {
-        options.maxAgents = parsed;
-        i++;
-      }
-      continue;
-    }
-    if (token.startsWith("--agent-timeout-ms=")) {
-      const parsed = parseWorkflowIntegerString(token.slice("--agent-timeout-ms=".length));
-      if (parsed === undefined) optionErrors.push(INVALID_AGENT_TIMEOUT_OPTION);
-      else options.agentTimeoutMs = parsed;
-      continue;
-    }
-    if (token === "--agent-timeout-ms") {
-      const next = tokens[i + 1];
-      const parsed = parseWorkflowIntegerString(next);
-      if (parsed === undefined) optionErrors.push(INVALID_AGENT_TIMEOUT_OPTION);
-      else {
-        options.agentTimeoutMs = parsed;
-        i++;
-      }
-      continue;
-    }
-    if (token.startsWith("--agent-retries=")) {
-      const parsed = parseWorkflowIntegerString(token.slice("--agent-retries=".length));
-      if (parsed === undefined) optionErrors.push(INVALID_AGENT_RETRIES_OPTION);
-      else options.agentRetries = parsed;
-      continue;
-    }
-    if (token === "--agent-retries") {
-      const next = tokens[i + 1];
-      const parsed = parseWorkflowIntegerString(next);
-      if (parsed === undefined) optionErrors.push(INVALID_AGENT_RETRIES_OPTION);
-      else {
-        options.agentRetries = parsed;
-        i++;
-      }
-      continue;
-    }
-    if (token.startsWith("--budget=")) {
-      const parsed = parseBudgetOption(token.slice("--budget=".length));
-      if (parsed === undefined) optionErrors.push(INVALID_BUDGET_OPTION);
-      else options.budget = parsed;
-      continue;
-    }
-    if (token === "--budget") {
-      const next = tokens[i + 1];
-      const parsed = next === undefined ? undefined : parseBudgetOption(next);
-      if (parsed === undefined) {
-        optionErrors.push(INVALID_BUDGET_OPTION);
-      } else {
-        options.budget = parsed;
-        i++;
-      }
-      continue;
-    }
-    if (token.startsWith("--resume=")) {
-      const value = token.slice("--resume=".length).trim();
-      if (value === "") optionErrors.push(INVALID_RESUME_OPTION);
-      else options.resumeFromRunId = value;
-      continue;
-    }
-    if (token === "--resume") {
-      const next = tokens[i + 1];
-      if (next === undefined || next.startsWith("--")) {
-        optionErrors.push(INVALID_RESUME_OPTION);
-      } else {
-        options.resumeFromRunId = next;
-        i++;
-      }
-      continue;
-    }
-    kept.push(token);
-  }
-  if (options.resumeEditedWorkflow && !options.resumeFromRunId) optionErrors.push(INVALID_EDITED_RESUME_OPTION);
-  return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined, optionErrors: optionErrors.length > 0 ? optionErrors : undefined };
-}
-
-function parseBudgetOption(value: string): number | undefined {
-  return parseWorkflowBudgetString(value);
-}
-
-function parseNumericOption(value: string | undefined): number | undefined {
-  if (value === undefined) return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function compactInlinePreview(script: string | undefined): string {
-  if (!script) return "";
-  const compact = script.replace(/\s+/g, " ").trim();
-  return compact.length > 60 ? `${compact.slice(0, 57)}…` : compact;
+  return { name, args, startedAt: Date.now(), snapshot: () => source.snapshot(), state: source.state };
 }
 
 export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {
@@ -484,27 +243,30 @@ export function inlineCompileErrorResult(message: string): WorkflowToolErrorResu
   return { content: [{ type: "text", text: `Inline workflow did not compile: ${message}` }], details: { error: "inline_compile_error", message } };
 }
 
+export type WorkflowPickerSelection =
+  | { readonly kind: "run"; readonly name: string; readonly args: string }
+  | { readonly kind: "author"; readonly brief: string };
+
 export async function pickWorkflow(
   workflows: ReadonlyMap<string, WorkflowModule>,
   ctx: ExtensionCommandContext,
-): Promise<WorkflowInvocation | undefined> {
-  const choice = await selectWorkflowValue(workflows, ctx);
-  if (!choice) return undefined;
+): Promise<WorkflowPickerSelection | undefined> {
+  const name = await selectWorkflowValue(workflows, ctx);
+  if (!name) return undefined;
 
-  if (choice === AUTHOR_TEMP_WORKFLOW_VALUE || choice === AUTHOR_TEMP_WORKFLOW_LABEL) {
+  if (name === AUTHOR_TEMP_WORKFLOW_VALUE) {
     const brief = await ctx.ui.editor(
       "Describe temporary workflow",
       "Goal:\n\nAgents to run:\n- \n\nFinal output should include:\n- summary\n- findings\n- next steps\n",
     );
     const trimmed = brief?.trim();
-    if (!trimmed) return undefined;
-    return { name: "", args: "", options: {}, authorBrief: trimmed };
+    return trimmed ? { kind: "author", brief: trimmed } : undefined;
   }
 
-  const separator = choice.indexOf(" — ");
-  const name = separator === -1 ? choice : choice.slice(0, separator);
-  const args = name === "code-review" ? (await ctx.ui.input("Code-review target/instructions", "Blank = auto-detect diff"))?.trim() ?? "" : "";
-  return { name, args, options: {} };
+  if (name !== "code-review") return { kind: "run", name, args: "" };
+  // Escape resolves undefined and cancels; only a submitted blank target means auto-detect.
+  const target = await ctx.ui.input("Code-review target/instructions", "Blank = auto-detect diff");
+  return target === undefined ? undefined : { kind: "run", name, args: target.trim() };
 }
 
 export async function sendWorkflowResult(
@@ -513,36 +275,14 @@ export async function sendWorkflowResult(
   name: string,
   mod: LoadedWorkflow,
   args: string,
-  options: WorkflowRunOptions,
+  options: ResolvedWorkflowRunOptions,
   perfRecorder?: PerfSink,
   reviewSessions: ReviewSessionCoordinator = createReviewSessionCoordinator(pi),
 ): Promise<void> {
-  await sendResolvedWorkflowResult(
-    pi,
-    ctx,
-    name,
-    mod,
-    args,
-    resolveWorkflowRunOptions(options),
-    perfRecorder,
-    reviewSessions,
-  );
-}
-
-async function sendResolvedWorkflowResult(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  name: string,
-  mod: LoadedWorkflow,
-  args: string,
-  options: ResolvedWorkflowRunOptions,
-  perfRecorder: PerfSink | undefined,
-  reviewSessions: ReviewSessionCoordinator,
-): Promise<void> {
-  const execution = await executeResolvedWorkflow(pi, ctx, name, mod, args, options, perfRecorder);
-  reviewSessions.remember(ctx, execution, options);
-  sendWorkflowExecution(pi, execution);
-  await reviewSessions.present(ctx, execution, options);
+  const envelope = await executeResolvedWorkflow(pi, ctx, name, mod, args, options, perfRecorder);
+  const retained = reviewSessions.remember(ctx, envelope, options);
+  publishWorkflowResult(pi, envelope);
+  await reviewSessions.present(ctx, retained, options);
 }
 
 async function executeResolvedWorkflow(
@@ -553,7 +293,7 @@ async function executeResolvedWorkflow(
   args: string,
   options: ResolvedWorkflowRunOptions,
   perfRecorder?: PerfSink,
-): Promise<WorkflowExecution> {
+): Promise<WorkflowResultEnvelope> {
   const { runResolvedWorkflow } = await loadEngine();
   let liveInspection: ActiveWorkflowInspection | undefined;
   const inspections = workflowInspectionState(pi, ctx);
@@ -570,35 +310,25 @@ async function executeResolvedWorkflow(
       if (source) {
         liveInspection = bindActiveWorkflowInspection(name, args, source);
         inspections.active = liveInspection;
-        latestActiveWorkflowInspection = liveInspection;
       } else if (inspections.active === liveInspection) {
         inspections.active = undefined;
-        if (latestActiveWorkflowInspection === liveInspection) latestActiveWorkflowInspection = undefined;
         liveInspection = undefined;
       }
     },
     onProgressSnapshot(snapshot) {
-      const completed = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
-      inspections.last = completed;
-      latestWorkflowInspection = completed;
+      // The durable state settles after this final snapshot; keep reading it from the live source.
+      inspections.last = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot, state: liveInspection?.state };
     },
   });
 }
 
-function sendWorkflowExecution(pi: ExtensionAPI, execution: WorkflowExecution): void {
-  const { name } = execution.envelope;
+function publishWorkflowResult(pi: ExtensionAPI, envelope: WorkflowResultEnvelope): void {
   pi.sendMessage(
     {
       customType: "workflow-result",
-      content: formatMessageContent(
-        name,
-        execution.envelope.result,
-        execution.envelope.usage,
-        execution.envelope.perf,
-        execution.metadata,
-      ),
+      content: formatWorkflowResultForContext(envelope),
       display: true,
-      details: execution.envelope,
+      details: envelope,
     },
     { triggerTurn: false },
   );
@@ -610,7 +340,7 @@ function createReviewSessionCoordinator(pi: ExtensionAPI): ReviewSessionCoordina
       const perfRecorder = await createInvocationPerf(options);
       return await executeResolvedWorkflow(pi, ctx, workflow.meta.name, workflow, "", options, perfRecorder);
     },
-    publish: (execution) => sendWorkflowExecution(pi, execution),
+    publish: (envelope) => publishWorkflowResult(pi, envelope),
   });
 }
 
@@ -625,12 +355,12 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
     async execute(ctx, name, workflow, options) {
       const perfRecorder = await createInvocationPerf(options);
-      const execution = await executeResolvedWorkflow(pi, ctx, name, workflow, "", options, perfRecorder);
-      reviewSessions.remember(ctx, execution, options);
+      const envelope = await executeResolvedWorkflow(pi, ctx, name, workflow, "", options, perfRecorder);
+      reviewSessions.remember(ctx, envelope, options);
     },
   });
   backgroundWorkflows.onRunSettled((ctx, runId) => workflowRuns.runSettled(ctx, runId));
-  registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
+  const dynamax = registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
   registerWorkflowModelProfileCommand(pi);
   registerWorkflowRunCommand(pi, workflowRuns);
   pi.on("session_start", async (_event, ctx) => {
@@ -658,13 +388,8 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
 
   pi.registerMessageRenderer("workflow-result", (message, { expanded }, theme) => {
     const details = message.details;
-    if (isWorkflowResult(details)) {
-      return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage, {
-        runId: details.runId,
-        resumedFromRunId: details.resumedFromRunId,
-      }, details.perf);
-    }
-    return renderWorkflowResult("workflow", details ?? message.content, expanded, theme);
+    const view = isWorkflowResult(details) ? details : { name: "workflow", result: details ?? message.content };
+    return renderWorkflowResult(view, expanded, theme, workflowResultHints(shortcuts));
   });
 
   pi.registerCommand("workflow:inspector", {
@@ -697,40 +422,54 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     description: "Run a multi-agent workflow: /workflow <name> [args]",
     getArgumentCompletions: workflowArgumentCompletions,
     handler: async (args: string, ctx: ExtensionCommandContext) => {
-      const direct = parseWorkflowInvocation(args);
-      if (direct.optionErrors?.length) {
-        ctx.ui.notify(`Invalid workflow option: ${direct.optionErrors.join("; ")}`, "warning");
+      const invocation = parseWorkflowInvocation(args);
+      if (invocation.optionErrors.length > 0) {
+        ctx.ui.notify(`Invalid workflow option: ${invocation.optionErrors.join("; ")}`, "warning");
         return;
       }
-      const directOptions = resolveWorkflowRunOptions(direct.options);
-      const perfRecorder = await createInvocationPerf(directOptions);
+      const options = resolveWorkflowRunOptions(invocation.options);
+      const perfRecorder = await createInvocationPerf(options);
       const { discoverWorkflows } = await loadDiscovery();
-      const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: direct.refreshDiscovery, perf: perfRecorder });
+      const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: invocation.refreshDiscovery, perf: perfRecorder });
       const available = [...workflows.keys()].join(", ") || "(none)";
-      const invocation = direct.name ? direct : ctx.hasUI ? await pickWorkflow(workflows, ctx) : undefined;
-
-      if (!invocation) {
+      if (!invocation.name && !ctx.hasUI) {
         ctx.ui.notify(`Usage: /workflow <name> [args]. Available: ${available}`, "warning");
         return;
       }
+      const selection: WorkflowPickerSelection | undefined = invocation.name
+        ? { kind: "run", name: invocation.name, args: invocation.args }
+        : await pickWorkflow(workflows, ctx);
+      // Dismissing the picker or one of its follow-up prompts is a deliberate cancel, not a usage error.
+      if (!selection) return;
 
-      if (invocation.authorBrief) {
-        pi.sendUserMessage(buildTemporaryWorkflowAuthorPrompt(invocation.authorBrief));
+      if (selection.kind === "author") {
+        // A send while the agent streams is rejected, which would leave the one-shot armed for an unrelated prompt.
+        await ctx.waitForIdle();
+        dynamax.markOneShot(ctx);
+        pi.sendUserMessage(buildTemporaryWorkflowAuthorPrompt(selection.brief));
         return;
       }
 
-      const mod = workflows.get(invocation.name);
+      const mod = workflows.get(selection.name);
       if (!mod) {
-        ctx.ui.notify(`Unknown workflow "${invocation.name}". Available: ${available}`, "error");
+        ctx.ui.notify(`Unknown workflow "${selection.name}". Available: ${available}`, "error");
         return;
       }
 
-      const effectiveOptions = invocation === direct ? directOptions : resolveWorkflowRunOptions(invocation.options);
-      await sendResolvedWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, effectiveOptions, perfRecorder, reviewSessions);
+      await sendWorkflowResult(pi, ctx, selection.name, mod, selection.args, options, perfRecorder, reviewSessions);
     },
   });
 
-  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows);
+  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts);
+}
+
+/** Result footers advertise the configured triage and inspector shortcuts and pi's current expand key, read at render time. */
+function workflowResultHints(shortcuts: DynamaxShortcuts): WorkflowResultHints {
+  return {
+    triage: shortcuts.results ?? "/workflow:results",
+    inspect: shortcuts.inspector ?? "/workflow:inspector",
+    expand: keyText("app.tools.expand") || undefined,
+  };
 }
 
 /** Register the host-facing workflow tool independently from command and lifecycle surfaces. */
@@ -738,9 +477,10 @@ function registerWorkflowTool(
   pi: ExtensionAPI,
   reviewSessions: ReviewSessionCoordinator,
   backgroundWorkflows: BackgroundWorkflowCoordinator,
+  shortcuts: DynamaxShortcuts,
 ): void {
   pi.registerTool({
-    name: "workflow",
+    name: WORKFLOW_TOOL_NAME,
     label: "Workflow",
     description:
       "ONLY call workflow when the user opted into multi-agent orchestration via the literal token `dynamax`, sticky `/workflow:dynamax on`, an explicit request to run or author a workflow, or a command/skill instruction. Runs either a registered named workflow or an inline one-off workflow script (fan-out → verify → synthesize), synchronously by default or explicitly in the background.",
@@ -815,29 +555,12 @@ function registerWorkflowTool(
       background: Type.Optional(Type.Boolean({ description: "Return a durable run ID immediately and deliver completion to this conversation later" })),
     }),
     renderCall(args, theme) {
-      const suffix = args.args ? ` ${theme.fg("dim", args.args)}` : "";
-      const background = args.background ? ` ${theme.fg("dim", "(background)")}` : "";
-      if (args.name?.trim()) {
-        return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", args.name.trim())}${background}${suffix}`, 0, 0);
-      }
-      const preview = compactInlinePreview(args.script);
-      const previewSuffix = preview ? ` ${theme.fg("dim", preview)}` : "";
-      return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", "inline")}${background}${suffix}${previewSuffix}`, 0, 0);
+      return renderWorkflowToolCall(args, theme);
     },
-    renderResult(result, { expanded, isPartial }, theme) {
-      if (isPartial) return new Text(theme.fg("accent", "Running workflow…"), 0, 0);
-      const details = result.details;
-      if (isWorkflowResult(details)) {
-        return renderWorkflowResult(details.name, details.result, expanded, theme, details.usage, {
-          runId: details.runId,
-          resumedFromRunId: details.resumedFromRunId,
-        }, details.perf);
-      }
-      const first = result.content[0];
-      const text = first?.type === "text" ? first.text : "Workflow finished.";
-      return new Text(theme.fg("muted", text), 0, 0);
+    renderResult(result, options, theme, context) {
+      return renderWorkflowToolResult(result, options, theme, context.args, workflowResultHints(shortcuts));
     },
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const request = normalizeWorkflowToolRequest(params);
       if (request.kind === "error") return invalidWorkflowInvocationResult();
       const resumeFromRunId = params.resumeFromRunId?.trim();
@@ -859,7 +582,6 @@ function registerWorkflowTool(
       }
 
       const runOptions = resolveWorkflowRunOptions({
-        inspect: ctx.hasUI && ctx.mode === "tui",
         concurrency: params.concurrency,
         parallelSubmissionLimit: params.parallelSubmissionLimit,
         maxAgents: params.maxAgents,
@@ -910,7 +632,7 @@ function registerWorkflowTool(
           name: resultName,
           options: runOptions,
           async execute(backgroundCtx, backgroundOptions) {
-            const execution = await executeResolvedWorkflow(
+            const envelope = await executeResolvedWorkflow(
               pi,
               backgroundCtx,
               resultName,
@@ -919,24 +641,17 @@ function registerWorkflowTool(
               backgroundOptions,
               perfRecorder,
             );
-            reviewSessions.remember(ctx, execution, backgroundOptions);
+            reviewSessions.remember(ctx, envelope, backgroundOptions);
           },
         });
       }
-      const execution = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
-      reviewSessions.remember(ctx, execution, runOptions);
+      // Marks the tool row as running (rendered `● running <name>`) until the envelope replaces it.
+      onUpdate?.({ content: [{ type: "text", text: `Running workflow ${resultName}.` }], details: { state: "running", name: resultName } });
+      const envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
+      reviewSessions.remember(ctx, envelope, runOptions);
       return {
-        content: [{
-          type: "text",
-          text: formatMessageContent(
-            resultName,
-            execution.envelope.result,
-            execution.envelope.usage,
-            execution.envelope.perf,
-            execution.metadata,
-          ),
-        }],
-        details: execution.envelope,
+        content: [{ type: "text", text: formatWorkflowResultForContext(envelope) }],
+        details: envelope,
       };
     },
   });

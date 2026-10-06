@@ -140,7 +140,6 @@ test("research preserves citation context through verification and filters rejec
       lanes: [{ id: "status", title: "Current status", objective: "Find the current specification.", queries: ["current specification"] }],
     },
     {
-      laneId: "status",
       evidence: [
         {
           claim: "The specification changed.",
@@ -201,6 +200,45 @@ test("research preserves citation context through verification and filters rejec
   assert.doesNotMatch(synthesis?.prompt ?? "", /A rejected claim/);
   assert.ok(api.calls.every((call) => call.options?.profile === "small" || call.options?.profile === "medium"));
   assert.ok(api.calls.every((call) => call.options?.resume === "off"));
+  // Web-derived prompt text must never select skills (or grant the read tool that skills need).
+  for (const call of [gather, verifier, synthesis]) assert.deepEqual(call?.options?.skills, [], call?.options?.label);
   assert.deepEqual(result.sources, [{ title: "Official specification", url: "https://example.com/spec" }]);
   assert.deepEqual(result.supportedClaims[0]?.citations, [{ title: "Official specification", url: "https://example.com/spec" }]);
+});
+
+const TWO_LANE_PLAN = {
+  scopeConstraints: [],
+  lanes: [
+    { id: "docs", title: "Official docs", objective: "Find the official statement.", queries: ["official changelog"] },
+    { id: "news", title: "News coverage", objective: "Find independent coverage.", queries: ["specification news"] },
+  ],
+};
+
+test("research reports failed gather lanes instead of a lack of evidence", async () => {
+  const api = scriptedApi([TWO_LANE_PLAN, new Error("search provider 503"), new Error("search provider 503")], "What changed?");
+
+  const result = await research(api);
+
+  assert.match(result.answer, /research lanes failed/);
+  assert.doesNotMatch(result.answer, /without enough direct-page evidence/);
+});
+
+test("research keeps verified claims when synthesis fails and lists failed lanes as a limitation", async () => {
+  const source = { title: "Official specification", url: "https://example.com/spec" };
+  const api = scriptedApi([
+    TWO_LANE_PLAN,
+    {
+      evidence: [{ claim: "The specification changed.", importance: "high", stance: "supports", evidence: "The changelog lists a new requirement.", source }],
+      gaps: [],
+    },
+    new Error("search provider 503"),
+    { claim: "The specification changed.", verdict: "SUPPORTED", explanation: "The official changelog confirms it.", sources: [source] },
+    new Error("synthesis provider unavailable"),
+  ], "What changed?");
+
+  const result = await research(api);
+
+  assert.deepEqual(result.supportedClaims, [{ claim: "The specification changed.", explanation: "The official changelog confirms it.", citations: [source] }]);
+  assert.ok(result.limitations.some((limitation) => /synthesis stage failed/.test(limitation)), JSON.stringify(result.limitations));
+  assert.ok(result.limitations.some((limitation) => limitation.includes("1 of 2 research lane(s) failed (News coverage)")), JSON.stringify(result.limitations));
 });

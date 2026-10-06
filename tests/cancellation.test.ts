@@ -1,84 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import {
-  runAgent as runAgentWithContext,
-  type AgentProgress,
-  type CreateAgentSession,
-  type RunContext,
-} from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import type { CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import { WorkflowBudgetExceededError } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import { isFatalWorkflowError, WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
-import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
-import { defaultAgentRetryScheduler } from "../.pi/extensions/pi-workflow-engine/src/agent-retry.ts";
-import { hostWorkflowModelProfiles } from "../.pi/extensions/pi-workflow-engine/src/model-profiles.ts";
-import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
-import { NoopPerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
-import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
-import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
-import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
-import type { AgentResumeBaseContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
-import { createAgentRunnerSession } from "./agent-runner-fixtures.ts";
-
-const RESUME_BASE_CONTEXT: AgentResumeBaseContext = {
-  workflow: { kind: "verified", name: "cancellation-test", sourceFingerprint: "source-a" },
-};
-
-function runAgent(
-  rc: RunContext,
-  prompt: string,
-  opts: Parameters<typeof runAgentWithContext>[2] = {},
-): Promise<unknown> {
-  return runAgentWithContext(rc, prompt, opts, RESUME_BASE_CONTEXT);
-}
+import { createAgentRunnerSession, createProgress, createRunContext, runAgent } from "./agent-runner-fixtures.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function createProgress(): AgentProgress & { events: string[] } {
-  const events: string[] = [];
-  return {
-    events,
-    agentQueued(_phase, label) {
-      events.push(`queued:${label}`);
-      return events.length;
-    },
-    agentStart(_phase, label) {
-      events.push(`start:${label}`);
-    },
-    agentTool() {},
-    agentDone(label) {
-      events.push(`done:${label}`);
-    },
-    agentFailed(label) {
-      events.push(`failed:${label}`);
-    },
-    event() {},
-    log() {},
-  };
-}
-
-function createRunContext(createSession: CreateAgentSession, signal: AbortSignal, progress: AgentProgress = createProgress(), semaphore = new Semaphore(1)): RunContext {
-  return {
-    cwd: process.cwd(),
-    hostModel: undefined,
-    modelRegistry: { find: () => undefined },
-    semaphore,
-    agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
-    agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
-    agentRetries: 0,
-    retryScheduler: defaultAgentRetryScheduler,
-    modelProfiles: hostWorkflowModelProfiles(undefined),
-    progress,
-    signal,
-    perf: new NoopPerfRecorder(),
-    usage: createWorkflowUsageRecorder(),
-    budget: { total: null, spent: () => 0, remaining: () => Infinity },
-    journal: createMemoryBackedJournal(),
-    worktrees: new WorktreeRegistry(process.cwd()),
-    createSession,
-  };
 }
 
 test("Semaphore rejects an aborted queued waiter without leaking slots", async () => {
@@ -144,16 +73,16 @@ test("runAgent marks queued row failed when semaphore acquisition aborts", async
     }),
   });
 
-  const first = runAgent(createRunContext(createSession, firstController.signal, progress, semaphore), "first", { label: "first" });
+  const first = runAgent(createRunContext({ createSession, signal: firstController.signal, progress, semaphore }), "first", { label: "first" });
   await delay(1);
-  const queued = runAgent(createRunContext(createSession, queuedController.signal, progress, semaphore), "queued", { label: "queued" });
+  const queued = runAgent(createRunContext({ createSession, signal: queuedController.signal, progress, semaphore }), "queued", { label: "queued" });
   await delay(1);
   queuedController.abort(new WorkflowAbortError("queued stop"));
 
   await assert.rejects(queued, /queued stop/);
   releaseFirst?.();
   await first;
-  assert.ok(progress.events.includes("failed:queued"), progress.events.join(","));
+  assert.ok(progress.events.some((event) => event.startsWith("failed:queued:")), progress.events.join(","));
 });
 
 test("runAgent calls session.abort when the run signal aborts", async () => {
@@ -179,7 +108,7 @@ test("runAgent calls session.abort when the run signal aborts", async () => {
     }),
   });
 
-  const running = runAgent(createRunContext(createSession, controller.signal), "hello", { label: "abort-me" });
+  const running = runAgent(createRunContext({ createSession, signal: controller.signal }), "hello", { label: "abort-me" });
   await delay(1);
   controller.abort(new WorkflowAbortError("stop"));
 

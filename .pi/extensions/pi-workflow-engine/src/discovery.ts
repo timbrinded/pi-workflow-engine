@@ -1,13 +1,12 @@
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import type { PerfSink } from "./perf.ts";
 import { loadWorkflow, parseWorkflowModule } from "./workflow-module.ts";
 import { BUILTIN_SOURCE_ROOT, BUILTIN_WORKFLOW_DEFINITIONS, BUILTIN_WORKFLOW_FILES } from "./workflows.ts";
-import { captureTreeFingerprint } from "./tree-fingerprint.ts";
-import { FINGERPRINT_EXCLUDED_RELATIVE_PATHS } from "./resume-context.ts";
+import { captureSourceTreeFingerprint, type FingerprintCapture } from "./tree-fingerprint.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 export interface DiscoverWorkflowsOptions {
@@ -16,16 +15,13 @@ export interface DiscoverWorkflowsOptions {
   readonly userWorkflowDir?: string;
 }
 
-const DISCOVERY_FINGERPRINT_MAX_BYTES = 32 << 20;
-const DISCOVERY_FINGERPRINT_MAX_FILES = 4096;
-
 const discoveryCache = new Map<string, Map<string, LoadedWorkflow>>();
 /** Best-effort dynamic load of every `*.ts` workflow in a directory. */
 async function loadDir(
   dir: string,
   sourceIdentity: (path: string) => WorkflowSourceIdentity,
   excludeFiles: ReadonlySet<string> = new Set(),
-  provenanceRoot?: string,
+  captureProvenance?: () => Promise<FingerprintCapture>,
 ): Promise<LoadedWorkflow[]> {
   let entries: string[];
   try {
@@ -33,12 +29,15 @@ async function loadDir(
   } catch {
     return [];
   }
+  const candidates = entries.filter(
+    (name) => !excludeFiles.has(name) && name.endsWith(".ts") && !name.startsWith("_") && !name.startsWith("."),
+  );
+  // The shipped workflows/ dir holds only excluded built-ins; skip the tree hash when nothing will be imported.
+  if (candidates.length === 0) return [];
 
-  const before = provenanceRoot ? await captureDiscoveryFingerprint(provenanceRoot) : undefined;
+  const before = await captureProvenance?.();
   const modules: Array<{ readonly path: string; readonly module: Parameters<typeof loadWorkflow>[0] }> = [];
-  for (const name of entries) {
-    if (excludeFiles.has(name)) continue;
-    if (!name.endsWith(".ts") || name.startsWith("_") || name.startsWith(".")) continue;
+  for (const name of candidates) {
     try {
       const path = join(dir, name);
       const importUrl = pathToFileURL(path);
@@ -56,15 +55,6 @@ async function loadDir(
   return modules.map(({ path, module }) => loadWorkflow(module, sourceIdentity(path)));
 }
 
-async function captureDiscoveryFingerprint(root: string) {
-  return await captureTreeFingerprint({
-    root,
-    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
-    maxBytes: DISCOVERY_FINGERPRINT_MAX_BYTES,
-    maxFiles: DISCOVERY_FINGERPRINT_MAX_FILES,
-  });
-}
-
 /**
  * All available workflows by name. Static registry wins on name collisions, so the
  * bundled example is always the verified one even if a same-named file is dropped in.
@@ -80,14 +70,14 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
 
   const byName = await timed(options.perf, "discovery.total_ms", async () => {
     const next = new Map<string, LoadedWorkflow>();
-    const builtinSource = await captureDiscoveryFingerprint(BUILTIN_SOURCE_ROOT);
+    const builtinSource = await captureSourceTreeFingerprint(BUILTIN_SOURCE_ROOT);
     for (const definition of BUILTIN_WORKFLOW_DEFINITIONS) {
       const source: WorkflowSourceIdentity =
         builtinSource.kind === "verified"
           ? {
               kind: "file",
               path: definition.path,
-              root: definition.root,
+              root: BUILTIN_SOURCE_ROOT,
               fingerprint: builtinSource.fingerprint,
             }
           : {
@@ -98,6 +88,9 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
     }
 
     const repoWorkflowDir = join(repoDir, "workflows");
+    // The shipped extension dir is both the built-in root and the drop-in root; hash that tree once.
+    const repoProvenance =
+      resolve(repoDir) === resolve(BUILTIN_SOURCE_ROOT) ? async () => builtinSource : () => captureSourceTreeFingerprint(repoDir);
     const [repoDynamic, userDynamic] = await Promise.all([
       timed(options.perf, "discovery.repo_dir_ms", () =>
         loadDir(
@@ -107,7 +100,7 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
             reason: "dynamic workflow module graphs are not loaded from an immutable source snapshot",
           }),
           BUILTIN_WORKFLOW_FILES,
-          repoDir,
+          repoProvenance,
         ),
       ),
       timed(options.perf, "discovery.user_dir_ms", () =>

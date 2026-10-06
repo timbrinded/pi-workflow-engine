@@ -1,4 +1,5 @@
-import type { AdvisoryFinding, AdvisoryReport } from "../advisory-schema.ts";
+import { formatAdvisoryLocation, type AdvisoryFinding, type AdvisoryReport } from "../advisory-schema.ts";
+import { isFiniteNumber } from "../guards.ts";
 
 export type ReviewIssueAction = "fix" | "comment" | "close";
 
@@ -9,8 +10,6 @@ export interface ReviewIssueSelection {
 
 export interface ReviewIssue {
   readonly id: string;
-  readonly index: number;
-  readonly workflowName: string;
   readonly file?: string;
   readonly line?: number;
   readonly symbol?: string;
@@ -35,13 +34,11 @@ export interface SerializedReviewIssue {
   readonly recommendation: string;
 }
 
-export function toReviewIssues(name: string, report: Pick<AdvisoryReport, "findings">): ReviewIssue[] {
+export function toReviewIssues(report: Pick<AdvisoryReport, "findings">): ReviewIssue[] {
   return report.findings.map((finding, index) => {
     const location = finding.reviewAnchor ?? finding.locations[0];
     return {
       id: formatIssueId(index),
-      index,
-      workflowName: name,
       file: location?.file,
       line: location?.line,
       symbol: location?.symbol,
@@ -52,9 +49,7 @@ export function toReviewIssues(name: string, report: Pick<AdvisoryReport, "findi
 
 export function formatIssueLocation(issue: ReviewIssue): string {
   if (!issue.file) return "(no location)";
-  const line = issue.line != null ? `:${issue.line}` : "";
-  const symbol = issue.symbol ? ` (${issue.symbol})` : "";
-  return `${issue.file}${line}${symbol}`;
+  return formatAdvisoryLocation({ file: issue.file, line: issue.line, symbol: issue.symbol });
 }
 
 export function serializeReviewIssue(issue: ReviewIssue): SerializedReviewIssue {
@@ -76,10 +71,10 @@ export function serializeReviewIssue(issue: ReviewIssue): SerializedReviewIssue 
   };
 }
 
-export function isCommentableIssue(
-  issue: ReviewIssue,
-): issue is ReviewIssue & { readonly file: string; readonly line: number } {
-  return typeof issue.file === "string" && issue.file.trim().length > 0 && typeof issue.line === "number" && Number.isFinite(issue.line);
+export type CommentableReviewIssue = ReviewIssue & { readonly file: string; readonly line: number };
+
+export function isCommentableIssue(issue: ReviewIssue): issue is CommentableReviewIssue {
+  return typeof issue.file === "string" && issue.file.trim().length > 0 && isFiniteNumber(issue.line);
 }
 
 function formatIssueId(index: number): string {

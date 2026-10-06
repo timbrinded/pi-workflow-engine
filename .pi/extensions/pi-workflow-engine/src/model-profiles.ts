@@ -5,6 +5,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { isMissingPathError } from "./filesystem-error.ts";
+import { isRecord } from "./guards.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 export const WORKFLOW_MODEL_PROFILE_NAMES = ["small", "medium", "big"] as const;
@@ -41,19 +42,6 @@ export interface WorkflowModelRouteRequest {
   readonly model?: string;
   readonly thinkingLevel?: ThinkingLevel;
   readonly profile?: WorkflowModelProfileName;
-}
-
-export class WorkflowModelProfileConfigError extends Error {
-  override readonly name = "WorkflowModelProfileConfigError";
-  readonly code = "WORKFLOW_MODEL_PROFILE_CONFIG";
-
-  constructor(
-    message: string,
-    readonly configPath: string,
-    readonly profile?: WorkflowModelProfileName,
-  ) {
-    super(message);
-  }
 }
 
 export const WORKFLOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
@@ -140,19 +128,15 @@ export function readWorkflowModelProfileFile(configPath: string): WorkflowModelP
     contents = readFileSync(configPath, "utf8");
   } catch (error) {
     if (isMissingPathError(error)) return { profiles: {} };
-    throw new WorkflowModelProfileConfigError(
+    throw new Error(
       `Could not read workflow model profiles at ${configPath}: ${unknownErrorMessage(error)}. Fix the file permissions or remove the file.`,
-      configPath,
     );
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(contents);
   } catch (error) {
-    throw new WorkflowModelProfileConfigError(
-      `Invalid JSON in workflow model profiles at ${configPath}: ${unknownErrorMessage(error)}. Fix or remove the file.`,
-      configPath,
-    );
+    throw new Error(`Invalid JSON in workflow model profiles at ${configPath}: ${unknownErrorMessage(error)}. Fix or remove the file.`);
   }
   return parseWorkflowModelProfileFile(parsed, configPath);
 }
@@ -198,10 +182,10 @@ function parseWorkflowModelProfileFile(value: unknown, configPath: string): Work
     if (!isWorkflowModelProfileName(name)) {
       throw invalidConfig(configPath, `unknown profile "${name}"; expected small, medium, or big`);
     }
-    if (!isRecord(profile)) throw invalidConfig(configPath, `profile "${name}" must be an object`, name);
-    assertOnlyKeys(profile, ["model", "thinkingLevel"], configPath, name);
+    if (!isRecord(profile)) throw invalidConfig(configPath, `profile "${name}" must be an object`);
+    assertOnlyKeys(profile, ["model", "thinkingLevel"], configPath);
     if (typeof profile.model !== "string") {
-      throw invalidConfig(configPath, `profile "${name}" requires a provider-qualified "model" string`, name);
+      throw invalidConfig(configPath, `profile "${name}" requires a provider-qualified "model" string`);
     }
     assertThinkingLevel(profile.thinkingLevel, configPath, name);
     profiles[name] = {
@@ -218,29 +202,18 @@ function resolveConfiguredModel(
   modelRegistry: Pick<ModelRegistry, "find">,
   configPath: string,
 ): Model<Api> {
+  // Exactly "provider/model": no whitespace, a non-empty provider, and a model id that neither starts nor ends with "/".
   const slash = modelRef.indexOf("/");
-  if (modelRef.trim() !== modelRef || slash <= 0 || slash === modelRef.length - 1) {
-    throw invalidConfig(
-      configPath,
-      `profile "${name}" model must be an exact provider/model identity; received "${modelRef}"`,
-      name,
-    );
+  if (/\s/.test(modelRef) || slash <= 0 || modelRef.endsWith("/") || modelRef[slash + 1] === "/") {
+    throw invalidConfig(configPath, `profile "${name}" model must be an exact provider/model identity; received "${modelRef}"`);
   }
   const provider = modelRef.slice(0, slash);
   const modelId = modelRef.slice(slash + 1);
-  if (/\s/.test(provider) || modelId.startsWith("/") || modelId.endsWith("/") || /\s/.test(modelId)) {
-    throw invalidConfig(
-      configPath,
-      `profile "${name}" model must be an exact provider/model identity; received "${modelRef}"`,
-      name,
-    );
-  }
   const model = modelRegistry.find(provider, modelId);
   if (!model) {
     throw invalidConfig(
       configPath,
       `profile "${name}" references unavailable model "${modelRef}"; choose an exact model shown by /model and update it with /workflow:models set ${name} provider/model`,
-      name,
     );
   }
   return model;
@@ -257,21 +230,12 @@ function assertThinkingLevel(
   profile: WorkflowModelProfileName,
 ): asserts value is ThinkingLevel | undefined {
   if (value === undefined || (typeof value === "string" && isWorkflowThinkingLevel(value))) return;
-  throw invalidConfig(
-    configPath,
-    `profile "${profile}" thinkingLevel must be off, minimal, low, medium, high, xhigh, or max`,
-    profile,
-  );
+  throw invalidConfig(configPath, `profile "${profile}" thinkingLevel must be off, minimal, low, medium, high, xhigh, or max`);
 }
 
-function assertOnlyKeys(
-  value: Record<string, unknown>,
-  allowed: readonly string[],
-  configPath: string,
-  profile?: WorkflowModelProfileName,
-): void {
+function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], configPath: string): void {
   const unexpected = Object.keys(value).find((key) => !allowed.includes(key));
-  if (unexpected) throw invalidConfig(configPath, `unexpected key "${unexpected}"`, profile);
+  if (unexpected) throw invalidConfig(configPath, `unexpected key "${unexpected}"`);
 }
 
 function writeWorkflowModelProfileFile(configPath: string, config: WorkflowModelProfileFile): void {
@@ -286,25 +250,10 @@ function writeWorkflowModelProfileFile(configPath: string, config: WorkflowModel
     } catch {
       // Best effort: preserve the original write error.
     }
-    throw new WorkflowModelProfileConfigError(
-      `Could not write workflow model profiles at ${configPath}: ${unknownErrorMessage(error)}.`,
-      configPath,
-    );
+    throw new Error(`Could not write workflow model profiles at ${configPath}: ${unknownErrorMessage(error)}.`);
   }
 }
 
-function invalidConfig(
-  configPath: string,
-  reason: string,
-  profile?: WorkflowModelProfileName,
-): WorkflowModelProfileConfigError {
-  return new WorkflowModelProfileConfigError(
-    `Invalid workflow model profile config at ${configPath}: ${reason}.`,
-    configPath,
-    profile,
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function invalidConfig(configPath: string, reason: string): Error {
+  return new Error(`Invalid workflow model profile config at ${configPath}: ${reason}.`);
 }

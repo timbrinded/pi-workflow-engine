@@ -9,17 +9,12 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
-import { defaultAgentRetryScheduler } from "../.pi/extensions/pi-workflow-engine/src/agent-retry.ts";
-import { hostWorkflowModelProfiles } from "../.pi/extensions/pi-workflow-engine/src/model-profiles.ts";
-import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
-import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { AgentProgress, CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
-import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { WorktreeRegistry, type WorktreeGitCommandOptions } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
-import { assistantTextMessage, createAgentRunnerSession } from "./agent-runner-fixtures.ts";
+import { assistantTextMessage, createAgentRunnerSession, createRunContext } from "./agent-runner-fixtures.ts";
 
 interface CaptureProgress extends AgentProgress, WorkflowProgress {
   readonly phases: string[];
@@ -61,25 +56,7 @@ function createRc(
   },
   usage: WorkflowUsageSink = createWorkflowUsageRecorder(),
 ): WorkflowRunContext {
-  return {
-    cwd: process.cwd(),
-    hostModel: undefined,
-    modelRegistry: { find: () => undefined },
-    semaphore,
-    agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
-    agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
-    agentRetries: 0,
-    retryScheduler: defaultAgentRetryScheduler,
-    modelProfiles: hostWorkflowModelProfiles(undefined),
-    progress,
-    signal: undefined,
-    perf: new PerfRecorder(),
-    usage,
-    budget: { total: null, spent: () => 0, remaining: () => Infinity },
-    journal: createMemoryBackedJournal(),
-    worktrees: new WorktreeRegistry(process.cwd()),
-    createSession,
-  };
+  return createRunContext({ cwd: process.cwd(), progress, semaphore, createSession, usage });
 }
 
 function workflowModule(name: string, run: WorkflowModule["default"]): LoadedWorkflow {

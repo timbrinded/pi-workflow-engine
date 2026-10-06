@@ -64,18 +64,6 @@ export function workflowJournalPath(cwd: string, runId: string): string {
   return join(cwd, WORKFLOW_RUNS_DIR, `${validateWorkflowRunId(runId)}.jsonl`);
 }
 
-export function agentJournalKey(prompt: string, opts: AgentOptions = {}, worktreeBaseline?: WorktreeBaseline): string {
-  const capture = captureAgentJournalKey(prompt, opts, worktreeBaseline);
-  return capture.kind === "verified" ? capture.key : `agent:unverifiable:${randomUUID()}`;
-}
-
-export function hashAgentCall(prompt: string, opts: AgentOptions = {}, worktreeBaseline?: WorktreeBaseline): string {
-  const capture = captureAgentCallHash(prompt, opts, worktreeBaseline);
-  return capture.kind === "verified"
-    ? capture.hash
-    : createHash("sha256").update(`unverifiable:${randomUUID()}`).digest("hex");
-}
-
 /** Capture a replay key without allowing hostile or oversized schemas to escape as exceptions. */
 export function captureAgentJournalKey(
   prompt: string,

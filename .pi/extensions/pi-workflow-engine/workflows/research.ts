@@ -1,4 +1,3 @@
-import { compactResults } from "../src/concurrency.ts";
 import {
   MAX_RESEARCH_LANES,
   ResearchLaneResultSchema,
@@ -7,18 +6,17 @@ import {
   ResearchVerificationSchema,
   type ResearchClaimCandidate,
   type ResearchReport,
-  type ResearchVerification,
 } from "../src/research-contract.ts";
 import {
   buildClaimCandidates,
   fallbackResearchReport,
   normalizeResearchLanes,
-  sanitizeLaneResults,
   sanitizeResearchReport,
   sanitizeVerification,
   unavailableResearchReport,
   unavailableVerification,
 } from "../src/research-evidence.ts";
+import { isFatalWorkflowError } from "../src/cancellation.ts";
 import { WorkflowToolHintUnavailableError } from "../src/tool-capabilities.ts";
 import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
@@ -32,7 +30,7 @@ const EXTERNAL_TOOLS: string[] = [];
 const EXTERNAL_TOOL_HINTS = ["external-search"] as const;
 
 export default async function run(api: WorkflowApi): Promise<ResearchReport> {
-  const { agent, parallel, phase, log, progress, args } = api;
+  const { agent, parallel, phase, log, progress, args, signal } = api;
   const question = args.trim();
   if (!question) return unavailableResearchReport("empty-question");
 
@@ -61,54 +59,54 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
     throw error;
   }
 
-  if (!plan) return unavailableResearchReport("no-evidence");
   const lanes = normalizeResearchLanes(plan);
   if (lanes.length === 0) return unavailableResearchReport("no-evidence");
   progress({ type: "counter", key: "research.lanes", label: "research lanes", value: lanes.length });
   progress({ type: "summary", key: "research.question", value: question });
 
   phase("Gather");
-  const gathered = compactResults(
-    await parallel(
-      lanes.map((lane) => async () => {
-        const result = await agent(
-          `Research one bounded lane using only installed external web-search, browsing, or URL-extraction tools.\n\n` +
-            `Question: ${question}\n` +
-            `Scope constraints: ${plan.scopeConstraints.join("; ") || "(none)"}\n` +
-            `Lane id: ${lane.id}\nLane: ${lane.title}\nObjective: ${lane.objective}\n` +
-            `Queries:\n${lane.queries.map((query) => `- ${query}`).join("\n")}\n\n` +
-            "Open the supporting pages instead of citing a search-results page. Prefer primary and authoritative sources; use independent sources when useful. " +
-            "Return concrete claims with importance, whether each page supports or conflicts with the claim, a short passage or precise paraphrase, and the exact page title and URL. " +
-            "State evidence gaps. Never invent a URL or claim that the opened page does not support. Structured output only.",
-          {
-            phase: "Gather",
-            label: `gather:${lane.id}`,
-            tools: EXTERNAL_TOOLS,
-            toolHints: EXTERNAL_TOOL_HINTS,
-            requireToolHints: true,
-            profile: "small",
-            resume: "off",
-            schema: ResearchLaneResultSchema,
-          },
-        );
-        if (!result) return null;
-        progress({ type: "counter_delta", key: "research.evidence", label: "evidence items", delta: result.evidence.length });
-        progress({
-          type: "lane_item",
-          lane: "Research lanes",
-          title: lane.title,
-          subtitle: `${result.evidence.length} evidence item(s)`,
-          status: result.evidence.length > 0 ? "success" : "warning",
-          details: result.gaps.join("; ") || lane.objective,
-        });
-        return result;
-      }),
-    ),
+  const gatherResults = await parallel(
+    lanes.map((lane) => async () => {
+      const result = await agent(
+        `Research one bounded lane using only installed external web-search, browsing, or URL-extraction tools.\n\n` +
+          `Question: ${question}\n` +
+          `Scope constraints: ${plan.scopeConstraints.join("; ") || "(none)"}\n` +
+          `Lane: ${lane.title}\nObjective: ${lane.objective}\n` +
+          `Queries:\n${lane.queries.map((query) => `- ${query}`).join("\n")}\n\n` +
+          "Open the supporting pages instead of citing a search-results page. Prefer primary and authoritative sources; use independent sources when useful. " +
+          "Return concrete claims with importance, whether each page supports or conflicts with the claim, a short passage or precise paraphrase, and the exact page title and URL. " +
+          "State evidence gaps. Never invent a URL or claim that the opened page does not support. Structured output only.",
+        {
+          phase: "Gather",
+          label: `gather:${lane.id}`,
+          tools: EXTERNAL_TOOLS,
+          toolHints: EXTERNAL_TOOL_HINTS,
+          requireToolHints: true,
+          // The prompt embeds lane text planned by a web-enabled agent; never infer skills (and the read tool) from it.
+          skills: [],
+          profile: "small",
+          resume: "off",
+          schema: ResearchLaneResultSchema,
+        },
+      );
+      progress({ type: "counter_delta", key: "research.evidence", label: "evidence items", delta: result.evidence.length });
+      progress({
+        type: "lane_item",
+        lane: "Research lanes",
+        title: lane.title,
+        subtitle: `${result.evidence.length} evidence item(s)`,
+        status: result.evidence.length > 0 ? "success" : "warning",
+        details: result.gaps.join("; ") || lane.objective,
+      });
+      return result;
+    }),
+    { settled: true },
   );
+  const gathered = gatherResults.flatMap((result) => (result.ok ? [result.value] : []));
+  const failedLanes = lanes.filter((_, index) => !gatherResults[index]!.ok);
 
-  const laneResults = sanitizeLaneResults(gathered);
-  const candidates = buildClaimCandidates(laneResults);
-  if (candidates.length === 0) return unavailableResearchReport("no-evidence");
+  const candidates = buildClaimCandidates(gathered);
+  if (candidates.length === 0) return unavailableResearchReport(failedLanes.length > 0 ? "lanes-failed" : "no-evidence");
   progress({ type: "counter", key: "research.claims", label: "claims to verify", value: candidates.length });
   log(`${candidates.length} bounded claim(s) selected for independent verification`);
 
@@ -121,11 +119,13 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
         tools: EXTERNAL_TOOLS,
         toolHints: EXTERNAL_TOOL_HINTS,
         requireToolHints: true,
+        // The prompt embeds web-derived evidence; never infer skills (and the read tool) from it.
+        skills: [],
         profile: "medium",
         resume: "off",
         schema: ResearchVerificationSchema,
       });
-      return result ? sanitizeVerification(result, candidate) : null;
+      return sanitizeVerification(result, candidate);
     }),
   );
   const verifications = verificationResults.map((result, index) => result ?? unavailableVerification(candidates[index]!));
@@ -135,28 +135,36 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
   const synthesisInputs = verifications.filter((verification) => verification.verdict !== "REJECTED");
 
   phase("Synthesize");
-  const synthesis = await agent(
-    `Answer the research question using only the independently verified handoff below.\n\n` +
-      `Question: ${question}\nScope constraints: ${plan.scopeConstraints.join("; ") || "(none)"}\n\n` +
-      `Verified claims JSON:\n${JSON.stringify(synthesisInputs)}\n\n` +
-      "Keep SUPPORTED claims, CONFLICTED evidence, UNCERTAIN claims, and model INFERENCE in their separate fields. Exclude REJECTED claims. " +
-      "Copy each verified claim string exactly so its citations remain bound to that claim during validation. " +
-      "Every supported or conflicting claim must cite exact title/URL objects from its verification; do not add URLs, cite search-results pages, or turn inference into fact. " +
-      "Answer concisely, disclose limited coverage, and provide useful next steps. Structured output only.",
-    {
-      phase: "Synthesize",
-      label: "synthesize",
-      tools: [],
-      profile: "medium",
-      resume: "off",
-      schema: ResearchReportSchema,
-    },
-  );
+  let synthesis: ResearchReport;
+  try {
+    synthesis = await agent(
+      `Answer the research question using only the independently verified handoff below.\n\n` +
+        `Question: ${question}\nScope constraints: ${plan.scopeConstraints.join("; ") || "(none)"}\n\n` +
+        `Verified claims JSON:\n${JSON.stringify(synthesisInputs)}\n\n` +
+        "Keep SUPPORTED claims, CONFLICTED evidence, UNCERTAIN claims, and model INFERENCE in their separate fields. Exclude REJECTED claims. " +
+        "Copy each verified claim string exactly so its citations remain bound to that claim during validation. " +
+        "Every supported or conflicting claim must cite exact title/URL objects from its verification; do not add URLs, cite search-results pages, or turn inference into fact. " +
+        "Answer concisely, disclose limited coverage, and provide useful next steps. Structured output only.",
+      {
+        phase: "Synthesize",
+        label: "synthesize",
+        tools: [],
+        // The prompt embeds web-derived claims; never infer skills (and the read tool) from them.
+        skills: [],
+        profile: "medium",
+        resume: "off",
+        schema: ResearchReportSchema,
+      },
+    );
+  } catch (error) {
+    if (isFatalWorkflowError(error, signal)) throw error;
+    synthesis = fallbackResearchReport(synthesisInputs);
+  }
 
-  return sanitizeResearchReport(
-    synthesis ?? fallbackResearchReport(synthesisInputs, "The model did not return a structured synthesis."),
-    synthesisInputs,
-  );
+  const report = sanitizeResearchReport(synthesis, synthesisInputs);
+  if (failedLanes.length === 0) return report;
+  const laneGap = `${failedLanes.length} of ${lanes.length} research lane(s) failed (${failedLanes.map((lane) => lane.title).join(", ")}); coverage is incomplete.`;
+  return { ...report, limitations: [...report.limitations, laneGap] };
 }
 
 function verificationPrompt(question: string, candidate: ResearchClaimCandidate): string {

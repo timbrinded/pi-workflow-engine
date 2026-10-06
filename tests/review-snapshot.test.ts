@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +11,7 @@ import {
   resolveReviewWorktreeBaseline,
   type VerifiedReviewSnapshot,
 } from "../.pi/extensions/pi-workflow-engine/src/review/review-snapshot.ts";
+import { gitCommit, runGit } from "./resume-fixtures.ts";
 
 function verifiedSnapshot(material: Awaited<ReturnType<typeof captureReviewMaterial>>): VerifiedReviewSnapshot {
   if (!material.ok) assert.fail(material.error);
@@ -28,14 +28,11 @@ function reviewTarget(command: string): ReviewDiffTarget {
 test("review fix baseline revalidates and reconstructs a dirty working-tree snapshot", async () => {
   const repo = await mkdtemp(join(tmpdir(), "pi-review-baseline-"));
   try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
+    runGit(repo, ["init"]);
     await writeFile(join(repo, "app.ts"), "export const value = 1;\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
-    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
+    runGit(repo, ["add", "app.ts"]);
+    gitCommit(repo, "initial");
+    const head = runGit(repo, ["rev-parse", "HEAD"]);
     await writeFile(join(repo, "app.ts"), "export const value = 2;\n");
     const diffTarget = reviewTarget("git diff");
     const material = await captureReviewMaterial(diffTarget, repo);
@@ -60,13 +57,10 @@ test("review fix baseline revalidates and reconstructs a dirty working-tree snap
 test("review fix baseline rejects a diff that changed after review", async () => {
   const repo = await mkdtemp(join(tmpdir(), "pi-review-stale-"));
   try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
+    runGit(repo, ["init"]);
     await writeFile(join(repo, "app.ts"), "before\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
+    runGit(repo, ["add", "app.ts"]);
+    gitCommit(repo, "initial");
     await writeFile(join(repo, "app.ts"), "after\n");
     const diffTarget = reviewTarget("git diff");
     const context: ReviewContext = {
@@ -89,20 +83,14 @@ test("review fix baseline rejects a diff that changed after review", async () =>
 test("review fix baseline resolves a ref-range target to its immutable commit", async () => {
   const repo = await mkdtemp(join(tmpdir(), "pi-review-range-"));
   try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
+    runGit(repo, ["init"]);
     await writeFile(join(repo, "app.ts"), "before\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
+    runGit(repo, ["add", "app.ts"]);
+    gitCommit(repo, "initial");
     await writeFile(join(repo, "app.ts"), "reviewed\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "reviewed"], { cwd: repo }).status,
-      0,
-    );
-    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
+    runGit(repo, ["add", "app.ts"]);
+    gitCommit(repo, "reviewed");
+    const head = runGit(repo, ["rev-parse", "HEAD"]);
     const diffTarget = reviewTarget("git diff HEAD~1...HEAD");
     const material = await captureReviewMaterial(diffTarget, repo);
     const snapshot = verifiedSnapshot(material);
@@ -123,14 +111,11 @@ test("review fix baseline resolves a ref-range target to its immutable commit", 
 test("review fix baseline rejects unchanged scoped diff when unrelated reviewed state changes", async () => {
   const repo = await mkdtemp(join(tmpdir(), "pi-review-baseline-state-"));
   try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
+    runGit(repo, ["init"]);
     await writeFile(join(repo, "app.ts"), "before\n");
     await writeFile(join(repo, "other.ts"), "before\n");
-    assert.equal(spawnSync("git", ["add", "app.ts", "other.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
+    runGit(repo, ["add", "app.ts", "other.ts"]);
+    gitCommit(repo, "initial");
     await writeFile(join(repo, "app.ts"), "reviewed\n");
     const diffTarget = reviewTarget("git diff -- app.ts");
     const material = await captureReviewMaterial(diffTarget, repo);
@@ -144,7 +129,7 @@ test("review fix baseline rejects unchanged scoped diff when unrelated reviewed 
     };
 
     await writeFile(join(repo, "other.ts"), "new unrelated staged state\n");
-    assert.equal(spawnSync("git", ["add", "other.ts"], { cwd: repo }).status, 0);
+    runGit(repo, ["add", "other.ts"]);
 
     await assert.rejects(() => resolveReviewWorktreeBaseline(context, repo), /reviewed snapshot changed/);
   } finally {
@@ -155,15 +140,12 @@ test("review fix baseline rejects unchanged scoped diff when unrelated reviewed 
 test("cached review baseline represents the index and excludes later unstaged content", async () => {
   const repo = await mkdtemp(join(tmpdir(), "pi-review-index-"));
   try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
+    runGit(repo, ["init"]);
     await writeFile(join(repo, "app.ts"), "before\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
+    runGit(repo, ["add", "app.ts"]);
+    gitCommit(repo, "initial");
     await writeFile(join(repo, "app.ts"), "reviewed index\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
+    runGit(repo, ["add", "app.ts"]);
     const diffTarget = reviewTarget("git diff --cached");
     const material = await captureReviewMaterial(diffTarget, repo);
     const snapshot = verifiedSnapshot(material);
@@ -188,15 +170,12 @@ test("cached review baseline represents the index and excludes later unstaged co
 test("review baseline requires explicit file operands and rejects ambiguous blob pairs", async () => {
   const repo = await mkdtemp(join(tmpdir(), "pi-review-path-operands-"));
   try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
+    runGit(repo, ["init"]);
     await writeFile(join(repo, "README.md"), "before readme\n");
     await writeFile(join(repo, "USAGE.md"), "before usage\n");
-    assert.equal(spawnSync("git", ["add", "README.md", "USAGE.md"], { cwd: repo }).status, 0);
-    assert.equal(
-      spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], { cwd: repo }).status,
-      0,
-    );
-    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
+    runGit(repo, ["add", "README.md", "USAGE.md"]);
+    gitCommit(repo, "initial");
+    const head = runGit(repo, ["rev-parse", "HEAD"]);
     await writeFile(join(repo, "README.md"), "reviewed readme\n");
     await writeFile(join(repo, "USAGE.md"), "reviewed usage\n");
 
@@ -223,9 +202,9 @@ test("review baseline requires explicit file operands and rejects ambiguous blob
 test("review material preserves its captured diff when baseline verification is unavailable", async () => {
   const repo = await mkdtemp(join(tmpdir(), "pi-review-unborn-"));
   try {
-    assert.equal(spawnSync("git", ["init"], { cwd: repo }).status, 0);
+    runGit(repo, ["init"]);
     await writeFile(join(repo, "app.ts"), "reviewed index\n");
-    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
+    runGit(repo, ["add", "app.ts"]);
 
     const material = await captureReviewMaterial(reviewTarget("git diff --cached"), repo);
 

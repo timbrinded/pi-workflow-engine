@@ -2,104 +2,25 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import {
-  runAgent as runAgentWithContext,
-  type AgentProgress,
-  type CreateAgentSession,
-  type RunContext,
-} from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import type { CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
-import { Semaphore } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
-import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
-import { defaultAgentRetryScheduler } from "../.pi/extensions/pi-workflow-engine/src/agent-retry.ts";
-import { hostWorkflowModelProfiles } from "../.pi/extensions/pi-workflow-engine/src/model-profiles.ts";
-import { DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS, DEFAULT_WORKFLOW_MAX_AGENTS } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import {
   MAX_SCHEMA_REPAIR_ATTEMPTS,
   STRUCTURED_OUTPUT_ERROR_CODE,
   WorkflowStructuredOutputError,
 } from "../.pi/extensions/pi-workflow-engine/src/structured-output.ts";
-import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
-import { createMemoryBackedJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
-import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
-import type { AgentResumeBaseContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
+import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import {
   assistantTextMessage,
   createAgentRunnerSession,
+  createRunContext,
   executeTestFinalAnswer,
+  runAgent,
 } from "./agent-runner-fixtures.ts";
-
-const RESUME_BASE_CONTEXT: AgentResumeBaseContext = {
-  workflow: { kind: "verified", name: "agent-perf-test", sourceFingerprint: "source-a" },
-};
-
-function runAgent(
-  rc: RunContext,
-  prompt: string,
-  opts: Parameters<typeof runAgentWithContext>[2] = {},
-): Promise<unknown> {
-  return runAgentWithContext(rc, prompt, opts, RESUME_BASE_CONTEXT);
-}
-
-function createProgress(): AgentProgress & { readonly events: string[] } {
-  const events: string[] = [];
-  return {
-    events,
-    agentQueued(_phase, label) {
-      events.push(`queued:${label}`);
-      return events.length;
-    },
-    agentStart(_phase, label) {
-      events.push(`start:${label}`);
-    },
-    agentTool(label, tool) {
-      events.push(`tool:${label}:${tool}`);
-    },
-    agentDone(label) {
-      events.push(`done:${label}`);
-    },
-    agentFailed(label, error) {
-      events.push(`failed:${label}:${String(error)}`);
-    },
-    event(event) {
-      events.push(`event:${event.type}`);
-    },
-    log(message) {
-      events.push(`log:${message}`);
-    },
-  };
-}
 
 function aggregateNames(recorder: PerfRecorder): string[] {
   return recorder.snapshot().aggregates.map((aggregate) => aggregate.name).sort();
-}
-
-function createRunContext(
-  createSession: CreateAgentSession,
-  perf: PerfRecorder,
-  usage: WorkflowUsageSink = createWorkflowUsageRecorder(),
-  signal?: AbortSignal,
-): RunContext {
-  return {
-    cwd: process.cwd(),
-    hostModel: undefined,
-    modelRegistry: { find: () => undefined },
-    semaphore: new Semaphore(1),
-    agentLimiter: new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
-    agentTimeoutMs: DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
-    agentRetries: 0,
-    retryScheduler: defaultAgentRetryScheduler,
-    modelProfiles: hostWorkflowModelProfiles(undefined),
-    progress: createProgress(),
-    signal,
-    perf,
-    usage,
-    budget: { total: null, spent: () => 0, remaining: () => Infinity },
-    journal: createMemoryBackedJournal(),
-    worktrees: new WorktreeRegistry(process.cwd()),
-    createSession,
-  };
 }
 
 function usageAssistant(input: number, output: number, costTotal: number): AssistantMessage {
@@ -140,7 +61,7 @@ test("runAgent records lifecycle timing samples without LLM calls", async () => 
     }),
   });
 
-  const result = await runAgent(createRunContext(createSession, perf), "hello", { label: "timed", phase: "Test" });
+  const result = await runAgent(createRunContext({ createSession, perf }), "hello", { label: "timed", phase: "Test" });
 
   assert.equal(result, "done");
   assert.equal(disposed, 1);
@@ -150,6 +71,7 @@ test("runAgent records lifecycle timing samples without LLM calls", async () => 
     "agent.extract_result_ms",
     "agent.prompt_ms",
     "agent.queue_wait_ms",
+    "agent.session_resources_ms",
     "agent.total_ms",
   ]);
   const queueWait = perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.queue_wait_ms");
@@ -177,7 +99,7 @@ test("runAgent records usage before disposing a successful subagent session", as
     }),
   });
 
-  const result = await runAgent(createRunContext(createSession, perf, usage), "hello", { label: "usage", phase: "Find" });
+  const result = await runAgent(createRunContext({ createSession, perf, usage }), "hello", { label: "usage", phase: "Find" });
 
   assert.equal(result, "done");
   const snapshot = usage.snapshot();
@@ -211,7 +133,7 @@ test("runAgent records usage before disposing a failed subagent session", async 
     }),
   });
 
-  await assert.rejects(() => runAgent(createRunContext(createSession, perf, usage), "hello", { label: "failed", phase: "Verify" }), /prompt failed/);
+  await assert.rejects(() => runAgent(createRunContext({ createSession, perf, usage }), "hello", { label: "failed", phase: "Verify" }), /prompt failed/);
 
   const snapshot = usage.snapshot();
   assert.equal(snapshot.agents.length, 1);
@@ -242,7 +164,7 @@ test("runAgent accepts an immediate final_answer without repair", async () => {
     };
   };
 
-  const result = await runAgent(createRunContext(createSession, perf), "hello", {
+  const result = await runAgent(createRunContext({ createSession, perf }), "hello", {
     label: "structured",
     schema: Type.Object({ ok: Type.Boolean() }),
   });
@@ -271,6 +193,7 @@ test("runAgent re-prompts a schema agent that skips final_answer once", async ()
         subscribe() {
           return () => {};
         },
+        getActiveToolNames: () => ["read", "final_answer"],
         setActiveToolsByName(toolNames) {
           restrictedTools.push([...toolNames]);
         },
@@ -280,14 +203,14 @@ test("runAgent re-prompts a schema agent that skips final_answer once", async ()
     };
   };
 
-  const result = await runAgent(createRunContext(createSession, perf, usage), "hello", {
+  const result = await runAgent(createRunContext({ createSession, perf, usage }), "hello", {
     label: "structured",
     schema: Type.Object({ ok: Type.Boolean() }),
   });
 
   assert.deepEqual(result, { ok: true });
   assert.equal(promptCalls, 2);
-  assert.deepEqual(restrictedTools, [["final_answer"]]);
+  assert.deepEqual(restrictedTools, [["final_answer"], ["read", "final_answer"]]);
   assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_reprompt")?.total, 1);
   assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_missing"), undefined);
   const snapshot = usage.snapshot();
@@ -312,6 +235,7 @@ test("runAgent throws a serialisable typed error after bounded schema repair exh
       subscribe() {
         return () => {};
       },
+      getActiveToolNames: () => ["read", "final_answer"],
       setActiveToolsByName(toolNames) {
         restrictedTools.push([...toolNames]);
       },
@@ -320,7 +244,7 @@ test("runAgent throws a serialisable typed error after bounded schema repair exh
     }),
   });
 
-  const error = await runAgent(createRunContext(createSession, perf, usage), "hello", {
+  const error = await runAgent(createRunContext({ createSession, perf, usage }), "hello", {
     label: "structured",
     schema: Type.Object({ ok: Type.Boolean() }),
   }).then(
@@ -342,7 +266,7 @@ test("runAgent throws a serialisable typed error after bounded schema repair exh
     details: error.details,
   });
   assert.equal(promptCalls, 3);
-  assert.deepEqual(restrictedTools, [["final_answer"], ["final_answer"]]);
+  assert.deepEqual(restrictedTools, [["final_answer"], ["final_answer"], ["read", "final_answer"]]);
   assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_reprompt")?.total, 2);
   assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_missing")?.total, 1);
   const snapshot = usage.snapshot();
@@ -372,7 +296,7 @@ test("runAgent preserves provider failures raised during schema repair", async (
 
   await assert.rejects(
     () =>
-      runAgent(createRunContext(createSession, perf), "hello", {
+      runAgent(createRunContext({ createSession, perf }), "hello", {
         label: "structured",
         schema: Type.Object({ ok: Type.Boolean() }),
       }),
@@ -401,7 +325,7 @@ test("runAgent does not re-prompt non-schema agents", async () => {
     }),
   });
 
-  const result = await runAgent(createRunContext(createSession, perf), "hello");
+  const result = await runAgent(createRunContext({ createSession, perf }), "hello");
 
   assert.equal(result, "done");
   assert.equal(promptCalls, 1);
@@ -429,7 +353,7 @@ test("runAgent preserves host cancellation raised during schema repair", async (
 
   await assert.rejects(
     () =>
-      runAgent(createRunContext(createSession, perf, createWorkflowUsageRecorder(), controller.signal), "hello", {
+      runAgent(createRunContext({ createSession, perf, signal: controller.signal }), "hello", {
         label: "structured",
         schema: Type.Object({ ok: Type.Boolean() }),
       }),

@@ -28,7 +28,7 @@ import {
   executeTestFinalAnswer,
   runAgent,
 } from "./agent-runner-fixtures.ts";
-import { createGitRepo, runGit } from "./resume-fixtures.ts";
+import { createGitRepo, gitCommit, runGit } from "./resume-fixtures.ts";
 
 test("runAgent with worktree isolation creates an isolated cwd and returns a patch wrapper", async () => {
   const repoCwd = "/repo";
@@ -280,13 +280,13 @@ test("isolated replay binds to prepared contents and same-tree commit identity",
     assert.equal(promptCalls, 2);
 
     runGit(repoCwd, ["add", "source.txt"]);
-    runGit(repoCwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "first committed baseline"]);
+    gitCommit(repoCwd, "first committed baseline");
     await run();
     assert.equal(promptCalls, 3);
     const firstCommitIdentity = stored?.identity.repository;
     assert.equal(firstCommitIdentity?.state, "isolated");
 
-    runGit(repoCwd, ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "same tree, different history"]);
+    gitCommit(repoCwd, "same tree, different history", ["--allow-empty"]);
     await run();
     assert.equal(promptCalls, 4);
     const secondCommitIdentity = stored?.identity.repository;
@@ -378,7 +378,7 @@ test("runAgent dynamically enables installed search-like tools", async () => {
         getAllTools() {
           return ["read", "bash", "grep", "find", "ls", "ffgrep", "mgrep", "ast-grep", "search_replace"]
             .map((name) => createToolInfo(name))
-            .concat(createToolInfo("workflow", "Run a workflow"));
+            .concat(createToolInfo("workflow", "Run a workflow"), createToolInfo("web_search", "Search the web and return page URLs"));
         },
         setActiveToolsByName(toolNames) {
           activatedTools = toolNames;
@@ -398,6 +398,34 @@ test("runAgent dynamically enables installed search-like tools", async () => {
   assert.equal(observedTools, undefined);
   assert.equal(observedNoTools, "builtin");
   assert.deepEqual(activatedTools, ["read", "bash", "grep", "find", "ls", "final_answer", "ffgrep", "mgrep", "ast-grep"]);
+});
+
+test("subagents cannot start nested workflows unless their allowlist names the workflow tool", async () => {
+  const activations: Array<readonly string[]> = [];
+  const createSession: CreateAgentSession = async () => ({
+    session: createAgentRunnerSession({
+      messages: [assistantTextMessage("done")],
+      async prompt() {},
+      subscribe() {
+        return () => {};
+      },
+      dispose() {},
+      async abort() {},
+      getActiveToolNames() {
+        return ["read", "bash", "workflow", "ast-grep"];
+      },
+      setActiveToolsByName(toolNames) {
+        activations.push(toolNames);
+      },
+    }),
+  });
+
+  await runAgent(createRunContext({ createSession }), "hello", { label: "default-tools" });
+  assert.deepEqual(activations, [["read", "bash", "ast-grep"]]);
+
+  activations.length = 0;
+  await runAgent(createRunContext({ createSession }), "hello", { label: "nested-allowed", tools: ["read", "workflow"] });
+  assert.ok(activations.every((tools) => tools.includes("workflow")));
 });
 
 test("external-search tool hints select web capabilities but exclude local and mutating search tools", async () => {

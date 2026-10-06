@@ -1,18 +1,20 @@
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { WorkflowAbortError, WorkflowPauseError } from "./cancellation.ts";
+import { isRecord } from "./guards.ts";
 import type { WorkflowBackgroundOrigin } from "./types.ts";
 import {
+  stopWorkflowRunRecord,
   transitionWorkflowRun,
   type WorkflowRunRecord,
   type WorkflowRunState,
 } from "./workflow-run-record.ts";
-import { updateWorkflowRunDelivery } from "./workflow-run-background.ts";
+import { updateWorkflowRunDelivery, type WorkflowRunDelivery } from "./workflow-run-background.ts";
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
+import { truncateText } from "./text.ts";
+import { workflowResultSummary } from "./workflow-execution.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
-import { emptyWorkflowUsageTotals } from "./usage.ts";
 
 const BACKGROUND_DELIVERY_CUSTOM_TYPE = "workflow-result";
-const BACKGROUND_WIDGET_KEY = "workflow-background";
 const SHUTDOWN_WAIT_MS = 5_000;
 const SUMMARY_LIMIT = 500;
 
@@ -25,7 +27,10 @@ export interface BackgroundWorkflowStartInput {
 
 export interface BackgroundWorkflowResultDetails {
   readonly name: string;
-  readonly result: { readonly summary: string };
+  /** The retained result of a completed run, so the delivery renders like a foreground result; else `{ summary }`. */
+  readonly result: unknown;
+  readonly summary: string;
+  readonly startedAt?: number;
   readonly completedAt: number;
   readonly usage: WorkflowRunRecord["usage"];
   readonly runId: string;
@@ -56,7 +61,7 @@ type BackgroundWorkflowSettledListener = (ctx: ExtensionContext, runId: string) 
 /** Owns background runs for one extension instance and routes their durable completion delivery. */
 export class BackgroundWorkflowCoordinator {
   private readonly active = new Map<string, ActiveBackgroundRun>();
-  private readonly settledListeners = new Set<BackgroundWorkflowSettledListener>();
+  private settledListener: BackgroundWorkflowSettledListener | undefined;
   private readonly pendingDelivery = new Map<string, Set<string>>();
   private readonly shuttingDown = new Set<string>();
   private readonly storeForCwd: (cwd: string) => WorkflowRunStore;
@@ -82,13 +87,8 @@ export class BackgroundWorkflowCoordinator {
     let accepted = false;
     let deliveryScheduled = false;
     let settled = false;
-    let startedSignalled = false;
-    let resolveStarted: (() => void) | undefined;
-    let rejectStarted: ((error: unknown) => void) | undefined;
-    const started = new Promise<void>((resolve, reject) => {
-      resolveStarted = resolve;
-      rejectStarted = reject;
-    });
+    // Settles once: a rejection after the run published its metadata is ignored.
+    const started = Promise.withResolvers<void>();
 
     const scheduleDelivery = (): void => {
       if (deliveryScheduled || !accepted || !settled || this.shuttingDown.has(sessionId)) return;
@@ -100,18 +100,13 @@ export class BackgroundWorkflowCoordinator {
 
     const settledPromise = (async () => {
       try {
-        await input.run(controller.signal, () => {
-          if (startedSignalled) return;
-          startedSignalled = true;
-          resolveStarted?.();
-        });
-        if (!startedSignalled) rejectStarted?.(new Error("Background workflow ended before publishing run metadata."));
+        await input.run(controller.signal, () => started.resolve());
+        started.reject(new Error("Background workflow ended before publishing run metadata."));
       } catch (error) {
-        if (!startedSignalled) rejectStarted?.(error);
+        started.reject(error);
       } finally {
         settled = true;
         this.active.delete(input.runId);
-        this.updateBackgroundSurface(input.ctx);
         await this.notifyRunSettled(input.ctx, input.runId);
         scheduleDelivery();
       }
@@ -124,7 +119,7 @@ export class BackgroundWorkflowCoordinator {
       isSettled: () => settled,
     });
 
-    await started;
+    await started.promise;
     const record = await this.storeForCwd(input.ctx.cwd).load(input.runId);
     if (record?.state !== "running" || !record.background || record.background.origin.sessionId !== sessionId) {
       controller.abort(new WorkflowAbortError("Background workflow could not persist its origin metadata."));
@@ -132,7 +127,6 @@ export class BackgroundWorkflowCoordinator {
     }
 
     accepted = true;
-    this.updateBackgroundSurface(input.ctx);
     scheduleDelivery();
   }
 
@@ -145,9 +139,8 @@ export class BackgroundWorkflowCoordinator {
     );
   }
 
-  onRunSettled(listener: BackgroundWorkflowSettledListener): () => void {
-    this.settledListeners.add(listener);
-    return () => this.settledListeners.delete(listener);
+  onRunSettled(listener: BackgroundWorkflowSettledListener): void {
+    this.settledListener = listener;
   }
 
   async stop(ctx: ExtensionContext, runId: string): Promise<WorkflowRunRecord> {
@@ -243,7 +236,6 @@ export class BackgroundWorkflowCoordinator {
         this.log(`[workflow:${runId}] failed to force paused state during shutdown: ${unknownErrorMessage(error)}`);
       }
     }
-    if (ctx.hasUI) ctx.ui.setWidget(BACKGROUND_WIDGET_KEY, undefined);
   }
 
   private async queueOrDeliver(ctx: ExtensionContext, runId: string): Promise<void> {
@@ -262,12 +254,10 @@ export class BackgroundWorkflowCoordinator {
   }
 
   private async notifyRunSettled(ctx: ExtensionContext, runId: string): Promise<void> {
-    for (const listener of this.settledListeners) {
-      try {
-        await listener(ctx, runId);
-      } catch (error) {
-        this.log(`[workflow:${runId}] background settlement listener failed: ${unknownErrorMessage(error)}`);
-      }
+    try {
+      await this.settledListener?.(ctx, runId);
+    } catch (error) {
+      this.log(`[workflow:${runId}] background settlement listener failed: ${unknownErrorMessage(error)}`);
     }
   }
 
@@ -290,23 +280,6 @@ export class BackgroundWorkflowCoordinator {
     const pending = this.pendingDelivery.get(sessionId) ?? new Set<string>();
     pending.add(runId);
     this.pendingDelivery.set(sessionId, pending);
-  }
-
-  private updateBackgroundSurface(ctx: ExtensionContext): void {
-    if (!ctx.hasUI) return;
-    const sessionId = ctx.sessionManager.getSessionId();
-    const runs = [...this.active.entries()]
-      .filter(([, run]) => run.sessionId === sessionId)
-      .map(([runId, run]) => ({ runId, name: run.name }));
-    if (runs.length === 0) {
-      ctx.ui.setWidget(BACKGROUND_WIDGET_KEY, undefined);
-      return;
-    }
-    ctx.ui.setWidget(
-      BACKGROUND_WIDGET_KEY,
-      [formatBackgroundActivity(runs, ctx.ui.theme)],
-      { placement: "aboveEditor" },
-    );
   }
 
   private async deliver(ctx: ExtensionContext, runId: string): Promise<boolean> {
@@ -333,25 +306,18 @@ export class BackgroundWorkflowCoordinator {
   }
 }
 
-function formatBackgroundActivity(
-  runs: readonly { readonly runId: string; readonly name: string }[],
-  theme: ExtensionContext["ui"]["theme"],
-): string {
-  const visible = runs.slice(0, 2).map((run) => `${run.name} ${run.runId.slice(0, 8)}`);
-  const hidden = runs.length - visible.length;
-  const suffix = hidden > 0 ? ` · +${hidden} more` : "";
-  return `${theme.fg("accent", "●")} ${theme.bold("Background workflows")} ${theme.fg("dim", `· ${visible.join(" · ")}${suffix}`)}`;
-}
-
 export function backgroundOrigin(ctx: Pick<ExtensionContext, "sessionManager">, requestedAt = Date.now()): WorkflowBackgroundOrigin {
   return { sessionId: ctx.sessionManager.getSessionId(), requestedAt };
 }
 
 export function backgroundResultDetails(record: WorkflowRunRecord): BackgroundWorkflowResultDetails {
   if (!isDeliverableState(record.state)) throw new Error(`Workflow run ${record.runId} has not finished or paused.`);
+  const summary = backgroundSummary(record);
   return {
     name: record.workflow.name,
-    result: { summary: backgroundSummary(record) },
+    result: record.state === "completed" && record.result.kind === "value" ? record.result.value : { summary },
+    summary,
+    startedAt: record.startedAt,
     completedAt: record.endedAt ?? record.updatedAt,
     usage: record.usage,
     runId: record.runId,
@@ -362,14 +328,12 @@ export function backgroundResultDetails(record: WorkflowRunRecord): BackgroundWo
 }
 
 function backgroundSummary(record: WorkflowRunRecord): string {
-  if (record.state !== "completed") return boundedSummary(`Workflow ${record.state}: ${record.message}`);
+  if (record.state !== "completed") return truncateText(`Workflow ${record.state}: ${record.message}`, SUMMARY_LIMIT);
   if (record.result.kind === "unavailable") {
-    return boundedSummary(`Workflow completed; retained result is unavailable: ${record.result.reason}`);
+    return truncateText(`Workflow completed; retained result is unavailable: ${record.result.reason}`, SUMMARY_LIMIT);
   }
-  const value = record.result.value;
-  if (typeof value === "string") return boundedSummary(value);
-  if (isRecord(value) && typeof value.summary === "string") return boundedSummary(value.summary);
-  return "Workflow completed. Open run history for the retained result.";
+  const summary = workflowResultSummary(record.result.value);
+  return summary === undefined ? "Workflow completed. Open run history for the retained result." : truncateText(summary, SUMMARY_LIMIT);
 }
 
 function formatBackgroundDelivery(details: BackgroundWorkflowResultDetails): string {
@@ -379,7 +343,7 @@ function formatBackgroundDelivery(details: BackgroundWorkflowResultDetails): str
     `Run ID: ${details.runId}`,
     `State: ${details.status}`,
     "",
-    details.result.summary,
+    details.summary,
   ].join("\n");
 }
 
@@ -404,7 +368,7 @@ function isDeliverableState(state: WorkflowRunState): state is "completed" | "fa
 async function markDelivery(
   store: WorkflowRunStore,
   runId: string,
-  delivery: Parameters<typeof updateWorkflowRunDelivery>[1],
+  delivery: WorkflowRunDelivery,
 ): Promise<void> {
   const latest = await store.load(runId);
   if (!latest?.background || latest.background.delivery.state !== "pending") return;
@@ -424,16 +388,7 @@ async function forcePausedRecord(store: WorkflowRunStore, runId: string): Promis
 async function forceStoppedRecord(store: WorkflowRunStore, runId: string): Promise<void> {
   const record = await store.load(runId);
   if (!record || (record.state !== "queued" && record.state !== "running")) return;
-  await store.save(transitionWorkflowRun(record, {
-    state: "stopped",
-    progress: record.progress,
-    usage: record.usage ?? record.progress.usage ?? {
-      agents: [],
-      totals: emptyWorkflowUsageTotals(),
-      assistantMessages: 0,
-    },
-    error: new WorkflowAbortError("Workflow stopped by user."),
-  }));
+  await store.save(stopWorkflowRunRecord(record));
 }
 
 async function reconcileInterruptedRun(
@@ -481,12 +436,4 @@ async function waitForRuns(runs: readonly Promise<void>[], timeoutMs: number): P
   } finally {
     if (timer) clearTimeout(timer);
   }
-}
-
-function boundedSummary(value: string): string {
-  return value.length <= SUMMARY_LIMIT ? value : `${value.slice(0, SUMMARY_LIMIT - 1)}…`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

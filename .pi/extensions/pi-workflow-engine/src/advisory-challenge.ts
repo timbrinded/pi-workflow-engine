@@ -61,7 +61,7 @@ export async function challengeFindings<T extends AdvisoryVerified>(
     replacements.set(finding.candidateId, { ...finding, verdict: "NOT_SUBSTANTIATED", challenge: { status: "failed", challenge } });
     const adjudication = await api.agent(
       `Adjudicate the original finding, independent verifier evidence and falsification attempt below. Preserve unresolved conflict; do not force consensus. A missing counterexample alone cannot upgrade a plausible claim. Cite concrete evidence and observed test results; never invent experiments.\nContext:\n${context}\nOriginal and verifier:\n${JSON.stringify(finding)}\nChallenger:\n${JSON.stringify(challenge)}`,
-      { label: `adjudicate:${finding.candidateId}`, phase: "Challenge", profile: "medium", tools: [], schema: AdjudicationSchema },
+      { label: `adjudicate:${finding.candidateId}`, phase: "Challenge", profile: "medium", tools: [], skills: [], schema: AdjudicationSchema },
     );
     replacements.set(finding.candidateId, {
       ...finding,

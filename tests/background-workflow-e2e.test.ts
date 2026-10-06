@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
 import {
   captureWorkflowExtension,
@@ -85,10 +86,6 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>, label: str
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`Timed out waiting for ${label}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 test("durable background workflow journey survives host work, inspection, restart, delivery, and stop", async () => {

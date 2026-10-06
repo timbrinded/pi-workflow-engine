@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isRecord } from "./guards.ts";
 import type { ResolvedWorkflowRunOptions } from "./options.ts";
 import type { PerfAggregate, PerfSink, PerfSnapshot } from "./perf.ts";
 import type { WorkflowProgressSnapshot } from "./progress-types.ts";
@@ -11,19 +12,25 @@ import type {
 import type { WorkflowUsageSnapshot } from "./usage.ts";
 
 export interface WorkflowPerfDetails {
-  readonly enabled: boolean;
-  readonly startedAt: number;
   readonly aggregates: readonly PerfAggregate[];
 }
 
 export interface WorkflowResultEnvelope {
   readonly name: string;
   readonly result: unknown;
+  /** Optional so envelopes persisted before it existed still render. */
+  readonly startedAt?: number;
   readonly completedAt: number;
   readonly usage?: WorkflowUsageSnapshot;
   readonly perf?: WorkflowPerfDetails;
   readonly runId?: string;
   readonly resumedFromRunId?: string;
+}
+
+/** A workflow result's own summary: the result itself when it is a string, else its string `summary` field. */
+export function workflowResultSummary(result: unknown): string | undefined {
+  if (typeof result === "string") return result;
+  return isRecord(result) && typeof result.summary === "string" ? result.summary : undefined;
 }
 
 export type ResolvedWorkflowRunner = (
@@ -46,13 +53,8 @@ export interface WorkflowExecutionInput {
   readonly onProgressSnapshot?: (snapshot: WorkflowProgressSnapshot) => void | Promise<void>;
 }
 
-export interface WorkflowExecution {
-  readonly metadata?: WorkflowRunMetadata;
-  readonly envelope: WorkflowResultEnvelope;
-}
-
 /** Shared command/tool execution path. The engine remains lazy-loaded by the caller. */
-export async function executeWorkflowInvocation(input: WorkflowExecutionInput): Promise<WorkflowExecution> {
+export async function executeWorkflowInvocation(input: WorkflowExecutionInput): Promise<WorkflowResultEnvelope> {
   let perfSnapshot: PerfSnapshot | undefined;
   let usageSnapshot: WorkflowUsageSnapshot | undefined;
   let runMetadata: WorkflowRunMetadata | undefined;
@@ -86,25 +88,18 @@ export async function executeWorkflowInvocation(input: WorkflowExecutionInput): 
       );
     },
   };
+  const startedAt = Date.now();
   const result = await input.runResolvedWorkflow(input.ctx, input.mod, input.args, runOptions);
-  const perf = compactPerfSnapshot(perfSnapshot);
   return {
-    metadata: runMetadata,
-    envelope: {
-      name: input.name,
-      result,
-      completedAt: Date.now(),
-      usage: usageSnapshot,
-      perf,
-      runId: runMetadata?.runId,
-      resumedFromRunId: runMetadata?.resumedFromRunId,
-    },
+    name: input.name,
+    result,
+    startedAt,
+    completedAt: Date.now(),
+    usage: usageSnapshot,
+    perf: perfSnapshot?.enabled ? { aggregates: perfSnapshot.aggregates } : undefined,
+    runId: runMetadata?.runId,
+    resumedFromRunId: runMetadata?.resumedFromRunId,
   };
-}
-
-function compactPerfSnapshot(snapshot: PerfSnapshot | undefined): WorkflowPerfDetails | undefined {
-  if (!snapshot?.enabled) return undefined;
-  return { enabled: true, startedAt: snapshot.startedAt, aggregates: snapshot.aggregates };
 }
 
 async function notifyLifecycleObservers(...observers: ReadonlyArray<() => void | Promise<void>>): Promise<void> {

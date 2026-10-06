@@ -1,13 +1,14 @@
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
-import type { LoadedWorkflow, WorkflowApi } from "./types.ts";
+import type { LoadedWorkflow, WorkflowApi, WorkflowMeta } from "./types.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { parseWorkflowMeta } from "./workflow-module.ts";
 
 /**
  * v1 inline workflow source contract:
  * - The script starts with `export const meta = { ... };` where the object is a pure literal.
- * - The script contains exactly one `export default async ...` workflow function.
+ * - The script contains exactly one `export default async ...` workflow function with a block body,
+ *   followed by nothing but an optional `;` and comments.
  * - Inline scripts must not use `import` or any exports other than `meta` and the default function.
  * - `Type` is injected lexically by the host; scripts must use that `Type`, not import typebox.
  */
@@ -19,25 +20,19 @@ export class InlineWorkflowCompileError extends Error {
   }
 }
 
-export interface InlineMetaLiteral {
-  readonly literal: string;
-  readonly value: unknown;
-  readonly endOffset: number;
-}
-
 type InlineWorkflowExecutor = (api: WorkflowApi, typebox: typeof Type) => Promise<unknown>;
 type AsyncFunctionConstructor = new (...args: string[]) => InlineWorkflowExecutor;
 
 const AsyncFunction = Object.getPrototypeOf(async function inlineWorkflowCompilerSentinel() {}).constructor as AsyncFunctionConstructor;
 
 export function compileInlineWorkflow(source: string): LoadedWorkflow {
-  rejectForbiddenModuleSyntax(source);
+  const code = maskNonCode(source);
+  rejectImportSyntax(code);
   const metaLiteral = extractMetaLiteral(source);
   const parsedMeta = parseWorkflowMeta(metaLiteral.value);
   if ("reason" in parsedMeta) throw new InlineWorkflowCompileError(parsedMeta.reason);
 
-  const defaultExpression = extractDefaultWorkflowExpression(source, metaLiteral.endOffset);
-  const executor = compileExecutor(defaultExpression);
+  const executor = compileExecutor(extractDefaultWorkflowExpression(source, code, metaLiteral.endOffset));
   return {
     meta: parsedMeta.meta,
     default: (api) => executor(api, Type),
@@ -45,7 +40,17 @@ export function compileInlineWorkflow(source: string): LoadedWorkflow {
   };
 }
 
-export function extractMetaLiteral(source: string): InlineMetaLiteral {
+/** The script's pure-literal meta, read without compiling or running anything; undefined when it does not parse. */
+export function readInlineWorkflowMeta(source: string): WorkflowMeta | undefined {
+  try {
+    const parsed = parseWorkflowMeta(extractMetaLiteral(source).value);
+    return "meta" in parsed ? parsed.meta : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractMetaLiteral(source: string): { readonly value: unknown; readonly endOffset: number } {
   const start = skipWhitespace(source, 0);
   const prefix = /export\s+const\s+meta\s*=/y;
   prefix.lastIndex = start;
@@ -61,83 +66,84 @@ export function extractMetaLiteral(source: string): InlineMetaLiteral {
 
   const parser = new LiteralParser(source, objectStart);
   const value = parser.parseValue();
-  const literalEnd = parser.offset;
-  let endOffset = skipWhitespace(source, literalEnd);
+  let endOffset = skipWhitespace(source, parser.offset);
   if (source[endOffset] === ";") endOffset++;
 
-  return { literal: source.slice(objectStart, literalEnd), value, endOffset };
+  return { value, endOffset };
 }
 
-function rejectForbiddenModuleSyntax(source: string): void {
-  if (/^\s*import\s/m.test(source)) {
-    throw new InlineWorkflowCompileError("inline workflows must not contain import statements; use injected Type instead");
-  }
-  if (/\bimport\s*\(/.test(source)) {
-    throw new InlineWorkflowCompileError("inline workflows must not use dynamic import()");
-  }
+/**
+ * Enforce the no-`import` rule on code only, so prompts may mention imports. This is a lint
+ * against honest mistakes, not a security boundary: inline code can still reach eval.
+ */
+function rejectImportSyntax(code: string): void {
+  // `import` as a keyword: not part of a longer identifier, a `.import` member, or an `import:` key.
+  const match = /(?<![\w$]|[^.]\.)import(?![\w$])(?!\s*:)(\s*\()?/.exec(code);
+  if (!match) return;
+  throw new InlineWorkflowCompileError(
+    match[1] === undefined
+      ? "inline workflows must not contain import statements; use injected Type instead"
+      : "inline workflows must not use dynamic import()",
+  );
 }
 
-function extractDefaultWorkflowExpression(source: string, startOffset: number): string {
-  const moduleSource = source.slice(startOffset).trim();
-  if (!moduleSource) throw new InlineWorkflowCompileError("inline workflow must export a default async function");
-  if (!moduleSource.startsWith("export default")) {
+function extractDefaultWorkflowExpression(source: string, code: string, startOffset: number): string {
+  const start = skipWhitespace(code, startOffset);
+  if (start === code.length) throw new InlineWorkflowCompileError("inline workflow must export a default async function");
+  const prefix = /export\s+default\b\s*/y;
+  prefix.lastIndex = start;
+  if (!prefix.test(code)) {
     throw new InlineWorkflowCompileError("inline workflow default export must directly follow the meta declaration");
   }
 
-  const defaultPrefix = /^export\s+default\s+/;
-  const match = defaultPrefix.exec(moduleSource);
-  if (!match) throw new InlineWorkflowCompileError("inline workflow must export a default async function");
-
-  const expressionSource = moduleSource.slice(match[0].length).trimStart();
-  const bodyOpen = findDefaultBodyOpen(expressionSource);
-  const bodyClose = findMatchingDelimiter(expressionSource, bodyOpen, "{", "}");
-  const expression = expressionSource.slice(0, bodyClose + 1);
-  const remainder = expressionSource.slice(bodyClose + 1).trim();
-  if (remainder !== "" && remainder !== ";") {
+  const expressionStart = prefix.lastIndex;
+  const expressionEnd = defaultFunctionEnd(code, expressionStart);
+  if (!/^\s*;?\s*$/.test(code.slice(expressionEnd))) {
     throw new InlineWorkflowCompileError("inline workflow must not contain code after the default export");
   }
-  return expression;
+  return source.slice(expressionStart, expressionEnd);
 }
 
-function findDefaultBodyOpen(expressionSource: string): number {
-  const functionMatch = /^async\s+function(?:\s+[A-Za-z_$][\w$]*)?\s*/.exec(expressionSource);
-  if (functionMatch) {
-    const paramsOpen = skipWhitespace(expressionSource, functionMatch[0].length);
-    if (expressionSource[paramsOpen] !== "(") {
-      throw new InlineWorkflowCompileError("default async function must declare parameters with parentheses");
-    }
-    const paramsClose = findMatchingDelimiter(expressionSource, paramsOpen, "(", ")");
-    const bodyOpen = skipWhitespace(expressionSource, paramsClose + 1);
-    if (expressionSource[bodyOpen] !== "{") {
-      throw new InlineWorkflowCompileError("default async function must use a block body");
-    }
-    return bodyOpen;
+/**
+ * End of the default export in the code-only view: the brace closing the function's block body.
+ * The parser cannot find it, because `fn, 5` and `fn\n(api)` (an immediate call) both parse as
+ * one expression; cutting here rejects them before any workflow code runs. Like the import rule,
+ * this is a lint over the masked view, not a security boundary.
+ */
+function defaultFunctionEnd(code: string, start: number): number {
+  const head = /async\s+(?<keyword>function\b)\s*(?:[A-Za-z_$][\w$]*\s*)?(?=\()|async\s*(?=\()|async\s+[A-Za-z_$][\w$]*\s*(?==>)/y;
+  head.lastIndex = start;
+  const match = head.exec(code);
+  if (!match) {
+    throw new InlineWorkflowCompileError("inline workflow default export must be an async function or async arrow function");
   }
 
-  const arrowMatch = /^async\s*/.exec(expressionSource);
-  if (arrowMatch) {
-    const paramsOpen = skipWhitespace(expressionSource, arrowMatch[0].length);
-    if (expressionSource[paramsOpen] !== "(") {
-      throw new InlineWorkflowCompileError("default async arrow workflow must declare parameters with parentheses");
-    }
-    const paramsClose = findMatchingDelimiter(expressionSource, paramsOpen, "(", ")");
-    let cursor = skipWhitespace(expressionSource, paramsClose + 1);
-    if (!expressionSource.startsWith("=>", cursor)) {
-      throw new InlineWorkflowCompileError("default async arrow workflow must use =>");
-    }
-    cursor = skipWhitespace(expressionSource, cursor + 2);
-    if (expressionSource[cursor] !== "{") {
-      throw new InlineWorkflowCompileError("default async arrow workflow must use a block body");
-    }
-    return cursor;
+  let cursor = head.lastIndex;
+  if (code[cursor] === "(") cursor = skipWhitespace(code, closingBracket(code, cursor) + 1);
+  if (match.groups?.keyword === undefined) {
+    if (!code.startsWith("=>", cursor)) throw new InlineWorkflowCompileError("default async arrow workflow must use =>");
+    cursor = skipWhitespace(code, cursor + 2);
   }
+  if (code[cursor] !== "{") throw new InlineWorkflowCompileError("default async workflow must use a block body");
+  return closingBracket(code, cursor) + 1;
+}
 
-  throw new InlineWorkflowCompileError("inline workflow default export must be an async function or async arrow function");
+/** Index of the bracket closing the one at `open`, counting every bracket kind in the code-only view. */
+function closingBracket(code: string, open: number): number {
+  let depth = 0;
+  for (let index = open; index < code.length; index++) {
+    const char = code[index];
+    if (char === "(" || char === "[" || char === "{") depth++;
+    else if ((char === ")" || char === "]" || char === "}") && --depth === 0) return index;
+  }
+  throw new InlineWorkflowCompileError("inline workflow default export has an unclosed bracket");
 }
 
 function compileExecutor(defaultExpression: string): InlineWorkflowExecutor {
   try {
-    return new AsyncFunction("api", "Type", `"use strict";\nconst workflow = ${defaultExpression};\nreturn await workflow(api);`);
+    // The expression already ends at the function body's closing brace; the parentheses also make
+    // the parser reject anything that is not a single expression.
+    return new AsyncFunction("api", "Type", `"use strict";\nconst workflow = (\n${defaultExpression}\n);\nreturn await workflow(api);`);
   } catch (error) {
     throw new InlineWorkflowCompileError(`inline workflow default export did not compile: ${unknownErrorMessage(error)}`);
   }
@@ -330,56 +336,115 @@ class LiteralParser {
   }
 }
 
-function findMatchingDelimiter(source: string, openIndex: number, open: string, close: string): number {
-  let depth = 1;
-  let index = openIndex + 1;
+const REGEX_PREFIX_KEYWORDS = new Set([
+  "await", "case", "delete", "do", "else", "in", "instanceof", "new", "of", "return", "throw", "typeof", "void", "yield",
+]);
+const CONTROL_HEAD_KEYWORDS = new Set(["for", "if", "while"]);
+
+/**
+ * Blank the contents of strings, template text, comments and regex literals, keeping offsets
+ * and delimiters, so keyword and bracket checks see only code. A `/` after `]`, `}` or any `)`
+ * but an `if`/`for`/`while` head's is read as division, so a regex literal opening a statement
+ * after a block's `}` stays unmasked. The parser still decides whether a script is valid.
+ */
+function maskNonCode(source: string): string {
+  const masked = source.split("");
+  const blank = (start: number, end: number): number => {
+    masked.fill(" ", start, end);
+    return end;
+  };
+  // One entry per open brace; true when it is a template `${` whose `}` resumes template text.
+  const braces: boolean[] = [];
+  const templateText = (start: number): number => {
+    for (let index = start; index < source.length; index++) {
+      if (source[index] === "\\") index++;
+      else if (source[index] === "`") return blank(start, index) + 1;
+      else if (source.startsWith("${", index)) {
+        braces.push(true);
+        return blank(start, index) + 2;
+      }
+    }
+    return blank(start, source.length);
+  };
+  // One entry per open paren; true when it opens an `if`/`for`/`while` head, after which `/` starts a regex.
+  const parens: boolean[] = [];
+  const controlHeadEnds = new Set<number>();
+
+  let index = 0;
   while (index < source.length) {
     const char = source[index];
-    if (char === '"' || char === "'" || char === "`") {
-      index = skipQuotedSource(source, index, char);
-      continue;
+    if (source.startsWith("//", index)) {
+      const newline = source.indexOf("\n", index);
+      index = blank(index, newline === -1 ? source.length : newline);
+    } else if (source.startsWith("/*", index)) {
+      const close = source.indexOf("*/", index + 2);
+      index = blank(index, close === -1 ? source.length : close + 2);
+    } else if (char === '"' || char === "'") {
+      index = blank(index + 1, quotedTextEnd(source, index + 1, char)) + 1;
+    } else if (char === "`") {
+      index = templateText(index + 1);
+    } else if (char === "{") {
+      braces.push(false);
+      index++;
+    } else if (char === "}") {
+      index = braces.pop() === true ? templateText(index + 1) : index + 1;
+    } else if (char === "(") {
+      parens.push(CONTROL_HEAD_KEYWORDS.has(wordBefore(masked, index)));
+      index++;
+    } else if (char === ")") {
+      if (parens.pop() === true) controlHeadEnds.add(index);
+      index++;
+    } else if (char === "/" && regexCanStart(masked, index, controlHeadEnds)) {
+      const close = regexLiteralEnd(source, index + 1);
+      index = close === undefined ? index + 1 : blank(index + 1, close) + 1;
+    } else {
+      index++;
     }
-    if (char === "/" && source[index + 1] === "/") {
-      index = skipLineComment(source, index);
-      continue;
-    }
-    if (char === "/" && source[index + 1] === "*") {
-      index = skipBlockComment(source, index);
-      continue;
-    }
-    if (char === open) depth++;
-    if (char === close) {
-      depth--;
-      if (depth === 0) return index;
-    }
-    index++;
   }
-  throw new InlineWorkflowCompileError(`unterminated ${open}${close} block in inline workflow default export`);
+  return masked.join("");
 }
 
-function skipQuotedSource(source: string, start: number, quote: string): number {
-  let index = start + 1;
-  while (index < source.length) {
+/** Index of the closing quote, or of the line break that leaves a broken string confined to one line. */
+function quotedTextEnd(source: string, start: number, quote: string): number {
+  for (let index = start; index < source.length; index++) {
     const char = source[index];
-    if (char === "\\") {
-      index += 2;
-      continue;
-    }
-    if (char === quote) return index + 1;
-    index++;
+    if (char === "\\") index++;
+    else if (char === quote || char === "\n") return index;
   }
-  throw new InlineWorkflowCompileError("unterminated string in inline workflow default export");
+  return source.length;
 }
 
-function skipLineComment(source: string, start: number): number {
-  const newline = source.indexOf("\n", start + 2);
-  return newline === -1 ? source.length : newline + 1;
+/** Whether a `/` here starts a regex literal, judged by the code token before it. */
+function regexCanStart(masked: readonly string[], slash: number, controlHeadEnds: ReadonlySet<number>): boolean {
+  let end = slash - 1;
+  while (end >= 0 && /\s/.test(masked[end])) end--;
+  if (end < 0) return true;
+  if (masked[end] === ")") return controlHeadEnds.has(end);
+  if (/[\w$]/.test(masked[end])) return REGEX_PREFIX_KEYWORDS.has(wordBefore(masked, slash));
+  return !/[\]}"'`]/.test(masked[end]);
 }
 
-function skipBlockComment(source: string, start: number): number {
-  const end = source.indexOf("*/", start + 2);
-  if (end === -1) throw new InlineWorkflowCompileError("unterminated block comment in inline workflow default export");
-  return end + 2;
+/** The identifier or keyword ending just before `index`, skipping whitespace; empty when there is none. */
+function wordBefore(masked: readonly string[], index: number): string {
+  let end = index;
+  while (end > 0 && /\s/.test(masked[end - 1])) end--;
+  let start = end;
+  while (start > 0 && /[\w$]/.test(masked[start - 1])) start--;
+  return masked.slice(start, end).join("");
+}
+
+/** Index of the closing `/` of a regex literal body starting at `start`, if it closes on this line. */
+function regexLiteralEnd(source: string, start: number): number | undefined {
+  let inClass = false;
+  for (let index = start; index < source.length; index++) {
+    const char = source[index];
+    if (char === "\\") index++;
+    else if (char === "\n") return undefined;
+    else if (char === "[") inClass = true;
+    else if (char === "]") inClass = false;
+    else if (char === "/" && !inClass) return index;
+  }
+  return undefined;
 }
 
 function skipWhitespace(source: string, start: number): number {

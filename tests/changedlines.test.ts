@@ -1,16 +1,22 @@
 import { dedupeCandidates, identifyCandidates } from "../.pi/extensions/pi-workflow-engine/src/advisory-evidence.ts";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "bun:test";
-import { changedLines, inDiff } from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
-import {
-  buildCodeReviewScopeBlock,
-} from "../.pi/extensions/pi-workflow-engine/src/review/code-review-orchestration.ts";
+import { parseAllowedDiffCommand } from "../.pi/extensions/pi-workflow-engine/src/review-diff-target.ts";
+import { captureReviewMaterial } from "../.pi/extensions/pi-workflow-engine/src/review/review-snapshot.ts";
+import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
+import { changedLines, diffAnchor } from "../.pi/extensions/pi-workflow-engine/src/review/review-diff-lines.ts";
+import { buildCodeReviewScopeBlock } from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
+import { gitCommit } from "./resume-fixtures.ts";
 
 function lines(map: Map<string, Set<number>>, file: string): number[] {
   return [...(map.get(file) ?? [])].sort((a, b) => a - b);
 }
 
-test("changedLines records single-hunk added lines and inDiff matches them", () => {
+test("changedLines records single-hunk added lines and diffAnchor matches them", () => {
   const diff = `diff --git a/sum.js b/sum.js
 index e0f74bf..54295d7 100644
 --- a/sum.js
@@ -27,11 +33,33 @@ index e0f74bf..54295d7 100644
 
   const changed = changedLines(diff);
   assert.deepEqual(lines(changed, "sum.js"), [3]);
-  assert.equal(inDiff(changed, "sum.js", 3), true);
-  assert.equal(inDiff(changed, "b/sum.js", 4), true);
-  assert.equal(inDiff(changed, "sum.js", 7), false);
-  assert.equal(inDiff(changed, "other.js", 3), false);
-  assert.equal(inDiff(changed, "sum.js"), true);
+  assert.deepEqual(diffAnchor(changed, { file: "sum.js", line: 3 }), { file: "sum.js", line: 3 });
+  assert.deepEqual(diffAnchor(changed, { file: "b/sum.js", line: 4, symbol: "sum" }), { file: "sum.js", line: 4, symbol: "sum" });
+  assert.deepEqual(diffAnchor(changed, { file: "./sum.js", line: 2 }), { file: "sum.js", line: 2 });
+  assert.equal(diffAnchor(changed, { file: "sum.js", line: 7 }), undefined);
+  assert.equal(diffAnchor(changed, { file: "other.js", line: 3 }), undefined);
+  assert.deepEqual(diffAnchor(changed, { file: "sum.js" }), { file: "sum.js" });
+});
+
+test("changedLines keeps real a/ and b/ directories and decodes git-quoted paths", () => {
+  const diff = `diff --git a/a/x.ts b/a/x.ts
+--- a/a/x.ts
++++ b/a/x.ts
+@@ -1 +1 @@
+-old
++new
+diff --git "a/caf\\303\\251 \\"menu\\".txt" "b/caf\\303\\251 \\"menu\\".txt"
+--- "a/caf\\303\\251 \\"menu\\".txt"
++++ "b/caf\\303\\251 \\"menu\\".txt"
+@@ -1 +1 @@
+-old
++new
+`;
+
+  const changed = changedLines(diff);
+  assert.deepEqual([...changed.keys()], ["a/x.ts", 'café "menu".txt']);
+  assert.deepEqual(diffAnchor(changed, { file: "a/x.ts", line: 1 }), { file: "a/x.ts", line: 1 });
+  assert.deepEqual(diffAnchor(changed, { file: 'café "menu".txt', line: 1 }), { file: 'café "menu".txt', line: 1 });
 });
 
 test("code-review scope construction bounds embedded diffs and preserves context", () => {
@@ -96,3 +124,40 @@ index 000..333
   assert.deepEqual(lines(changed, "a.ts"), [11, 41]);
   assert.deepEqual(lines(changed, "b.ts"), [1, 2]);
 });
+
+for (const [key, value] of [["diff.mnemonicPrefix", "true"], ["diff.noprefix", "true"], ["color.ui", "always"]] as const) {
+  test(`review diff bounds and snapshot patches ignore user ${key}=${value}`, async () => {
+    const repo = await mkdtemp(join(tmpdir(), "pi-review-git-config-"));
+    const worktrees = new WorktreeRegistry(repo);
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+    try {
+      git("init", "-q");
+      await mkdir(join(repo, "src"));
+      await writeFile(join(repo, "src/app.ts"), "one\ntwo\n");
+      git("add", ".");
+      gitCommit(repo, "initial");
+      git("config", key, value);
+      await writeFile(join(repo, "src/app.ts"), "one\nTWO\n");
+      const target = parseAllowedDiffCommand("git diff HEAD");
+      if ("error" in target) assert.fail(target.error);
+
+      const material = await captureReviewMaterial(target, repo);
+      if (!material.ok) assert.fail(material.error);
+      if (material.snapshot.status !== "verified") assert.fail(material.snapshot.reason);
+      assert.deepEqual([...changedLines(material.diff)], [["src/app.ts", new Set([2])]]);
+
+      const reviewed = await worktrees.add(undefined, material.snapshot.baseline);
+      if ("error" in reviewed) assert.fail(reviewed.error);
+      await writeFile(join(reviewed.path, "src/app.ts"), "one\nthree\n");
+      const candidate = await worktrees.capturePatch(reviewed.path, reviewed.baselineOid);
+      if ("error" in candidate) assert.fail(candidate.error);
+      const fresh = await worktrees.add(undefined, material.snapshot.baseline);
+      if ("error" in fresh) assert.fail(fresh.error);
+      const validated = await worktrees.validatePatch(fresh.path, candidate);
+      if (!validated.ok) assert.fail(validated.error);
+    } finally {
+      await worktrees.removeAll();
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+}

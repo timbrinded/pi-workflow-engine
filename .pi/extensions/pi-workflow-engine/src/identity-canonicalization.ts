@@ -2,15 +2,9 @@ export type IdentityCanonicalization =
   | { readonly kind: "verified"; readonly value: string }
   | { readonly kind: "unverifiable"; readonly reason: string };
 
-export interface IdentityCanonicalizationOptions {
-  readonly maxBytes?: number;
-  readonly maxDepth?: number;
-  readonly maxNodes?: number;
-}
-
-const DEFAULT_MAX_BYTES = 1 << 20;
-const DEFAULT_MAX_DEPTH = 64;
-const DEFAULT_MAX_NODES = 16_384;
+const MAX_BYTES = 1 << 20;
+const MAX_DEPTH = 64;
+const MAX_NODES = 16_384;
 
 /**
  * Produce a deterministic, bounded identity for JSON-like data.
@@ -19,13 +13,7 @@ const DEFAULT_MAX_NODES = 16_384;
  * accessors, proxies, or values JSON cannot represent. Those inputs disable
  * replay instead of throwing or being silently collapsed to the same key.
  */
-export function canonicalizeIdentity(
-  value: unknown,
-  options: IdentityCanonicalizationOptions = {},
-): IdentityCanonicalization {
-  const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
-  const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
-  const maxNodes = options.maxNodes ?? DEFAULT_MAX_NODES;
+export function canonicalizeIdentity(value: unknown): IdentityCanonicalization {
   const active = new WeakSet<object>();
   const chunks: string[] = [];
   let bytes = 0;
@@ -33,14 +21,14 @@ export function canonicalizeIdentity(
 
   const append = (chunk: string): void => {
     bytes += Buffer.byteLength(chunk);
-    if (bytes > maxBytes) throw new IdentityCanonicalizationError(`identity exceeded ${maxBytes} bytes`);
+    if (bytes > MAX_BYTES) throw new IdentityCanonicalizationError(`identity exceeded ${MAX_BYTES} bytes`);
     chunks.push(chunk);
   };
 
   const visit = (current: unknown, depth: number): void => {
     nodes += 1;
-    if (nodes > maxNodes) throw new IdentityCanonicalizationError(`identity exceeded ${maxNodes} values`);
-    if (depth > maxDepth) throw new IdentityCanonicalizationError(`identity exceeded ${maxDepth} levels`);
+    if (nodes > MAX_NODES) throw new IdentityCanonicalizationError(`identity exceeded ${MAX_NODES} values`);
+    if (depth > MAX_DEPTH) throw new IdentityCanonicalizationError(`identity exceeded ${MAX_DEPTH} levels`);
 
     if (current === null) {
       append("n;");

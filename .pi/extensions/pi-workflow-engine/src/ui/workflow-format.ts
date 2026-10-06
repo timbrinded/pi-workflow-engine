@@ -1,7 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { AgentRowSnapshot, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "../progress-types.ts";
+import type { AgentRowSnapshot, PhaseSnapshot, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
+import { dot, GLYPH } from "./kit.ts";
 
 export type WorkflowDisplayStatus = WorkflowLaneItemStatus | "queued" | "done" | "failed";
 export type WorkflowThemeColor = Parameters<Theme["fg"]>[0];
@@ -22,13 +23,9 @@ export function formatDuration(ms: number): string {
   return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
 }
 
-export function formatCount(n: number): string {
-  if (!Number.isFinite(n)) return "0";
-  const sign = n < 0 ? "-" : "";
-  const value = Math.abs(n);
-  if (value < 1_000) return `${Math.trunc(n)}`;
-  if (value < 1_000_000) return `${sign}${formatCompact(value / 1_000)}k`;
-  return `${sign}${formatCompact(value / 1_000_000)}m`;
+/** Whole seconds, for clocks that tick once a second (`0s`, `12s`, `1m 4s`). */
+export function formatElapsed(ms: number): string {
+  return formatDuration(Math.floor(Math.max(0, ms) / 1_000) * 1_000);
 }
 
 export function statusIcon(status: WorkflowDisplayStatus, theme: Theme): string {
@@ -59,10 +56,7 @@ export interface AgentDetailOptions {
   includeQueuedStatus?: boolean;
 }
 
-export function agentDetailParts(agent: AgentRowSnapshot, now?: number): string[];
-export function agentDetailParts(agent: AgentRowSnapshot, options?: AgentDetailOptions): string[];
-export function agentDetailParts(agent: AgentRowSnapshot, optionsOrNow: AgentDetailOptions | number = {}): string[] {
-  const options = typeof optionsOrNow === "number" ? { now: optionsOrNow } : optionsOrNow;
+export function agentDetailParts(agent: AgentRowSnapshot, options: AgentDetailOptions = {}): string[] {
   const now = options.now ?? Date.now();
   const includeQueuedStatus = options.includeQueuedStatus ?? true;
   const parts: string[] = [];
@@ -86,13 +80,6 @@ export interface WorkflowStatusCounts {
   readonly total: number;
 }
 
-export interface WorkflowStatusSource {
-  readonly title: string;
-  readonly doneAt?: number;
-  readonly currentPhase: string;
-  readonly counters: readonly { readonly key: string; readonly label: string; readonly value: number }[];
-}
-
 interface WorkflowInspectionSource {
   readonly name: string;
   readonly snapshot: WorkflowProgressSnapshot | (() => WorkflowProgressSnapshot);
@@ -104,7 +91,7 @@ export function workflowInspectionSnapshot(inspection: WorkflowInspectionSource)
 
 export function formatWorkflowInspection(inspection: WorkflowInspectionSource): string {
   const snapshot = workflowInspectionSnapshot(inspection);
-  const counts = countSnapshotAgents(snapshot);
+  const counts = countAgents(snapshot.phases);
   const lines = [
     `Workflow inspector: ${inspection.name}`,
     `Run: ${snapshot.runId}`,
@@ -117,40 +104,26 @@ export function formatWorkflowInspection(inspection: WorkflowInspectionSource): 
   return lines.join("\n");
 }
 
-export function statusText(snapshot: WorkflowProgressSnapshot, theme: Theme): string | undefined {
-  const counts = countSnapshotAgents(snapshot);
-  return statusTextFromCounts(snapshot, counts, theme);
-}
-
-export function statusTextFromCounts(snapshot: WorkflowStatusSource, counts: WorkflowStatusCounts, theme: Theme): string | undefined {
+/** Footer status: `◆ review · Find 6/10 · 12s`. Usage and counters live in the widget, not here. */
+export function statusTextFromCounts(snapshot: WorkflowProgressSnapshot, counts: WorkflowStatusCounts, theme: Theme): string | undefined {
   if (snapshot.doneAt !== undefined) return undefined;
 
-  const complete = counts.done + counts.failed;
-  const active = counts.running + counts.queued;
-  const kept = snapshot.counters.find((counter) => counter.key === "kept" || counter.label.toLowerCase() === "kept");
   const displayName = snapshot.title === "code-review" ? "review" : snapshot.title;
-
-  const parts = [theme.fg("accent", displayName), theme.fg("muted", snapshot.currentPhase)];
-  if (counts.total > 0) parts.push(theme.fg("muted", `${complete}/${counts.total}`));
-  if (kept) parts.push(theme.fg("success", `${formatCount(kept.value)} kept`));
-  else if (active > 0) parts.push(theme.fg("muted", `${active} active`));
-
-  return parts.join(theme.fg("dim", " · "));
+  const progress = counts.total > 0 ? ` ${counts.done + counts.failed}/${counts.total}` : "";
+  return [
+    `${theme.fg("accent", GLYPH.workflow)} ${theme.fg("accent", displayName)}`,
+    theme.fg("muted", `${snapshot.currentPhase}${progress}`),
+    theme.fg("dim", formatElapsed(Date.now() - snapshot.startedAt)),
+  ].join(dot(theme));
 }
 
-function countSnapshotAgents(snapshot: WorkflowProgressSnapshot): WorkflowStatusCounts {
+export function countAgents(phases: readonly PhaseSnapshot[]): WorkflowStatusCounts {
   const counts = { queued: 0, running: 0, done: 0, failed: 0, total: 0 };
-  for (const phase of snapshot.phases) {
+  for (const phase of phases) {
     for (const agent of phase.agents) {
       counts[agent.status]++;
       counts.total++;
     }
   }
   return counts;
-}
-
-function formatCompact(value: number): string {
-  if (value >= 100) return `${Math.round(value)}`;
-  const rounded = Math.round(value * 10) / 10;
-  return Number.isInteger(rounded) ? `${rounded}` : rounded.toFixed(1);
 }

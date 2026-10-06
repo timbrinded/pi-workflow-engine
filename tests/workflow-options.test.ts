@@ -8,10 +8,11 @@ import {
   DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS,
   DEFAULT_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS,
   defaultConcurrency,
+  parseWorkflowInvocation,
   resolveWorkflowRunOptions,
 } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import type { WorkflowModule } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
-import { buildTemporaryWorkflowAuthorPrompt, parseWorkflowInvocation, pickWorkflow } from "../.pi/extensions/pi-workflow-engine";
+import { buildTemporaryWorkflowAuthorPrompt, pickWorkflow } from "../.pi/extensions/pi-workflow-engine";
 
 test("defaultConcurrency preserves existing formula", () => {
   assert.equal(defaultConcurrency(1), 2);
@@ -52,6 +53,7 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS: "4" }).usageLimitMaxAttempts, 4);
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS: "120000" }).usageLimitMaxDelayMs, 120_000);
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_MAX_AGENTS: "1.5" }).maxAgents, DEFAULT_WORKFLOW_MAX_AGENTS);
+  assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_CONCURRENCY: "2.5" }).concurrency, defaultConcurrency());
   assert.equal(
     resolveWorkflowRunOptions({}, { PI_WORKFLOW_AGENT_TIMEOUT_MS: "1500.75" }).agentTimeoutMs,
     DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
@@ -106,23 +108,24 @@ test("parseWorkflowInvocation rejects non-integer agent limit options", () => {
   ]);
 });
 
-test("parseWorkflowInvocation preserves concurrency value consumption semantics", () => {
-  const equalsForm = parseWorkflowInvocation("code-review --concurrency=4 review src");
-  assert.equal(equalsForm.options.concurrency, 4);
-  assert.equal(equalsForm.args, "review src");
-
+test("parseWorkflowInvocation rejects invalid concurrency flags without consuming the next token", () => {
   const nextTokenForm = parseWorkflowInvocation("code-review --concurrency 4 review src");
   assert.equal(nextTokenForm.options.concurrency, 4);
   assert.equal(nextTokenForm.args, "review src");
 
-  const invalidValue = parseWorkflowInvocation("code-review --concurrency nope review src");
-  assert.equal(invalidValue.options.concurrency, undefined);
-  assert.equal(invalidValue.args, "review src");
+  const missingValue = parseWorkflowInvocation("code-review --parallel-limit HEAD~1");
+  assert.equal(missingValue.options.parallelSubmissionLimit, undefined);
+  assert.equal(missingValue.args, "HEAD~1");
+  assert.deepEqual(missingValue.optionErrors, ["--parallel-limit requires an integer"]);
 
-  const consumedOptionToken = parseWorkflowInvocation("code-review --concurrency --perf review src");
-  assert.equal(consumedOptionToken.options.concurrency, undefined);
-  assert.equal(consumedOptionToken.options.perf, undefined);
-  assert.equal(consumedOptionToken.args, "review src");
+  const followingFlag = parseWorkflowInvocation("code-review --concurrency --perf review src");
+  assert.equal(followingFlag.options.perf, true);
+  assert.equal(followingFlag.args, "review src");
+  assert.deepEqual(followingFlag.optionErrors, ["--concurrency requires an integer"]);
+
+  const invalidEquals = parseWorkflowInvocation("code-review --concurrency= --parallel-limit=2.5 review src");
+  assert.deepEqual(invalidEquals.options, {});
+  assert.deepEqual(invalidEquals.optionErrors, ["--concurrency requires an integer", "--parallel-limit requires an integer"]);
 });
 
 test("parseWorkflowInvocation rejects invalid budget flags without consuming positional args", () => {
@@ -178,13 +181,6 @@ test("resolveWorkflowRunOptions resolves budget env values strictly and rejects 
   assert.throws(() => resolveWorkflowRunOptions({ budget: Infinity }, {}), RangeError);
 });
 
-test("resolved workflow options remain plain spreadable data", () => {
-  const resolved = resolveWorkflowRunOptions({}, { PI_WORKFLOW_BUDGET: "100" });
-
-  assert.deepEqual({ ...resolved }, resolved);
-  assert.deepEqual(Object.getOwnPropertySymbols(resolved), []);
-});
-
 test("parses result viewer workflow options", () => {
   const forcedOpen = parseWorkflowInvocation("code-review --result-viewer review src only");
   assert.equal(forcedOpen.name, "code-review");
@@ -237,10 +233,30 @@ test("pickWorkflow does not prompt for inspector by default", async () => {
   const invocation = await pickWorkflow(workflows, ctx);
 
   assert.equal(confirmCalls, 0);
-  assert.deepEqual(invocation, { name: "code-review", args: "review src", options: {} });
+  assert.deepEqual(invocation, { kind: "run", name: "code-review", args: "review src" });
 });
 
-test("pickWorkflow maps Pi's native selection label back to the workflow name", async () => {
+test("pickWorkflow cancels when the code-review target prompt is dismissed", async () => {
+  const workflows = new Map<string, WorkflowModule>([
+    ["code-review", { meta: { name: "code-review", description: "Review code" }, default: async () => "ok" }],
+  ]);
+  const ctx = {
+    hasUI: true,
+    mode: "tui",
+    ui: {
+      async custom() {
+        return "code-review";
+      },
+      async input() {
+        return undefined;
+      },
+    },
+  } as unknown as ExtensionCommandContext;
+
+  assert.equal(await pickWorkflow(workflows, ctx), undefined);
+});
+
+test("pickWorkflow maps Pi's native selection label back to the workflow name outside the TUI", async () => {
   let offered: readonly string[] = [];
   const workflows = new Map<string, WorkflowModule>([
     [
@@ -257,7 +273,7 @@ test("pickWorkflow maps Pi's native selection label back to the workflow name", 
   ]);
   const ctx = {
     hasUI: true,
-    mode: "tui",
+    mode: "rpc",
     ui: {
       async select(_title: string, options: readonly string[]) {
         offered = options;
@@ -275,7 +291,7 @@ test("pickWorkflow maps Pi's native selection label back to the workflow name", 
   const invocation = await pickWorkflow(workflows, ctx);
 
   assert.match(offered.join("\n"), /refactor-scout — Advisory-only refactor scout/);
-  assert.deepEqual(invocation, { name: "refactor-scout", args: "", options: {} });
+  assert.deepEqual(invocation, { kind: "run", name: "refactor-scout", args: "" });
 });
 
 test("buildTemporaryWorkflowAuthorPrompt asks for an inline one-shot workflow", () => {

@@ -32,7 +32,7 @@ function prReviewContext(number = 123): ReviewContext {
 }
 
 test("fix action returns a programmatic workflow instead of a parent follow-up", async () => {
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues(createReport());
   const context: ReviewContext = { workflowName: "code-review", target: "review src", diffTarget: reviewTarget("gh pr diff 123"), files: ["src/app.ts"], summary: "PR 123" };
   const prompt = buildFixAgentPrompt(issues[0]!, context);
 
@@ -100,7 +100,7 @@ test("fix action returns a programmatic workflow instead of a parent follow-up",
 });
 
 test("fix action propagates cancellation raised during snapshot resolution", async () => {
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues(createReport());
   const controller = new AbortController();
   const notifications: string[] = [];
   const pi: ReviewActionPi = {
@@ -141,7 +141,7 @@ test("fix action propagates cancellation raised during snapshot resolution", asy
 });
 
 test("fix workflow keeps finding ids, isolated patches, and per-finding failures", async () => {
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues(createReport());
   const context: ReviewContext = { workflowName: "code-review", target: "review src", diffTarget: reviewTarget("gh pr diff 123"), files: ["src/app.ts", "src/lock.ts"] };
   type ReviewFixAgentOptions = AgentOptions & { readonly isolation: "worktree" };
   const calls: Array<{ prompt: string; options: ReviewFixAgentOptions }> = [];
@@ -204,7 +204,7 @@ test("fix workflow keeps finding ids, isolated patches, and per-finding failures
 });
 
 test("comment action falls back to parent agent when gh context is unavailable", async () => {
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues(createReport());
   const context: ReviewContext = { ...prReviewContext(), summary: "PR context unavailable" };
   const sent: Array<{ content: string; deliverAs: string | undefined }> = [];
   const notifications: string[] = [];
@@ -263,7 +263,7 @@ test("comment action falls back to parent agent when gh context is unavailable",
 });
 
 test("comment action rejects mutable and local git review targets", async () => {
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues(createReport());
   const notifications: string[] = [];
   let confirmations = 0;
   let resolverCalls = 0;
@@ -319,7 +319,7 @@ test("comment action rejects mutable and local git review targets", async () => 
 
 test("comment fallback does not queue after cancellation during confirmation", async () => {
   const controller = new AbortController();
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues(createReport());
   const sent: string[] = [];
   let confirmations = 0;
   const pi: ReviewActionPi = {
@@ -359,7 +359,7 @@ test("comment fallback does not queue after cancellation during confirmation", a
 });
 
 test("comment action refuses stale findings after confirmation and before posting or fallback", async () => {
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues(createReport());
   const sent: string[] = [];
   let confirmations = 0;
   const notifications: string[] = [];
@@ -404,7 +404,7 @@ test("comment action refuses stale findings after confirmation and before postin
 });
 
 test("declining comment confirmation cancels without posting or fallback", async () => {
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues(createReport());
   const sent: string[] = [];
   let execCalls = 0;
   let resolverCalls = 0;
@@ -449,7 +449,7 @@ test("declining comment confirmation cancels without posting or fallback", async
 });
 
 test("comment action refuses a PR head that differs from the verified snapshot", async () => {
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues(createReport());
   const sent: string[] = [];
   const calls: string[][] = [];
   const notifications: string[] = [];
@@ -498,7 +498,7 @@ test("comment action refuses a PR head that differs from the verified snapshot",
 });
 
 test("comment action posts only when the resolved PR head matches the verified snapshot", async () => {
-  const issues = toReviewIssues("code-review", createReport());
+  const issues = toReviewIssues(createReport());
   const head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const calls: string[][] = [];
   const notifications: string[] = [];

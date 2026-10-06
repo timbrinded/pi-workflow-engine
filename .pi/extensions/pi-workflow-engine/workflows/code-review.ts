@@ -3,22 +3,22 @@ import { Type } from "typebox";
 import {
   type AdvisoryVerified,
   type AdvisoryLens,
-  synthesizeAdvisoryReport,
+  concludeLensReview,
+  emptyAdvisoryReport,
   finishAdvisoryReport,
   formatEvidence,
   formatLocation,
-  normalizePath,
-  publishVerifiedKeptProgress,
   runLensVerificationPipeline,
+  EMPTY_LENS_REVIEW_STATS,
   verdictConfidence,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
 import { formatReviewDiffTarget, parseAllowedDiffCommand } from "../src/review-diff-target.ts";
-import { buildCodeReviewScopeBlock } from "../src/review/code-review-orchestration.ts";
+import { changedLines, diffAnchor } from "../src/review/review-diff-lines.ts";
 import type { ReviewContext } from "../src/review/review-report.ts";
-import { captureReviewMaterial, type ReviewMaterialCaptureResult } from "../src/review/review-snapshot.ts";
-import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
+import { captureReviewMaterial } from "../src/review/review-snapshot.ts";
+import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
   name: "code-review",
@@ -45,60 +45,39 @@ const ANGLES: AdvisoryLens[] = [
 
 const PER_ANGLE = 6;
 
-/** Parse a unified diff into the set of added/changed new-file line numbers per file. */
-export function changedLines(diff: string): Map<string, Set<number>> {
-  const byFile = new Map<string, Set<number>>();
-  let file: string | null = null;
-  let newLine = 0;
-  for (const raw of diff.split("\n")) {
-    if (raw.startsWith("+++ ")) {
-      const path = raw.slice(4).trim();
-      file = path === "/dev/null" ? null : normalizePath(path);
-      if (file && !byFile.has(file)) byFile.set(file, new Set());
-    } else if (raw.startsWith("@@")) {
-      const match = /\+(\d+)/.exec(raw);
-      newLine = match ? Number(match[1]) : 0;
-    } else if (file === null || raw.startsWith("---") || raw.startsWith("\\")) {
-      // file header, deletion, or "No newline" marker — record nothing
-    } else if (raw.startsWith("+")) {
-      byFile.get(file)!.add(newLine++);
-    } else if (!raw.startsWith("-")) {
-      newLine++; // context line advances the new-file counter; deletions do not
-    }
-  }
-  return byFile;
-}
+const DIFF_EMBED_CAP = 60_000;
 
-/** Is a finding inside the diff? File-level findings count if the file changed; ±1 line of fuzz. */
-export function inDiff(changed: Map<string, Set<number>>, file: string, line?: number): boolean {
-  const set = changed.get(normalizePath(file));
-  if (!set) return false;
-  if (line == null) return true;
-  return set.has(line) || set.has(line - 1) || set.has(line + 1);
+export function buildCodeReviewScopeBlock(input: {
+  readonly diffCommand: string;
+  readonly files: readonly string[];
+  readonly summary: string;
+  readonly conventions?: string;
+  readonly diffText: string;
+  readonly target: string;
+}): string {
+  const diffBlock = input.diffText
+    ? `\n## Diff (review is bounded to these changed lines)\n\`\`\`diff\n${
+        input.diffText.length > DIFF_EMBED_CAP
+          ? `${input.diffText.slice(0, DIFF_EMBED_CAP)}\n... (truncated — run \`${input.diffCommand}\` for the full diff)`
+          : input.diffText
+      }\n\`\`\`\n`
+    : "";
+  return (
+    `## Diff command\n${input.diffCommand}\n\n## Changed files\n${input.files.map((file) => `- ${file}`).join("\n")}\n\n` +
+    `## Summary\n${input.summary}\n\n## Conventions\n${input.conventions ?? "(none noted)"}\n` +
+    diffBlock +
+    (input.target ? `\n## User instructions (verbatim)\n${input.target}\n` : "")
+  );
 }
 
 export interface CodeReviewDependencies {
-  readonly captureReviewMaterial?: (
-    target: Parameters<typeof captureReviewMaterial>[0],
-    cwd: string,
-    signal?: AbortSignal,
-  ) => Promise<ReviewMaterialCaptureResult>;
+  readonly captureReviewMaterial?: typeof captureReviewMaterial;
 }
 
 export default async function run(api: WorkflowApi, dependencies: CodeReviewDependencies = {}): Promise<unknown> {
   const { agent, phase, log, progress, args, cwd, signal } = api;
   const challengeConfig = parseChallengeArgs(args);
-  const target = challengeConfig.args.trim();
-  let fileCount = 0;
-  let rawCandidateCount = 0;
-  let droppedCandidateCount = 0;
-  const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
-    files: fileCount,
-    candidates: rawCandidateCount,
-    verified,
-    kept,
-    dropped: droppedCandidateCount,
-  });
+  const target = challengeConfig.args;
 
   // ─── Phase 0: Scope ───
   phase("Scope");
@@ -122,11 +101,6 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
-  if (!scope) {
-    return { summary: "No changes found to review.", findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) };
-  }
-
-  fileCount = scope.files.length;
   progress({ type: "summary", key: "files", value: scope.files.join(", ") || "(none)" });
   const diffTarget = parseAllowedDiffCommand(scope.diffCommand);
   if ("error" in diffTarget) {
@@ -134,11 +108,11 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   }
   const diffCommand = formatReviewDiffTarget(diffTarget);
   progress({ type: "summary", key: "diffCommand", value: diffCommand });
-  progress({ type: "counter", key: "files", label: "files", value: fileCount });
+  progress({ type: "counter", key: "files", label: "files", value: scope.files.length });
+  const noChanges = (summary: string, nextSteps = ["Provide a PR, ref range, or changed files to review."]) =>
+    finishAdvisoryReport(emptyAdvisoryReport(summary, nextSteps, { ...EMPTY_LENS_REVIEW_STATS, files: scope.files.length }), []);
 
-  if (scope.files.length === 0) {
-    return { summary: "No changes found to review.", findings: [], nextSteps: ["Provide a PR, ref range, or changed files to review."], stats: makeStats(0, 0) };
-  }
+  if (scope.files.length === 0) return noChanges("No changes found to review.");
 
   log(`${scope.files.length} changed files`);
 
@@ -150,6 +124,14 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
   const diffText = reviewMaterial.diff;
   const changed = changedLines(diffText);
   progress({ type: "summary", key: "diffBytes", value: Buffer.byteLength(diffText) });
+  // Findings anchor only on files with a new-side text hunk; without one, skip the finder fan-out.
+  if (changed.size === 0) {
+    if (!diffText.trim()) return noChanges(`No changes found to review: \`${diffCommand}\` has no added or modified files.`);
+    return noChanges(
+      `Nothing to review line by line: \`${diffCommand}\` only deletes or renames files, changes file modes, or touches binary files; there are no added lines to anchor findings on.`,
+      ["Inspect the deleted, renamed, mode-changed or binary files directly; code-review anchors findings on added lines only."],
+    );
+  }
   if (reviewMaterial.snapshot.status === "unavailable") {
     log(`review snapshot unavailable (${reviewMaterial.snapshot.reason}) — patch previews will be unavailable`);
   }
@@ -179,9 +161,10 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     lenses: ANGLES,
     perLens: PER_ANGLE,
     boundCandidate: (candidate, lens) => {
-      const anchor = candidate.reviewAnchor ?? candidate.locations.find((location) => inDiff(changed, location.file, location.line));
-      return anchor && inDiff(changed, anchor.file, anchor.line)
-        ? { ...candidate, category: lens.category, reviewAnchor: anchor } : undefined;
+      const reviewAnchor = candidate.reviewAnchor
+        ? diffAnchor(changed, candidate.reviewAnchor)
+        : candidate.locations.map((location) => diffAnchor(changed, location)).find((anchor) => anchor !== undefined);
+      return reviewAnchor ? { ...candidate, category: lens.category, reviewAnchor } : undefined;
     },
     finderPrompt: (lens) =>
       `## Code-review finder — ${lens.label}\n\n${scopeBlock}\n` +
@@ -198,35 +181,23 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       "Run the diff command, read the relevant file(s), and return exactly one verdict (CONFIRMED / PLAUSIBLE / NOT_SUBSTANTIATED / REFUTED) " +
       "with evidence quoting the line(s). Use NOT_SUBSTANTIATED when evidence is insufficient; use REFUTED only for concrete disproof. Structured output only.",
   });
-  rawCandidateCount += pipelineResult.rawCandidates;
-  droppedCandidateCount += pipelineResult.dropped;
-  const { coverage } = pipelineResult;
-  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
-  const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
-  const stats = makeStats(verified.length, surviving.length);
-  publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
-
-  if (surviving.length === 0) {
-    return finishAdvisoryReport({ summary: "No findings survived verification.", findings: [], nextSteps: ["No code-review action is recommended from this workflow run."], stats, reviewContext }, coverage, verified);
-  }
-
-  // ─── Synthesize: rank, merge, report ───
-  const rank = (finding: AdvisoryVerified): number => (finding.category === "cleanup" ? 2 : 0) + (finding.verdict !== "CONFIRMED" ? 1 : 0);
-  const ranked = [...surviving].sort((a, b) => rank(a) - rank(b));
-  const block = ranked
-    .map(
-      (finding, index) =>
-        `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}${finding.category === "cleanup" ? ", cleanup" : ""})\n` +
-        `Category: ${finding.category}\nConfidence: ${verdictConfidence(finding.verdict)}\n` +
-        `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}`,
-    )
-    .join("\n\n");
-
-  const resolved = await synthesizeAdvisoryReport(api,
-    `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
+  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, pipelineResult.coverage);
+  const report = await concludeLensReview(api, pipelineResult, verified, {
+    files: scope.files.length,
+    rank,
+    formatFinding: (finding, index) =>
+      `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}${finding.category === "cleanup" ? ", cleanup" : ""})\n` +
+      `Category: ${finding.category}\nConfidence: ${verdictConfidence(finding.verdict)}\n` +
+      `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}`,
+    empty: { summary: "No findings survived verification.", nextSteps: ["No code-review action is recommended from this workflow run."] },
+    synthesisPrompt: (block, ranked) =>
+      `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
       "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final advisory report. " +
       "Return summary, ID selections with severity (low/medium/high) and advisory recommendation, and nextSteps. Evidence and confidence are reconstructed from verified records. Structured output only.",
-    ranked, coverage,
-  );
-  return finishAdvisoryReport({ ...resolved, stats: { ...stats, kept: resolved.findings.length }, reviewContext }, coverage, verified);
+  });
+  return { ...report, reviewContext };
+}
+
+function rank(finding: AdvisoryVerified): number {
+  return (finding.category === "cleanup" ? 2 : 0) + (finding.verdict !== "CONFIRMED" ? 1 : 0);
 }

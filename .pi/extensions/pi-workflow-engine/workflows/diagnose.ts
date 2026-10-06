@@ -3,17 +3,15 @@ import { Type } from "typebox";
 import {
   type AdvisoryVerified,
   type AdvisoryLens,
-  synthesizeAdvisoryReport,
-  finishAdvisoryReport,
-  emptyAdvisoryReport,
+  concludeLensReview,
   formatEvidence,
   formatLocation,
-  publishVerifiedKeptProgress,
+  formatRankedFinding,
   runLensVerificationPipeline,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
-import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
+import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
   name: "diagnose",
@@ -42,19 +40,7 @@ const PER_LENS = 4;
 export default async function run(api: WorkflowApi): Promise<unknown> {
   const { agent, phase, log, progress, args } = api;
   const challengeConfig = parseChallengeArgs(args);
-  const symptom = challengeConfig.args.trim();
-  let fileCount = 0;
-  let rawCandidateCount = 0;
-  let droppedCandidateCount = 0;
-  let refutedCandidateCount = 0;
-  const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
-    files: fileCount,
-    candidates: rawCandidateCount,
-    verified,
-    kept,
-    dropped: droppedCandidateCount,
-    refuted: refutedCandidateCount,
-  });
+  const symptom = challengeConfig.args;
 
   phase("Scope");
   const scope = await agent(
@@ -68,16 +54,7 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
-  if (!scope) {
-    return finishAdvisoryReport(emptyAdvisoryReport(
-      "Diagnosis could not establish a scope.",
-      ["Provide the failing command, error message, or regression description and rerun diagnose."],
-      makeStats(0, 0),
-    ), []);
-  }
-
-  fileCount = scope.files.length;
-  progress({ type: "counter", key: "files", label: "files", value: fileCount });
+  progress({ type: "counter", key: "files", label: "files", value: scope.files.length });
   progress({ type: "summary", key: "symptom", value: scope.symptom });
   progress({ type: "summary", key: "files", value: scope.files.join(", ") || "(none)" });
   log(`${scope.files.length} files scoped for diagnosis`);
@@ -107,45 +84,26 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Do not run mutation, install, commit, network, or destructive commands. Return CONFIRMED, PLAUSIBLE, NOT_SUBSTANTIATED, or REFUTED with evidence. " +
       "Use NOT_SUBSTANTIATED when evidence is missing; REFUTED requires disproof. Structured output only.",
   });
-  rawCandidateCount += pipelineResult.rawCandidates;
-  droppedCandidateCount += pipelineResult.dropped;
-  refutedCandidateCount += pipelineResult.refuted;
-  const { coverage } = pipelineResult;
-  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
-  const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
-  const refuted = verified.filter((finding) => finding.verdict === "REFUTED");
-  const stats = makeStats(verified.length, surviving.length);
-  publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
-
-  if (surviving.length === 0) {
-    return finishAdvisoryReport(emptyAdvisoryReport(
-      "No root-cause hypothesis survived verification.",
-      ["Capture the exact failing command and error output.", "Rerun diagnose with a narrower symptom or more evidence."],
-      stats,
-    ), coverage, verified);
-  }
-
-  const ranked = [...surviving].sort((a, b) => rank(a) - rank(b));
-  const block = ranked
-    .map(
-      (finding, index) =>
-        `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
-        `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}\nValidation/fix plan: ${finding.recommendation ?? "(none supplied)"}`,
-    )
-    .join("\n\n");
-  const refutedBlock = refuted
-    .slice(0, 8)
-    .map((finding) => `- ${finding.summary} — REFUTED because ${formatEvidence(finding.evidence)}`)
-    .join("\n");
-
-  const resolved = await synthesizeAdvisoryReport(api,
-    `## Synthesis: final diagnosis report\n\n${ranked.length} hypotheses survived independent verification.\n\n${block}\n\n` +
-      `## Refuted hypotheses for context\n${refutedBlock || "(none recorded)"}\n\n` +
-      "Select confirmed, plausible or explicitly unresolved root causes by ID. " +
-      "Recommendation must be a validation/fix plan, not a patch. nextSteps must be the minimum commands or code inspections needed to confirm the top diagnosis. Structured output only.",
-    ranked, coverage,
-  );
-  return finishAdvisoryReport({ ...resolved, stats: { ...stats, kept: resolved.findings.length } }, coverage, verified);
+  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, pipelineResult.coverage);
+  return concludeLensReview(api, pipelineResult, verified, {
+    files: scope.files.length,
+    rank,
+    formatFinding: (finding, index) => formatRankedFinding(finding, index, "Validation/fix plan"),
+    empty: {
+      summary: "No root-cause hypothesis survived verification.",
+      nextSteps: ["Capture the exact failing command and error output.", "Rerun diagnose with a narrower symptom or more evidence."],
+    },
+    synthesisPrompt: (block, ranked, refuted) => {
+      const refutedBlock = refuted
+        .slice(0, 8)
+        .map((finding) => `- ${finding.summary} — REFUTED because ${formatEvidence(finding.evidence)}`)
+        .join("\n");
+      return `## Synthesis: final diagnosis report\n\n${ranked.length} hypotheses survived independent verification.\n\n${block}\n\n` +
+        `## Refuted hypotheses for context\n${refutedBlock || "(none recorded)"}\n\n` +
+        "Select confirmed, plausible or explicitly unresolved root causes by ID. " +
+        "Recommendation must be a validation/fix plan, not a patch. nextSteps must be the minimum commands or code inspections needed to confirm the top diagnosis. Structured output only.";
+    },
+  });
 }
 
 function rank(finding: AdvisoryVerified): number {

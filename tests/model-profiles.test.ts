@@ -16,6 +16,7 @@ import {
   type WorkflowModelProfilePaths,
 } from "../.pi/extensions/pi-workflow-engine/src/model-profiles.ts";
 import {
+  formatWorkflowModelProfiles,
   parseWorkflowModelsCommand,
   workflowModelProfileArgumentCompletions,
 } from "../.pi/extensions/pi-workflow-engine/src/model-profile-command.ts";
@@ -278,4 +279,31 @@ test("/workflow:models exposes native completions without filling the free-form 
     ["clear big --user", "clear big --project"],
   );
   assert.equal(workflowModelProfileArgumentCompletions("clear big --user "), null);
+});
+
+test("/workflow:models prints an aligned table with home and project paths shortened", () => {
+  const host = testModel("faux", "faux-1");
+  const big = testModel("anthropic", "claude-opus");
+  const profiles: ResolvedWorkflowModelProfiles = {
+    ...hostWorkflowModelProfiles(host),
+    big: { name: "big", model: big, thinkingLevel: "xhigh", source: "project", configPath: "/work/repo/.pi/workflow-models.json" },
+  };
+  const text = formatWorkflowModelProfiles(
+    profiles,
+    { user: "/home/tim/.pi/agent/workflow-models.json", project: "/work/repo/.pi/workflow-models.json" },
+    "/work/repo",
+    "/home/tim",
+  );
+  const lines = text.split("\n");
+
+  assert.deepEqual(lines, [
+    "  profile  model                  thinking  source",
+    "  small    faux/faux-1            low       host fallback",
+    "  medium   faux/faux-1            medium    host fallback",
+    "  big      anthropic/claude-opus  xhigh     project config",
+    "",
+    "  user     ~/.pi/agent/workflow-models.json",
+    "  project  .pi/workflow-models.json  (overrides user)",
+  ]);
+  assert.ok(lines.every((line) => line === line.trimEnd()), "no trailing padding");
 });

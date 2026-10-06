@@ -1,7 +1,7 @@
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { AdvisoryReportWithStatsSchema } from "../advisory-schema.ts";
-import { formatReviewDiffTarget, isReviewDiffTarget, ReviewDiffTargetSchema } from "../review-diff-target.ts";
+import { formatReviewDiffTarget, isAllowedReviewDiffTarget, ReviewDiffTargetSchema } from "../review-diff-target.ts";
 
 /** Atomic identity of the exact diff and post-change snapshot that were reviewed. */
 export const ReviewSnapshotIdentitySchema = Type.Object({
@@ -27,13 +27,9 @@ export type ReviewSnapshotIdentity = Static<typeof ReviewSnapshotIdentitySchema>
 export type ReviewContext = Static<typeof ReviewContextSchema>;
 export type ReviewReport = Static<typeof ReviewReportSchema>;
 
+/** The schema check covers the nested context; the diff target also has to round-trip through the allowlist parser. */
 export function isReviewReport(value: unknown): value is ReviewReport {
-  if (!Value.Check(ReviewReportSchema, value)) return false;
-  return value.reviewContext === undefined || isReviewContext(value.reviewContext);
-}
-
-export function isReviewContext(value: unknown): value is ReviewContext {
-  return Value.Check(ReviewContextSchema, value) && isReviewDiffTarget(value.diffTarget);
+  return Value.Check(ReviewReportSchema, value) && (value.reviewContext === undefined || isAllowedReviewDiffTarget(value.reviewContext.diffTarget));
 }
 
 /** Prompt-facing context retains the canonical display command without persisting duplicate identity. */

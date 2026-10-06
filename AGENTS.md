@@ -17,11 +17,14 @@ A **pi extension** with canonical entrypoint `.pi/extensions/pi-workflow-engine/
 
 ## What this extension does
 
-`.pi/extensions/pi-workflow-engine/index.ts` registers five surfaces:
+`.pi/extensions/pi-workflow-engine/index.ts` registers these surfaces:
 - `/workflow <name> [args]` — slash command to run a saved workflow.
 - `/workflow:inspector [last]` — opens the live or most recently completed workflow inspector.
 - `/workflow:results` — reopens the most recent code-review findings without rerunning the workflow.
+- `/workflow:runs` — browses recent durable project runs and their lifecycle actions (inspect, stop, resume, restart).
+- `/workflow:models` — inspects and sets the `small`/`medium`/`big` model routes.
 - `/workflow:dynamax on|off|status` plus the literal `dynamax` token — opt-in signals for host-agent workflow orchestration.
+- configurable inspector and results shortcuts (defaults `ctrl+shift+m` / `ctrl+shift+r`).
 - a `workflow` tool — lets the host agent run a saved workflow by `name` or a one-off inline workflow by `script` mid-conversation.
 
 A **workflow** (`.pi/extensions/pi-workflow-engine/workflows/*.ts`) exports `meta` + a default `async (api) => result`. The injected `api`:
@@ -35,11 +38,12 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 ## Architecture / key files
 
 - `.pi/extensions/pi-workflow-engine/index.ts` — canonical pi extension entry; registers workflow commands and shortcuts, the `workflow` tool, and result rendering.
-- `.pi/extensions/pi-workflow-engine/src/agent-runner.ts` — **the bridge**. Each `agent()` is an in-process `createAgentSession(... SessionManager.inMemory())`. Structured output = one **terminating tool** whose `parameters` IS the schema; pi validates the call, `execute` captures the args in a closure, `terminate: true` ends the turn. No event parsing.
+- `.pi/extensions/pi-workflow-engine/src/agent-runner.ts` — per-`agent()` orchestration around each subagent session: profile/model resolution, budget, limits, replay, and retries.
+- `.pi/extensions/pi-workflow-engine/src/agent-session.ts` — **the bridge**. Builds each subagent's in-process pi session (`SessionManager.inMemory`). Structured output = one **terminating tool** (`final_answer`) whose `parameters` IS the schema; pi validates the call, `execute` captures the args in a closure, `terminate: true` ends the turn. No event parsing.
 - `.pi/extensions/pi-workflow-engine/src/concurrency.ts` — `Semaphore` (the single global concurrency cap, acquired inside every `agent()`), `parallel`, `pipeline`.
-- `.pi/extensions/pi-workflow-engine/src/engine.ts` — `runWorkflow()` binds the primitives to one run (shared semaphore + progress tracker). `DEFAULT_CONCURRENCY` lives here.
+- `.pi/extensions/pi-workflow-engine/src/engine.ts` — `runResolvedWorkflow()` (what index.ts calls; `runWorkflow()` resolves options first) binds the primitives to one run (shared semaphore + progress tracker). The default concurrency comes from `defaultConcurrency()` in `src/options.ts`.
 - `.pi/extensions/pi-workflow-engine/src/progress.ts` — live phase/agent tree via `ctx.ui.setWidget`; stderr breadcrumbs when headless.
-- `.pi/extensions/pi-workflow-engine/src/discovery.ts` + `.pi/extensions/pi-workflow-engine/src/workflows.ts` — static registry (`BUILTIN_WORKFLOWS`) plus best-effort dynamic drop-in loading.
+- `.pi/extensions/pi-workflow-engine/src/discovery.ts` + `.pi/extensions/pi-workflow-engine/src/workflows.ts` — static registry (`BUILTIN_WORKFLOW_DEFINITIONS`) plus best-effort dynamic drop-in loading.
 - `.pi/extensions/pi-workflow-engine/src/inline-workflow.ts` — inline workflow compiler (`script` string → `WorkflowModule`) with pure-literal `export const meta` extraction and injected Type schemas.
 - `.pi/extensions/pi-workflow-engine/src/dynamax.ts` — `dynamax` trigger/sticky state and reminder injection.
 - `.pi/extensions/pi-workflow-engine/src/types.ts` — `WorkflowApi` / `WorkflowModule` / `AgentOptions` contracts.
@@ -66,7 +70,7 @@ bun run test:smoke     # optional focused discovery smoke
 pi -e .                                      # load this package manifest/entrypoint ephemerally
 ```
 
-Add a workflow: create `.pi/extensions/pi-workflow-engine/workflows/<name>.ts`, import it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`, add it to `BUILTIN_WORKFLOWS`. Customise review lenses via the `ANGLES` array in `.pi/extensions/pi-workflow-engine/workflows/code-review.ts`.
+Add a workflow: create `.pi/extensions/pi-workflow-engine/workflows/<name>.ts`, import it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`, and add a `defineBuiltinWorkflow(mod, "<name>.ts")` entry to `BUILTIN_WORKFLOW_DEFINITIONS`. Customise review lenses via the `ANGLES` array in `.pi/extensions/pi-workflow-engine/workflows/code-review.ts`.
 
 ## How to make a release
 

@@ -3,17 +3,17 @@ import { Type } from "typebox";
 import {
   type AdvisoryVerified,
   type AdvisoryLens,
-  synthesizeAdvisoryReport,
+  concludeLensReview,
   finishAdvisoryReport,
   emptyAdvisoryReport,
-  formatEvidence,
+  EMPTY_LENS_REVIEW_STATS,
   formatLocation,
-  publishVerifiedKeptProgress,
+  formatRankedFinding,
   runLensVerificationPipeline,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
-import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
+import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 
 export const meta: WorkflowMeta = {
   name: "refactor-scout",
@@ -42,19 +42,7 @@ const PER_LENS = 5;
 export default async function run(api: WorkflowApi): Promise<unknown> {
   const { agent, phase, log, progress, args } = api;
   const challengeConfig = parseChallengeArgs(args);
-  const target = challengeConfig.args.trim() || ".";
-  let fileCount = 0;
-  let rawCandidateCount = 0;
-  let droppedCandidateCount = 0;
-  let refutedCandidateCount = 0;
-  const makeStats = (verified: number, kept: number): WorkflowRunStats => ({
-    files: fileCount,
-    candidates: rawCandidateCount,
-    verified,
-    kept,
-    dropped: droppedCandidateCount,
-    refuted: refutedCandidateCount,
-  });
+  const target = challengeConfig.args || ".";
 
   phase("Scope");
   const scope = await agent(
@@ -66,23 +54,22 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
     { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
   );
 
-  if (!scope || scope.files.length === 0) {
+  if (scope.files.length === 0) {
     return finishAdvisoryReport(emptyAdvisoryReport(
       "No files were identified for refactor scouting.",
       ["Provide a target path, module, or subsystem to scout for refactor opportunities."],
-      makeStats(0, 0),
+      EMPTY_LENS_REVIEW_STATS,
     ), []);
   }
 
-  fileCount = scope.files.length;
-  progress({ type: "counter", key: "files", label: "files", value: fileCount });
+  progress({ type: "counter", key: "files", label: "files", value: scope.files.length });
   progress({ type: "summary", key: "files", value: scope.files.join(", ") });
   log(`${scope.files.length} files scoped for refactor scouting`);
 
   const scopeBlock =
     `## Target\n${scope.target}\n\n## Files in scope\n${scope.files.map((file) => `- ${file}`).join("\n")}\n\n` +
     `## Summary\n${scope.summary}\n\n## Conventions\n${scope.conventions ?? "(none noted)"}\n` +
-    (args.trim() ? `\n## User instructions (verbatim)\n${args.trim()}\n` : "");
+    (challengeConfig.args ? `\n## User instructions (verbatim)\n${challengeConfig.args}\n` : "");
 
   const pipelineResult = await runLensVerificationPipeline({
     api,
@@ -103,37 +90,22 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       "Default toward REFUTED if the opportunity is generic, too broad, not evidenced by code, or lacks a safe first step. " +
       "Evidence must quote or cite code. Structured output only.",
   });
-  rawCandidateCount += pipelineResult.rawCandidates;
-  droppedCandidateCount += pipelineResult.dropped;
-  refutedCandidateCount += pipelineResult.refuted;
-  const { coverage } = pipelineResult;
-  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, coverage);
-  const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
-  const stats = makeStats(verified.length, surviving.length);
-  publishVerifiedKeptProgress({ progress, log }, verified.length, surviving.length);
-
-  if (surviving.length === 0) {
-    return finishAdvisoryReport(emptyAdvisoryReport("No refactor opportunities survived verification.", ["Leave the scoped code unchanged unless a human reviewer has additional context."], stats), coverage, verified);
-  }
-
-  const ranked = [...surviving].sort((a, b) => rank(a) - rank(b));
-  const block = ranked
-    .map(
-      (finding, index) =>
-        `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
-        `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}\nSafe first step: ${finding.recommendation ?? "(none supplied)"}`,
-    )
-    .join("\n\n");
-
-  const resolved = await synthesizeAdvisoryReport(api,
-    `## Synthesis: final refactor-scout report\n\n${ranked.length} opportunities survived independent verification.\n\n${block}\n\n` +
+  const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, pipelineResult.coverage);
+  return concludeLensReview(api, pipelineResult, verified, {
+    files: scope.files.length,
+    rank,
+    formatFinding: (finding, index) => formatRankedFinding(finding, index, "Safe first step"),
+    empty: {
+      summary: "No refactor opportunities survived verification.",
+      nextSteps: ["Leave the scoped code unchanged unless a human reviewer has additional context."],
+    },
+    synthesisPrompt: (block, ranked) =>
+      `## Synthesis: final refactor-scout report\n\n${ranked.length} opportunities survived independent verification.\n\n${block}\n\n` +
       "Merge findings with the same root cause and rank highest leverage / lowest risk first. " +
       "Select findings by ID. " +
       "Severity is maintenance or future-correctness impact. " +
       "Recommendations must be safe first refactor steps, not rewrites. Include concrete nextSteps for the host developer. Structured output only.",
-    ranked, coverage,
-  );
-  return finishAdvisoryReport({ ...resolved, stats: { ...stats, kept: resolved.findings.length } }, coverage, verified);
+  });
 }
 
 function rank(finding: AdvisoryVerified): number {

@@ -2,8 +2,15 @@ import { lstat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { isMissingPathError } from "./filesystem-error.ts";
 import { hashIdentity } from "./identity-fingerprint.ts";
-import { logicalWorkspacePath, portableRelativePath } from "./replay-path-identity.ts";
-import { captureTreeFingerprint, isPathWithin, validateTreeFile, type FingerprintCapture } from "./tree-fingerprint.ts";
+import { logicalWorkspacePath } from "./replay-path-identity.ts";
+import {
+  captureSourceTreeFingerprint,
+  FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
+  isPathWithin,
+  portableRelativePath,
+  validateTreeFile,
+  type FingerprintCapture,
+} from "./tree-fingerprint.ts";
 
 export interface EffectiveToolSourceInfoLike {
   readonly path: string;
@@ -32,10 +39,6 @@ export interface ToolSourceIdentityOptions {
   readonly signal?: AbortSignal;
 }
 
-const SOURCE_FINGERPRINT_MAX_BYTES = 32 << 20;
-const SOURCE_FINGERPRINT_MAX_FILES = 4096;
-const SOURCE_FINGERPRINT_EXCLUSIONS = new Set([".git", ".pi/.workflow-runs"]);
-
 export async function captureEffectiveToolSourceIdentity(
   sourceInfo: EffectiveToolSourceInfoLike,
   options: ToolSourceIdentityOptions,
@@ -58,26 +61,20 @@ export async function captureEffectiveToolSourceIdentity(
     };
   }
 
-  const baseDir = declaredBaseDir === undefined ? undefined : resolveDeclaredPath(declaredBaseDir, options.sessionCwd);
+  const baseDir = declaredBaseDir === undefined ? undefined : resolve(options.sessionCwd, declaredBaseDir);
   const sourcePath = await resolveExistingSourcePath(path, baseDir, options.sessionCwd, options.workspaceRoot);
   const sourceRoot = baseDir && isPathWithin(baseDir, sourcePath) ? baseDir : dirname(sourcePath);
   const validation = await validateTreeFile({
     root: sourceRoot,
     path: sourcePath,
-    excludedRelativePaths: SOURCE_FINGERPRINT_EXCLUSIONS,
+    excludedRelativePaths: FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
     signal: options.signal,
   });
   if (validation.kind === "unverifiable") throw new Error(`tool source "${path}" is not fingerprintable: ${validation.reason}`);
 
   let capture = options.cache.get(sourceRoot);
   if (!capture) {
-    capture = captureTreeFingerprint({
-      root: sourceRoot,
-      excludedRelativePaths: SOURCE_FINGERPRINT_EXCLUSIONS,
-      maxBytes: SOURCE_FINGERPRINT_MAX_BYTES,
-      maxFiles: SOURCE_FINGERPRINT_MAX_FILES,
-      signal: options.signal,
-    });
+    capture = captureSourceTreeFingerprint(sourceRoot, options.signal);
     options.cache.set(sourceRoot, capture);
   }
   const fingerprint = await capture;
@@ -103,11 +100,11 @@ async function resolveExistingSourcePath(
 ): Promise<string> {
   const candidates = isAbsolute(path)
     ? [resolve(path)]
-    : uniquePaths([
+    : [...new Set([
         ...(baseDir ? [resolve(baseDir, path), resolve(baseDir, path.split(/[\\/]/).at(-1) ?? path)] : []),
         resolve(sessionCwd, path),
         resolve(workspaceRoot, path),
-      ]);
+      ])];
 
   for (const candidate of candidates) {
     try {
@@ -119,13 +116,8 @@ async function resolveExistingSourcePath(
   throw new Error(`tool source path does not identify a regular file: ${path}`);
 }
 
-function resolveDeclaredPath(path: string, sessionCwd: string): string {
-  return isAbsolute(path) ? resolve(path) : resolve(sessionCwd, path);
-}
-
 function normalizeUnresolvedBaseDir(path: string, sessionCwd: string, workspaceRoot: string): string {
-  const resolvedPath = resolveDeclaredPath(path, sessionCwd);
-  return logicalWorkspacePath(resolvedPath, { sessionCwd, workspaceRoot }) ?? "source-root:.";
+  return logicalWorkspacePath(resolve(sessionCwd, path), { sessionCwd, workspaceRoot }) ?? "source-root:.";
 }
 
 function logicalSourcePath(path: string, sourceRoot: string, sessionCwd: string, workspaceRoot: string): string {
@@ -139,11 +131,7 @@ function isSyntheticSource(path: string, source: string): boolean {
   return (path.startsWith("<") && path.endsWith(">")) || source === "builtin" || source === "sdk" || /^(?:builtin|sdk):/.test(path);
 }
 
-function uniquePaths(paths: readonly string[]): readonly string[] {
-  return [...new Set(paths)];
-}
-
-function nonEmptyString(value: string, label: string): string {
+export function nonEmptyString(value: string, label: string): string {
   if (typeof value !== "string") throw new Error(`${label} is not a string`);
   if (value.length === 0) throw new Error(`${label} is empty`);
   return value;

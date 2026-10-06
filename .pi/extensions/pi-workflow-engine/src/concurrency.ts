@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { abortReason, isFatalWorkflowError, throwIfAborted } from "./cancellation.ts";
+import { isFiniteNumber } from "./guards.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 /**
@@ -59,10 +60,6 @@ export class Semaphore {
         cleanup();
         reject(abortReason(signal));
       };
-      if (signal?.aborted) {
-        reject(abortReason(signal));
-        return;
-      }
       this.waiters.push(waiter);
       signal?.addEventListener("abort", onAbort, { once: true });
     });
@@ -138,13 +135,6 @@ export async function parallel<T>(
 }
 
 export function bindParallel(options: ParallelOptions): WorkflowParallel {
-  const executionOptions: ParallelOptions = {
-    signal: options.signal,
-    abortController: options.abortController,
-    limit: options.limit,
-    drainTimeoutMs: options.drainTimeoutMs,
-  };
-
   function boundParallel<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>>;
   function boundParallel<T>(
     thunks: Array<() => Promise<T>>,
@@ -155,9 +145,9 @@ export function bindParallel(options: ParallelOptions): WorkflowParallel {
     workflowOptions?: ParallelSettledOptions,
   ): Promise<Array<T | null> | Array<ParallelSettledResult<T>>> {
     if (workflowOptions?.settled) {
-      return await parallel(thunks, { ...executionOptions, settled: true });
+      return await parallel(thunks, { ...options, settled: true });
     }
-    return await parallel(thunks, executionOptions);
+    return await parallel(thunks, options);
   }
 
   return boundParallel;
@@ -224,7 +214,6 @@ async function runParallel<T, Result>(
     };
 
     options.signal?.addEventListener("abort", onAbort, { once: true });
-    if (options.signal?.aborted) onAbort();
     for (let worker = 0; worker < limit; worker++) {
       void runWorker().then(completeWorker, (error) => {
         recordFatalFailure(error);
@@ -264,7 +253,7 @@ function readSerializableDetails(
         typeof detail === "string" ||
         typeof detail === "boolean" ||
         detail === null ||
-        (typeof detail === "number" && Number.isFinite(detail))
+        isFiniteNumber(detail)
       ) {
         details[key] = detail;
       }
@@ -285,12 +274,12 @@ function readProperty(value: unknown, property: string): unknown {
 }
 
 function normalizeLimit(limit: number | undefined, itemCount: number): number {
-  if (limit === undefined || !Number.isFinite(limit)) return Math.max(1, itemCount);
+  if (!isFiniteNumber(limit)) return Math.max(1, itemCount);
   return Math.max(1, Math.min(itemCount, Math.trunc(limit)));
 }
 
 function normalizeDrainTimeout(timeoutMs: number | undefined): number {
-  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) return DEFAULT_FATAL_DRAIN_TIMEOUT_MS;
+  if (!isFiniteNumber(timeoutMs)) return DEFAULT_FATAL_DRAIN_TIMEOUT_MS;
   return Math.max(0, Math.trunc(timeoutMs));
 }
 
@@ -302,48 +291,7 @@ function normalizeDrainTimeout(timeoutMs: number | undefined): number {
  *
  * Each stage receives (previousResult, originalItem, index).
  */
-export async function pipeline<Item, A>(
-  items: readonly Item[],
-  stage1: (prev: Item, item: Item, index: number) => Promise<A>,
-): Promise<Array<A | null>>;
-export async function pipeline<Item, A, B>(
-  items: readonly Item[],
-  stage1: (prev: Item, item: Item, index: number) => Promise<A>,
-  stage2: (prev: A, item: Item, index: number) => Promise<B>,
-): Promise<Array<B | null>>;
-export async function pipeline<Item, A, B, C>(
-  items: readonly Item[],
-  stage1: (prev: Item, item: Item, index: number) => Promise<A>,
-  stage2: (prev: A, item: Item, index: number) => Promise<B>,
-  stage3: (prev: B, item: Item, index: number) => Promise<C>,
-): Promise<Array<C | null>>;
-export async function pipeline<Item, A, B, C, D>(
-  items: readonly Item[],
-  stage1: (prev: Item, item: Item, index: number) => Promise<A>,
-  stage2: (prev: A, item: Item, index: number) => Promise<B>,
-  stage3: (prev: B, item: Item, index: number) => Promise<C>,
-  stage4: (prev: C, item: Item, index: number) => Promise<D>,
-): Promise<Array<D | null>>;
-export async function pipeline<Item, A, B, C, D, E>(
-  items: readonly Item[],
-  stage1: (prev: Item, item: Item, index: number) => Promise<A>,
-  stage2: (prev: A, item: Item, index: number) => Promise<B>,
-  stage3: (prev: B, item: Item, index: number) => Promise<C>,
-  stage4: (prev: C, item: Item, index: number) => Promise<D>,
-  stage5: (prev: D, item: Item, index: number) => Promise<E>,
-): Promise<Array<E | null>>;
-export async function pipeline(
-  items: readonly unknown[],
-  ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
-): Promise<Array<unknown | null>>;
-export async function pipeline(
-  items: readonly unknown[],
-  ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
-): Promise<Array<unknown | null>> {
-  return pipelineWithOptions(items, stages);
-}
-
-export function bindPipeline(options: PipelineOptions): Pipeline {
+export function bindPipeline(options: PipelineOptions) {
   async function boundPipeline<Item, A>(
     items: readonly Item[],
     stage1: (prev: Item, item: Item, index: number) => Promise<A>,
@@ -377,30 +325,27 @@ export function bindPipeline(options: PipelineOptions): Pipeline {
   async function boundPipeline(
     items: readonly unknown[],
     ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
+  ): Promise<Array<unknown | null>>;
+  async function boundPipeline(
+    items: readonly unknown[],
+    ...stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>
   ): Promise<Array<unknown | null>> {
-    return pipelineWithOptions(items, stages, options);
+    return await parallel(
+      items.map((item, index) => async () => {
+        let acc: unknown = item;
+        for (const stage of stages) {
+          throwIfAborted(options.signal);
+          acc = await stage(acc, item, index);
+        }
+        return acc;
+      }),
+      options,
+    );
   }
   return boundPipeline;
 }
 
-export async function pipelineWithOptions(
-  items: readonly unknown[],
-  stages: Array<(prev: unknown, item: unknown, index: number) => Promise<unknown>>,
-  options: PipelineOptions = {},
-): Promise<Array<unknown | null>> {
-  throwIfAborted(options.signal);
-  return await parallel(
-    items.map((item, index) => async () => {
-      throwIfAborted(options.signal);
-      let acc: unknown = item;
-      for (const stage of stages) {
-        throwIfAborted(options.signal);
-        acc = await stage(acc, item, index);
-      }
-      return acc;
-    }),
-    options,
-  );
-}
+export type Pipeline = ReturnType<typeof bindPipeline>;
 
-export type Pipeline = typeof pipeline;
+/** `pipeline` without a run's abort signal (tests, benchmarks). */
+export const pipeline: Pipeline = bindPipeline({});
