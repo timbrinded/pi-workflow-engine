@@ -1,6 +1,7 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
-import { renderIssueDetailLines, severityColor } from "./review-format.ts";
+import { renderFindingDetail } from "./review-format.ts";
+import { severityColor } from "../ui/kit.ts";
 import { formatIssueLocation, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
 import { truncateDisplay } from "../ui/workflow-format.ts";
 import {
@@ -203,7 +204,7 @@ export class ReviewResultsViewer implements Component {
       width,
     );
     const lines = this.detailsExpanded
-      ? renderIssueDetailLines(issue, this.theme, width)
+      ? renderFindingDetail(issue, width, this.theme)
       : [issue.finding.summary, this.theme.fg("dim", "Press enter to expand details.")];
     if (bodyHeight === 0) this.detailScroll = 0;
     const maxScroll = Math.max(0, lines.length - bodyHeight);

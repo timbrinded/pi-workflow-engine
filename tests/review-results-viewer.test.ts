@@ -4,7 +4,7 @@ import { test } from "bun:test";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { ReviewResultsViewer } from "../.pi/extensions/pi-workflow-engine/src/review/review-results-viewer.ts";
 import { toReviewIssues, type ReviewIssueSelection } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
-import { createReviewReportFixture, createTestTheme } from "./fixtures/theme.ts";
+import { createReviewReportFixture, createTestTheme, plain } from "./fixtures/theme.ts";
 
 test("viewer toggles selections and returns fix action", () => {
   const issues = toReviewIssues(createReviewReportFixture());
@@ -31,12 +31,12 @@ test("viewer digit keys jump to findings and show expanded formatted details", (
   const viewer = createViewer(issues).viewer;
 
   viewer.handleInput("2");
-  const rendered = viewer.render(140).join("\n");
+  const rendered = plain(viewer.render(140).join("\n"));
 
-  assert.match(rendered, /R002.*The cleanup path duplicates parser setup/);
-  assert.match(rendered, /Metadata:.*cleanup.*severity medium.*confidence medium/);
-  assert.match(rendered, /Location:.*src\/parser\.ts:42/);
-  assert.match(rendered, /Impact:.*Future parser changes/);
+  assert.match(rendered, /MED +R002 · cleanup · confidence medium/);
+  assert.match(rendered, /The cleanup path duplicates parser setup/);
+  assert.match(rendered, /Location +src\/parser\.ts:42/);
+  assert.match(rendered, /Impact +Future parser changes/);
   assert.match(rendered, /1-9 jump/);
   assert.match(rendered, /enter details/);
 });
