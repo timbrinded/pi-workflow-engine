@@ -1,9 +1,14 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
 import { renderIssueDetailLines, severityColor } from "./review-format.ts";
 import { formatIssueLocation, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
 import { truncateDisplay } from "../ui/workflow-format.ts";
-import { fitWorkflowViewerRow, fitWorkflowViewerRows, workflowViewerHeight } from "../ui/workflow-viewer-layout.ts";
+import {
+  fitWorkflowViewerRow,
+  fitWorkflowViewerRows,
+  WORKFLOW_VIEWER_OVERLAY_OPTIONS,
+  workflowViewerHeight,
+} from "../ui/workflow-viewer-layout.ts";
 
 const SPLIT_WIDTH = 96;
 const LIST_MIN_WIDTH = 34;
@@ -11,6 +16,20 @@ const LIST_MAX_WIDTH = 48;
 const DETAIL_SCROLL_STEP = 5;
 
 type ViewerTui = Pick<TUI, "requestRender" | "terminal">;
+
+export interface ReviewResultsViewerContext {
+  readonly ui: Pick<ExtensionContext["ui"], "custom">;
+}
+
+export async function showReviewResultsViewer(
+  ctx: ReviewResultsViewerContext,
+  issues: readonly ReviewIssue[],
+): Promise<ReviewIssueSelection> {
+  return await ctx.ui.custom<ReviewIssueSelection>(
+    (tui, theme, _keybindings, done) => new ReviewResultsViewer(issues, tui, theme, done),
+    WORKFLOW_VIEWER_OVERLAY_OPTIONS,
+  );
+}
 
 export class ReviewResultsViewer implements Component {
   private readonly selected = new Set<string>();

@@ -37,7 +37,7 @@ import {
   WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS,
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
 } from "./src/options.ts";
-import { executeWorkflowInvocation, workflowResultSummary, type WorkflowExecution, type WorkflowResultEnvelope } from "./src/workflow-execution.ts";
+import { executeWorkflowInvocation, workflowResultSummary, type WorkflowResultEnvelope } from "./src/workflow-execution.ts";
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
 import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
@@ -467,10 +467,10 @@ export async function sendWorkflowResult(
   perfRecorder?: PerfSink,
   reviewSessions: ReviewSessionCoordinator = createReviewSessionCoordinator(pi),
 ): Promise<void> {
-  const execution = await executeResolvedWorkflow(pi, ctx, name, mod, args, options, perfRecorder);
-  reviewSessions.remember(ctx, execution, options);
-  sendWorkflowExecution(pi, execution);
-  await reviewSessions.present(ctx, execution, options);
+  const envelope = await executeResolvedWorkflow(pi, ctx, name, mod, args, options, perfRecorder);
+  const retained = reviewSessions.remember(ctx, envelope, options);
+  publishWorkflowResult(pi, envelope);
+  await reviewSessions.present(ctx, retained, options);
 }
 
 async function executeResolvedWorkflow(
@@ -481,7 +481,7 @@ async function executeResolvedWorkflow(
   args: string,
   options: ResolvedWorkflowRunOptions,
   perfRecorder?: PerfSink,
-): Promise<WorkflowExecution> {
+): Promise<WorkflowResultEnvelope> {
   const { runResolvedWorkflow } = await loadEngine();
   let liveInspection: ActiveWorkflowInspection | undefined;
   const inspections = workflowInspectionState(pi, ctx);
@@ -509,13 +509,13 @@ async function executeResolvedWorkflow(
   });
 }
 
-function sendWorkflowExecution(pi: ExtensionAPI, execution: WorkflowExecution): void {
+function publishWorkflowResult(pi: ExtensionAPI, envelope: WorkflowResultEnvelope): void {
   pi.sendMessage(
     {
       customType: "workflow-result",
-      content: formatMessageContent(execution.envelope),
+      content: formatMessageContent(envelope),
       display: true,
-      details: execution.envelope,
+      details: envelope,
     },
     { triggerTurn: false },
   );
@@ -527,7 +527,7 @@ function createReviewSessionCoordinator(pi: ExtensionAPI): ReviewSessionCoordina
       const perfRecorder = await createInvocationPerf(options);
       return await executeResolvedWorkflow(pi, ctx, workflow.meta.name, workflow, "", options, perfRecorder);
     },
-    publish: (execution) => sendWorkflowExecution(pi, execution),
+    publish: (envelope) => publishWorkflowResult(pi, envelope),
   });
 }
 
@@ -542,8 +542,8 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
     async execute(ctx, name, workflow, options) {
       const perfRecorder = await createInvocationPerf(options);
-      const execution = await executeResolvedWorkflow(pi, ctx, name, workflow, "", options, perfRecorder);
-      reviewSessions.remember(ctx, execution, options);
+      const envelope = await executeResolvedWorkflow(pi, ctx, name, workflow, "", options, perfRecorder);
+      reviewSessions.remember(ctx, envelope, options);
     },
   });
   backgroundWorkflows.onRunSettled((ctx, runId) => workflowRuns.runSettled(ctx, runId));
@@ -819,7 +819,7 @@ function registerWorkflowTool(
           name: resultName,
           options: runOptions,
           async execute(backgroundCtx, backgroundOptions) {
-            const execution = await executeResolvedWorkflow(
+            const envelope = await executeResolvedWorkflow(
               pi,
               backgroundCtx,
               resultName,
@@ -828,15 +828,15 @@ function registerWorkflowTool(
               backgroundOptions,
               perfRecorder,
             );
-            reviewSessions.remember(ctx, execution, backgroundOptions);
+            reviewSessions.remember(ctx, envelope, backgroundOptions);
           },
         });
       }
-      const execution = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
-      reviewSessions.remember(ctx, execution, runOptions);
+      const envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
+      reviewSessions.remember(ctx, envelope, runOptions);
       return {
-        content: [{ type: "text", text: formatMessageContent(execution.envelope) }],
-        details: execution.envelope,
+        content: [{ type: "text", text: formatMessageContent(envelope) }],
+        details: envelope,
       };
     },
   });

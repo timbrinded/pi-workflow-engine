@@ -3,7 +3,7 @@ import { test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import { resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
-import { showReviewResultsViewer, type ReviewResultsViewerContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-results-flow.ts";
+import { showReviewResultsViewer, type ReviewResultsViewerContext } from "../.pi/extensions/pi-workflow-engine/src/review/review-results-viewer.ts";
 import { toReviewIssues, type ReviewIssueSelection } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
 import { isReviewReport } from "../.pi/extensions/pi-workflow-engine/src/review/review-report.ts";
 import { ReviewSessionCoordinator } from "../.pi/extensions/pi-workflow-engine/src/review/review-session-coordinator.ts";
@@ -35,11 +35,10 @@ test("code-review results open the viewer only when it is requested in the TUI",
       { sendUserMessage() {}, async exec() { throw new Error("unexpected exec"); } },
       { async runFollowUp() { throw new Error("unexpected follow-up"); }, publish() {} },
     );
-    const execution = { envelope: { name, result, completedAt: 0 } };
     const options = resolveWorkflowRunOptions(resultViewer ? { resultViewer } : {}, {});
 
-    coordinator.remember(ctx, execution, options);
-    await coordinator.present(ctx, execution, options);
+    const retained = coordinator.remember(ctx, { name, result, completedAt: 0 }, options);
+    await coordinator.present(ctx, retained, options);
 
     assert.equal(opened, opens ? 1 : 0, `${name} ${mode} ${resultViewer ?? "default"} ${result.findings.length} finding(s)`);
   }

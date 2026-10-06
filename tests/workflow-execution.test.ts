@@ -53,7 +53,7 @@ test("workflow execution invokes composed lifecycle observers independently", as
     source: { kind: "fingerprint", fingerprint: "observer-test" },
   };
 
-  const execution = await executeWorkflowInvocation({
+  const envelope = await executeWorkflowInvocation({
     ctx: { cwd: process.cwd() } as ExtensionContext,
     name: mod.meta.name,
     mod,
@@ -69,7 +69,7 @@ test("workflow execution invokes composed lifecycle observers independently", as
     },
   });
 
-  assert.equal(execution.envelope.result, "ok");
+  assert.equal(envelope.result, "ok");
   assert.equal(optionSourceCalls, 1);
   assert.equal(inputSnapshotCalls, 1);
   assert.equal(observerFailures.length, 2);

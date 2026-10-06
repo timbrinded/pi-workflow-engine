@@ -2,14 +2,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { sessionKey } from "../session-identity.ts";
 import { resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "../options.ts";
 import type { LoadedWorkflow } from "../types.ts";
-import type { WorkflowExecution } from "../workflow-execution.ts";
+import type { WorkflowResultEnvelope } from "../workflow-execution.ts";
 import { handleReviewViewerAction } from "./review-actions.ts";
 import { ReviewFixBudgetLedger } from "./review-budget.ts";
 import { toReviewIssues, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
-import { showReviewResultsViewer } from "./review-results-flow.ts";
+import { showReviewResultsViewer } from "./review-results-viewer.ts";
 import { isReviewReport, type ReviewReport } from "./review-report.ts";
 
-interface RetainedCodeReviewResult {
+export interface RetainedCodeReviewResult {
   readonly report: ReviewReport;
   readonly concurrency: number;
   readonly parallelSubmissionLimit?: number;
@@ -22,8 +22,8 @@ export interface ReviewSessionCoordinatorDependencies {
     ctx: ExtensionContext,
     workflow: LoadedWorkflow,
     options: ResolvedWorkflowRunOptions,
-  ) => Promise<WorkflowExecution>;
-  readonly publish: (execution: WorkflowExecution) => void;
+  ) => Promise<WorkflowResultEnvelope>;
+  readonly publish: (envelope: WorkflowResultEnvelope) => void;
 }
 
 /** Owns retained code-review state and every path that presents or acts on it. */
@@ -35,37 +35,39 @@ export class ReviewSessionCoordinator {
     private readonly dependencies: ReviewSessionCoordinatorDependencies,
   ) {}
 
+  /** Retains a code-review result for this session and returns it; any other result retains nothing. */
   remember(
     ctx: ExtensionContext,
-    execution: WorkflowExecution,
+    envelope: WorkflowResultEnvelope,
     options: ResolvedWorkflowRunOptions,
-  ): void {
-    if (execution.envelope.name !== "code-review") return;
+  ): RetainedCodeReviewResult | undefined {
+    if (envelope.name !== "code-review") return undefined;
     const key = sessionKey(ctx);
-    const report = execution.envelope.result;
+    const report = envelope.result;
     if (!isReviewReport(report)) {
       this.sessions.delete(key);
-      return;
+      return undefined;
     }
-    this.sessions.set(key, {
+    const retained: RetainedCodeReviewResult = {
       report,
       concurrency: options.concurrency,
       parallelSubmissionLimit: options.parallelSubmissionLimit ?? undefined,
       perf: options.perf,
-      budget: new ReviewFixBudgetLedger(options.budget, execution.envelope.usage),
-    });
+      budget: new ReviewFixBudgetLedger(options.budget, envelope.usage),
+    };
+    this.sessions.set(key, retained);
+    return retained;
   }
 
-  /** Opens the findings viewer when explicitly requested. Call after remember() for the same execution. */
+  /** Opens the findings viewer for a result remember() just retained, when explicitly requested. */
   async present(
     ctx: ExtensionContext,
-    execution: WorkflowExecution,
+    retained: RetainedCodeReviewResult | undefined,
     options: ResolvedWorkflowRunOptions,
   ): Promise<void> {
-    if (execution.envelope.name !== "code-review" || options.resultViewer !== "open" || ctx.mode !== "tui" || !ctx.hasUI) return;
-    const retained = this.sessions.get(sessionKey(ctx));
     if (!retained || retained.report.findings.length === 0) return;
-    await this.openAndHandle(ctx, retained, toReviewIssues(retained.report));
+    if (options.resultViewer !== "open" || ctx.mode !== "tui" || !ctx.hasUI) return;
+    await this.openAndHandle(ctx, retained);
   }
 
   async reopen(ctx: ExtensionContext): Promise<void> {
@@ -83,18 +85,15 @@ export class ReviewSessionCoordinator {
       return;
     }
 
-    await this.openAndHandle(ctx, retained, toReviewIssues(retained.report));
+    await this.openAndHandle(ctx, retained);
   }
 
   dispose(ctx: ExtensionContext): void {
     this.sessions.delete(sessionKey(ctx));
   }
 
-  private async openAndHandle(
-    ctx: ExtensionContext,
-    retained: RetainedCodeReviewResult,
-    issues: readonly ReviewIssue[],
-  ): Promise<void> {
+  private async openAndHandle(ctx: ExtensionContext, retained: RetainedCodeReviewResult): Promise<void> {
+    const issues = toReviewIssues(retained.report);
     let action: ReviewIssueSelection | undefined;
     try {
       action = await showReviewResultsViewer(ctx, issues);
@@ -123,8 +122,8 @@ export class ReviewSessionCoordinator {
     try {
       const followUp = await handleReviewViewerAction(this.pi, ctx, action, issues, retained.report.reviewContext);
       if (!followUp) return;
-      const execution = await this.dependencies.runFollowUp(ctx, followUp, followUpOptions(retained, ctx.signal));
-      this.dependencies.publish(execution);
+      const envelope = await this.dependencies.runFollowUp(ctx, followUp, followUpOptions(retained, ctx.signal));
+      this.dependencies.publish(envelope);
     } finally {
       if (lease?.ok) lease.release();
     }

@@ -7,13 +7,8 @@ import { toReviewIssues } from "../review/review-issues.ts";
 import { formatCount } from "../text.ts";
 import { formatPerfSummary } from "../perf.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
-import { workflowResultSummary, type WorkflowPerfDetails, type WorkflowResultEnvelope } from "../workflow-execution.ts";
+import { workflowResultSummary, type WorkflowPerfDetails } from "../workflow-execution.ts";
 import { unknownErrorMessage } from "../unknown-error.ts";
-
-export function isWorkflowResult(value: unknown): value is WorkflowResultEnvelope {
-  if (!isRecord(value)) return false;
-  return typeof value.name === "string" && "result" in value && typeof value.completedAt === "number";
-}
 
 /** What the result renderers read. Persisted message details are unvalidated, so `usage` stays `unknown`. */
 export interface WorkflowResultView {
@@ -25,7 +20,11 @@ export interface WorkflowResultView {
   readonly resumedFromRunId?: string;
 }
 
-type WorkflowDetailLineInput = Pick<WorkflowResultView, "usage" | "perf" | "runId" | "resumedFromRunId">;
+/** Recognises persisted result-envelope details by the fields every envelope carries. */
+export function isWorkflowResult(value: unknown): value is WorkflowResultView {
+  if (!isRecord(value)) return false;
+  return typeof value.name === "string" && "result" in value && typeof value.completedAt === "number";
+}
 
 export function renderWorkflowResult(view: WorkflowResultView, expanded: boolean, theme: Theme): Component {
   const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
@@ -84,13 +83,13 @@ function renderGenericWorkflowResult(view: WorkflowResultView, expanded: boolean
   return lines.join("\n");
 }
 
-function pushWorkflowDetailLines(lines: string[], theme: Theme, input: WorkflowDetailLineInput): void {
+function pushWorkflowDetailLines(lines: string[], theme: Theme, input: WorkflowResultView): void {
   for (const line of formatWorkflowDetailLines(input)) {
     lines.push(theme.fg("dim", line));
   }
 }
 
-export function formatWorkflowDetailLines(input: WorkflowDetailLineInput): string[] {
+export function formatWorkflowDetailLines(input: WorkflowResultView): string[] {
   return [
     formatWorkflowRunLine(input),
     formatWorkflowUsageLine(input.usage),
@@ -98,7 +97,7 @@ export function formatWorkflowDetailLines(input: WorkflowDetailLineInput): strin
   ].filter((line): line is string => line !== undefined);
 }
 
-function formatWorkflowRunLine({ runId, resumedFromRunId }: WorkflowDetailLineInput): string | undefined {
+function formatWorkflowRunLine({ runId, resumedFromRunId }: WorkflowResultView): string | undefined {
   if (!runId) return undefined;
   return resumedFromRunId ? `Run: ${runId} (resumed from ${resumedFromRunId})` : `Run: ${runId}`;
 }

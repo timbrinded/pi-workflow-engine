@@ -51,12 +51,8 @@ export interface WorkflowExecutionInput {
   readonly onProgressSnapshot?: (snapshot: WorkflowProgressSnapshot) => void | Promise<void>;
 }
 
-export interface WorkflowExecution {
-  readonly envelope: WorkflowResultEnvelope;
-}
-
 /** Shared command/tool execution path. The engine remains lazy-loaded by the caller. */
-export async function executeWorkflowInvocation(input: WorkflowExecutionInput): Promise<WorkflowExecution> {
+export async function executeWorkflowInvocation(input: WorkflowExecutionInput): Promise<WorkflowResultEnvelope> {
   let perfSnapshot: PerfSnapshot | undefined;
   let usageSnapshot: WorkflowUsageSnapshot | undefined;
   let runMetadata: WorkflowRunMetadata | undefined;
@@ -91,22 +87,15 @@ export async function executeWorkflowInvocation(input: WorkflowExecutionInput): 
     },
   };
   const result = await input.runResolvedWorkflow(input.ctx, input.mod, input.args, runOptions);
-  const perf = compactPerfSnapshot(perfSnapshot);
   return {
-    envelope: {
-      name: input.name,
-      result,
-      completedAt: Date.now(),
-      usage: usageSnapshot,
-      perf,
-      runId: runMetadata?.runId,
-      resumedFromRunId: runMetadata?.resumedFromRunId,
-    },
+    name: input.name,
+    result,
+    completedAt: Date.now(),
+    usage: usageSnapshot,
+    perf: perfSnapshot?.enabled ? { aggregates: perfSnapshot.aggregates } : undefined,
+    runId: runMetadata?.runId,
+    resumedFromRunId: runMetadata?.resumedFromRunId,
   };
-}
-
-function compactPerfSnapshot(snapshot: PerfSnapshot | undefined): WorkflowPerfDetails | undefined {
-  return snapshot?.enabled ? { aggregates: snapshot.aggregates } : undefined;
 }
 
 async function notifyLifecycleObservers(...observers: ReadonlyArray<() => void | Promise<void>>): Promise<void> {
