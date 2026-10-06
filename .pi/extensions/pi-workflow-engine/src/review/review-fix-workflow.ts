@@ -94,7 +94,7 @@ export async function runReviewFixWorkflow(
         tools: [...REVIEW_FIX_TOOLS],
         toolHints: ["search"],
       });
-      const validation = await evaluateReviewFix(api, { issue, context, baseline, isolated });
+      const validation = await evaluateReviewFix(api, { issue, baseline, isolated });
       return {
         findingId: issue.id,
         result: isolated.result,
@@ -123,17 +123,14 @@ function isReviewFixPreview(outcome: ReviewFixOutcome): outcome is ReviewFixPrev
   return "patch" in outcome;
 }
 
+/** `baseline` was already revalidated against the reviewed snapshot identity by resolveReviewWorktreeBaseline. */
 async function evaluateReviewFix(api: ReviewFixWorkflowApi, input: {
-  issue: ReviewIssue; context: ReviewContext | undefined; baseline: WorktreeBaseline; isolated: IsolatedAgentResult<string>;
+  issue: ReviewIssue; baseline: WorktreeBaseline; isolated: IsolatedAgentResult<string>;
 }): Promise<PatchValidation> {
-  const { issue, context, baseline, isolated } = input;
+  const { issue, baseline, isolated } = input;
   const validation = initialPatchValidation(baseline, isolated.baselineOid, isolated.patch);
   if (!isolated.patch.trim()) return validation;
   if (!isolated.baselineOid) return { ...validation, reason: "Candidate has no recorded baseline identity." };
-  if (!context?.snapshot) return { ...validation, reason: "Reviewed snapshot identity is unavailable." };
-  if (validation.baselineFingerprint !== context.snapshot.baselineFingerprint) {
-    return { ...validation, status: "rejected", reason: "Stale reviewed baseline identity." };
-  }
   try {
     const evaluated = await api.agent(
       `Independently evaluate a candidate repair. Your fresh worktree contains the exact reviewed baseline plus the captured patch. The implementer's report is not validation evidence. Inspect the finding, callers and tests. Reject incorrect repairs; return blocked if required validation is unavailable. Select at most six focused deterministic checks with executable and argument arrays. Require at least one meaningful behavior check. If a regression test is applicable, supply a test-only baselinePatch and specific expectedFailure so the engine can prove it fails before the repair and passes after. Do not edit, install dependencies, commit or change branches. The engine will execute checks independently.\nFinding: ${JSON.stringify(serializeReviewIssue(issue))}\nBaseline: ${isolated.baselineOid}\nPatch SHA-256: ${validation.patchHash}\nPatch:\n${isolated.patch}`,
@@ -145,7 +142,7 @@ async function evaluateReviewFix(api: ReviewFixWorkflowApi, input: {
     if (evaluated.baselineOid !== isolated.baselineOid || evaluated.patch !== isolated.patch) {
       return { ...validation, status: "blocked", reason: "Evaluator session changed its workspace (candidate patch or baseline drifted); independent checks were not run.", evaluation: evaluated.result };
     }
-    return await validateCandidatePatch({ cwd: api.cwd, baseline, expectedFingerprint: context.snapshot.baselineFingerprint,
+    return await validateCandidatePatch({ cwd: api.cwd, baseline,
         baselineOid: isolated.baselineOid, patch: isolated.patch, evaluation: evaluated.result, signal: api.signal });
   } catch (error) {
     if (isFatalWorkflowError(error, api.signal)) throw error;

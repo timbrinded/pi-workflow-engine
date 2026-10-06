@@ -32,18 +32,17 @@ async function fixture() {
 const check = { file: process.execPath, args: ["-e", "const fs = require('node:fs'); if(fs.readFileSync('value.txt','utf8') !== 'fixed\\n') { console.error('value remains broken'); process.exit(1); }"], required: true };
 const accepted: PatchEvaluation = { outcome: "accepted", reason: "Repair addresses the condition", checks: [check] };
 
-for (const scenario of ["verified", "rejected", "blocked", "stale", "wrong-baseline", "no-patch"] as const) {
+for (const scenario of ["verified", "rejected", "blocked", "wrong-baseline", "no-patch"] as const) {
   test(`candidate validation: ${scenario}`, async () => {
     const repo = await fixture();
     try {
       const evaluation: PatchEvaluation = scenario === "rejected" ? { ...accepted, checks: [{ ...check, args: ["-e", "console.error('regression'); process.exit(1)"] }] }
         : scenario === "blocked" ? { ...accepted, checks: [check, { ...check, file: "unavailable-validation-tool-123" }] } : accepted;
       const result = await validateCandidatePatch({ ...repo, evaluation,
-        ...(scenario === "stale" ? { expectedFingerprint: "stale" } : {}),
         ...(scenario === "wrong-baseline" ? { baselineOid: "b".repeat(40) } : {}),
         ...(scenario === "no-patch" ? { patch: "" } : {}),
       });
-      assert.equal(result.status, scenario === "stale" || scenario === "wrong-baseline" ? "rejected" : scenario);
+      assert.equal(result.status, scenario === "wrong-baseline" ? "rejected" : scenario);
       assert.equal(result.baselineFingerprint, repo.expectedFingerprint);
       assert.match(result.patchHash, /^[a-f0-9]{64}$/);
       if (scenario === "verified") assert.equal(result.checks[0]?.result.ok, true);
@@ -133,7 +132,7 @@ test("evaluator reconstruction includes the reviewed dirty snapshot", async () =
     const baseline = { ...repo.baseline, patch: dirtyPatch };
     const prepared = await registry.add(undefined, baseline);
     assert.ok(!("error" in prepared));
-    const result = await validateCandidatePatch({ ...repo, baseline, expectedFingerprint: fingerprintReviewWorktreeBaseline(baseline), baselineOid: prepared.baselineOid,
+    const result = await validateCandidatePatch({ ...repo, baseline, baselineOid: prepared.baselineOid,
       evaluation: { ...accepted, checks: [{ ...check, args: ["-e", "const fs=require('node:fs'); if(fs.readFileSync('value.txt','utf8') !== 'fixed\\n' || fs.readFileSync('reviewed.txt','utf8') !== 'reviewed dirty state\\n') process.exit(1)"] }] } });
     assert.equal(result.status, "verified");
     assert.equal(result.baselineOid, prepared.baselineOid);

@@ -37,7 +37,7 @@ export function initialPatchValidation(baseline: WorktreeBaseline, baselineOid: 
 }
 
 interface PatchValidationOptions {
-  cwd: string; baseline: WorktreeBaseline; expectedFingerprint: string; baselineOid: string; patch: string;
+  cwd: string; baseline: WorktreeBaseline; baselineOid: string; patch: string;
   evaluation: PatchEvaluation; signal?: AbortSignal;
 }
 
@@ -45,7 +45,6 @@ interface PatchValidationOptions {
 export async function validateCandidatePatch(options: PatchValidationOptions): Promise<PatchValidation> {
   const validation = initialPatchValidation(options.baseline, options.baselineOid, options.patch);
   validation.evaluation = options.evaluation;
-  if (validation.baselineFingerprint !== options.expectedFingerprint) return { ...validation, status: "rejected", reason: "Stale reviewed baseline identity." };
   if (!options.patch.trim()) return validation;
   const worktrees = new WorktreeRegistry(options.cwd);
   let result = validation;
