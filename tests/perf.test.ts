@@ -9,7 +9,7 @@ function aggregateValue(recorder: PerfRecorder, name: string): number {
 }
 
 test("PerfRecorder aggregates observed values and percentiles", () => {
-  const recorder = new PerfRecorder(123);
+  const recorder = new PerfRecorder();
   for (let i = 1; i <= 100; i++) recorder.observe("queue", i, { phase: "test" });
   recorder.counter("misses", 2);
   recorder.counter("misses", 3);
@@ -18,7 +18,6 @@ test("PerfRecorder aggregates observed values and percentiles", () => {
   const queue = snapshot.aggregates.find((entry) => entry.name === "queue");
   assert.ok(queue);
   assert.equal(snapshot.enabled, true);
-  assert.equal(snapshot.startedAt, 123);
   assert.equal(queue.count, 100);
   assert.equal(queue.total, 5050);
   assert.equal(queue.min, 1);
@@ -45,7 +44,7 @@ test("PerfRecorder records async and sync durations", async () => {
 });
 
 test("NoopPerfRecorder executes functions without retaining samples", async () => {
-  const recorder = new NoopPerfRecorder(456);
+  const recorder = new NoopPerfRecorder();
   recorder.observe("ignored", 10);
   recorder.counter("ignored");
 
@@ -54,10 +53,10 @@ test("NoopPerfRecorder executes functions without retaining samples", async () =
 
   assert.equal(syncValue, "sync");
   assert.equal(asyncValue, "async");
-  assert.deepEqual(recorder.snapshot(), { enabled: false, startedAt: 456, samples: [], aggregates: [] });
+  assert.deepEqual(recorder.snapshot(), { enabled: false, aggregates: [] });
 });
 
 test("createPerfRecorder returns enabled or disabled recorders", () => {
-  assert.equal(createPerfRecorder(true, 1).snapshot().enabled, true);
-  assert.equal(createPerfRecorder(false, 1).snapshot().enabled, false);
+  assert.equal(createPerfRecorder(true).snapshot().enabled, true);
+  assert.equal(createPerfRecorder(false).snapshot().enabled, false);
 });

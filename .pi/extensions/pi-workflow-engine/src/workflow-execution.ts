@@ -12,8 +12,6 @@ import type {
 import type { WorkflowUsageSnapshot } from "./usage.ts";
 
 export interface WorkflowPerfDetails {
-  readonly enabled: boolean;
-  readonly startedAt: number;
   readonly aggregates: readonly PerfAggregate[];
 }
 
@@ -108,8 +106,7 @@ export async function executeWorkflowInvocation(input: WorkflowExecutionInput): 
 }
 
 function compactPerfSnapshot(snapshot: PerfSnapshot | undefined): WorkflowPerfDetails | undefined {
-  if (!snapshot?.enabled) return undefined;
-  return { enabled: true, startedAt: snapshot.startedAt, aggregates: snapshot.aggregates };
+  return snapshot?.enabled ? { aggregates: snapshot.aggregates } : undefined;
 }
 
 async function notifyLifecycleObservers(...observers: ReadonlyArray<() => void | Promise<void>>): Promise<void> {

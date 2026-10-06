@@ -2,13 +2,6 @@ import { performance } from "node:perf_hooks";
 
 export type PerfTags = Record<string, string | number>;
 
-export interface PerfSample {
-  readonly name: string;
-  readonly durationMs?: number;
-  readonly value?: number;
-  readonly tags?: PerfTags;
-}
-
 export interface PerfAggregate {
   readonly name: string;
   readonly count: number;
@@ -22,8 +15,6 @@ export interface PerfAggregate {
 
 export interface PerfSnapshot {
   readonly enabled: boolean;
-  readonly startedAt: number;
-  readonly samples: readonly PerfSample[];
   readonly aggregates: readonly PerfAggregate[];
 }
 
@@ -36,16 +27,15 @@ export interface PerfSink {
 }
 
 export class PerfRecorder implements PerfSink {
-  private readonly samples: PerfSample[] = [];
-
-  constructor(private readonly startedAt = Date.now()) {}
+  /** Finite observed values per metric, in first-observation order. */
+  private readonly values = new Map<string, number[]>();
 
   async time<T>(name: string, fn: () => Promise<T>, tags?: PerfTags): Promise<T> {
     const start = performance.now();
     try {
       return await fn();
     } finally {
-      this.observeDuration(name, performance.now() - start, tags);
+      this.observe(name, performance.now() - start, tags);
     }
   }
 
@@ -54,13 +44,15 @@ export class PerfRecorder implements PerfSink {
     try {
       return fn();
     } finally {
-      this.observeDuration(name, performance.now() - start, tags);
+      this.observe(name, performance.now() - start, tags);
     }
   }
 
-  observe(name: string, value: number, tags?: PerfTags): void {
+  observe(name: string, value: number, _tags?: PerfTags): void {
     if (!Number.isFinite(value)) return;
-    this.samples.push({ name, value, tags });
+    const values = this.values.get(name);
+    if (values) values.push(value);
+    else this.values.set(name, [value]);
   }
 
   counter(name: string, delta = 1, tags?: PerfTags): void {
@@ -68,23 +60,11 @@ export class PerfRecorder implements PerfSink {
   }
 
   snapshot(): PerfSnapshot {
-    return {
-      enabled: true,
-      startedAt: this.startedAt,
-      samples: this.samples.map((sample) => ({ ...sample, tags: sample.tags ? { ...sample.tags } : undefined })),
-      aggregates: aggregateSamples(this.samples),
-    };
-  }
-
-  private observeDuration(name: string, durationMs: number, tags?: PerfTags): void {
-    if (!Number.isFinite(durationMs)) return;
-    this.samples.push({ name, durationMs, tags });
+    return { enabled: true, aggregates: [...this.values].map(([name, values]) => aggregate(name, values)) };
   }
 }
 
 export class NoopPerfRecorder implements PerfSink {
-  constructor(private readonly startedAt = Date.now()) {}
-
   async time<T>(_name: string, fn: () => Promise<T>, _tags?: PerfTags): Promise<T> {
     return await fn();
   }
@@ -98,12 +78,12 @@ export class NoopPerfRecorder implements PerfSink {
   counter(_name: string, _delta?: number, _tags?: PerfTags): void {}
 
   snapshot(): PerfSnapshot {
-    return { enabled: false, startedAt: this.startedAt, samples: [], aggregates: [] };
+    return { enabled: false, aggregates: [] };
   }
 }
 
-export function createPerfRecorder(enabled: boolean, startedAt?: number): PerfSink {
-  return enabled ? new PerfRecorder(startedAt) : new NoopPerfRecorder(startedAt);
+export function createPerfRecorder(enabled: boolean): PerfSink {
+  return enabled ? new PerfRecorder() : new NoopPerfRecorder();
 }
 
 export function formatPerfSummary(aggregates: readonly PerfAggregate[]): string {
@@ -111,34 +91,22 @@ export function formatPerfSummary(aggregates: readonly PerfAggregate[]): string 
   return parts.length > 0 ? `Perf: ${parts.join(" · ")}` : "Perf: no samples";
 }
 
-function aggregateSamples(samples: readonly PerfSample[]): PerfAggregate[] {
-  const byName = new Map<string, number[]>();
-  for (const sample of samples) {
-    const value = sample.durationMs ?? sample.value;
-    if (value === undefined || !Number.isFinite(value)) continue;
-    const values = byName.get(sample.name) ?? [];
-    values.push(value);
-    byName.set(sample.name, values);
-  }
-
-  return [...byName.entries()].map(([name, rawValues]) => {
-    const values = [...rawValues].sort((a, b) => a - b);
-    const total = values.reduce((sum, value) => sum + value, 0);
-    return {
-      name,
-      count: values.length,
-      total,
-      min: values[0] ?? 0,
-      max: values[values.length - 1] ?? 0,
-      mean: values.length === 0 ? 0 : total / values.length,
-      p50: percentile(values, 0.5),
-      p95: percentile(values, 0.95),
-    };
-  });
+/** `observed` is never empty: a metric is recorded with its first value. */
+function aggregate(name: string, observed: readonly number[]): PerfAggregate {
+  const values = [...observed].sort((a, b) => a - b);
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return {
+    name,
+    count: values.length,
+    total,
+    min: values[0],
+    max: values[values.length - 1],
+    mean: total / values.length,
+    p50: percentile(values, 0.5),
+    p95: percentile(values, 0.95),
+  };
 }
 
 function percentile(sortedValues: readonly number[], p: number): number {
-  if (sortedValues.length === 0) return 0;
-  const index = Math.min(sortedValues.length - 1, Math.max(0, Math.ceil(sortedValues.length * p) - 1));
-  return sortedValues[index] ?? 0;
+  return sortedValues[Math.ceil(sortedValues.length * p) - 1];
 }
