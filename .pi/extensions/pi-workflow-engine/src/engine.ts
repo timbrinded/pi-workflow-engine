@@ -206,16 +206,13 @@ export async function runResolvedWorkflow(
     }),
   );
 
-  const outcome: Outcome<unknown> = !workflowOutcome.ok
-    ? {
-        ok: false,
-        error: finalizationOutcome.ok
-          ? workflowOutcome.error
-          : combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error),
-      }
-    : finalizationOutcome.ok
-      ? workflowOutcome
-      : finalizationOutcome;
+  let outcome: Outcome<unknown> = workflowOutcome;
+  if (!finalizationOutcome.ok) {
+    outcome = workflowOutcome.ok
+      ? finalizationOutcome
+      : { ok: false, error: combinedWorkflowError(workflowOutcome.error, finalizationOutcome.error) };
+  }
+  const pauseError = outcome.ok ? undefined : backgroundPauseError(outcome.error, ctx.signal, resolvedOptions.signal);
   if (outcome.ok) {
     durableRun.transition({
       state: "completed",
@@ -223,41 +220,27 @@ export async function runResolvedWorkflow(
       usage: usage.snapshot(),
       result: outcome.value,
     });
+  } else if (pauseError instanceof WorkflowProviderUsageLimitError) {
+    durableRun.transition({
+      state: "paused",
+      progress: progress.snapshot(),
+      ...createProviderUsageLimitPauseRecord(pauseError, resolvedOptions, mod.source.kind === "file" && args.length === 0),
+    });
+  } else if (pauseError) {
+    durableRun.transition({
+      state: "paused",
+      progress: progress.snapshot(),
+      message: unknownErrorMessage(pauseError),
+    });
   } else {
-    persistTerminalWorkflowError(outcome.error);
-  }
-  await durableRun.flush().catch(() => undefined);
-
-  function persistTerminalWorkflowError(error: unknown): void {
-    const pauseError = backgroundPauseError(error, ctx.signal, resolvedOptions.signal);
-    if (pauseError) {
-      if (pauseError instanceof WorkflowProviderUsageLimitError) {
-        const providerPause = createProviderUsageLimitPauseRecord(
-          pauseError,
-          resolvedOptions,
-          mod.source.kind === "file" && args.length === 0,
-        );
-        durableRun.transition({
-          state: "paused",
-          progress: progress.snapshot(),
-          ...providerPause,
-        });
-        return;
-      }
-      durableRun.transition({
-        state: "paused",
-        progress: progress.snapshot(),
-        message: unknownErrorMessage(pauseError),
-      });
-      return;
-    }
     durableRun.transition({
       state: ctx.signal?.aborted || resolvedOptions.signal?.aborted ? "stopped" : "failed",
       progress: progress.snapshot(),
       usage: usage.snapshot(),
-      error,
+      error: outcome.error,
     });
   }
+  await durableRun.flush().catch(() => undefined);
 
   if (outcome.ok) return outcome.value;
   throw outcome.error;

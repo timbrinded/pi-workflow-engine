@@ -8,17 +8,26 @@ import type { WorktreeBaseline } from "./worktree.ts";
 import { isRecord } from "./guards.ts";
 
 /** Validate and normalize workflow metadata without executing workflow code. */
-export function parseWorkflowMeta(value: unknown): { meta: WorkflowMeta } | { reason: string } {
-  if (!isRecord(value)) return { reason: "meta export must be an object" };
-  return parseWorkflowMetaObject(value);
+export function parseWorkflowMeta(meta: unknown): { meta: WorkflowMeta } | { reason: string } {
+  if (!isRecord(meta)) return { reason: "meta export must be an object" };
+  if (typeof meta.name !== "string") return { reason: "meta.name must be a string" };
+
+  const description = meta.description;
+  if (description !== undefined && typeof description !== "string") return { reason: "meta.description must be a string when provided" };
+
+  const phases = meta.phases;
+  if (phases !== undefined && !isWorkflowPhases(phases)) return { reason: "meta.phases must be an array of { title: string }" };
+
+  const workflowMeta: WorkflowMeta = { name: meta.name, description: description ?? "" };
+  if (phases !== undefined) workflowMeta.phases = phases;
+  return { meta: workflowMeta };
 }
 
 export function parseWorkflowModule(value: unknown): { module: WorkflowModule } | { reason: string } {
   if (!isRecord(value)) return { reason: "module export is not an object" };
-  const meta = value.meta;
-  if (!isRecord(meta)) return { reason: "missing meta export" };
+  if (value.meta === undefined) return { reason: "missing meta export" };
 
-  const parsedMeta = parseWorkflowMetaObject(meta);
+  const parsedMeta = parseWorkflowMeta(value.meta);
   if ("reason" in parsedMeta) return parsedMeta;
   if (!isWorkflowRun(value.default)) return { reason: "default export must be a function" };
 
@@ -35,20 +44,6 @@ export function loadWorkflow(
   return isolatedWorktreeBaseline === undefined
     ? loaded
     : { ...loaded, isolatedWorktreeBaseline };
-}
-
-function parseWorkflowMetaObject(meta: Record<string, unknown>): { meta: WorkflowMeta } | { reason: string } {
-  if (typeof meta.name !== "string") return { reason: "meta.name must be a string" };
-
-  const description = meta.description;
-  if (description !== undefined && typeof description !== "string") return { reason: "meta.description must be a string when provided" };
-
-  const phases = meta.phases;
-  if (phases !== undefined && !isWorkflowPhases(phases)) return { reason: "meta.phases must be an array of { title: string }" };
-
-  const workflowMeta: WorkflowMeta = { name: meta.name, description: description ?? "" };
-  if (phases !== undefined) workflowMeta.phases = phases;
-  return { meta: workflowMeta };
 }
 
 function isWorkflowRun(value: unknown): value is WorkflowModule["default"] {
