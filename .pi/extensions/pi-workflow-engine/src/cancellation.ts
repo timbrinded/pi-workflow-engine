@@ -27,7 +27,7 @@ export function throwIfAborted(signal: AbortSignal | undefined): void {
 export function isFatalWorkflowError(error: unknown, signal: AbortSignal | undefined): boolean {
   if (signal?.aborted) return true;
   if (safeInstanceOf(error, WorkflowAbortError)) return true;
-  if (typeof DOMException !== "undefined" && safeInstanceOf(error, DOMException)) {
+  if (safeInstanceOf(error, DOMException)) {
     try {
       return error.name === "AbortError";
     } catch {
@@ -67,10 +67,6 @@ export async function raceWithAbort<T>(operation: () => Promise<T>, signal: Abor
     };
     const onAbort = () => finish(() => reject(abortReason(signal)));
     signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
     void operation().then(
       (value) => finish(() => resolve(value)),
       (error: unknown) => finish(() => reject(error)),
