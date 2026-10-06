@@ -142,7 +142,12 @@ test("background start returns after durable metadata and delivers success once 
     assert.equal(sent.length, 0);
 
     harness.idle = true;
+    // The run settles after its record says "completed"; idle events may arrive before or after it is queued.
     await coordinator.agentSettled(ctx);
+    await waitFor(async () => {
+      await coordinator.agentSettled(ctx);
+      return sent.length > 0;
+    });
     await coordinator.agentSettled(ctx);
     const record = await new ProjectWorkflowRunStore(cwd).load("background-success-run");
     assert.equal(sent.length, 1);
@@ -250,6 +255,8 @@ test("background failures are delivered without rejecting unrelated host work", 
       throw new Error("expected background failure");
     }), "background-failure-run");
     await waitFor(() => sent.length === 1);
+    // The delivered marker is saved just after the message is sent.
+    await waitFor(async () => (await new ProjectWorkflowRunStore(cwd).load("background-failure-run"))?.background?.delivery.state === "delivered");
 
     const record = await new ProjectWorkflowRunStore(cwd).load("background-failure-run");
     assert.equal(record?.state, "failed");
