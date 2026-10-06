@@ -70,6 +70,22 @@ test("provider synchronization preserves isolated-cwd providers but removes shar
   assert.equal(childRuntime.getRegisteredProviderConfig("target-only"), undefined);
 });
 
+test("provider synchronization mirrors providers registered as objects on pi 1.x", async () => {
+  const native = { id: "faux", api: {} };
+  const mirrored: unknown[] = [];
+  const hostRegistry = Object.assign(new ModelRegistry(await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false })), {
+    getRegisteredProviderIds: () => ["faux"],
+    getRegisteredNativeProvider: (id: string) => (id === "faux" ? native : undefined),
+  });
+  const childRuntime = Object.assign(await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false }), {
+    registerNativeProvider: (provider: unknown) => mirrored.push(provider),
+  });
+
+  await synchronizeWorkflowModelRuntime({ host: hostRegistry, child: childRuntime, selectedModel: undefined, removeChildOnlyProviders: true });
+
+  assert.deepEqual(mirrored, [native]);
+});
+
 test("production session services load skills, tools, and host runtime providers, and inherit user retry settings without writing them", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-workflow-session-services-"));
   const cwd = join(root, "project");
