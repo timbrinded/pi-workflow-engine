@@ -22,10 +22,9 @@ import {
   WORKFLOW_RUN_HISTORY_LIMIT,
   type WorkflowRunLifecycleAction,
 } from "./workflow-run-history.ts";
-import { transitionWorkflowRun, type WorkflowRunRecord } from "./workflow-run-record.ts";
+import { stopWorkflowRunRecord, type WorkflowRunRecord } from "./workflow-run-record.ts";
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
-import { emptyWorkflowUsageTotals } from "./usage.ts";
 import {
   WorkflowUsageLimitScheduler,
   type WorkflowUsageLimitSchedulerClock,
@@ -196,17 +195,7 @@ export class WorkflowRunController {
       if (action === "stop") {
         if (record.state === "paused") {
           this.usageLimitScheduler.cancel(runId);
-          const stopped = transitionWorkflowRun(record, {
-            state: "stopped",
-            progress: record.progress,
-            usage: record.usage ?? record.progress.usage ?? {
-              agents: [],
-              totals: emptyWorkflowUsageTotals(),
-              assistantMessages: 0,
-            },
-            error: new Error("Workflow stopped by user."),
-          });
-          await this.storeForCwd(ctx.cwd).save(stopped);
+          await this.storeForCwd(ctx.cwd).save(stopWorkflowRunRecord(record));
           await this.background.durableRunSettled(ctx, runId);
           ctx.ui.notify(`Workflow run ${runId} is now stopped.`, "info");
           return;
@@ -229,10 +218,7 @@ export class WorkflowRunController {
     action: "resume" | "restart",
   ): Promise<string> {
     const unavailable = backgroundUnavailableResult(ctx.mode);
-    if (unavailable) {
-      const first = unavailable.content[0];
-      throw new Error(first?.type === "text" ? first.text : "background workflows are unavailable");
-    }
+    if (unavailable) throw new Error(unavailable.content[0].text);
     const workflow = await this.dependencies.resolveWorkflow(record.workflow.name);
     if (!workflow) throw new Error(`registered workflow ${record.workflow.name} is unavailable`);
     if (workflow.source.kind !== "file") {
@@ -245,7 +231,6 @@ export class WorkflowRunController {
       throw new Error("workflow source changed, so journal replay cannot resume safely");
     }
     const options = resolveWorkflowRunOptions({
-      inspect: false,
       perf: record.options.perf,
       concurrency: record.options.concurrency,
       parallelSubmissionLimit: record.options.parallelSubmissionLimit ?? undefined,
@@ -259,7 +244,6 @@ export class WorkflowRunController {
         ? (record.state === "paused" ? record.pause?.attempt : undefined) ?? record.options.usageLimitAttempt
         : 0,
       budget: record.options.budget ?? undefined,
-      resultViewer: "skip",
       resumeFromRunId: action === "resume" ? record.runId : undefined,
     });
     const result = await startBackgroundWorkflowTool({
@@ -270,8 +254,7 @@ export class WorkflowRunController {
       execute: (backgroundCtx, backgroundOptions) =>
         this.dependencies.execute(backgroundCtx, workflow.meta.name, workflow, backgroundOptions),
     });
-    const first = result.content[0];
-    const message = first?.type === "text" ? first.text : `Workflow ${action} started.`;
+    const message = result.content[0].text;
     if (typeof result.details.error === "string") throw new Error(message);
     return message;
   }

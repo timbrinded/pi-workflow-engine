@@ -10,7 +10,7 @@ import {
 import type { WorkflowProgressSnapshot } from "./progress-types.ts";
 import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import { truncateText } from "./text.ts";
-import { isWorkflowUsageSnapshot, type WorkflowUsageSnapshot } from "./usage.ts";
+import { emptyWorkflowUsageTotals, isWorkflowUsageSnapshot, type WorkflowUsageSnapshot } from "./usage.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
   createPersistedWorkflowBackground,
@@ -114,7 +114,6 @@ export type WorkflowRunRecord = WorkflowRunRecordBase & (
 );
 
 export type WorkflowRunTransition =
-  | { readonly state: "queued"; readonly progress: WorkflowProgressSnapshot; readonly at?: number }
   | { readonly state: "running"; readonly progress: WorkflowProgressSnapshot; readonly at?: number }
   | { readonly state: "paused"; readonly progress: WorkflowProgressSnapshot; readonly message: string; readonly pause?: WorkflowRunPause; readonly at?: number }
   | { readonly state: "completed"; readonly progress: WorkflowProgressSnapshot; readonly usage: WorkflowUsageSnapshot; readonly result: unknown; readonly at?: number }
@@ -179,8 +178,6 @@ export function transitionWorkflowRun(record: WorkflowRunRecord, transition: Wor
   };
 
   switch (transition.state) {
-    case "queued":
-      return { ...base, state: "queued", startedAt: record.startedAt };
     case "running":
       return { ...base, state: "running", startedAt: record.startedAt ?? at };
     case "paused":
@@ -211,6 +208,16 @@ export function transitionWorkflowRun(record: WorkflowRunRecord, transition: Wor
         message: persistedErrorMessage(transition.error),
       };
   }
+}
+
+/** Records a user stop from the retained state, for runs whose engine cannot record it itself. */
+export function stopWorkflowRunRecord(record: WorkflowRunRecord): WorkflowRunRecord {
+  return transitionWorkflowRun(record, {
+    state: "stopped",
+    progress: record.progress,
+    usage: record.usage ?? record.progress.usage ?? { agents: [], totals: emptyWorkflowUsageTotals(), assistantMessages: 0 },
+    error: "Workflow stopped by user.",
+  });
 }
 
 export function captureWorkflowRunResult(value: unknown): WorkflowRunStoredResult {
@@ -336,7 +343,7 @@ function isAllowedTransition(from: WorkflowRunState, to: WorkflowRunState): bool
     case "running":
       return to === "completed" || to === "failed" || to === "stopped" || to === "paused";
     case "paused":
-      return to === "queued" || to === "running" || to === "failed" || to === "stopped";
+      return to === "running" || to === "failed" || to === "stopped";
     case "completed":
     case "failed":
     case "stopped":
