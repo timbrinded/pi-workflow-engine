@@ -228,12 +228,6 @@ interface SessionWorkflowInspections {
 }
 
 const workflowInspections = new WeakMap<ExtensionAPI, Map<string, SessionWorkflowInspections>>();
-let latestWorkflowInspection: LastWorkflowInspection | undefined;
-let latestActiveWorkflowInspection: ActiveWorkflowInspection | undefined;
-
-export function getLastWorkflowInspection(): LastWorkflowInspection | undefined {
-  return latestWorkflowInspection;
-}
 
 export async function openWorkflowInspector(ctx: ExtensionContext, inspection: LastWorkflowInspection | ActiveWorkflowInspection): Promise<void> {
   if (!ctx.hasUI || ctx.mode !== "tui") {
@@ -466,31 +460,9 @@ export async function sendWorkflowResult(
   name: string,
   mod: LoadedWorkflow,
   args: string,
-  options: WorkflowRunOptions,
+  options: ResolvedWorkflowRunOptions,
   perfRecorder?: PerfSink,
   reviewSessions: ReviewSessionCoordinator = createReviewSessionCoordinator(pi),
-): Promise<void> {
-  await sendResolvedWorkflowResult(
-    pi,
-    ctx,
-    name,
-    mod,
-    args,
-    resolveWorkflowRunOptions(options),
-    perfRecorder,
-    reviewSessions,
-  );
-}
-
-async function sendResolvedWorkflowResult(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  name: string,
-  mod: LoadedWorkflow,
-  args: string,
-  options: ResolvedWorkflowRunOptions,
-  perfRecorder: PerfSink | undefined,
-  reviewSessions: ReviewSessionCoordinator,
 ): Promise<void> {
   const execution = await executeResolvedWorkflow(pi, ctx, name, mod, args, options, perfRecorder);
   reviewSessions.remember(ctx, execution, options);
@@ -523,17 +495,13 @@ async function executeResolvedWorkflow(
       if (source) {
         liveInspection = bindActiveWorkflowInspection(name, args, source);
         inspections.active = liveInspection;
-        latestActiveWorkflowInspection = liveInspection;
       } else if (inspections.active === liveInspection) {
         inspections.active = undefined;
-        if (latestActiveWorkflowInspection === liveInspection) latestActiveWorkflowInspection = undefined;
         liveInspection = undefined;
       }
     },
     onProgressSnapshot(snapshot) {
-      const completed = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
-      inspections.last = completed;
-      latestWorkflowInspection = completed;
+      inspections.last = { name, args, completedAt: snapshot.doneAt ?? Date.now(), snapshot };
     },
   });
 }
@@ -666,7 +634,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
       }
 
       // A picked invocation only exists for a blank command line, so its options equal the already-resolved defaults.
-      await sendResolvedWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, directOptions, perfRecorder, reviewSessions);
+      await sendWorkflowResult(pi, ctx, invocation.name, mod, invocation.args, directOptions, perfRecorder, reviewSessions);
     },
   });
 

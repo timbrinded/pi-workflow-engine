@@ -18,11 +18,7 @@ import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/con
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
-import {
-  captureWorkflowExtension,
-  captureWorkflowTool,
-  getLastWorkflowInspection,
-} from "./workflow-extension-fixtures.ts";
+import { captureWorkflowExtension, captureWorkflowTool } from "./workflow-extension-fixtures.ts";
 
 const WORKFLOW_TOOL_TEST_CWD = mkdtempSync(join(tmpdir(), "pi-workflow-tool-tests-"));
 process.on("exit", () => rmSync(WORKFLOW_TOOL_TEST_CWD, { recursive: true, force: true }));
@@ -502,30 +498,33 @@ export default async function run() {
   assert.match(JSON.stringify(extension.sentMessages[0]), /Detached background completed/);
 });
 
-test("a tool-invoked workflow records an inspector snapshot", async () => {
-  const tool = captureWorkflowTool();
+test("a failed tool-invoked workflow stays available to /workflow:inspector", async () => {
+  const extension = captureWorkflowExtension();
+  const inspector = extension.commands.get("workflow:inspector");
+  if (!inspector) throw new Error("expected /workflow:inspector command");
+  const notifications: string[] = [];
+  const ctx = { ...HEADLESS_CTX, ui: { notify: (message: string) => notifications.push(message) } } as unknown as ExtensionCommandContext;
   const script = `
-export const meta = { name: "inspect-probe", description: "Inspector capture probe" };
-export default async function run({ phase }) {
-  phase("Solo");
-  return { ok: true };
+export const meta = { name: "failing-inspect-probe", description: "Failed inspector probe" };
+export default async function run({ phase, log }) {
+  phase("Doomed");
+  log("failing workflow log");
+  throw new Error("boom");
 }
 `;
 
-  const result = await tool.execute("call-1", { script }, undefined, () => {}, HEADLESS_CTX);
+  await assert.rejects(() => extension.tool.execute("call-failing-inspect", { script }, undefined, () => {}, ctx), /boom/);
+  await inspector.handler("", ctx);
 
-  assert.equal(resultUsageAssistantMessages(result), 0);
-  const inspection = getLastWorkflowInspection();
-  assert.equal(inspection?.name, "inspect-probe");
-  assert.ok(
-    inspection?.snapshot.phases.some((phase) => phase.title === "Solo"),
-    `expected a "Solo" phase in the captured snapshot, got ${JSON.stringify(inspection?.snapshot.phases.map((p) => p.title))}`,
-  );
+  const inspection = notifications.at(-1) ?? "";
+  assert.match(inspection, /Workflow inspector: failing-inspect-probe/);
+  assert.match(inspection, /Phase: Doomed/);
+  assert.match(inspection, /failing workflow log/);
 });
 
 test("a TUI tool-invoked workflow opens the live inspector", async () => {
   const tool = captureWorkflowTool();
-  const { ctx, customCalls, customOptions } = createTuiContext();
+  const { ctx, customCalls, customOptions, customRenders } = createTuiContext();
   const script = `
 export const meta = { name: "inspect-live-probe", description: "Live inspector probe" };
 export default async function run({ phase }) {
@@ -538,8 +537,7 @@ export default async function run({ phase }) {
 
   assert.equal(customCalls(), 1);
   assert.deepEqual(customOptions()[0], WORKFLOW_VIEWER_OVERLAY_OPTIONS);
-  const inspection = getLastWorkflowInspection();
-  assert.equal(inspection?.name, "inspect-live-probe");
+  assert.match(customRenders()[0]?.join("\n") ?? "", /inspect-live-probe/);
 });
 
 test("the results command and shortcut reopen the last code-review findings without rerunning it", async () => {
