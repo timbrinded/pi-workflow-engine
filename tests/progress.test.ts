@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_LANE_ITEM_LIMIT, ProgressTracker } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
+import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import { createWorkflowUsageRecorder, formatWorkflowUsageLine } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createTestTheme } from "./fixtures/theme.ts";
 
@@ -140,6 +141,53 @@ test("concurrent progress trackers use string widgets and clear their run-scoped
     second.done();
     assert.equal(statuses.size, 0);
     assert.equal(widgets.size, 0);
+  }
+});
+
+test("ProgressTracker records late agent events after done without reviving its live surfaces", () => {
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  let intervalsStarted = 0;
+  globalThis.setInterval = (() => {
+    intervalsStarted++;
+    return 1 as unknown as ReturnType<typeof setInterval>;
+  }) as unknown as typeof setInterval;
+  globalThis.clearInterval = (() => {}) as typeof clearInterval;
+  const widgets = new Map<string, string[]>();
+  const statuses = new Map<string, string>();
+  const ctx = {
+    hasUI: true,
+    mode: "tui",
+    ui: {
+      theme: createTestTheme(),
+      setStatus(key: string, value: string | undefined) {
+        if (value === undefined) statuses.delete(key);
+        else statuses.set(key, value);
+      },
+      setWidget(key: string, value: string[] | undefined) {
+        if (value === undefined) widgets.delete(key);
+        else widgets.set(key, value);
+      },
+    },
+  } as unknown as ExtensionContext;
+  const snapshots: WorkflowProgressSnapshot[] = [];
+  const tracker = new ProgressTracker(ctx, "late-test", "late-test-run", (snapshot) => snapshots.push(snapshot));
+
+  try {
+    const id = tracker.agentQueued("Find", "straggler");
+    tracker.agentStart("Find", "straggler", id);
+    tracker.done();
+
+    tracker.agentFailed("straggler", new Error("session creation outlived the drain"), id);
+    tracker.log("progress snapshot callback failed: boom");
+
+    assert.equal(widgets.size, 0);
+    assert.equal(statuses.size, 0);
+    assert.equal(intervalsStarted, 1);
+    assert.equal(snapshots.at(-1)?.phases.flatMap((phase) => phase.agents)[0]?.status, "failed");
+  } finally {
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
   }
 });
 

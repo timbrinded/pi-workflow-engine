@@ -276,7 +276,8 @@ export class ProgressTracker {
 
   private publish(): void {
     this.publishSnapshot();
-    if (!this.ctx.hasUI) return;
+    // Agents that outlive a fatal drain still report after done(); record them without reviving live surfaces.
+    if (!this.ctx.hasUI || this.doneAt !== undefined) return;
     this.publishWidget();
     this.startWidgetRefresh();
     this.publishStatus();
