@@ -3,10 +3,8 @@ import { test } from "bun:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ProgressTracker } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
-import {
-  resolveAgentModel,
-  type CreateAgentSession,
-} from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import type { CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import { resolveAgentModel } from "../.pi/extensions/pi-workflow-engine/src/agent-session.ts";
 import {
   WorkflowBudgetExceededError,
   type WorkflowBudget,
@@ -24,47 +22,22 @@ import {
 test("resolveAgentModel uses provider-qualified refs and preserves additional slashes in model ids", () => {
   const target = testModel("openrouter", "anthropic/claude-3.5-sonnet");
   const calls: FindCall[] = [];
-  const resolved = resolveAgentModel("openrouter/anthropic/claude-3.5-sonnet", createRegistry([target], calls), undefined);
-
-  assert.equal(resolved.model, target);
-  assert.deepEqual(resolved.requested, {
-    ref: "openrouter/anthropic/claude-3.5-sonnet",
-    provider: "openrouter",
-    id: "anthropic/claude-3.5-sonnet",
-  });
+  assert.equal(resolveAgentModel("openrouter/anthropic/claude-3.5-sonnet", createRegistry([target], calls)), target);
   assert.deepEqual(calls, [{ provider: "openrouter", modelId: "anthropic/claude-3.5-sonnet" }]);
 });
 
 test("resolveAgentModel keeps bare model ids as Anthropic shorthand", () => {
   const target = testModel("anthropic", "claude-opus-4-5");
   const calls: FindCall[] = [];
-  const resolved = resolveAgentModel("claude-opus-4-5", createRegistry([target], calls), undefined);
-
-  assert.equal(resolved.model, target);
-  assert.deepEqual(resolved.requested, {
-    ref: "claude-opus-4-5",
-    provider: "anthropic",
-    id: "claude-opus-4-5",
-  });
+  assert.equal(resolveAgentModel("claude-opus-4-5", createRegistry([target], calls)), target);
   assert.deepEqual(calls, [{ provider: "anthropic", modelId: "claude-opus-4-5" }]);
 });
 
-test("resolveAgentModel inherits the host model only when model is omitted", () => {
-  const hostModel = testModel("anthropic", "claude-host");
-  const calls: FindCall[] = [];
-  const resolved = resolveAgentModel(undefined, createRegistry([], calls), hostModel);
-
-  assert.equal(resolved.model, hostModel);
-  assert.equal(resolved.requested, undefined);
-  assert.deepEqual(calls, []);
-});
-
 test("resolveAgentModel rejects unknown explicit model refs instead of falling back", () => {
-  const hostModel = testModel("anthropic", "claude-host");
   const calls: FindCall[] = [];
 
   assert.throws(
-    () => resolveAgentModel("openai/gpt-missing", createRegistry([], calls), hostModel),
+    () => resolveAgentModel("openai/gpt-missing", createRegistry([], calls)),
     /Agent model "openai\/gpt-missing" not found \(resolved as openai\/gpt-missing\)\./,
   );
   assert.deepEqual(calls, [{ provider: "openai", modelId: "gpt-missing" }]);
@@ -73,7 +46,7 @@ test("resolveAgentModel rejects unknown explicit model refs instead of falling b
 test("resolveAgentModel rejects malformed explicit model refs before registry lookup", () => {
   for (const modelRef of ["", " ", " openai/gpt", "/gpt", "openai/", "openai//gpt"]) {
     const calls: FindCall[] = [];
-    assert.throws(() => resolveAgentModel(modelRef, createRegistry([], calls), undefined), /Invalid agent model ref/);
+    assert.throws(() => resolveAgentModel(modelRef, createRegistry([], calls)), /Invalid agent model ref/);
     assert.deepEqual(calls, []);
   }
 });

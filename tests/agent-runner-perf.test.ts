@@ -150,6 +150,7 @@ test("runAgent records lifecycle timing samples without LLM calls", async () => 
     "agent.extract_result_ms",
     "agent.prompt_ms",
     "agent.queue_wait_ms",
+    "agent.session_resources_ms",
     "agent.total_ms",
   ]);
   const queueWait = perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.queue_wait_ms");

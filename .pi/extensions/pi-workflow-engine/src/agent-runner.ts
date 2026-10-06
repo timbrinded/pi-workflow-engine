@@ -9,10 +9,7 @@ import {
   type AgentAttemptResult,
   type AgentReplayPlan,
 } from "./agent-replay.ts";
-import {
-  resolveAgentModel,
-  type ResolvedAgentModel,
-} from "./agent-session.ts";
+import { resolveAgentModel } from "./agent-session.ts";
 import type {
   AgentExecutionOptions,
   AgentRunTags,
@@ -33,8 +30,6 @@ export type {
   CreateAgentSession,
   RunContext,
 } from "./agent-runner-types.ts";
-export { resolveAgentModel } from "./agent-session.ts";
-export type { ResolvedAgentModel, ResolvedAgentModelRequest } from "./agent-session.ts";
 
 /**
  * Run one subagent to completion in an isolated in-memory session.
@@ -169,13 +164,13 @@ function resolveAgentRouting(
   rc: RunContext,
   opts: AgentExecutionOptions,
   label: string,
-): { readonly model: ResolvedAgentModel["model"]; readonly thinkingLevel: AgentExecutionOptions["thinkingLevel"] } {
+): ReturnType<typeof resolveAgentModelProfile> {
   try {
     return resolveAgentModelProfile(
       {
         request: opts,
         profiles: rc.modelProfiles,
-        resolveExplicitModel: (modelRef) => resolveAgentModel(modelRef, rc.modelRegistry, rc.hostModel).model,
+        resolveExplicitModel: (modelRef) => resolveAgentModel(modelRef, rc.modelRegistry),
         hostModel: rc.hostModel,
       },
     );
