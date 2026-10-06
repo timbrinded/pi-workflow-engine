@@ -5,7 +5,7 @@ import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapsh
 import { countAgents, statusTextFromCounts } from "../../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
 import { renderWorkflowWidgetLines } from "../../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
 import { createTestTheme } from "../../tests/fixtures/theme.ts";
-import { intFlag, maybeWriteBenchmarkOutput, parseBenchArgs, printBenchmarkOutput, runBenchmark } from "./lib.ts";
+import { intFlag, parseBenchArgs, runBenchmark, writeBenchmarkOutput } from "./lib.ts";
 
 const options = parseBenchArgs();
 const agents = intFlag(options, "agents", 500);
@@ -41,8 +41,7 @@ const result = {
   progressEventMs,
 };
 
-const written = await maybeWriteBenchmarkOutput("ui", result, options.out);
-printBenchmarkOutput(written ? { ...result, written } : result);
+await writeBenchmarkOutput("ui", result, options.out);
 
 function createSnapshot(config: { agents: number; laneItems: number; phases: number }): WorkflowProgressSnapshot {
   const phaseSnapshots = Array.from({ length: config.phases }, (_value, phaseIndex) => ({

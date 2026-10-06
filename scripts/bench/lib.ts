@@ -102,16 +102,16 @@ export async function runBenchmark(name: string, iterations: number, fn: () => P
   };
 }
 
-export async function maybeWriteBenchmarkOutput(name: string, data: unknown, out: string | undefined): Promise<string | undefined> {
-  if (!out) return undefined;
+/** Print the result as JSON, first writing it to `out` when given ("auto" picks a timestamped artifact path). */
+export async function writeBenchmarkOutput(name: string, data: object, out: string | undefined): Promise<void> {
+  if (!out) {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
   const path = out === "auto" ? join(".artifacts", "benchmarks", `${timestamp()}-${safeName(name)}.json`) : out;
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(data, null, 2)}\n`);
-  return path;
-}
-
-export function printBenchmarkOutput(data: unknown): void {
-  console.log(JSON.stringify(data, null, 2));
+  console.log(JSON.stringify({ ...data, written: path }, null, 2));
 }
 
 function parsePositiveInt(raw: string, fallback: number): number {

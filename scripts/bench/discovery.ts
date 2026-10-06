@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverWorkflows } from "../../.pi/extensions/pi-workflow-engine/src/discovery.ts";
-import { maybeWriteBenchmarkOutput, parseBenchArgs, printBenchmarkOutput, runBenchmark } from "./lib.ts";
+import { parseBenchArgs, runBenchmark, writeBenchmarkOutput } from "./lib.ts";
 
 const options = parseBenchArgs();
 const extensionDir = fileURLToPath(new URL("../../.pi/extensions/pi-workflow-engine/", import.meta.url));
@@ -32,8 +32,7 @@ const result = {
   temp,
 };
 
-const written = await maybeWriteBenchmarkOutput("discovery", result, options.out);
-printBenchmarkOutput(written ? { ...result, written } : result);
+await writeBenchmarkOutput("discovery", result, options.out);
 
 async function runTempWorkflowBenchmark(count: number, iterations: number): Promise<unknown> {
   const repo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-bench-"));

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { maybeWriteBenchmarkOutput, parseBenchArgs, printBenchmarkOutput, runBenchmark } from "./lib.ts";
+import { parseBenchArgs, runBenchmark, writeBenchmarkOutput } from "./lib.ts";
 
 interface ImportTarget {
   readonly name: string;
@@ -29,12 +29,11 @@ const result = {
   imports,
 };
 
-const written = await maybeWriteBenchmarkOutput("startup", result, options.out);
-printBenchmarkOutput(written ? { ...result, written } : result);
+await writeBenchmarkOutput("startup", result, options.out);
 
 function runImportProbe(path: string): void {
   // runBenchmark times the whole child process, so the measurement includes process startup.
-  const result = spawnSync(process.execPath, ["--eval", `await import(${JSON.stringify(path)});`], { cwd: process.cwd(), encoding: "utf8" });
+  const result = spawnSync(process.execPath, ["--eval", `await import(${JSON.stringify(path)});`], { encoding: "utf8" });
   if (result.status !== 0) {
     throw new Error(`import probe failed for ${path}: ${result.stderr || result.stdout}`);
   }
