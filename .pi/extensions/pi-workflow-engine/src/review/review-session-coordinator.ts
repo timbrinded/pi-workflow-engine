@@ -6,8 +6,8 @@ import type { WorkflowExecution } from "../workflow-execution.ts";
 import { handleReviewViewerAction } from "./review-actions.ts";
 import { ReviewFixBudgetLedger } from "./review-budget.ts";
 import { toReviewIssues, type ReviewIssue, type ReviewIssueSelection } from "./review-issues.ts";
-import { codeReviewReport, decideReviewResultsPresentation, showReviewResultsViewer } from "./review-results-flow.ts";
-import type { ReviewReport } from "./review-report.ts";
+import { showReviewResultsViewer } from "./review-results-flow.ts";
+import { isReviewReport, type ReviewReport } from "./review-report.ts";
 
 interface RetainedCodeReviewResult {
   readonly report: ReviewReport;
@@ -40,11 +40,10 @@ export class ReviewSessionCoordinator {
     execution: WorkflowExecution,
     options: ResolvedWorkflowRunOptions,
   ): void {
-    const name = execution.envelope.name;
-    if (name !== "code-review") return;
+    if (execution.envelope.name !== "code-review") return;
     const key = sessionKey(ctx);
-    const report = codeReviewReport(name, execution.envelope.result);
-    if (!report) {
+    const report = execution.envelope.result;
+    if (!isReviewReport(report)) {
       this.sessions.delete(key);
       return;
     }
@@ -57,24 +56,16 @@ export class ReviewSessionCoordinator {
     });
   }
 
+  /** Opens the findings viewer when explicitly requested. Call after remember() for the same execution. */
   async present(
     ctx: ExtensionContext,
     execution: WorkflowExecution,
     options: ResolvedWorkflowRunOptions,
   ): Promise<void> {
-    const name = execution.envelope.name;
-    const decision = decideReviewResultsPresentation({
-      workflowName: name,
-      result: execution.envelope.result,
-      mode: ctx.mode,
-      hasUI: ctx.hasUI,
-      resultViewer: options.resultViewer,
-    });
-    if (decision.kind !== "open") return;
-
+    if (execution.envelope.name !== "code-review" || options.resultViewer !== "open" || ctx.mode !== "tui" || !ctx.hasUI) return;
     const retained = this.sessions.get(sessionKey(ctx));
-    if (!retained) return;
-    await this.openAndHandle(ctx, retained, decision.issues);
+    if (!retained || retained.report.findings.length === 0) return;
+    await this.openAndHandle(ctx, retained, toReviewIssues(retained.report));
   }
 
   async reopen(ctx: ExtensionContext): Promise<void> {
