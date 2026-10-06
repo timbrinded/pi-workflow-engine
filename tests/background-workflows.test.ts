@@ -9,6 +9,7 @@ import {
   backgroundOrigin,
 } from "../.pi/extensions/pi-workflow-engine/src/background-workflows.ts";
 import { raceWithAbort } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
 import { resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
@@ -131,7 +132,7 @@ test("background start returns after durable metadata and delivers success once 
   try {
     await startRun(coordinator, ctx, workflow("background-success", async () => {
       await gate;
-      return { summary: "Background success." };
+      return { summary: "Background success.", areas: ["engine"] };
     }), "background-success-run");
 
     assert.equal((await new ProjectWorkflowRunStore(cwd).load("background-success-run"))?.state, "running");
@@ -147,6 +148,10 @@ test("background start returns after durable metadata and delivers success once 
     assert.equal(sent.length, 1);
     assert.match(sent[0]?.content ?? "", /Run ID: background-success-run/);
     assert.match(sent[0]?.content ?? "", /Background success/);
+    // The delivery carries the full result so it renders like a foreground run.
+    const details = sent[0]?.details;
+    assert.ok(isRecord(details));
+    assert.deepEqual(details.result, { summary: "Background success.", areas: ["engine"] });
     assert.equal(record?.background?.delivery.state, "delivered");
   } finally {
     await rm(cwd, { recursive: true, force: true });

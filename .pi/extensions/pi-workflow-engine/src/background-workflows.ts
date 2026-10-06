@@ -28,7 +28,10 @@ export interface BackgroundWorkflowStartInput {
 
 export interface BackgroundWorkflowResultDetails {
   readonly name: string;
-  readonly result: { readonly summary: string };
+  /** The retained result of a completed run, so the delivery renders like a foreground result; else `{ summary }`. */
+  readonly result: unknown;
+  readonly summary: string;
+  readonly startedAt?: number;
   readonly completedAt: number;
   readonly usage: WorkflowRunRecord["usage"];
   readonly runId: string;
@@ -340,9 +343,12 @@ export function backgroundOrigin(ctx: Pick<ExtensionContext, "sessionManager">, 
 
 export function backgroundResultDetails(record: WorkflowRunRecord): BackgroundWorkflowResultDetails {
   if (!isDeliverableState(record.state)) throw new Error(`Workflow run ${record.runId} has not finished or paused.`);
+  const summary = backgroundSummary(record);
   return {
     name: record.workflow.name,
-    result: { summary: backgroundSummary(record) },
+    result: record.state === "completed" && record.result.kind === "value" ? record.result.value : { summary },
+    summary,
+    startedAt: record.startedAt,
     completedAt: record.endedAt ?? record.updatedAt,
     usage: record.usage,
     runId: record.runId,
@@ -368,7 +374,7 @@ function formatBackgroundDelivery(details: BackgroundWorkflowResultDetails): str
     `Run ID: ${details.runId}`,
     `State: ${details.status}`,
     "",
-    details.result.summary,
+    details.summary,
   ].join("\n");
 }
 
