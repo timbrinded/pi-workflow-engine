@@ -13,6 +13,7 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
 import { DEFAULT_REVIEW_RESULTS_SHORTCUT } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
@@ -101,19 +102,6 @@ function createSessionManager(sessionId: string): Pick<ExtensionContext["session
     getSessionFile: () => undefined,
     getSessionId: () => sessionId,
   };
-}
-
-function resultUsageAssistantMessages(value: unknown): unknown {
-  if (!isRecord(value)) return undefined;
-  const details = value.details;
-  if (!isRecord(details)) return undefined;
-  const usage = details.usage;
-  if (!isRecord(usage)) return undefined;
-  return usage.assistantMessages;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function toolResultText(value: unknown): string {

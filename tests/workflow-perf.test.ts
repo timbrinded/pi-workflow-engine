@@ -99,14 +99,6 @@ function codeReviewWorkflowModule(): WorkflowModule {
   };
 }
 
-function fakePi(): ExtensionAPI {
-  return {
-    sendMessage() {
-      throw new Error("sendMessage should not be called for failing workflows");
-    },
-  } as unknown as ExtensionAPI;
-}
-
 test("runWorkflow exposes a perf snapshot when perf is enabled", async () => {
   let snapshot: PerfSnapshot | undefined;
   const mod: WorkflowModule = {

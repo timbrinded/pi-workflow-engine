@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
-import { WORKFLOW_RUNS_DIR } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import { resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import type { LoadedWorkflow, WorkflowRunMetadata } from "../.pi/extensions/pi-workflow-engine/src/types.ts";

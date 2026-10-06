@@ -2,7 +2,6 @@ import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, type AdvisoryCandidate
 import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "./types.ts";
 
-export { normalizePath } from "./advisory-evidence.ts";
 
 export interface AdvisoryLens {
   label: string;

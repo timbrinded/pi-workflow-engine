@@ -6,7 +6,6 @@ import {
   ResearchVerificationSchema,
   type ResearchClaimCandidate,
   type ResearchReport,
-  type ResearchVerification,
 } from "../src/research-contract.ts";
 import {
   buildClaimCandidates,

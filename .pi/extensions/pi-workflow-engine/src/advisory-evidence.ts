@@ -30,7 +30,7 @@ function normalizedSummary(summary: string): string {
   return summary.toLowerCase().replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
 }
 
-export function normalizePath(path: string): string {
+function normalizePath(path: string): string {
   return path.replace(/^\.\//, "").replace(/^[ab]\//, "");
 }
 

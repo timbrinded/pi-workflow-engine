@@ -55,11 +55,11 @@ const MAX_CONTEXT_RESULT_JSON_CHARS = 20_000;
 
 function formatMessageContent(envelope: WorkflowResultEnvelope): string {
   const details = formatWorkflowDetailLines(envelope);
-  return `## Workflow: ${envelope.name}\n\n${formatResultForContext(envelope.name, envelope.result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
+  return `## Workflow: ${envelope.name}\n\n${formatResultForContext(envelope.result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
 }
 
 /** The host model only sees this text, never the envelope `details`, so it carries every result field. */
-function formatResultForContext(name: string, result: unknown): string {
+function formatResultForContext(result: unknown): string {
   if (typeof result === "string") return result;
   if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(result);
   const summary = workflowResultSummary(result);
