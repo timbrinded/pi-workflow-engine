@@ -202,6 +202,64 @@ test("runAgent records successful live results into the journal", async () => {
   assert.deepEqual(recorded, [{ key: verifiedJournalKey("hello", { label: "live", resumeInputs: [] }), value: "done" }]);
 });
 
+test("a structured agent that needed a schema re-prompt is still journaled", async () => {
+  const recorded: unknown[] = [];
+  const journal: WorkflowJournal = {
+    lookup(): JournalLookup {
+      return { hit: false };
+    },
+    async record(_key, value) {
+      recorded.push(value);
+      return { ok: true };
+    },
+  };
+  const createSession: CreateAgentSession = async (options) => {
+    const finalTool = options.customTools?.find((tool) => tool.name === "final_answer");
+    if (!finalTool) throw new Error("expected final-answer tool");
+    const finalToolInfo = {
+      name: finalTool.name,
+      description: finalTool.description,
+      parameters: finalTool.parameters,
+      promptGuidelines: [],
+      sourceInfo: { path: "<sdk:final_answer>", source: "sdk", scope: "temporary", origin: "top-level" } as const,
+    };
+    // Like pi, the active tool set drives the effective system prompt.
+    let active = [...(options.tools ?? [])];
+    let prompts = 0;
+    return {
+      session: {
+        ...createAgentRunnerSession({
+          model: DEFAULT_SESSION_MODEL,
+          async prompt() {
+            prompts += 1;
+            if (prompts === 2) await executeTestFinalAnswer(options, { ok: true });
+          },
+          getAllTools: () => [TEST_TOOL, finalToolInfo],
+          getActiveToolNames: () => [...active],
+          getToolDefinition: (name) => (name === TEST_TOOL.name ? TEST_TOOL_DEFINITION : name === finalTool.name ? finalTool : undefined),
+          setActiveToolsByName(names) {
+            active = [...names];
+          },
+        }),
+        get systemPrompt() {
+          return `Tools: ${active.join(", ")}`;
+        },
+      },
+    };
+  };
+
+  const result = await runAgent(createRunContext({ createSession, journal }), "hello", {
+    label: "repaired",
+    resume: "read-only",
+    resumeInputs: [],
+    tools: ["read"],
+    schema: Type.Object({ ok: Type.Boolean() }),
+  });
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(recorded, [{ ok: true }]);
+});
+
 test("an agent that recovers through an agentRetries restart is still journaled", async () => {
   const recorded: unknown[] = [];
   const journal: WorkflowJournal = {

@@ -271,6 +271,7 @@ test("runAgent re-prompts a schema agent that skips final_answer once", async ()
         subscribe() {
           return () => {};
         },
+        getActiveToolNames: () => ["read", "final_answer"],
         setActiveToolsByName(toolNames) {
           restrictedTools.push([...toolNames]);
         },
@@ -287,7 +288,7 @@ test("runAgent re-prompts a schema agent that skips final_answer once", async ()
 
   assert.deepEqual(result, { ok: true });
   assert.equal(promptCalls, 2);
-  assert.deepEqual(restrictedTools, [["final_answer"]]);
+  assert.deepEqual(restrictedTools, [["final_answer"], ["read", "final_answer"]]);
   assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_reprompt")?.total, 1);
   assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_missing"), undefined);
   const snapshot = usage.snapshot();
@@ -312,6 +313,7 @@ test("runAgent throws a serialisable typed error after bounded schema repair exh
       subscribe() {
         return () => {};
       },
+      getActiveToolNames: () => ["read", "final_answer"],
       setActiveToolsByName(toolNames) {
         restrictedTools.push([...toolNames]);
       },
@@ -342,7 +344,7 @@ test("runAgent throws a serialisable typed error after bounded schema repair exh
     details: error.details,
   });
   assert.equal(promptCalls, 3);
-  assert.deepEqual(restrictedTools, [["final_answer"], ["final_answer"]]);
+  assert.deepEqual(restrictedTools, [["final_answer"], ["final_answer"], ["read", "final_answer"]]);
   assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_reprompt")?.total, 2);
   assert.equal(perf.snapshot().aggregates.find((aggregate) => aggregate.name === "agent.structured_missing")?.total, 1);
   const snapshot = usage.snapshot();

@@ -191,7 +191,8 @@ export async function promptAgentSession(input: {
           if (failure) throw failure;
         };
         await promptSession(finalPrompt);
-        if (opts.schema) {
+        if (opts.schema && !handle.hasStructuredResult()) {
+          const activeTools = session.getActiveToolNames();
           for (let attempt = 0; !handle.hasStructuredResult() && attempt < MAX_SCHEMA_REPAIR_ATTEMPTS; attempt++) {
             throwIfAborted(rc.signal);
             session.setActiveToolsByName([FINAL_TOOL]);
@@ -199,6 +200,8 @@ export async function promptAgentSession(input: {
             rc.perf.counter("agent.structured_reprompt", 1, tags);
             await promptSession(SCHEMA_REPROMPT);
           }
+          // Narrowing also rebuilds pi's system prompt; restore both so replay validation sees the captured identity.
+          session.setActiveToolsByName(activeTools);
         }
 
         throwIfAborted(rc.signal);
