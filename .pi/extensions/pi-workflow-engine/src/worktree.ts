@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { runBoundedProcess } from "./process-runner.ts";
@@ -138,6 +139,8 @@ export class WorktreeRegistry {
 
   async add(signal?: AbortSignal, baseline?: WorktreeBaseline): Promise<WorktreeRef | WorktreeAddFailure> {
     const added = await addWorktree({ repoCwd: this.repoCwd, runner: this.runner, signal, timeoutMs: this.timeoutMs, baseline });
+    // A rejected `git worktree add` creates nothing; tracking it would make cleanup fail on a path git never knew.
+    if ("error" in added && !existsSync(added.path)) return added;
     this.register(added.path);
     if (added.snapshot === true) this.snapshots.add(added.path);
     if ("error" in added) {

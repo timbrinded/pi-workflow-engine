@@ -116,24 +116,6 @@ test("WorktreeRegistry registers created worktrees and removes them", async () =
   assert.deepEqual(runner.calls[2]?.args, ["worktree", "remove", "--force", added.path]);
 });
 
-test("WorktreeRegistry attempts cleanup when worktree add fails", async () => {
-  const runner = fakeRunner((options) => {
-    if (options.args[0] === "worktree" && options.args[1] === "add") {
-      return { ok: false, stdout: "", stderr: "add failed", error: "add failed" };
-    }
-    return OK;
-  });
-  const registry = new WorktreeRegistry("/repo", { runner });
-
-  const added = await registry.add();
-
-  assert.ok("error" in added);
-  assert.equal(added.error, "add failed");
-  assert.equal(added.cleanup?.ok, true);
-  assert.equal(registry.size, 0);
-  assert.deepEqual(runner.calls.map((call) => call.args.slice(0, 2).join(" ")), ["worktree add", "worktree remove"]);
-});
-
 test("WorktreeRegistry removeAll retries every registered path", async () => {
   const removed: string[] = [];
   const runner = fakeRunner((options) => {
@@ -339,6 +321,37 @@ test("addWorktree falls back to a committed snapshot for unborn repositories", a
   } finally {
     if (repeated && !("error" in repeated)) await removeWorktree({ repoCwd: repo, path: repeated.path, snapshot: repeated.snapshot });
     if (added && !("error" in added)) await removeWorktree({ repoCwd: repo, path: added.path, snapshot: added.snapshot });
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("WorktreeRegistry removes failed worktrees git created and does not track ones it never created", async () => {
+  const repo = await makeTempGitRepo("pi-workflow-failed-add-");
+  const registry = new WorktreeRegistry(repo);
+  try {
+    await writeFile(join(repo, "app.ts"), "before\n");
+    assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
+    const commit = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], {
+      cwd: repo,
+      encoding: "utf8",
+    });
+    assert.equal(commit.status, 0, commit.stderr);
+
+    const neverCreated = await registry.add(undefined, { ref: "0".repeat(40) });
+    assert.ok("error" in neverCreated);
+    assert.equal(registry.size, 0);
+
+    const created = await registry.add(undefined, {
+      ref: "HEAD",
+      patch: "diff --git a/app.ts b/app.ts\n--- a/app.ts\n+++ b/app.ts\n@@ -1 +1 @@\n-not the baseline\n+reviewed\n",
+    });
+    assert.ok("error" in created);
+    assert.equal(created.cleanup?.ok, true);
+    await assert.rejects(stat(created.path));
+    assert.equal(registry.size, 0);
+
+    assert.deepEqual(await registry.removeAll(), []);
+  } finally {
     await rm(repo, { recursive: true, force: true });
   }
 });
