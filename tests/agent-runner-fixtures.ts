@@ -30,7 +30,7 @@ import {
   hostWorkflowModelProfiles,
   type ResolvedWorkflowModelProfiles,
 } from "../.pi/extensions/pi-workflow-engine/src/model-profiles.ts";
-import { PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
+import { PerfRecorder, type PerfSink } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import { createBudget, type WorkflowBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
 import {
@@ -143,6 +143,9 @@ export function createRunContext(input: {
   readonly modelRegistry?: Pick<ModelRegistry, "find">;
   readonly progress?: AgentProgress;
   readonly cwd?: string;
+  readonly semaphore?: Semaphore;
+  readonly perf?: PerfSink;
+  readonly resumeEditedWorkflow?: boolean;
   readonly budget?: WorkflowBudget;
   readonly usage?: ReturnType<typeof createWorkflowUsageRecorder>;
   readonly journal?: WorkflowJournal;
@@ -161,16 +164,17 @@ export function createRunContext(input: {
     cwd,
     hostModel: input.hostModel,
     modelRegistry: input.modelRegistry ?? createRegistry([]),
-    semaphore: new Semaphore(1),
+    semaphore: input.semaphore ?? new Semaphore(1),
     agentLimiter: input.agentLimiter ?? new WorkflowAgentLimiter(DEFAULT_WORKFLOW_MAX_AGENTS),
     agentTimeoutMs: input.agentTimeoutMs ?? DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
     agentRetries: input.agentRetries ?? DEFAULT_WORKFLOW_AGENT_RETRIES,
     pauseOnProviderUsageLimit: input.pauseOnProviderUsageLimit ?? false,
+    resumeEditedWorkflow: input.resumeEditedWorkflow,
     retryScheduler: input.retryScheduler ?? defaultAgentRetryScheduler,
     modelProfiles: input.modelProfiles ?? hostWorkflowModelProfiles(input.hostModel),
     progress: input.progress ?? createProgress(),
     signal: input.signal,
-    perf: new PerfRecorder(),
+    perf: input.perf ?? new PerfRecorder(),
     usage,
     budget: input.budget ?? createBudget(null, usage),
     journal: input.journal ?? createMemoryBackedJournal(),
@@ -227,18 +231,10 @@ export function createTextSession(model: Model<Api> | undefined = DEFAULT_SESSIO
   return {
     session: createAgentRunnerSession({
       messages: [assistantTextMessage("done")],
-      systemPrompt: "Test system prompt",
       model,
-      thinkingLevel: "low",
-      async prompt() {},
       getLastAssistantText() {
         return "done";
       },
-      subscribe() {
-        return () => {};
-      },
-      dispose() {},
-      async abort() {},
       getAllTools() {
         return [TEST_TOOL];
       },

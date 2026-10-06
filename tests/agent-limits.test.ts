@@ -8,37 +8,27 @@ import {
 import { WorkflowAbortError } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import type { WorkflowJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import type { AgentResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
-import type { CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import type { AgentRunnerSession, CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import {
   DEFAULT_SESSION_MODEL,
   assistantTextMessage,
   commandNames,
+  createAgentRunnerSession,
   createFakeWorktreeRegistry,
   createRunContext,
   runAgent,
 } from "./agent-runner-fixtures.ts";
 
-function textSession(input: {
-  readonly prompt?: () => Promise<void>;
-  readonly abort?: () => Promise<void>;
-  readonly dispose?: () => void;
-} = {}): Awaited<ReturnType<CreateAgentSession>> {
+function textSession(
+  overrides: Partial<Pick<AgentRunnerSession, "prompt" | "abort" | "dispose">> = {},
+): Awaited<ReturnType<CreateAgentSession>> {
   return {
-    session: {
+    session: createAgentRunnerSession({
       messages: [assistantTextMessage("done")],
-      systemPrompt: "Agent limits test",
       model: DEFAULT_SESSION_MODEL,
-      thinkingLevel: "low",
-      prompt: input.prompt ?? (async () => {}),
       getLastAssistantText: () => "done",
-      subscribe: () => () => {},
-      dispose: input.dispose ?? (() => {}),
-      abort: input.abort ?? (async () => {}),
-      getAllTools: () => [],
-      getActiveToolNames: () => [],
-      getToolDefinition: () => undefined,
-      setActiveToolsByName() {},
-    },
+      ...overrides,
+    }),
   };
 }
 
