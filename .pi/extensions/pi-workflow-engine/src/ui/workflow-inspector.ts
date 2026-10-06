@@ -2,7 +2,8 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
-import { agentDetailParts, formatCount, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
+import { formatCount } from "../text.ts";
+import { agentDetailParts, formatDuration, statusIcon, truncateDisplay } from "./workflow-format.ts";
 import {
   centerWorkflowViewerViewport,
   fitWorkflowViewerRow,

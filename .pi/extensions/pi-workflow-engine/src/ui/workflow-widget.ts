@@ -1,7 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
-import { agentDetailParts, agentLabelColor, formatCount, formatDuration, statusIcon } from "./workflow-format.ts";
+import { formatCount } from "../text.ts";
+import { agentDetailParts, agentLabelColor, formatDuration, statusIcon } from "./workflow-format.ts";
 
 const MAX_WIDGET_LINES = 10;
 

@@ -4,7 +4,7 @@ import { isAdvisoryReport, type AdvisoryReportWithStats } from "../advisory-sche
 import { isRecord } from "../guards.ts";
 import { renderIssueDetails, renderIssuesTable } from "../review/review-format.ts";
 import { toReviewIssues } from "../review/review-issues.ts";
-import { formatCount } from "./workflow-format.ts";
+import { formatCount } from "../text.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
 import type { WorkflowPerfDetails, WorkflowResultEnvelope } from "../workflow-execution.ts";
 import { unknownErrorMessage } from "../unknown-error.ts";

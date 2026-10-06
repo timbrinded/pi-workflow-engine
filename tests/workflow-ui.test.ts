@@ -3,7 +3,8 @@ import { stripVTControlCharacters } from "node:util";
 import { test } from "bun:test";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { createTestTheme } from "./fixtures/theme.ts";
-import { agentDetailParts, formatCount, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
+import { agentDetailParts, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
+import { formatCount } from "../.pi/extensions/pi-workflow-engine/src/text.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import { WorkflowInspector } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import {
@@ -55,7 +56,7 @@ test("workflow formatting helpers format durations, counts, agents, and truncati
 
   assert.equal(formatCount(999), "999");
   assert.equal(formatCount(1_200), "1.2k");
-  assert.equal(formatCount(1_200_000), "1.2m");
+  assert.equal(formatCount(1_200_000), "1.2M");
 
   const queuedAgent = { id: 1, label: "scope", status: "queued" as const, toolUses: 0 };
   assert.deepEqual(agentDetailParts(queuedAgent), ["queued"]);
@@ -275,7 +276,7 @@ test("workflow inspector and widget share the workflow usage formatter", () => {
     logs: [],
     usage: usageSnapshot,
   };
-  const expected = "Usage: fresh 12k · cache read 40k · cache write 5.0k · output 1.8k · cost $0.123 · agents 1";
+  const expected = "Usage: fresh 12.3k · cache read 40k · cache write 5k · output 1.8k · cost $0.123 · agents 1";
   const tui = { requestRender() {}, terminal: { rows: 24, columns: 200 } } as Pick<TUI, "requestRender" | "terminal">;
   const theme = createTestTheme();
   const inspector = new WorkflowInspector(() => snapshot, tui, theme, () => {});
@@ -401,10 +402,10 @@ test("workflow result text renders usage summaries", () => {
   const theme = createTestTheme();
 
   const generic = renderWorkflowResultText("generic", { summary: "Done" }, false, theme, usageSnapshot);
-  assert.match(generic, /Usage: fresh 12k · cache read 40k · cache write 5.0k · output 1.8k · cost \$0.123 · agents 1/);
+  assert.match(generic, /Usage: fresh 12.3k · cache read 40k · cache write 5k · output 1.8k · cost \$0.123 · agents 1/);
 
   const advisory = renderWorkflowResultText("refactor-scout", validReport, true, theme, usageSnapshot);
-  assert.match(advisory, /Usage: fresh 12k · cache read 40k · cache write 5.0k · output 1.8k · cost \$0.123 · agents 1/);
+  assert.match(advisory, /Usage: fresh 12.3k · cache read 40k · cache write 5k · output 1.8k · cost \$0.123 · agents 1/);
 });
 
 test("workflow result text renders perf detail lines", () => {

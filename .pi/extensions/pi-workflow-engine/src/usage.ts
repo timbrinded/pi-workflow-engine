@@ -1,4 +1,5 @@
 import { isRecord } from "./guards.ts";
+import { formatCount } from "./text.ts";
 
 export interface WorkflowUsageCost {
   readonly input: number;
@@ -146,9 +147,9 @@ function formatWorkflowUsageComponents(totals: WorkflowUsageTotals): string[] {
   appendUsageComponent(parts, "output", totals.output, totals.coverage.output);
 
   const knownComponents = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
-  if (parts.length === 0 && totals.totalTokens > 0) parts.push(`tokens ${formatUsageCount(totals.totalTokens)}`);
+  if (parts.length === 0 && totals.totalTokens > 0) parts.push(`tokens ${formatCount(totals.totalTokens)}`);
   else if (!hasCompleteCoverage(totals.coverage) && totals.totalTokens !== knownComponents) {
-    parts.push(`total ${formatUsageCount(totals.totalTokens)}`);
+    parts.push(`total ${formatCount(totals.totalTokens)}`);
   }
   return parts;
 }
@@ -160,7 +161,7 @@ function appendUsageComponent(
   coverage: WorkflowUsageCoverage,
 ): void {
   if (value <= 0 || coverage === "none") return;
-  const count = formatUsageCount(value);
+  const count = formatCount(value);
   parts.push(`${label} ${coverage === "partial" ? `≥${count}` : count}`);
 }
 
@@ -321,14 +322,6 @@ function hasCompleteCoverage(coverage: WorkflowUsageComponentCoverage): boolean 
 
 function isCoverageValue(value: unknown): value is WorkflowUsageCoverage {
   return value === "none" || value === "partial" || value === "complete";
-}
-
-function formatUsageCount(count: number): string {
-  if (count < 1000) return count.toString();
-  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1000000) return `${Math.round(count / 1000)}k`;
-  if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-  return `${Math.round(count / 1000000)}M`;
 }
 
 function finiteNumber(value: unknown): number | undefined {

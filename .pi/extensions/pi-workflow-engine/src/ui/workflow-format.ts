@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { AgentRowSnapshot, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "../progress-types.ts";
+import { formatCount } from "../text.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
 
 export type WorkflowDisplayStatus = WorkflowLaneItemStatus | "queued" | "done" | "failed";
@@ -20,15 +21,6 @@ export function formatDuration(ms: number): string {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
-}
-
-export function formatCount(n: number): string {
-  if (!Number.isFinite(n)) return "0";
-  const sign = n < 0 ? "-" : "";
-  const value = Math.abs(n);
-  if (value < 1_000) return `${Math.trunc(n)}`;
-  if (value < 1_000_000) return `${sign}${formatCompact(value / 1_000)}k`;
-  return `${sign}${formatCompact(value / 1_000_000)}m`;
 }
 
 export function statusIcon(status: WorkflowDisplayStatus, theme: Theme): string {
@@ -147,10 +139,4 @@ function countSnapshotAgents(snapshot: WorkflowProgressSnapshot): WorkflowStatus
     }
   }
   return counts;
-}
-
-function formatCompact(value: number): string {
-  if (value >= 100) return `${Math.round(value)}`;
-  const rounded = Math.round(value * 10) / 10;
-  return Number.isInteger(rounded) ? `${rounded}` : rounded.toFixed(1);
 }
