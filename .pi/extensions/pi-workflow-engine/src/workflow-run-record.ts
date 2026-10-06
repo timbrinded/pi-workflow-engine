@@ -1,4 +1,5 @@
 import { validateWorkflowRunId } from "./journal.ts";
+import { isFiniteNumber, isRecord } from "./guards.ts";
 import {
   type ResolvedWorkflowRunOptions,
   WORKFLOW_USAGE_LIMIT_ATTEMPTS_MAX,
@@ -617,16 +618,8 @@ function isValidRunId(value: unknown): value is string {
   }
 }
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
 function isIntegerInRange(value: unknown, min: number, max: number): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= min && value <= max;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 class WorkflowRunValueError extends Error {}

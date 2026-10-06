@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Key, type KeyId } from "@earendil-works/pi-tui";
+import { isRecord } from "./guards.ts";
 
 export const DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT = "ctrl+shift+m" satisfies KeyId;
 export const DEFAULT_REVIEW_RESULTS_SHORTCUT = "ctrl+shift+r" satisfies KeyId;
@@ -110,10 +111,6 @@ function shortcutIdentity(shortcut: KeyId): string {
 
 function defaultDynamaxShortcuts(): DynamaxShortcuts {
   return { inspector: DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT, results: DEFAULT_REVIEW_RESULTS_SHORTCUT };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function warnUsingDefaults(reason: "Could not read" | "Invalid", configPath: string): void {

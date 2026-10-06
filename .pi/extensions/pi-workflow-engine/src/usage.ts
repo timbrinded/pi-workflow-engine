@@ -1,3 +1,5 @@
+import { isRecord } from "./guards.ts";
+
 export interface WorkflowUsageCost {
   readonly input: number;
   readonly output: number;
@@ -331,8 +333,4 @@ function formatUsageCount(count: number): string {
 
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

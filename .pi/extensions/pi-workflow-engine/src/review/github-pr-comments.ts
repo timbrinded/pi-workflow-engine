@@ -1,6 +1,8 @@
 import { throwIfAborted } from "../cancellation.ts";
+import { isRecord } from "../guards.ts";
 import { isCommentableIssue, type ReviewIssue } from "./review-issues.ts";
 import type { ReviewContext } from "./review-report.ts";
+import { unknownErrorMessage } from "../unknown-error.ts";
 
 export interface ExecResultLike {
   readonly stdout: string;
@@ -161,7 +163,7 @@ async function runJson(
   try {
     return { ok: true, value: JSON.parse(result.stdout) };
   } catch (error) {
-    return { ok: false, reason: error instanceof Error ? `Invalid gh JSON: ${error.message}` : "Invalid gh JSON." };
+    return { ok: false, reason: `Invalid gh JSON: ${unknownErrorMessage(error)}` };
   }
 }
 
@@ -179,7 +181,7 @@ async function runCommand(
     return { ok: true, stdout: result.stdout };
   } catch (error) {
     throwIfAborted(signal);
-    return { ok: false, reason: error instanceof Error ? error.message : "gh command failed." };
+    return { ok: false, reason: unknownErrorMessage(error) };
   }
 }
 
@@ -242,8 +244,4 @@ function parsePostedCommentUrl(stdout: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

@@ -3,6 +3,7 @@ import { lstat, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { throwIfAborted } from "./cancellation.ts";
 import { isMissingPathError } from "./filesystem-error.ts";
+import { isGitObjectId, isRecord } from "./guards.ts";
 import type {
   EffectiveAgentSessionIdentity,
   EffectiveToolIdentity,
@@ -723,10 +724,6 @@ function parseGitTopLevel(output: string, cwd: string): string | undefined {
   return isPathWithin(root, cwd) ? root : undefined;
 }
 
-function isGitObjectId(value: string): boolean {
-  return /^[0-9a-f]{40,64}$/i.test(value);
-}
-
 function isFingerprintExcludedPath(path: string): boolean {
   const normalized = path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
   for (const excluded of FINGERPRINT_EXCLUDED_RELATIVE_PATHS) {
@@ -740,10 +737,6 @@ function isFingerprintExcludedPath(path: string): boolean {
     }
   }
   return false;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function sanitizeProcessMessage(message: string): string {

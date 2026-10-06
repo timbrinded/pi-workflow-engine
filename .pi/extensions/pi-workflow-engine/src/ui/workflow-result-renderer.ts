@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Text } from "@earendil-works/pi-tui";
 import { isAdvisoryReport, type AdvisoryReportWithStats } from "../advisory-schema.ts";
+import { isRecord } from "../guards.ts";
 import { renderIssueDetails, renderIssuesTable } from "../review/review-format.ts";
 import { toReviewIssues } from "../review/review-issues.ts";
 import { formatCount } from "./workflow-format.ts";
@@ -164,8 +165,4 @@ function safeJson(value: unknown): string {
   } catch (error) {
     return unknownErrorMessage(error);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

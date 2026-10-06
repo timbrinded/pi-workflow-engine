@@ -3,6 +3,7 @@ import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendi
 import type { EditorComponent, KeyId } from "@earendil-works/pi-tui";
 import { completeCurrentArgument } from "./command-completions.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./dynamax-shortcuts.ts";
+import { isRecord } from "./guards.ts";
 import { sessionKey } from "./session-identity.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
@@ -359,8 +360,4 @@ function createDynamaxContextMessage(): AgentMessage {
     details: { dynamax: true, sticky: true },
     timestamp: Date.now(),
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

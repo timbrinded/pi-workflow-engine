@@ -1,3 +1,4 @@
+import { isFiniteNumber, isRecord } from "./guards.ts";
 import type { WorkflowBackgroundOrigin } from "./types.ts";
 import type { WorkflowRunRecord } from "./workflow-run-record.ts";
 
@@ -61,12 +62,4 @@ export function isPersistedWorkflowBackground(value: unknown): value is Persiste
 
 function boundedText(value: string): string {
   return value.length <= MAX_BACKGROUND_TEXT ? value : `${value.slice(0, MAX_BACKGROUND_TEXT - 1)}…`;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

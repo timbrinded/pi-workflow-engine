@@ -1,5 +1,6 @@
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { WorkflowAbortError, WorkflowPauseError } from "./cancellation.ts";
+import { isRecord } from "./guards.ts";
 import type { WorkflowBackgroundOrigin } from "./types.ts";
 import {
   transitionWorkflowRun,
@@ -485,8 +486,4 @@ async function waitForRuns(runs: readonly Promise<void>[], timeoutMs: number): P
 
 function boundedSummary(value: string): string {
   return value.length <= SUMMARY_LIMIT ? value : `${value.slice(0, SUMMARY_LIMIT - 1)}…`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

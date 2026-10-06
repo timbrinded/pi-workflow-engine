@@ -5,6 +5,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { isMissingPathError } from "./filesystem-error.ts";
+import { isRecord } from "./guards.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 export const WORKFLOW_MODEL_PROFILE_NAMES = ["small", "medium", "big"] as const;
@@ -303,8 +304,4 @@ function invalidConfig(
     configPath,
     profile,
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

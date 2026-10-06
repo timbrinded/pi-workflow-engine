@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { runBoundedProcess } from "./process-runner.ts";
+import { isGitObjectId } from "./guards.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 export interface WorktreeGitCommandOptions {
@@ -542,10 +543,6 @@ function isExcludedSnapshotPath(sourceRoot: string, source: string): boolean {
 
 function isInvalidHeadError(message: string): boolean {
   return /invalid reference:\s*HEAD/i.test(message) || /ambiguous argument ['"]?HEAD/i.test(message) || /unknown revision or path.*HEAD/i.test(message);
-}
-
-function isGitObjectId(value: string): boolean {
-  return /^[0-9a-f]{40,64}$/i.test(value);
 }
 
 export const spawnGitRunner: WorktreeGitRunner = {

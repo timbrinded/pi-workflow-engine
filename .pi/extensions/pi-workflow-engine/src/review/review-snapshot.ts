@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { throwIfAborted } from "../cancellation.ts";
 import { captureDiffTarget, type DiffCaptureFailure } from "../diff-capture.ts";
+import { isGitObjectId } from "../guards.ts";
 import {
   reviewGitDiffBaseline,
   type GitReviewDiffTarget,
@@ -205,7 +206,7 @@ function parsePullRequestHead(value: string): { readonly head: string; readonly 
     readonly headRefName?: unknown;
     readonly headRepository?: { readonly nameWithOwner?: unknown } | null;
   };
-  if (typeof candidate.headRefOid !== "string" || !/^[0-9a-f]{40,64}$/i.test(candidate.headRefOid)) return undefined;
+  if (typeof candidate.headRefOid !== "string" || !isGitObjectId(candidate.headRefOid)) return undefined;
   if (typeof candidate.headRefName !== "string" || candidate.headRefName.length === 0 || candidate.headRefName.includes("\0")) return undefined;
   const repository = candidate.headRepository?.nameWithOwner;
   if (typeof repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return undefined;
@@ -255,7 +256,7 @@ async function resolveCommit(ref: string, cwd: string, signal: AbortSignal | und
 async function tryResolveCommit(ref: string, cwd: string, signal: AbortSignal | undefined): Promise<string | undefined> {
   const result = await runReviewCommand("git", ["rev-parse", "--verify", `${ref}^{commit}`], cwd, signal);
   const commit = result.stdout.trim();
-  return result.ok && /^[0-9a-f]{40,64}$/i.test(commit) ? commit : undefined;
+  return result.ok && isGitObjectId(commit) ? commit : undefined;
 }
 
 async function commitExists(ref: string, cwd: string, signal: AbortSignal | undefined): Promise<boolean> {

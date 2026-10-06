@@ -5,6 +5,7 @@ import type {
   WorkflowSourceIdentity,
 } from "./types.ts";
 import type { WorktreeBaseline } from "./worktree.ts";
+import { isRecord } from "./guards.ts";
 
 type WorkflowMetaCandidate = {
   readonly name?: unknown;
@@ -68,8 +69,4 @@ function isWorkflowRun(value: unknown): value is WorkflowModule["default"] {
 
 function isWorkflowPhases(value: unknown): value is Array<{ title: string }> {
   return Array.isArray(value) && value.every((phase) => isRecord(phase) && typeof phase.title === "string");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
