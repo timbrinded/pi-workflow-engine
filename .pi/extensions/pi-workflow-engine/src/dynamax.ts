@@ -1,10 +1,10 @@
-import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { EditorComponent, KeyId } from "@earendil-works/pi-tui";
+import { CustomEditor, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import type { EditorComponent } from "@earendil-works/pi-tui";
 import { completeCurrentArgument } from "./command-completions.ts";
 import type { DynamaxShortcuts } from "./dynamax-shortcuts.ts";
-import { isRecord } from "./guards.ts";
 import { sessionKey } from "./session-identity.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
+import { dot, GLYPH } from "./ui/kit.ts";
 import { setWorkflowInspectorShortcut } from "./ui/workflow-widget.ts";
 import {
   decorateDynamaxEditor,
@@ -22,7 +22,6 @@ export interface DynamaxState {
 
 export interface DynamaxRuntime {
   state: DynamaxState;
-  runningWorkflow?: string;
 }
 
 export type DynamaxRuntimeStore = Map<string, DynamaxRuntime>;
@@ -130,16 +129,15 @@ export function describeDynamaxState(state: DynamaxState): string {
   return `sticky ${sticky}; one-shot ${oneShot}${turn}`;
 }
 
-export function dynamaxWidgetLine(state: DynamaxState, shortcut: KeyId | null, runningWorkflow?: string): string {
-  const modes = [
-    runningWorkflow ? `running ${runningWorkflow}` : undefined,
-    state.sticky ? "sticky on" : undefined,
-    !state.sticky && state.turnActive ? "active this turn" : undefined,
-    state.oneShotPending ? "one-shot pending" : undefined,
-  ].filter((value): value is string => value !== undefined);
-  const mode = modes.join(" + ") || "off";
-  const inspectorHint = shortcut ? `${shortcut} inspector` : "/workflow:inspector";
-  return `dynamax: ${mode} | /workflow:dynamax on|off | ${inspectorHint}`;
+/**
+ * Footer status: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its
+ * prompt, `◆ dynamax · this turn` while that turn runs. A running workflow names itself in its own
+ * status (`◆ repo-scan · Scan 2/3 · 4s`), so this one only states the mode.
+ */
+export function dynamaxStatusText(state: DynamaxState, theme: Theme): string {
+  const mode = state.sticky ? undefined : state.oneShotPending ? "next prompt" : state.turnActive ? "this turn" : undefined;
+  const label = `${theme.fg("accent", GLYPH.workflow)} ${theme.fg("accent", "dynamax")}`;
+  return mode ? `${label}${dot(theme)}${theme.fg("muted", mode)}` : label;
 }
 
 export function appendDynamaxSystemReminder(systemPrompt: string, state: DynamaxState): string {
@@ -157,7 +155,7 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
   const markOneShot = (ctx: ExtensionContext): void => {
     const runtime = getDynamaxRuntime(runtimes, ctx);
     markDynamaxOneShot(runtime.state);
-    updateDynamaxSurfaces(ctx, runtime, shortcuts);
+    updateDynamaxSurfaces(ctx, runtime);
   };
   const installEditor = (ctx: ExtensionContext): void => {
     if (ctx.mode !== "tui" || effect === "off") return;
@@ -225,7 +223,7 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
 
   pi.on("session_start", (_event, ctx) => {
     installEditor(ctx);
-    updateDynamaxSurfaces(ctx, getDynamaxRuntime(runtimes, ctx), shortcuts);
+    updateDynamaxSurfaces(ctx, getDynamaxRuntime(runtimes, ctx));
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
@@ -242,31 +240,14 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
     const runtime = getDynamaxRuntime(runtimes, ctx);
     const systemPrompt = appendDynamaxSystemReminder(event.systemPrompt, runtime.state);
     if (systemPrompt === event.systemPrompt) return undefined;
-    updateDynamaxSurfaces(ctx, runtime, shortcuts);
+    updateDynamaxSurfaces(ctx, runtime);
     return { systemPrompt };
   });
 
   pi.on("agent_end", (_event, ctx) => {
     const runtime = getDynamaxRuntime(runtimes, ctx);
-    runtime.runningWorkflow = undefined;
     if (!runtime.state.sticky) runtime.state.turnActive = false;
-    updateDynamaxSurfaces(ctx, runtime, shortcuts);
-  });
-
-  pi.on("tool_execution_start", (event, ctx) => {
-    if (event.toolName !== "workflow") return undefined;
-    const runtime = getDynamaxRuntime(runtimes, ctx);
-    runtime.runningWorkflow = workflowLabel(event.args);
-    updateDynamaxSurfaces(ctx, runtime, shortcuts);
-    return undefined;
-  });
-
-  pi.on("tool_execution_end", (event, ctx) => {
-    if (event.toolName !== "workflow") return undefined;
-    const runtime = getDynamaxRuntime(runtimes, ctx);
-    runtime.runningWorkflow = undefined;
-    updateDynamaxSurfaces(ctx, runtime, shortcuts);
-    return undefined;
+    updateDynamaxSurfaces(ctx, runtime);
   });
 
   if (shortcuts.inspector) {
@@ -290,13 +271,13 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
       }
       if (action === "on") {
         enableDynamaxSticky(runtime.state);
-        updateDynamaxSurfaces(ctx, runtime, shortcuts);
+        updateDynamaxSurfaces(ctx, runtime);
         ctx.ui.notify("Dynamax workflow orchestration is on for this session", "info");
         return;
       }
       if (action === "off") {
         clearDynamax(runtime.state);
-        updateDynamaxSurfaces(ctx, runtime, shortcuts);
+        updateDynamaxSurfaces(ctx, runtime);
         ctx.ui.notify("Dynamax workflow orchestration is off", "info");
         return;
       }
@@ -311,27 +292,16 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
   return { markOneShot };
 }
 
-export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">, runtime: DynamaxRuntime, shortcuts: DynamaxShortcuts): void {
+export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">, runtime: DynamaxRuntime): void {
   if (!ctx.hasUI) return;
-  if (!isDynamaxActive(runtime.state) && !runtime.runningWorkflow) {
+  if (!isDynamaxActive(runtime.state)) {
     clearDynamaxSurfaces(ctx);
     return;
   }
-
-  const status = dynamaxWidgetLine(runtime.state, shortcuts.inspector, runtime.runningWorkflow);
-  ctx.ui.setStatus(DYNAMAX_STATUS_KEY, status);
+  ctx.ui.setStatus(DYNAMAX_STATUS_KEY, dynamaxStatusText(runtime.state, ctx.ui.theme));
 }
 
 export function clearDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
   if (!ctx.hasUI) return;
   ctx.ui.setStatus(DYNAMAX_STATUS_KEY, undefined);
-}
-
-function workflowLabel(args: unknown): string {
-  if (!isRecord(args)) return "workflow";
-  const name = args.name;
-  if (typeof name === "string" && name.trim()) return name.trim();
-  const script = args.script;
-  if (typeof script === "string" && script.trim()) return "inline workflow";
-  return "workflow";
 }

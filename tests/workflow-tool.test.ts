@@ -20,6 +20,7 @@ import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-en
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
 import { WORKFLOW_INSPECTOR_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import { captureWorkflowExtension, captureWorkflowTool } from "./workflow-extension-fixtures.ts";
+import { createTestTheme } from "./fixtures/theme.ts";
 
 const WORKFLOW_TOOL_TEST_CWD = mkdtempSync(join(tmpdir(), "pi-workflow-tool-tests-"));
 process.on("exit", () => rmSync(WORKFLOW_TOOL_TEST_CWD, { recursive: true, force: true }));
@@ -681,6 +682,7 @@ test("the picker's authored temporary workflow activates Dynamax for the run it 
       editor: async () => "inspect src and summarize risks",
       notify: () => {},
       setStatus: (key: string, value: string | undefined) => statuses.set(key, value),
+      theme: createTestTheme(),
     },
   } as unknown as ExtensionCommandContext;
 
@@ -688,7 +690,7 @@ test("the picker's authored temporary workflow activates Dynamax for the run it 
 
   assert.deepEqual(armedBeforeIdle, { status: undefined, sent: 0 }, "the one-shot is armed and sent only once the host is idle");
   assert.match(String(extension.sentUserMessages[0]), /inspect src and summarize risks/);
-  assert.match(statuses.get("dynamax") ?? "", /one-shot pending/);
+  assert.match(statuses.get("dynamax") ?? "", /next prompt/);
 });
 
 test("workflow inspector history stays isolated to its originating session", async () => {
