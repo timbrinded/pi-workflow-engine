@@ -15,7 +15,6 @@ import {
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
 import { formatReviewDiffTarget, parseAllowedDiffCommand } from "../src/review-diff-target.ts";
-import { buildCodeReviewScopeBlock } from "../src/review/code-review-orchestration.ts";
 import type { ReviewContext } from "../src/review/review-report.ts";
 import { captureReviewMaterial } from "../src/review/review-snapshot.ts";
 import type { WorkflowApi, WorkflowMeta, WorkflowRunStats } from "../src/types.ts";
@@ -94,6 +93,31 @@ export function diffAnchor(changed: ReadonlyMap<string, ReadonlySet<number>>, lo
   if (!lines) return undefined;
   const { line } = location;
   return line == null || lines.has(line) || lines.has(line - 1) || lines.has(line + 1) ? { ...location, file } : undefined;
+}
+
+const DIFF_EMBED_CAP = 60_000;
+
+export function buildCodeReviewScopeBlock(input: {
+  readonly diffCommand: string;
+  readonly files: readonly string[];
+  readonly summary: string;
+  readonly conventions?: string;
+  readonly diffText: string;
+  readonly target: string;
+}): string {
+  const diffBlock = input.diffText
+    ? `\n## Diff (review is bounded to these changed lines)\n\`\`\`diff\n${
+        input.diffText.length > DIFF_EMBED_CAP
+          ? `${input.diffText.slice(0, DIFF_EMBED_CAP)}\n... (truncated — run \`${input.diffCommand}\` for the full diff)`
+          : input.diffText
+      }\n\`\`\`\n`
+    : "";
+  return (
+    `## Diff command\n${input.diffCommand}\n\n## Changed files\n${input.files.map((file) => `- ${file}`).join("\n")}\n\n` +
+    `## Summary\n${input.summary}\n\n## Conventions\n${input.conventions ?? "(none noted)"}\n` +
+    diffBlock +
+    (input.target ? `\n## User instructions (verbatim)\n${input.target}\n` : "")
+  );
 }
 
 export interface CodeReviewDependencies {
