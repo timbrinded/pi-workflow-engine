@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { relative, sep } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import {
@@ -78,7 +80,7 @@ export function registerWorkflowModelProfileCommand(pi: ExtensionAPI): void {
         const prefix = command.kind === "status"
           ? "Workflow model profiles"
           : `${command.profile} ${command.kind === "set" ? "updated" : "cleared"} in ${command.scope} config`;
-        ctx.ui.notify(`${prefix}\n${formatWorkflowModelProfiles(profiles, paths)}`, "info");
+        ctx.ui.notify(`${prefix}\n${formatWorkflowModelProfiles(profiles, paths, ctx.cwd)}`, "info");
       } catch (error) {
         ctx.ui.notify(unknownErrorMessage(error), "error");
       }
@@ -152,16 +154,43 @@ export function parseWorkflowModelsCommand(args: string): WorkflowModelsCommand 
   };
 }
 
-function formatWorkflowModelProfiles(
+/**
+ * An aligned plain-text table (notifications cannot style or measure the terminal):
+ * one row per profile, then the two config files with home and project paths shortened.
+ */
+export function formatWorkflowModelProfiles(
   profiles: ResolvedWorkflowModelProfiles,
   paths: WorkflowModelProfilePaths,
+  cwd: string,
+  home: string = homedir(),
 ): string {
-  const lines = WORKFLOW_MODEL_PROFILE_NAMES.map((name) => {
+  const rows = WORKFLOW_MODEL_PROFILE_NAMES.map((name) => {
     const profile = profiles[name];
-    const model = profile.model ? `${profile.model.provider}/${profile.model.id}` : "(no host model)";
-    const thinking = profile.thinkingLevel ?? "host";
-    const source = profile.source === "host" ? "host fallback" : `${profile.source}: ${profile.configPath}`;
-    return `${name}: ${model} · thinking ${thinking} · ${source}`;
+    return [
+      name,
+      profile.model ? `${profile.model.provider}/${profile.model.id}` : "no host model",
+      profile.thinkingLevel ?? "host",
+      profile.source === "host" ? "host fallback" : `${profile.source} config`,
+    ];
   });
-  return [...lines, `user: ${paths.user}`, `project: ${paths.project} (overrides user)`].join("\n");
+  const configs = [
+    ["user", displayPath(paths.user, cwd, home)],
+    ["project", `${displayPath(paths.project, cwd, home)}  (overrides user)`],
+  ];
+  return [...alignColumns([["profile", "model", "thinking", "source"], ...rows]), "", ...alignColumns(configs)].join("\n");
+}
+
+function alignColumns(rows: readonly (readonly string[])[]): string[] {
+  const widths = rows.reduce<number[]>(
+    (max, row) => row.map((cell, index) => Math.max(max[index] ?? 0, cell.length)),
+    [],
+  );
+  return rows.map((row) => `  ${row.map((cell, index) => (index === row.length - 1 ? cell : cell.padEnd(widths[index] ?? 0))).join("  ")}`);
+}
+
+/** Project paths relative to the cwd, others with the home directory as `~`. */
+function displayPath(path: string, cwd: string, home: string): string {
+  if (path.startsWith(cwd + sep)) return relative(cwd, path);
+  if (home && path.startsWith(home + sep)) return `~${path.slice(home.length)}`;
+  return path;
 }
