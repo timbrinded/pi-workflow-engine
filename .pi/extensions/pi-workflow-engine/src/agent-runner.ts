@@ -107,7 +107,7 @@ export async function runAgent(
               await agentRc.retryScheduler.sleep(delayMs, agentRc.signal);
               continue;
             }
-            const settlement = await settleAgentAttempt({ rc: agentRc, label, replay: attemptPlan, outcome });
+            const settlement = await settleAgentAttempt({ rc: agentRc, label, outcome });
             if (settlement.kind === "retry-live") {
               attemptPlan = { kind: "off" };
               continue;

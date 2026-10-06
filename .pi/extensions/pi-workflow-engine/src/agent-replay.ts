@@ -27,13 +27,17 @@ export type AgentReplayPlan =
   | { readonly kind: "shared"; readonly key: string; readonly additionalInputs: readonly string[] }
   | { readonly kind: "isolated"; readonly key: string };
 
-export type AgentReplayEvidence =
-  | { readonly kind: "shared" }
-  | { readonly kind: "isolated"; readonly mutationGuard: string };
+/** An enabled replay plan with its main-workspace evidence: isolated replays carry the mutation guard taken before setup. */
+export type ArmedReplayPlan =
+  | Extract<AgentReplayPlan, { readonly kind: "shared" }>
+  | (Extract<AgentReplayPlan, { readonly kind: "isolated" }> & { readonly mutationGuard: string });
+
+/** An armed replay plan plus the resume identity captured for one attempt. */
+export type AgentReplayContract = ArmedReplayPlan & { readonly identity: AgentResumeContext };
 
 export type AgentAttemptResult =
-  | { readonly kind: "cache-hit"; readonly result: unknown; readonly identity: AgentResumeContext; readonly evidence: AgentReplayEvidence }
-  | { readonly kind: "live-recordable"; readonly result: unknown; readonly identity: AgentResumeContext; readonly evidence: AgentReplayEvidence }
+  | { readonly kind: "cache-hit"; readonly result: unknown; readonly contract: AgentReplayContract }
+  | { readonly kind: "live-recordable"; readonly result: unknown; readonly contract: AgentReplayContract }
   | { readonly kind: "live-unrecordable"; readonly result: unknown };
 
 export type AgentAttemptSettlement =
@@ -130,28 +134,28 @@ export async function lookupReplayResult(input: {
 
 export async function validateReplayIdentity(input: {
   readonly rc: RunContext;
-  readonly identity: AgentResumeContext;
+  readonly contract: AgentReplayContract;
   readonly selectedSkills: readonly Skill[];
   readonly session: AgentRunnerSession;
   readonly sessionCwd: string;
-  readonly replay: Extract<AgentReplayPlan, { readonly kind: "shared" | "isolated" }>;
   readonly workspace: AgentWorkspace;
 }): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
-  const repository = input.identity.repository.state === "inaccessible"
+  const { identity } = input.contract;
+  const repository = identity.repository.state === "inaccessible"
     ? INACCESSIBLE_REPOSITORY_CONTEXT
-    : await captureCurrentRepository(input.rc, input.replay, input.workspace);
+    : await captureCurrentRepository(input.rc, input.contract, input.workspace);
   if (repository.kind === "unverifiable") return { ok: false, reason: repository.reason };
 
   const current = await captureVerifiedReplayIdentity({
     rc: input.rc,
     repository,
-    workflow: input.identity.workflow,
+    workflow: identity.workflow,
     selectedSkills: input.selectedSkills,
     session: input.session,
     sessionCwd: input.sessionCwd,
   });
   if (current.kind === "unverifiable") return { ok: false, reason: current.reason };
-  const mismatch = resumeContextMismatchReason(input.identity, current.identity, {
+  const mismatch = resumeContextMismatchReason(identity, current.identity, {
     allowWorkflowSourceMismatch: input.rc.resumeEditedWorkflow,
   });
   return mismatch ? { ok: false, reason: mismatch } : { ok: true };
@@ -160,22 +164,16 @@ export async function validateReplayIdentity(input: {
 export async function settleAgentAttempt(input: {
   readonly rc: RunContext;
   readonly label: string;
-  readonly replay: AgentReplayPlan;
   readonly outcome: AgentAttemptResult;
 }): Promise<AgentAttemptSettlement> {
-  const { rc, label, replay, outcome } = input;
+  const { rc, label, outcome } = input;
   if (outcome.kind === "live-unrecordable") {
     recordAgentResultSource(rc, "live");
     return { kind: "done", result: outcome.result };
   }
-  if (!isReplayEnabled(replay)) throw new Error("Replayable agent outcome produced without an enabled replay plan.");
 
-  const repository = await validateRepositoryAfterCleanup(
-    rc,
-    outcome.identity,
-    replay,
-    outcome.evidence,
-  );
+  const { contract } = outcome;
+  const repository = await validateRepositoryAfterCleanup(rc, contract);
   if (!repository.ok) {
     if (outcome.kind === "cache-hit") {
       rc.progress.log(`${label}: cached result invalidated after cleanup (${repository.reason})`);
@@ -185,7 +183,7 @@ export async function settleAgentAttempt(input: {
     return { kind: "done", result: outcome.result };
   }
 
-  await recordJournalResult(rc, label, replay.key, outcome.result, outcome.identity);
+  await recordJournalResult(rc, label, contract.key, outcome.result, contract.identity);
   if (outcome.kind === "cache-hit") {
     rc.progress.log(`${label}: using cached result from workflow journal`);
     rc.perf.counter("agent.cache_hit");
@@ -298,35 +296,33 @@ function isolatedCachedResult(value: unknown):
 
 async function validateRepositoryAfterCleanup(
   rc: RunContext,
-  identity: AgentResumeContext,
-  replay: Extract<AgentReplayPlan, { readonly kind: "shared" | "isolated" }>,
-  evidence: AgentReplayEvidence,
+  contract: AgentReplayContract,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
-  if (replay.kind === "isolated") return await validateReplayEvidence(rc, evidence);
+  if (contract.kind === "isolated") return await validateMutationGuard(rc, contract.mutationGuard);
 
-  const repository = identity.repository.state === "inaccessible"
+  const repository = contract.identity.repository.state === "inaccessible"
     ? INACCESSIBLE_REPOSITORY_CONTEXT
-    : await captureRepositoryResumeContext(rc.cwd, replay.additionalInputs, rc.signal);
+    : await captureRepositoryResumeContext(rc.cwd, contract.additionalInputs, rc.signal);
   if (repository.kind === "unverifiable") return { ok: false, reason: repository.reason };
-  const mismatch = repositoryMismatchReason(identity.repository, repository);
+  const mismatch = repositoryMismatchReason(contract.identity.repository, repository);
   return mismatch ? { ok: false, reason: mismatch } : { ok: true };
 }
 
-export async function validateReplayEvidence(
+/** Check that the main workspace is unchanged since an isolated replay took its mutation guard. */
+export async function validateMutationGuard(
   rc: RunContext,
-  evidence: AgentReplayEvidence,
+  mutationGuard: string,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
-  if (evidence.kind === "shared") return { ok: true };
   const current = await captureRepositoryMutationGuard(rc.cwd, rc.signal);
   if (current.kind === "unverifiable") return { ok: false, reason: current.reason };
-  return current.fingerprint === evidence.mutationGuard
+  return current.fingerprint === mutationGuard
     ? { ok: true }
     : { ok: false, reason: "main workspace changed outside the isolated worktree" };
 }
 
 async function captureCurrentRepository(
   rc: RunContext,
-  replay: Extract<AgentReplayPlan, { readonly kind: "shared" | "isolated" }>,
+  replay: ArmedReplayPlan,
   workspace: AgentWorkspace,
 ): Promise<RepositoryResumeContext> {
   if (replay.kind === "shared") return await captureRepositoryResumeContext(rc.cwd, replay.additionalInputs, rc.signal);

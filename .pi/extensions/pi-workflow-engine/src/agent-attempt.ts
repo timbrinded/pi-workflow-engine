@@ -8,17 +8,17 @@ import {
   captureReplayIdentity,
   captureIsolatedRepositoryAfterSetup,
   captureSharedRepositoryBeforeSetup,
-  isReplayEnabled,
   lookupReplayResult,
-  validateReplayEvidence,
+  validateMutationGuard,
   validateReplayIdentity,
   type AgentAttemptResult,
-  type AgentReplayEvidence,
+  type AgentReplayContract,
   type AgentReplayPlan,
+  type ArmedReplayPlan,
 } from "./agent-replay.ts";
 import { openAgentSession, promptAgentSession, type AgentSessionHandle } from "./agent-session.ts";
 import { createAgentWorkspace, type AgentWorkspace } from "./agent-workspace.ts";
-import type { AgentResumeBaseContext, AgentResumeContext, RepositoryResumeContext } from "./resume-context.ts";
+import type { AgentResumeBaseContext, RepositoryResumeContext } from "./resume-context.ts";
 import { captureRepositoryMutationGuard } from "./resume-context.ts";
 
 /** Execute one fully bracketed workspace/session attempt. Cleanup always precedes settlement. */
@@ -35,34 +35,28 @@ export async function executeAgentAttempt(input: {
   readonly admitLiveAgent: () => void;
 }): Promise<AgentAttemptResult> {
   const { rc, prompt, opts, resumeBaseContext, model, replay, label, rowId, phase, admitLiveAgent } = input;
+  let armed: ArmedReplayPlan | undefined;
   let repositoryBefore: RepositoryResumeContext | undefined;
-  let evidence: AgentReplayEvidence | undefined;
-  if (isReplayEnabled(replay)) {
-    if (replay.kind === "isolated") {
-      const mutationGuard = await captureRepositoryMutationGuard(rc.cwd, rc.signal);
-      if (mutationGuard.kind === "unverifiable") {
-        repositoryBefore = mutationGuard;
-      } else {
-        evidence = { kind: "isolated", mutationGuard: mutationGuard.fingerprint };
-      }
-    } else {
-      repositoryBefore = await captureSharedRepositoryBeforeSetup(rc, prompt, opts, replay);
-      evidence = { kind: "shared" };
-    }
+  if (replay.kind === "isolated") {
+    const mutationGuard = await captureRepositoryMutationGuard(rc.cwd, rc.signal);
+    if (mutationGuard.kind === "verified") armed = { ...replay, mutationGuard: mutationGuard.fingerprint };
+  } else if (replay.kind === "shared") {
+    armed = replay;
+    repositoryBefore = await captureSharedRepositoryBeforeSetup(rc, prompt, opts, replay);
   }
   let workspace: AgentWorkspace | undefined;
   let handle: AgentSessionHandle | undefined;
 
   try {
     workspace = await createAgentWorkspace(rc, opts, label);
-    if (replay.kind === "isolated" && evidence?.kind === "isolated") {
+    if (armed?.kind === "isolated") {
       if (workspace.kind !== "isolated") throw new Error("Isolated replay created a shared workspace.");
       repositoryBefore = await captureIsolatedRepositoryAfterSetup(rc, prompt, opts, workspace);
     }
     handle = await openAgentSession({ rc, prompt, opts, cwd: workspace.cwd, model, label });
 
-    let contract: ReplayContract | undefined;
-    if (isReplayEnabled(replay) && repositoryBefore && evidence) {
+    let contract: AgentReplayContract | undefined;
+    if (armed && repositoryBefore) {
       const capture = await captureReplayIdentity({
         rc,
         base: resumeBaseContext,
@@ -74,13 +68,12 @@ export async function executeAgentAttempt(input: {
       if (capture.kind === "unverifiable") {
         rc.progress.log(`${label}: resume disabled for this call (${capture.reason})`);
       } else {
-        const { identity } = capture;
-        contract = { identity, replay, evidence };
-        const cached = await lookupReplayResult({ rc, key: replay.key, identity, opts, workspace });
+        contract = { ...armed, identity: capture.identity };
+        const cached = await lookupReplayResult({ rc, key: contract.key, identity: contract.identity, opts, workspace });
         if (cached.hit) {
           const validation = await validateReplayContract(rc, contract, handle, workspace);
           if (validation.ok) {
-            return { kind: "cache-hit", result: cached.result, identity, evidence };
+            return { kind: "cache-hit", result: cached.result, contract };
           }
           rc.progress.log(`${label}: cached result invalidated (${validation.reason})`);
         } else if (cached.reason) {
@@ -105,7 +98,7 @@ export async function executeAgentAttempt(input: {
 
     const validation = await validateReplayContract(rc, contract, handle, workspace);
     if (validation.ok) {
-      return { kind: "live-recordable", result, identity: contract.identity, evidence: contract.evidence };
+      return { kind: "live-recordable", result, contract };
     }
     rc.progress.log(`${label}: read-only resume contract was not recorded (${validation.reason})`);
     return { kind: "live-unrecordable", result };
@@ -119,27 +112,21 @@ export async function executeAgentAttempt(input: {
   }
 }
 
-interface ReplayContract {
-  readonly identity: AgentResumeContext;
-  readonly replay: Extract<AgentReplayPlan, { readonly kind: "shared" | "isolated" }>;
-  readonly evidence: AgentReplayEvidence;
-}
-
 /** Re-check a captured replay identity and its repository evidence against the session and workspace as they are now. */
 async function validateReplayContract(
   rc: RunContext,
-  contract: ReplayContract,
+  contract: AgentReplayContract,
   handle: AgentSessionHandle,
   workspace: AgentWorkspace,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> {
   const identity = await validateReplayIdentity({
     rc,
-    identity: contract.identity,
+    contract,
     selectedSkills: handle.selectedSkills,
     session: handle.session,
     sessionCwd: workspace.cwd,
-    replay: contract.replay,
     workspace,
   });
-  return identity.ok ? await validateReplayEvidence(rc, contract.evidence) : identity;
+  if (!identity.ok || contract.kind === "shared") return identity;
+  return await validateMutationGuard(rc, contract.mutationGuard);
 }
