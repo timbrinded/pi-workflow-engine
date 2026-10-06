@@ -551,7 +551,7 @@ test("the results command and shortcut reopen the last code-review findings with
     const tui = createTuiContext({ action: "fix", issueIds: ["R001"] });
     await command.handler("", tui.ctx as ExtensionCommandContext);
     assert.equal(tui.customCalls(), 1);
-    assert.match(tui.customRenders()[0]?.join("\n") ?? "", /Review results/);
+    assert.match(tui.customRenders()[0]?.join("\n") ?? "", /Review findings/);
     assert.match(tui.customRenders()[0]?.join("\n") ?? "", /R001/);
     assert.match(tui.notifications().join("\n"), /Verifying the reviewed snapshot/);
     assert.equal(runCounter.__piWorkflowResultsTestRuns, 1);
