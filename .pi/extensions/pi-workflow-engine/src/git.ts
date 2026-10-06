@@ -17,12 +17,6 @@ export interface GitCommandOptions {
   readonly env?: NodeJS.ProcessEnv;
 }
 
-/**
- * Pins the git diff output that the engine parses or applies, so user config such as
- * diff.noprefix, diff.mnemonicPrefix, diff.srcPrefix or color.ui cannot change it.
- */
-export const GIT_DIFF_MACHINE_FORMAT = ["--no-color", "--src-prefix=a/", "--dst-prefix=b/"] as const;
-
 export async function runGit(options: GitCommandOptions): Promise<BoundedProcessResult> {
   const { label, timeoutMs, maxBufferBytes } = options;
   const env = { ...process.env, ...options.env };

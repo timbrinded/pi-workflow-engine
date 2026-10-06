@@ -1,6 +1,11 @@
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import { GIT_DIFF_MACHINE_FORMAT } from "./git.ts";
+
+/**
+ * Pins the git diff output that the engine parses or applies, so user config such as
+ * diff.noprefix, diff.mnemonicPrefix, diff.srcPrefix or color.ui cannot change it.
+ */
+export const GIT_DIFF_MACHINE_FORMAT = ["--no-color", "--src-prefix=a/", "--dst-prefix=b/"] as const;
 
 export type GitDiffBaselineTarget =
   | { readonly kind: "working-tree" }

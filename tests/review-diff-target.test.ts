@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "bun:test";
 import { parseAllowedDiffCommand, reviewDiffCommand } from "../.pi/extensions/pi-workflow-engine/src/review-diff-target.ts";
 
@@ -58,4 +59,9 @@ test("pull-request capture always uses the cumulative diff argv", () => {
     args: ["pr", "diff", "123", "--color=never"],
   });
   assert.equal(reviewDiffCommand(target).args.includes("--patch"), false);
+});
+
+test("review diff targets stay a pure schema module that cannot spawn processes", async () => {
+  const source = await readFile(".pi/extensions/pi-workflow-engine/src/review-diff-target.ts", "utf8");
+  assert.doesNotMatch(source, /process-runner|node:child_process|\.\/git\.ts/);
 });

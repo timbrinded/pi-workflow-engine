@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { GIT_DIFF_MACHINE_FORMAT, isGitObjectId, parseGitTopLevel, runGit, type GitCommandOptions } from "./git.ts";
+import { isGitObjectId, parseGitTopLevel, runGit, type GitCommandOptions } from "./git.ts";
+import { GIT_DIFF_MACHINE_FORMAT } from "./review-diff-target.ts";
 import { FINGERPRINT_EXCLUDED_RELATIVE_PATHS, isExcludedDeclaredInput, portableRelativePath } from "./tree-fingerprint.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 

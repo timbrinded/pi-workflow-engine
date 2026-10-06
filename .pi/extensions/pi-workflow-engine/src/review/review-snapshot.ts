@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { throwIfAborted } from "../cancellation.ts";
-import { GIT_DIFF_MACHINE_FORMAT, isGitObjectId, runGit } from "../git.ts";
+import { isGitObjectId, runGit } from "../git.ts";
 import {
+  GIT_DIFF_MACHINE_FORMAT,
   reviewDiffCommand,
   reviewGitDiffBaseline,
   type GitReviewDiffTarget,
