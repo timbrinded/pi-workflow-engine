@@ -168,7 +168,7 @@ export async function synthesizeAdvisoryReport(
   api.phase("Synthesize");
   const [report] = await collectAdvisoryStage(api, "Synthesize", [{ id: "synthesize", run: () => api.agent(
     SYNTHESIS_ID_INSTRUCTIONS + prompt,
-    { phase: "Synthesize", label: "synthesize", tools: [], profile: "medium", resume: "read-only", schema: AdvisorySynthesisSchema },
+    { phase: "Synthesize", label: "synthesize", tools: [], skills: [], profile: "medium", resume: "read-only", schema: AdvisorySynthesisSchema },
   ) }], coverage);
   return resolveAdvisorySynthesis(report, ranked, {
     impact: "Impact not restated by verification.",

@@ -144,6 +144,8 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
       phase: "Synthesize",
       label: "synthesize",
       tools: [],
+      // The prompt embeds web-derived claims; never infer skills (and the read tool) from them.
+      skills: [],
       profile: "medium",
       resume: "off",
       schema: ResearchReportSchema,
