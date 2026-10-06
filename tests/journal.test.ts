@@ -5,11 +5,9 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { Type } from "typebox";
 import {
-  agentJournalKey,
   captureAgentJournalKey,
   createMemoryBackedJournal,
   createWorkflowJournal,
-  hashAgentCall,
   loadJournalEntries,
   pruneWorkflowJournals,
   WorkflowJournalLoadError,
@@ -17,6 +15,7 @@ import {
   workflowJournalPath,
 } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import type { AgentResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
+import { verifiedJournalKey } from "./resume-fixtures.ts";
 
 const RESUME_CONTEXT = {
   repository: { kind: "verified", state: "git", head: "head-a", workingTreeFingerprint: "clean" },
@@ -45,12 +44,12 @@ const RESUME_CONTEXT = {
   skills: [{ name: "review", path: "/skills/review", fingerprint: "skill-a" }],
 } satisfies AgentResumeContext;
 
-test("hashAgentCall is stable for equivalent behavioral options", () => {
+test("journal keys are stable for equivalent behavioral options", () => {
   const schemaA = Type.Object({ ok: Type.Boolean(), value: Type.String() });
   const schemaB = Type.Object({ ok: Type.Boolean(), value: Type.String() });
   schemaB.properties = { value: schemaB.properties.value, ok: schemaB.properties.ok };
 
-  const first = hashAgentCall("inspect", {
+  const first = verifiedJournalKey("inspect", {
     label: "first",
     phase: "Find",
     schema: schemaA,
@@ -59,7 +58,7 @@ test("hashAgentCall is stable for equivalent behavioral options", () => {
     skills: ["alpha", "beta"],
     thinkingLevel: "low",
   });
-  const second = hashAgentCall("inspect", {
+  const second = verifiedJournalKey("inspect", {
     label: "second",
     phase: "Verify",
     schema: schemaB,
@@ -72,15 +71,15 @@ test("hashAgentCall is stable for equivalent behavioral options", () => {
   assert.equal(first, second);
 });
 
-test("hashAgentCall preserves authored tool and skill ordering", () => {
-  const first = hashAgentCall("inspect", {
+test("journal keys preserve authored tool and skill ordering", () => {
+  const first = verifiedJournalKey("inspect", {
     tools: ["read", "grep"],
     toolHints: ["search"],
     skills: ["alpha", "beta"],
   });
 
-  assert.notEqual(hashAgentCall("inspect", { tools: ["grep", "read"], toolHints: ["search"], skills: ["alpha", "beta"] }), first);
-  assert.notEqual(hashAgentCall("inspect", { tools: ["read", "grep"], toolHints: ["search"], skills: ["beta", "alpha"] }), first);
+  assert.notEqual(verifiedJournalKey("inspect", { tools: ["grep", "read"], toolHints: ["search"], skills: ["alpha", "beta"] }), first);
+  assert.notEqual(verifiedJournalKey("inspect", { tools: ["read", "grep"], toolHints: ["search"], skills: ["beta", "alpha"] }), first);
 });
 
 test("captureAgentJournalKey fails closed for cyclic, accessor, and oversized schemas", () => {
@@ -106,34 +105,33 @@ test("captureAgentJournalKey fails closed for cyclic, accessor, and oversized sc
   assert.equal(oversized.kind, "unverifiable");
   if (oversized.kind !== "unverifiable") assert.fail("expected oversized identity to be rejected");
   assert.match(oversized.reason, /identity exceeded/);
-  assert.doesNotThrow(() => agentJournalKey("inspect", { schema: cyclic }));
 });
 
-test("hashAgentCall changes when behavioral inputs change", () => {
-  const base = hashAgentCall("inspect", { thinkingLevel: "low", tools: ["read"] });
+test("journal keys change when behavioral inputs change", () => {
+  const base = verifiedJournalKey("inspect", { thinkingLevel: "low", tools: ["read"] });
 
-  assert.notEqual(hashAgentCall("inspect again", { thinkingLevel: "low", tools: ["read"] }), base);
-  assert.notEqual(hashAgentCall("inspect", { thinkingLevel: "medium", tools: ["read"] }), base);
-  assert.notEqual(hashAgentCall("inspect", { thinkingLevel: "low", tools: ["read", "grep"] }), base);
-  assert.notEqual(hashAgentCall("inspect", { thinkingLevel: "low", tools: ["read"], schema: Type.Object({ ok: Type.Boolean() }) }), base);
-  assert.notEqual(hashAgentCall("inspect", { thinkingLevel: "low", tools: ["read"], requireToolHints: true }), base);
+  assert.notEqual(verifiedJournalKey("inspect again", { thinkingLevel: "low", tools: ["read"] }), base);
+  assert.notEqual(verifiedJournalKey("inspect", { thinkingLevel: "medium", tools: ["read"] }), base);
+  assert.notEqual(verifiedJournalKey("inspect", { thinkingLevel: "low", tools: ["read", "grep"] }), base);
+  assert.notEqual(verifiedJournalKey("inspect", { thinkingLevel: "low", tools: ["read"], schema: Type.Object({ ok: Type.Boolean() }) }), base);
+  assert.notEqual(verifiedJournalKey("inspect", { thinkingLevel: "low", tools: ["read"], requireToolHints: true }), base);
 });
 
-test("agentJournalKey uses optional cache keys without hiding behavior changes", () => {
-  const base = agentJournalKey("inspect", { cacheKey: "stage:item-1", thinkingLevel: "low" });
-  assert.equal(agentJournalKey("inspect", { cacheKey: "stage:item-1", thinkingLevel: "low" }), base);
-  assert.notEqual(agentJournalKey("inspect", { cacheKey: "stage:item-2", thinkingLevel: "low" }), base);
-  assert.notEqual(agentJournalKey("inspect", { cacheKey: "stage:item-1", thinkingLevel: "medium" }), base);
+test("journal keys use optional cache keys without hiding behavior changes", () => {
+  const base = verifiedJournalKey("inspect", { cacheKey: "stage:item-1", thinkingLevel: "low" });
+  assert.equal(verifiedJournalKey("inspect", { cacheKey: "stage:item-1", thinkingLevel: "low" }), base);
+  assert.notEqual(verifiedJournalKey("inspect", { cacheKey: "stage:item-2", thinkingLevel: "low" }), base);
+  assert.notEqual(verifiedJournalKey("inspect", { cacheKey: "stage:item-1", thinkingLevel: "medium" }), base);
 });
 
-test("agentJournalKey includes the isolated worktree baseline identity", () => {
-  const first = agentJournalKey(
+test("journal keys include the isolated worktree baseline identity", () => {
+  const first = verifiedJournalKey(
     "fix",
     { isolation: "worktree" },
     { ref: "a".repeat(40), patch: "first patch" },
   );
   assert.notEqual(
-    agentJournalKey(
+    verifiedJournalKey(
       "fix",
       { isolation: "worktree" },
       { ref: "b".repeat(40), patch: "first patch" },
@@ -141,7 +139,7 @@ test("agentJournalKey includes the isolated worktree baseline identity", () => {
     first,
   );
   assert.notEqual(
-    agentJournalKey(
+    verifiedJournalKey(
       "fix",
       { isolation: "worktree" },
       { ref: "a".repeat(40), patch: "second patch" },

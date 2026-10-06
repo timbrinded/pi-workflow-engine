@@ -7,11 +7,7 @@ import { test } from "bun:test";
 import { Type, type TSchema } from "typebox";
 import type { CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import type { WorkflowBudget } from "../.pi/extensions/pi-workflow-engine/src/budget.ts";
-import {
-  agentJournalKey,
-  type JournalLookup,
-  type WorkflowJournal,
-} from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
+import type { JournalLookup, WorkflowJournal } from "../.pi/extensions/pi-workflow-engine/src/journal.ts";
 import type { AgentResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import {
@@ -29,13 +25,14 @@ import {
   runAgent,
   testModel,
 } from "./agent-runner-fixtures.ts";
+import { verifiedJournalKey } from "./resume-fixtures.ts";
 
 test("runAgent resume cache uses effective model identity rather than model ref syntax", async () => {
   const target = testModel("anthropic", "claude-cache");
   const prompt = "hello";
   const bareOptions = { label: "model-cache", model: "claude-cache", resume: "read-only" as const, resumeInputs: [] };
   const qualifiedOptions = { label: "model-cache", model: "anthropic/claude-cache", resume: "read-only" as const, resumeInputs: [] };
-  assert.equal(agentJournalKey(prompt, bareOptions), agentJournalKey(prompt, qualifiedOptions));
+  assert.equal(verifiedJournalKey(prompt, bareOptions), verifiedJournalKey(prompt, qualifiedOptions));
 
   let observedModel: AgentResumeContext["session"]["model"] | undefined;
   const journal: WorkflowJournal = {
@@ -202,7 +199,7 @@ test("runAgent records successful live results into the journal", async () => {
   });
 
   assert.equal(result, "done");
-  assert.deepEqual(recorded, [{ key: agentJournalKey("hello", { label: "live", resumeInputs: [] }), value: "done" }]);
+  assert.deepEqual(recorded, [{ key: verifiedJournalKey("hello", { label: "live", resumeInputs: [] }), value: "done" }]);
 });
 
 test("shared-workspace agents run live without touching the journal by default", async () => {
