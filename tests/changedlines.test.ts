@@ -8,7 +8,8 @@ import { test } from "bun:test";
 import { parseAllowedDiffCommand } from "../.pi/extensions/pi-workflow-engine/src/review-diff-target.ts";
 import { captureReviewMaterial } from "../.pi/extensions/pi-workflow-engine/src/review/review-snapshot.ts";
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
-import { buildCodeReviewScopeBlock, changedLines, diffAnchor } from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
+import { changedLines, diffAnchor } from "../.pi/extensions/pi-workflow-engine/src/review/review-diff-lines.ts";
+import { buildCodeReviewScopeBlock } from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
 
 function lines(map: Map<string, Set<number>>, file: string): number[] {
   return [...(map.get(file) ?? [])].sort((a, b) => a - b);

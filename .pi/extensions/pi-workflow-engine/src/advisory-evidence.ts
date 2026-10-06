@@ -30,13 +30,15 @@ function normalizedSummary(summary: string): string {
   return summary.toLowerCase().replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
 }
 
-function normalizePath(path: string): string {
-  return path.replace(/^\.\//, "").replace(/^[ab]\//, "");
+/** Repo-relative readings of a reported path, most literal first: without a stray `./`, then also without a git `a/`/`b/` prefix. */
+export function repoPathCandidates(path: string): [literal: string, unprefixed: string] {
+  const literal = path.replace(/^\.\//, "");
+  return [literal, literal.replace(/^[ab]\//, "")];
 }
 
 function candidateDedupKey(candidate: AdvisoryCandidate): string {
   const location = candidate.locations[0];
-  return JSON.stringify([candidate.category, location && normalizePath(location.file),
+  return JSON.stringify([candidate.category, location && repoPathCandidates(location.file)[1],
     location?.symbol ?? location?.line ?? null, normalizedSummary(candidate.summary)]);
 }
 
