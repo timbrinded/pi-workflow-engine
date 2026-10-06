@@ -142,29 +142,18 @@ export class ProgressTracker {
     return id;
   }
 
-  agentStart(phase: string | undefined, label: string, id?: number): void {
-    const row = id === undefined ? undefined : this.findRowById(id);
+  agentStart(_phase: string | undefined, _label: string, id: number): void {
+    const row = this.rowsById.get(id);
     if (row) {
       this.transitionAgentStatus(row, "running");
       row.startedAt = Date.now();
       row.error = undefined;
-    } else {
-      const nextRow = {
-        label,
-        id: this.nextAgentId++,
-        status: "running" as const,
-        startedAt: Date.now(),
-        toolUses: 0,
-      };
-      this.ensurePhase(phase ?? this.currentPhase).agents.push(nextRow);
-      this.rowsById.set(nextRow.id, nextRow);
-      this.agentCounts.running++;
     }
     this.publish();
   }
 
-  agentTool(label: string, tool: string, id?: number): void {
-    const row = this.findRow(label, id);
+  agentTool(_label: string, tool: string, id: number): void {
+    const row = this.rowsById.get(id);
     if (row) {
       row.lastTool = tool;
       row.toolUses += 1;
@@ -172,8 +161,8 @@ export class ProgressTracker {
     this.publish();
   }
 
-  agentDone(label: string, id?: number): void {
-    const row = this.findRow(label, id);
+  agentDone(_label: string, id: number): void {
+    const row = this.rowsById.get(id);
     if (row && row.status !== "failed") {
       this.transitionAgentStatus(row, "done");
       row.doneAt = Date.now();
@@ -181,8 +170,8 @@ export class ProgressTracker {
     this.publish();
   }
 
-  agentFailed(label: string, error: unknown, id?: number): void {
-    const row = this.findRow(label, id);
+  agentFailed(_label: string, error: unknown, id: number): void {
+    const row = this.rowsById.get(id);
     if (row) {
       this.transitionAgentStatus(row, "failed");
       row.doneAt = Date.now();
@@ -238,25 +227,6 @@ export class ProgressTracker {
       lane.shift();
       this.laneOverflow.set(laneName, (this.laneOverflow.get(laneName) ?? 0) + 1);
     }
-  }
-
-  private findRow(label: string, id?: number): AgentRow | undefined {
-    if (id !== undefined) return this.findRowById(id);
-    for (let i = this.phases.length - 1; i >= 0; i--) {
-      const running = this.phases[i].agents.find(
-        (agent) => agent.label === label && (agent.status === "running" || agent.status === "queued"),
-      );
-      if (running) return running;
-    }
-    for (let i = this.phases.length - 1; i >= 0; i--) {
-      const matching = this.phases[i].agents.find((agent) => agent.label === label);
-      if (matching) return matching;
-    }
-    return undefined;
-  }
-
-  private findRowById(id: number): AgentRow | undefined {
-    return this.rowsById.get(id);
   }
 
   private publish(): void {
