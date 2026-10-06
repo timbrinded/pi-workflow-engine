@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, ClassifierApi, ClassifierModel, Model } from "@earendil-works/pi-ai";
 import type {
   AgentSession,
   CreateAgentSessionOptions,
@@ -66,6 +66,8 @@ interface RunContextBase {
   worktrees: WorktreeRegistry;
   /** Host MCP tools subagents may call; set only for a synchronous `workflow` tool run. */
   hostTools?: HostToolBridge;
+  /** Classifier routes resolved this run, so repeated `api.classify()` calls skip the credential lookup. */
+  classifierRoutes?: Map<string, Promise<ClassifierModel<ClassifierApi>>>;
 }
 
 /** Shared per-run context threaded into every agent() call. */

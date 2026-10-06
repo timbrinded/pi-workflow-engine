@@ -606,10 +606,13 @@ fields from those records.
 Lenses often report the same defect in different words. When a TypeSafe Jev
 classifier is reachable (TypeSafe directly, OpenRouter, Cloudflare Workers AI,
 Vercel AI Gateway, or OpenCode Zen), the four advisory workflows ask it whether
-each pair of candidates in the same file describes one defect, and merge pairs
-it is at least 80% sure of before verification, so each defect gets one
-verifier. Merged candidates keep all of their source IDs, locations, impacts,
-and evidence. Without Jev credentials the merge is skipped after one probe call.
+each pair of candidates in the same file describes one defect. Before
+verification, a candidate joins a group only when the classifier is at least 80%
+sure it matches every member, so each defect gets one verifier. Merged
+candidates keep all of their source IDs, locations, impacts, and evidence, and
+the verifier sees the other wordings as "Also reported as" evidence. If the
+first comparison fails (no Jev credentials, a bad key, a rate limit), the merge
+is skipped.
 
 Measured on GPT-6.1 Sol code reviews with planted bugs, the merge cut verifier
 agents and cost by about 40% (e.g. 29 → 18 agents, $0.60 → $0.37 list price on

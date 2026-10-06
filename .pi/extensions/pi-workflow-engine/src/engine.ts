@@ -179,6 +179,7 @@ export async function runResolvedWorkflow(
       journal,
       worktrees,
       hostTools: resolvedOptions.hostTools,
+      classifierRoutes: new Map(),
     };
 
     // perf.total_ms wraps the whole tree: sub-workflows run inside this span via api.workflow().

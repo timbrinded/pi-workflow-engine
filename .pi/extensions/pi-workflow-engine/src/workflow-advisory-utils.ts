@@ -1,6 +1,8 @@
 import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, formatAdvisoryLocation, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
-import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, mergeCandidateInto, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
+import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, mergeCandidateInto, repoPathCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
+import { isFatalWorkflowError } from "./cancellation.ts";
 import { WorkflowClassifierUnavailableError } from "./classify.ts";
+import { unknownErrorMessage } from "./unknown-error.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent, WorkflowRunStats } from "./types.ts";
 
 
@@ -130,16 +132,17 @@ const SAME_DEFECT_PROBABILITY = 0.8;
 /**
  * Merge same-file candidates that a classifier judges to be one defect, so each defect gets one verifier.
  * Lenses often report the same bug in different words; on GPT-6.1 Sol code reviews this cut verifier
- * agents and cost by about 40% without losing a finding. Runs without a Jev classifier skip it.
+ * agents and cost by about 40% without losing a finding. Runs without a reachable Jev classifier skip it.
  */
 export async function mergeEquivalentCandidates<T extends IdentifiedAdvisoryCandidate>(
   api: Pick<WorkflowApi, "classify" | "parallel" | "log">,
   candidates: readonly T[],
 ): Promise<T[]> {
+  const files = candidates.map(candidateFile);
   const pairs: Array<readonly [number, number]> = [];
   for (let first = 0; first < candidates.length; first++) {
     for (let second = first + 1; second < candidates.length; second++) {
-      if (primaryLocation(candidates[first]!).file === primaryLocation(candidates[second]!).file) pairs.push([first, second]);
+      if (files[first] === files[second]) pairs.push([first, second]);
     }
   }
   if (pairs.length === 0) return [...candidates];
@@ -156,34 +159,50 @@ export async function mergeEquivalentCandidates<T extends IdentifiedAdvisoryCand
     }, { model: DUPLICATE_CANDIDATE_CLASSIFIERS, label: "dedup" });
     return answers.same?.type === "bool" ? answers.same.probability : 0;
   };
-  // The first call doubles as the availability probe, so a run without Jev makes one call, not one per pair.
+  // The first call probes the classifier: if it fails for any reason (no Jev route, bad credentials, a rate
+  // limit), skip the merge rather than send every other pair into the same failure.
   let firstProbability: number;
   try {
     firstProbability = await sameDefect(pairs[0]!);
   } catch (error) {
-    if (error instanceof WorkflowClassifierUnavailableError) return [...candidates];
-    firstProbability = 0;
+    if (isFatalWorkflowError(error, undefined)) throw error;
+    if (!(error instanceof WorkflowClassifierUnavailableError)) api.log(`Skipped merging duplicate candidates: ${unknownErrorMessage(error)}`);
+    return [...candidates];
   }
+  if (pairs.length > 1) api.log(`Comparing ${pairs.length} same-file candidate pairs for duplicates`);
   const rest = await api.parallel(pairs.slice(1).map((pair) => () => sameDefect(pair)));
-  const probabilities = [firstProbability, ...rest.map((probability) => probability ?? 0)];
+  const probability = new Map<string, number>();
+  pairs.forEach(([first, second], index) => probability.set(`${first}:${second}`, index === 0 ? firstProbability : rest[index - 1] ?? 0));
 
-  // Union-find over confident pairs; the earliest candidate of each group absorbs the others.
-  const parent = candidates.map((_, index) => index);
-  const root = (index: number): number => (parent[index] === index ? index : (parent[index] = root(parent[index]!)));
-  pairs.forEach(([first, second], index) => {
-    if ((probabilities[index] ?? 0) < SAME_DEFECT_PROBABILITY) return;
-    const [keep, fold] = [root(first), root(second)].sort((a, b) => a - b) as [number, number];
-    if (keep !== fold) parent[fold] = keep;
+  // Complete linkage: a candidate joins a group only when it matches every member, so one vague candidate
+  // that resembles two different defects cannot chain them together.
+  const groups: number[][] = [];
+  candidates.forEach((_, index) => {
+    const group = groups.find((members) =>
+      members.every((member) => (probability.get(`${member}:${index}`) ?? 0) >= SAME_DEFECT_PROBABILITY));
+    if (group) group.push(index);
+    else groups.push([index]);
   });
-  const groups = new Map<number, T>();
-  candidates.forEach((candidate, index) => {
-    const group = groups.get(root(index));
-    if (group) mergeCandidateInto(group, candidate);
-    else groups.set(root(index), { ...candidate });
+  const merged = groups.map(([keep, ...folded]) => {
+    const kept = { ...candidates[keep!]! };
+    for (const index of folded) {
+      const duplicate = candidates[index]!;
+      mergeCandidateInto(kept, duplicate);
+      // The kept summary leads; keep folded wording visible to the verifier in case the classifier was wrong.
+      if (duplicate.summary !== kept.summary) {
+        kept.discoveryEvidence = [...new Set([...(kept.discoveryEvidence ?? []), `Also reported as: ${duplicate.summary}`])];
+      }
+    }
+    return kept;
   });
-  const merged = candidates.length - groups.size;
-  if (merged > 0) api.log(`Merged ${merged} candidate(s) describing the same defect before verification`);
-  return [...groups.values()];
+  const folded = candidates.length - merged.length;
+  if (folded > 0) api.log(`Merged ${folded} candidate(s) describing the same defect before verification`);
+  return merged;
+}
+
+/** Pair by the changed line when there is one, with the repository-relative path exact dedup uses. */
+function candidateFile(candidate: IdentifiedAdvisoryCandidate): string {
+  return repoPathCandidates((candidate.reviewAnchor ?? primaryLocation(candidate)).file)[1];
 }
 
 function candidateForClassifier(candidate: IdentifiedAdvisoryCandidate) {

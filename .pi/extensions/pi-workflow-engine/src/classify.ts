@@ -41,7 +41,7 @@ export async function runClassifier(
   const registry = rc.modelRegistry;
   return await rc.semaphore.run(async () => {
     assertWorkflowBudgetAvailable(rc.budget);
-    const model = await resolveClassifierModel(registry, opts.model);
+    const model = await cachedClassifierModel(rc, registry, opts.model);
     const label = opts.label ?? `classify:${model.provider}/${model.id}`;
     // A stalled classifier must not hold a concurrency slot past the limit agents get.
     const timeout = AbortSignal.timeout(rc.agentTimeoutMs);
@@ -62,6 +62,20 @@ export async function runClassifier(
     }
     return result.answers;
   }, { signal: rc.signal });
+}
+
+/** One credential lookup per route and run; a route that failed to resolve keeps failing for the run. */
+function cachedClassifierModel(
+  rc: RunContext,
+  registry: ClassifierRegistry,
+  ref: string | readonly string[] | undefined,
+): Promise<ClassifierModel<ClassifierApi>> {
+  const key = JSON.stringify(ref ?? null);
+  const cached = rc.classifierRoutes?.get(key);
+  if (cached) return cached;
+  const resolved = resolveClassifierModel(registry, ref);
+  rc.classifierRoutes?.set(key, resolved);
+  return resolved;
 }
 
 async function resolveClassifierModel(

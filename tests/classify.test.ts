@@ -42,11 +42,13 @@ function classifierRun(input: {
   readonly budget?: number;
   readonly agentTimeoutMs?: number;
   readonly classify?: ClassifierRegistry["classify"];
-} = {}): { rc: RunContext; usage: ReturnType<typeof createWorkflowUsageRecorder>; classified: ClassifierModelRef[] } {
+} = {}): { rc: RunContext; usage: ReturnType<typeof createWorkflowUsageRecorder>; classified: ClassifierModelRef[]; lookups: () => number } {
   const classified: ClassifierModelRef[] = [];
+  let lookups = 0;
   const registry: ClassifierRegistry = {
     find: () => undefined,
     async getAvailableOfType() {
+      lookups += 1;
       return (input.available ?? [JEV]) as never;
     },
     getModelOfType: ((_type: string, provider: string, id: string) =>
@@ -62,8 +64,9 @@ function classifierRun(input: {
     ...createRunContext({ createSession, usage, budget: createBudget(input.budget ?? null, usage), agentTimeoutMs: input.agentTimeoutMs }),
     createSession,
     modelRegistry: registry,
+    classifierRoutes: new Map(),
   };
-  return { rc, usage, classified };
+  return { rc, usage, classified, lookups: () => lookups };
 }
 
 test("classify uses the first credentialed classifier and records its usage like an agent", async () => {
@@ -124,4 +127,14 @@ test("a model preference list uses the first ref with working credentials", asyn
   assert.deepEqual(run.classified, [CLEF]);
 
   await assert.rejects(() => runClassifier(classifierRun({ available: [] }).rc, CONTEXT, { model: ["typesafe/jev-latest"] }), WorkflowClassifierUnavailableError);
+});
+
+test("a run resolves each classifier route once, however many calls use it", async () => {
+  const run = classifierRun();
+  const route = ["typesafe/jev-latest", "openrouter/~typesafe/jev-latest"];
+  await Promise.all([runClassifier(run.rc, CONTEXT, { model: route }), runClassifier(run.rc, CONTEXT, { model: route }), runClassifier(run.rc, CONTEXT)]);
+
+  assert.equal(run.classified.length, 3);
+  // One lookup for the preference list and one for the default route.
+  assert.equal(run.lookups(), 2);
 });
