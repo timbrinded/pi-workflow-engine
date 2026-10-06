@@ -21,6 +21,10 @@ class FakeClock implements WorkflowUsageLimitSchedulerClock {
 
   constructor(private current: number) {}
 
+  get pending(): number {
+    return this.timers.size;
+  }
+
   now(): number {
     return this.current;
   }
@@ -132,7 +136,9 @@ test("usage-limit scheduler fires once and cancellation prevents a stale resume"
   clock.advance(60_000);
   await Promise.resolve();
   assert.deepEqual(resumed, [{ runId: "scheduled-once", attempt: 1 }]);
-  assert.equal(scheduler.has("scheduled-once"), false);
+  // A fired timer releases the run, so a later session can schedule it again.
+  assert.equal(scheduler.arm(context(), record), true);
+  assert.equal(scheduler.cancel(record.runId), true);
 
   const cancelled = pausedRecord("scheduled-cancel", { now: 61_000 });
   assert.equal(scheduler.arm(context(), cancelled), true);
@@ -157,7 +163,7 @@ test("session shutdown cancels timers and blocks late settlement re-arming", () 
   const record = pausedRecord("shutdown", { now: 0 });
   assert.equal(scheduler.arm(ctx, record), true);
   scheduler.cancelSession(ctx);
-  assert.equal(scheduler.has(record.runId), false);
+  assert.equal(clock.pending, 0);
   assert.equal(scheduler.arm(ctx, record), false);
   scheduler.activateSession(ctx);
   assert.equal(scheduler.arm(ctx, record), true);

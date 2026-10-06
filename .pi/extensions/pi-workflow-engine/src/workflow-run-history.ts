@@ -1,6 +1,6 @@
 import { truncateText } from "./text.ts";
 import { formatWorkflowUsageLine } from "./usage.ts";
-import type { WorkflowRunRecord, WorkflowRunState } from "./workflow-run-record.ts";
+import type { WorkflowRunRecord } from "./workflow-run-record.ts";
 import { formatDuration } from "./ui/workflow-format.ts";
 
 export const WORKFLOW_RUN_HISTORY_LIMIT = 50;
@@ -71,16 +71,13 @@ export function canRelaunchWorkflowRun(record: WorkflowRunRecord): boolean {
 
 export function formatWorkflowRunHistory(
   records: readonly WorkflowRunRecord[],
-  activeRunIds: ReadonlySet<string> = new Set(),
+  activeRunIds: ReadonlySet<string>,
   now = Date.now(),
 ): string {
   if (records.length === 0) return "No durable workflow runs are available for this project.";
   const lines = ["Recent workflow runs:"];
-  for (const record of records.slice(0, WORKFLOW_RUN_HISTORY_LIMIT)) {
+  for (const record of records) {
     lines.push(`- ${formatWorkflowRunSummary(record, activeRunIds.has(record.runId), now)}`);
-  }
-  if (records.length > WORKFLOW_RUN_HISTORY_LIMIT) {
-    lines.push(`… ${records.length - WORKFLOW_RUN_HISTORY_LIMIT} older runs hidden`);
   }
   return lines.join("\n");
 }
@@ -92,7 +89,7 @@ export function formatWorkflowRunSummary(
 ): string {
   const usage = formatWorkflowUsageLine(record.usage);
   const actions = availableWorkflowRunActions(record, active).filter((action) => action !== "inspect");
-  return `${workflowRunStateLabel(record.state)} ${record.workflow.name} · age ${formatDuration(Math.max(0, now - record.createdAt))} · duration ${formatWorkflowRunDuration(record, now)}${usage ? ` · ${usage}` : ""} · ${record.runId}${actions.length > 0 ? ` · actions ${actions.join(", ")}` : ""}`;
+  return `${record.state.toUpperCase()} ${record.workflow.name} · age ${formatDuration(Math.max(0, now - record.createdAt))} · duration ${formatWorkflowRunDuration(record, now)}${usage ? ` · ${usage}` : ""} · ${record.runId}${actions.length > 0 ? ` · actions ${actions.join(", ")}` : ""}`;
 }
 
 export function formatWorkflowRunDetails(
@@ -108,7 +105,7 @@ export function formatWorkflowRunDetails(
   const lines = [
     `Workflow run ${record.runId}`,
     `Workflow: ${record.workflow.name}`,
-    `State: ${workflowRunStateLabel(record.state)}`,
+    `State: ${record.state.toUpperCase()}`,
     `Age: ${formatDuration(Math.max(0, now - record.createdAt))}`,
     `Duration: ${formatWorkflowRunDuration(record, now)}`,
     `Phase: ${record.progress.currentPhase}`,
@@ -150,8 +147,4 @@ export function formatWorkflowRunDuration(record: WorkflowRunRecord, now = Date.
   const start = record.startedAt ?? record.createdAt;
   const end = record.endedAt ?? (record.state === "paused" ? record.updatedAt : now);
   return formatDuration(Math.max(0, end - start));
-}
-
-export function workflowRunStateLabel(state: WorkflowRunState): string {
-  return state.toUpperCase();
 }
