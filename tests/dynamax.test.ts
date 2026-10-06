@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   CustomEditor,
   type ExtensionAPI,
@@ -25,7 +24,6 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import {
   ADAPTIVE_WORKFLOW_GUIDANCE,
-  appendDynamaxContextReminder,
   appendDynamaxSystemReminder,
   clearDynamax,
   createDynamaxRuntime,
@@ -564,21 +562,6 @@ test("dynamax sticky mode remains active until cleared", () => {
 
   clearDynamax(state);
   assert.equal(isDynamaxActive(state), false);
-});
-
-test("appendDynamaxContextReminder appends a hidden custom message only when sticky", () => {
-  const state = createDynamaxState();
-  const messages: AgentMessage[] = [];
-
-  assert.equal(appendDynamaxContextReminder(messages, state), messages);
-
-  enableDynamaxSticky(state);
-  const appended = appendDynamaxContextReminder(messages, state);
-  assert.equal(appended.length, 1);
-  const reminder = appended[0];
-  assert.equal(isRecord(reminder) ? reminder.role : undefined, "custom");
-  assert.equal(isRecord(reminder) ? reminder.customType : undefined, "workflow-dynamax-reminder");
-  assert.equal(isRecord(reminder) ? reminder.display : undefined, false);
 });
 
 test("resolveDynamaxShortcuts reads configurable workflow UI shortcuts", () => {

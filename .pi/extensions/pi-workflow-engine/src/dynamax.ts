@@ -1,4 +1,3 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { EditorComponent, KeyId } from "@earendil-works/pi-tui";
 import { completeCurrentArgument } from "./command-completions.ts";
@@ -79,8 +78,6 @@ Inline workflow rules:
 ${ADAPTIVE_WORKFLOW_GUIDANCE}
 `;
 
-const DYNAMAX_CONTEXT_CUSTOM_TYPE = "workflow-dynamax-reminder";
-
 export function createDynamaxState(): DynamaxState {
   return { sticky: false, oneShotPending: false, turnActive: false };
 }
@@ -144,11 +141,6 @@ export function appendDynamaxSystemReminder(systemPrompt: string, state: Dynamax
   state.oneShotPending = false;
   state.turnActive = true;
   return `${systemPrompt}\n\n${DYNAMAX_REMINDER.trim()}`;
-}
-
-export function appendDynamaxContextReminder(messages: AgentMessage[], state: DynamaxState): AgentMessage[] {
-  if (!state.sticky) return messages;
-  return [...messages, createDynamaxContextMessage()];
 }
 
 export function registerDynamax(
@@ -279,13 +271,6 @@ export function registerDynamax(
     return undefined;
   });
 
-  pi.on("context", (event, ctx) => {
-    const runtime = getDynamaxRuntime(runtimes, ctx);
-    const messages = appendDynamaxContextReminder(event.messages, runtime.state);
-    if (messages === event.messages) return undefined;
-    return { messages };
-  });
-
   if (shortcuts.inspector) {
     pi.registerShortcut(shortcuts.inspector, {
       description: "Open workflow inspector",
@@ -349,15 +334,4 @@ function workflowLabel(args: unknown): string {
   const script = args.script;
   if (typeof script === "string" && script.trim()) return "inline workflow";
   return "workflow";
-}
-
-function createDynamaxContextMessage(): AgentMessage {
-  return {
-    role: "custom",
-    customType: DYNAMAX_CONTEXT_CUSTOM_TYPE,
-    content: DYNAMAX_REMINDER.trim(),
-    display: false,
-    details: { dynamax: true, sticky: true },
-    timestamp: Date.now(),
-  };
 }
