@@ -202,7 +202,6 @@ test("production session services load skills, tools, and host runtime providers
         cwd,
         model: selectedModel,
         label,
-        tags: { label, phase: "Test" },
       });
     const handle = await openSession(model, "session-services");
     const session = handle.session;

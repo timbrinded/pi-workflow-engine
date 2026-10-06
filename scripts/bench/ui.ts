@@ -99,9 +99,9 @@ function simulateProgressEvents(agentCount: number, itemCount: number): void {
   const start = performance.now();
   for (let i = 0; i < agentCount; i++) {
     const row = tracker.agentQueued("Bench", `agent:${i}`);
-    tracker.agentStart("Bench", `agent:${i}`, row);
-    if (i % 3 === 0) tracker.agentTool(`agent:${i}`, "read", row);
-    tracker.agentDone(`agent:${i}`, row);
+    tracker.agentStart(row);
+    if (i % 3 === 0) tracker.agentTool(row, "read");
+    tracker.agentDone(row);
   }
   for (let i = 0; i < itemCount; i++) {
     tracker.event({ type: "lane_item", lane: "Findings", title: `Finding ${i}`, status: "pending" });

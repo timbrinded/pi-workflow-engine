@@ -1,7 +1,5 @@
 import { performance } from "node:perf_hooks";
 
-export type PerfTags = Record<string, string | number>;
-
 export interface PerfAggregate {
   readonly name: string;
   readonly count: number;
@@ -19,10 +17,10 @@ export interface PerfSnapshot {
 }
 
 export interface PerfSink {
-  time<T>(name: string, fn: () => Promise<T>, tags?: PerfTags): Promise<T>;
-  timeSync<T>(name: string, fn: () => T, tags?: PerfTags): T;
-  observe(name: string, value: number, tags?: PerfTags): void;
-  counter(name: string, delta?: number, tags?: PerfTags): void;
+  time<T>(name: string, fn: () => Promise<T>): Promise<T>;
+  timeSync<T>(name: string, fn: () => T): T;
+  observe(name: string, value: number): void;
+  counter(name: string, delta?: number): void;
   snapshot(): PerfSnapshot;
 }
 
@@ -30,33 +28,33 @@ export class PerfRecorder implements PerfSink {
   /** Finite observed values per metric, in first-observation order. */
   private readonly values = new Map<string, number[]>();
 
-  async time<T>(name: string, fn: () => Promise<T>, tags?: PerfTags): Promise<T> {
+  async time<T>(name: string, fn: () => Promise<T>): Promise<T> {
     const start = performance.now();
     try {
       return await fn();
     } finally {
-      this.observe(name, performance.now() - start, tags);
+      this.observe(name, performance.now() - start);
     }
   }
 
-  timeSync<T>(name: string, fn: () => T, tags?: PerfTags): T {
+  timeSync<T>(name: string, fn: () => T): T {
     const start = performance.now();
     try {
       return fn();
     } finally {
-      this.observe(name, performance.now() - start, tags);
+      this.observe(name, performance.now() - start);
     }
   }
 
-  observe(name: string, value: number, _tags?: PerfTags): void {
+  observe(name: string, value: number): void {
     if (!Number.isFinite(value)) return;
     const values = this.values.get(name);
     if (values) values.push(value);
     else this.values.set(name, [value]);
   }
 
-  counter(name: string, delta = 1, tags?: PerfTags): void {
-    this.observe(name, delta, tags);
+  counter(name: string, delta = 1): void {
+    this.observe(name, delta);
   }
 
   snapshot(): PerfSnapshot {
@@ -65,17 +63,17 @@ export class PerfRecorder implements PerfSink {
 }
 
 export class NoopPerfRecorder implements PerfSink {
-  async time<T>(_name: string, fn: () => Promise<T>, _tags?: PerfTags): Promise<T> {
+  async time<T>(_name: string, fn: () => Promise<T>): Promise<T> {
     return await fn();
   }
 
-  timeSync<T>(_name: string, fn: () => T, _tags?: PerfTags): T {
+  timeSync<T>(_name: string, fn: () => T): T {
     return fn();
   }
 
-  observe(_name: string, _value: number, _tags?: PerfTags): void {}
+  observe(): void {}
 
-  counter(_name: string, _delta?: number, _tags?: PerfTags): void {}
+  counter(): void {}
 
   snapshot(): PerfSnapshot {
     return { enabled: false, aggregates: [] };

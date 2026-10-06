@@ -13,7 +13,6 @@ import { prepareAgentSkillResources } from "./agent-skills.ts";
 import type {
   AgentExecutionOptions,
   AgentProgress,
-  AgentRunTags,
   AgentRunnerSession,
   RunContext,
 } from "./agent-runner-types.ts";
@@ -65,9 +64,8 @@ export async function openAgentSession(input: {
   readonly cwd: string;
   readonly model: Model<Api> | undefined;
   readonly label: string;
-  readonly tags: AgentRunTags;
 }): Promise<AgentSessionHandle> {
-  const { rc, prompt, opts, cwd, model, label, tags } = input;
+  const { rc, prompt, opts, cwd, model, label } = input;
   let captured = false;
   let structuredResult: unknown;
   const customTools: ToolDefinition[] = opts.schema
@@ -92,14 +90,12 @@ export async function openAgentSession(input: {
     const resources = await rc.perf.time(
       "agent.session_resources_ms",
       () => prepareAgentSessionResources({ rc, prompt, opts, cwd, model, customTools, label }),
-      tags,
     );
     const toolSelection = buildToolSelection(opts, resources.selectedSkills.length > 0);
     session = (
       await rc.perf.time(
         "agent.create_session_ms",
         () => resources.createSession(toolSelection.sessionOptions),
-        tags,
       )
     ).session;
     const matchedToolHints = toolSelection.toolHints.length === 0
@@ -118,7 +114,7 @@ export async function openAgentSession(input: {
     };
   } catch (error) {
     const created = session;
-    if (created) rc.perf.timeSync("agent.dispose_ms", () => created.dispose(), tags);
+    if (created) rc.perf.timeSync("agent.dispose_ms", () => created.dispose());
     throw error;
   }
 }
@@ -130,9 +126,9 @@ export async function promptAgentSession(input: {
   readonly opts: AgentExecutionOptions;
   readonly label: string;
   readonly rowId: number;
-  readonly tags: AgentRunTags;
+  readonly phase: string;
 }): Promise<unknown> {
-  const { rc, handle, prompt, opts, label, rowId, tags } = input;
+  const { rc, handle, prompt, opts, label, rowId, phase } = input;
   const { session } = handle;
   throwIfAborted(rc.signal);
   // pi drops a retried turn's failed message from session.messages; keep it so usage covers every attempt.
@@ -140,7 +136,7 @@ export async function promptAgentSession(input: {
   let lastFailure: AssistantMessage | undefined;
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start" && event.toolName !== FINAL_TOOL) {
-      rc.progress.agentTool(label, event.toolName, rowId);
+      rc.progress.agentTool(rowId, event.toolName);
     } else if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error") {
       lastFailure = event.message;
     } else if (event.type === "auto_retry_start") {
@@ -150,12 +146,12 @@ export async function promptAgentSession(input: {
       rc.progress.log(
         `${label}: transient provider failure (${reason}); retrying turn ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms`,
       );
-      rc.perf.counter("agent.turn_retry", 1, tags);
+      rc.perf.counter("agent.turn_retry");
     }
   });
   const unlinkPromptAbort = linkSessionAbort(rc.signal, session);
   const promptSession = async (text: string) => {
-    await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(text), rc.signal), tags);
+    await rc.perf.time("agent.prompt_ms", () => raceWithAbort(() => session.prompt(text), rc.signal));
     const failure = providerErrorFromMessages(session.messages, {
       pauseOnUsageLimit: rc.pauseOnProviderUsageLimit,
     });
@@ -172,7 +168,7 @@ export async function promptAgentSession(input: {
         throwIfAborted(rc.signal);
         session.setActiveToolsByName([FINAL_TOOL]);
         rc.progress.log(`${label}: no final answer; re-prompting (${attempt + 1}/${MAX_SCHEMA_REPAIR_ATTEMPTS})`);
-        rc.perf.counter("agent.structured_reprompt", 1, tags);
+        rc.perf.counter("agent.structured_reprompt");
         await promptSession(SCHEMA_REPROMPT);
       }
       // Narrowing also rebuilds pi's system prompt; restore both so replay validation sees the captured identity.
@@ -188,18 +184,17 @@ export async function promptAgentSession(input: {
         }
         if (!handle.hasStructuredResult()) {
           rc.progress.log(`${label}: no structured answer returned`);
-          rc.perf.counter("agent.structured_missing", 1, tags);
+          rc.perf.counter("agent.structured_missing");
           throw new WorkflowStructuredOutputError(label, MAX_SCHEMA_REPAIR_ATTEMPTS);
         }
         return handle.structuredResult();
       },
-      tags,
     );
   } finally {
     // Detach first: recording publishes usage to the UI and must not be able to skip listener cleanup.
     unlinkPromptAbort();
     unsubscribe();
-    rc.usage.recordAgentSession({ label, phase: tags.phase, messages: [...retriedFailures, ...session.messages] });
+    rc.usage.recordAgentSession({ label, phase, messages: [...retriedFailures, ...session.messages] });
   }
 }
 

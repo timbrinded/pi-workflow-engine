@@ -110,23 +110,26 @@ export function createRegistry(models: readonly Model<Api>[], calls: FindCall[] 
 
 export function createProgress(): AgentProgress & { readonly events: string[] } {
   const events: string[] = [];
+  const labels = new Map<number, string>();
   return {
     events,
     agentQueued(_phase, label) {
+      const id = labels.size + 1;
+      labels.set(id, label);
       events.push(`queued:${label}`);
-      return events.length;
+      return id;
     },
-    agentStart(_phase, label) {
-      events.push(`start:${label}`);
+    agentStart(id) {
+      events.push(`start:${labels.get(id)}`);
     },
-    agentTool(label, tool) {
-      events.push(`tool:${label}:${tool}`);
+    agentTool(id, tool) {
+      events.push(`tool:${labels.get(id)}:${tool}`);
     },
-    agentDone(label) {
-      events.push(`done:${label}`);
+    agentDone(id) {
+      events.push(`done:${labels.get(id)}`);
     },
-    agentFailed(label, error) {
-      events.push(`failed:${label}:${String(error)}`);
+    agentFailed(id, error) {
+      events.push(`failed:${labels.get(id)}:${String(error)}`);
     },
     event(event) {
       events.push(`event:${event.type}`);

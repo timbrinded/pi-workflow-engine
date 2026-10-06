@@ -16,10 +16,10 @@ test("ProgressTracker tracks rows by id and keeps status counts correct", () => 
 
   assert.deepEqual(tracker.statusCounts(), { queued: 1_000, running: 0, done: 0, failed: 0, total: 1_000 });
 
-  tracker.agentStart("Bulk", "agent:999", ids[999]);
-  tracker.agentDone("agent:999", ids[999]);
-  tracker.agentStart("Bulk", "agent:998", ids[998]);
-  tracker.agentFailed("agent:998", new Error("boom"), ids[998]);
+  tracker.agentStart(ids[999]);
+  tracker.agentDone(ids[999]);
+  tracker.agentStart(ids[998]);
+  tracker.agentFailed(ids[998], new Error("boom"));
 
   assert.deepEqual(tracker.statusCounts(), { queued: 998, running: 0, done: 1, failed: 1, total: 1_000 });
   const lastRows = tracker.snapshot().phases.flatMap((phase) => phase.agents).slice(-2);
@@ -49,7 +49,7 @@ test("ProgressTracker caps lane items and reports overflow", () => {
 test("ProgressTracker snapshots copy retained state", () => {
   const tracker = new ProgressTracker(headlessContext(), "copy-test", "copy-test-run");
   const id = tracker.agentQueued("Copy", "agent");
-  tracker.agentStart("Copy", "agent", id);
+  tracker.agentStart(id);
   tracker.event({ type: "lane_item", lane: "Findings", title: "Finding", status: "success", details: "evidence" });
 
   const first = tracker.snapshot();
@@ -175,10 +175,10 @@ test("ProgressTracker records late agent events after done without reviving its 
 
   try {
     const id = tracker.agentQueued("Find", "straggler");
-    tracker.agentStart("Find", "straggler", id);
+    tracker.agentStart(id);
     tracker.done();
 
-    tracker.agentFailed("straggler", new Error("session creation outlived the drain"), id);
+    tracker.agentFailed(id, new Error("session creation outlived the drain"));
     tracker.log("progress snapshot callback failed: boom");
 
     assert.equal(widgets.size, 0);

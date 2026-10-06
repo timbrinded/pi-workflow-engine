@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { createPerfRecorder, NoopPerfRecorder, PerfRecorder } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
+import { createPerfRecorder, NoopPerfRecorder, PerfRecorder, type PerfSink } from "../.pi/extensions/pi-workflow-engine/src/perf.ts";
 
 function aggregateValue(recorder: PerfRecorder, name: string): number {
   const aggregate = recorder.snapshot().aggregates.find((entry) => entry.name === name);
@@ -10,7 +10,7 @@ function aggregateValue(recorder: PerfRecorder, name: string): number {
 
 test("PerfRecorder aggregates observed values and percentiles", () => {
   const recorder = new PerfRecorder();
-  for (let i = 1; i <= 100; i++) recorder.observe("queue", i, { phase: "test" });
+  for (let i = 1; i <= 100; i++) recorder.observe("queue", i);
   recorder.counter("misses", 2);
   recorder.counter("misses", 3);
 
@@ -44,7 +44,7 @@ test("PerfRecorder records async and sync durations", async () => {
 });
 
 test("NoopPerfRecorder executes functions without retaining samples", async () => {
-  const recorder = new NoopPerfRecorder();
+  const recorder: PerfSink = new NoopPerfRecorder();
   recorder.observe("ignored", 10);
   recorder.counter("ignored");
 

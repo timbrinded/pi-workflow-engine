@@ -142,7 +142,7 @@ export class ProgressTracker {
     return id;
   }
 
-  agentStart(_phase: string | undefined, _label: string, id: number): void {
+  agentStart(id: number): void {
     const row = this.rowsById.get(id);
     if (row) {
       this.transitionAgentStatus(row, "running");
@@ -152,7 +152,7 @@ export class ProgressTracker {
     this.publish();
   }
 
-  agentTool(_label: string, tool: string, id: number): void {
+  agentTool(id: number, tool: string): void {
     const row = this.rowsById.get(id);
     if (row) {
       row.lastTool = tool;
@@ -161,7 +161,7 @@ export class ProgressTracker {
     this.publish();
   }
 
-  agentDone(_label: string, id: number): void {
+  agentDone(id: number): void {
     const row = this.rowsById.get(id);
     if (row && row.status !== "failed") {
       this.transitionAgentStatus(row, "done");
@@ -170,7 +170,7 @@ export class ProgressTracker {
     this.publish();
   }
 
-  agentFailed(_label: string, error: unknown, id: number): void {
+  agentFailed(id: number, error: unknown): void {
     const row = this.rowsById.get(id);
     if (row) {
       this.transitionAgentStatus(row, "failed");

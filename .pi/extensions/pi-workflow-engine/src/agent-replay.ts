@@ -1,7 +1,7 @@
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import { captureAgentSkillIdentities, extractSkillSelectorsFromText } from "./agent-skills.ts";
-import type { AgentExecutionOptions, AgentRunnerSession, AgentRunTags, RunContext } from "./agent-runner-types.ts";
+import type { AgentExecutionOptions, AgentRunnerSession, RunContext } from "./agent-runner-types.ts";
 import { captureEffectiveAgentSessionIdentity } from "./agent-session-identity.ts";
 import { FINAL_TOOL } from "./agent-session.ts";
 import type { AgentWorkspace, IsolatedAgentWorkspace } from "./agent-workspace.ts";
@@ -159,7 +159,6 @@ export async function validateReplayIdentity(input: {
 export async function settleAgentAttempt(input: {
   readonly rc: RunContext;
   readonly label: string;
-  readonly tags: AgentRunTags;
   readonly replay: AgentReplayPlan;
   readonly outcome: AgentAttemptResult;
 }): Promise<AgentAttemptSettlement> {
@@ -188,7 +187,7 @@ export async function settleAgentAttempt(input: {
   await recordJournalResult(rc, label, replay.key, outcome.result, outcome.identity);
   if (outcome.kind === "cache-hit") {
     rc.progress.log(`${label}: using cached result from workflow journal`);
-    rc.perf.counter("agent.cache_hit", 1, input.tags);
+    rc.perf.counter("agent.cache_hit");
     recordAgentResultSource(rc, "cached");
   } else {
     recordAgentResultSource(rc, "live");

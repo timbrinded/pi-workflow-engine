@@ -2,7 +2,6 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { assertWorkflowBudgetAvailable } from "./budget.ts";
 import {
   type AgentExecutionOptions,
-  type AgentRunTags,
   type RunContext,
 } from "./agent-runner-types.ts";
 import {
@@ -32,10 +31,10 @@ export async function executeAgentAttempt(input: {
   readonly replay: AgentReplayPlan;
   readonly label: string;
   readonly rowId: number;
-  readonly tags: AgentRunTags;
+  readonly phase: string;
   readonly admitLiveAgent: () => void;
 }): Promise<AgentAttemptResult> {
-  const { rc, prompt, opts, resumeBaseContext, model, replay, label, rowId, tags, admitLiveAgent } = input;
+  const { rc, prompt, opts, resumeBaseContext, model, replay, label, rowId, phase, admitLiveAgent } = input;
   let repositoryBefore: RepositoryResumeContext | undefined;
   let evidence: AgentReplayEvidence | undefined;
   if (isReplayEnabled(replay)) {
@@ -60,7 +59,7 @@ export async function executeAgentAttempt(input: {
       if (workspace.kind !== "isolated") throw new Error("Isolated replay created a shared workspace.");
       repositoryBefore = await captureIsolatedRepositoryAfterSetup(rc, prompt, opts, workspace);
     }
-    handle = await openAgentSession({ rc, prompt, opts, cwd: workspace.cwd, model, label, tags });
+    handle = await openAgentSession({ rc, prompt, opts, cwd: workspace.cwd, model, label });
 
     let contract: ReplayContract | undefined;
     if (isReplayEnabled(replay) && repositoryBefore && evidence) {
@@ -99,7 +98,7 @@ export async function executeAgentAttempt(input: {
       opts,
       label,
       rowId,
-      tags,
+      phase,
     });
     const result = await workspace.wrapResult(rawResult);
     if (!contract) return { kind: "live-unrecordable", result };
@@ -113,7 +112,7 @@ export async function executeAgentAttempt(input: {
   } finally {
     try {
       const session = handle?.session;
-      if (session) rc.perf.timeSync("agent.dispose_ms", () => session.dispose(), tags);
+      if (session) rc.perf.timeSync("agent.dispose_ms", () => session.dispose());
     } finally {
       await workspace?.dispose();
     }
