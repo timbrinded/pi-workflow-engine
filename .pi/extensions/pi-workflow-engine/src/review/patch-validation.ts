@@ -77,7 +77,7 @@ async function evaluateCandidateInWorktrees(
   if ("error" in candidate) return { ...validation, reason: candidate.error };
   if (candidate.baselineOid !== options.baselineOid) return { ...validation, status: "rejected", reason: "Candidate was produced from a different baseline." };
   const applied = await worktrees.applyPatch(candidate.path, options.patch, options.signal);
-  if (!applied.ok) return { ...validation, status: "rejected", reason: applied.error ?? applied.stderr };
+  if (!applied.ok) return { ...validation, status: "rejected", reason: applied.error };
   const rejected = options.evaluation.outcome === "rejected" ? [options.evaluation.reason] : [];
   const blocked = options.evaluation.outcome === "blocked" ? [options.evaluation.reason] : [];
   if (!options.evaluation.checks.some((check) => check.required)) blocked.push("No required behavior check was selected.");
@@ -93,7 +93,7 @@ async function evaluateCandidateInWorktrees(
       const original = await worktrees.add(options.signal, options.baseline);
       if ("error" in original) { blocked.push(`Baseline worktree setup failed: ${original.error}`); continue; }
       const testApplied = await worktrees.applyPatch(original.path, check.regression.baselinePatch, options.signal);
-      if (!testApplied.ok) { blocked.push(`Baseline regression setup failed: ${testApplied.error ?? testApplied.stderr}`); continue; }
+      if (!testApplied.ok) { blocked.push(`Baseline regression setup failed: ${testApplied.error}`); continue; }
       const baselineResult = await runCheck(check, original.path, options.signal);
       validation.checks.push({ ...check, stage: "baseline", result: baselineResult });
       throwIfAborted(options.signal);

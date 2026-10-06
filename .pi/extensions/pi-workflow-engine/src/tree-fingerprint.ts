@@ -362,15 +362,6 @@ export function portableRelativePath(root: string, path: string): string {
   return value.length === 0 ? "." : value;
 }
 
-/** Resolve `git rev-parse --show-toplevel` output to a root that contains `cwd`. */
-export function parseGitTopLevel(output: string, cwd: string): string | undefined {
-  const withoutLf = output.endsWith("\n") ? output.slice(0, -1) : output;
-  const value = withoutLf.endsWith("\r") ? withoutLf.slice(0, -1) : withoutLf;
-  if (value.length === 0 || value.includes("\n") || value.includes("\0")) return undefined;
-  const root = resolve(cwd, value);
-  return isPathWithin(root, cwd) ? root : undefined;
-}
-
 function isExcludedRelativePath(path: string, excluded: ReadonlySet<string> | undefined): boolean {
   if (!excluded || excluded.size === 0) return false;
   const normalized = normalizeRelativePath(path);

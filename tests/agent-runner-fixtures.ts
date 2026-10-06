@@ -40,6 +40,7 @@ import {
 import {
   WorktreeRegistry,
   type WorktreeGitCommandOptions,
+  type WorktreeGitCommandResult,
   type WorktreeGitRunner,
 } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import type { AgentResumeBaseContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
@@ -295,7 +296,7 @@ export function createFakeWorktreeRegistry(input: {
   readonly insideGit?: boolean;
   readonly patch?: string;
   readonly changed?: boolean;
-  readonly removeResult?: { readonly ok: boolean; readonly stdout: string; readonly stderr: string; readonly error?: string };
+  readonly removeResult?: WorktreeGitCommandResult;
 }): { readonly registry: WorktreeRegistry; readonly calls: WorktreeGitCommandOptions[] } {
   const calls: WorktreeGitCommandOptions[] = [];
   const runner: WorktreeGitRunner = {

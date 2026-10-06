@@ -233,6 +233,20 @@ test("runBoundedProcess terminates a descendant that retains inherited stdio", a
   await assertProcessGone(descendantPid);
 });
 
+test("runBoundedProcess terminates the child when aborted", async () => {
+  const controller = new AbortController();
+  const running = runBoundedProcess({
+    ...processOptions("setInterval(() => {}, 1_000)"),
+    signal: controller.signal,
+    killGraceMs: 5,
+  });
+  controller.abort();
+  const result = await running;
+
+  if (result.ok) assert.fail("expected the process to be aborted");
+  assert.deepEqual(result.failure, { kind: "abort", message: "aborted" });
+});
+
 test("runBoundedProcess preserves the first terminal failure", async () => {
   const controller = new AbortController();
   const abortTimer = setTimeout(() => controller.abort(new Error("late abort")), 100);

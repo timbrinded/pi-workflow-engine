@@ -257,7 +257,7 @@ async function validateCachedResult(
     if (!patch.ok) {
       return {
         ok: false,
-        reason: `cached isolated patch does not apply to the current baseline (${(patch.error ?? patch.stderr.trim()) || "unknown error"})`,
+        reason: `cached isolated patch does not apply to the current baseline (${patch.error})`,
       };
     }
     result = isolated.wrapper.result;

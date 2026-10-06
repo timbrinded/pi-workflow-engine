@@ -62,7 +62,7 @@ test("isGitWorktree probes the repository cwd", async () => {
   assert.deepEqual(await isGitWorktree({ repoCwd: "/repo", runner: outside }), { ok: true, inside: false });
 
   const failing = fakeRunner(() => ({ ok: false, stdout: "", stderr: "no git", error: "no git" }));
-  assert.deepEqual(await isGitWorktree({ repoCwd: "/repo", runner: failing }), { ok: false, inside: false, error: "no git" });
+  assert.deepEqual(await isGitWorktree({ repoCwd: "/repo", runner: failing }), { ok: false, error: "no git" });
 });
 
 test("addWorktree builds a detached HEAD worktree command", async () => {
@@ -166,7 +166,7 @@ test("WorktreeRegistry removeAll tries every path, retains failures, and throws 
     const path = String(options.args[3]);
     removed.push(path);
     if (path === "/tmp/leaked-one") return { ok: false, stdout: "", stderr: "", error: "busy" };
-    if (path === "/tmp/leaked-two") return { ok: false, stdout: "", stderr: "permission denied" };
+    if (path === "/tmp/leaked-two") return { ok: false, stdout: "", stderr: "permission denied", error: "permission denied" };
     return OK;
   });
   const registry = new WorktreeRegistry("/repo", { runner });
@@ -318,11 +318,7 @@ test("WorktreeRegistry removes failed worktrees git created and does not track o
   try {
     await writeFile(join(repo, "app.ts"), "before\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: repo }).status, 0);
-    const commit = spawnSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"], {
-      cwd: repo,
-      encoding: "utf8",
-    });
-    assert.equal(commit.status, 0, commit.stderr);
+    gitCommit(repo, "initial");
 
     const neverCreated = await registry.add(undefined, { ref: "0".repeat(40) });
     assert.ok("error" in neverCreated);
@@ -376,12 +372,7 @@ test("captured patches retain committed isolated edits and reconstruct from the 
     assert.ok(!("error" in changed));
     await writeFile(join(changed.path, "app.ts"), "committed by agent\n");
     assert.equal(spawnSync("git", ["add", "app.ts"], { cwd: changed.path }).status, 0);
-    const agentCommit = spawnSync(
-      "git",
-      ["-c", "user.name=agent", "-c", "user.email=agent@example.invalid", "commit", "-m", "agent edit"],
-      { cwd: changed.path, encoding: "utf8" },
-    );
-    assert.equal(agentCommit.status, 0, agentCommit.stderr);
+    gitCommit(changed.path, "agent edit");
     const movedHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: changed.path, encoding: "utf8" }).stdout.trim();
     assert.notEqual(movedHead, changed.baselineOid);
 
@@ -449,7 +440,7 @@ test("captured patches reconstruct binary, new, symlink, mode, and deletion chan
     assert.equal(await readFile(join(baseline.path, "delete.txt"), "utf8"), "delete me\n");
 
     const valid = await registry.validatePatch(baseline.path, captured);
-    assert.equal(valid.ok, true, valid.error ?? valid.stderr);
+    if (!valid.ok) assert.fail(valid.error);
     assert.deepEqual(await readFile(join(baseline.path, "binary.dat")), originalBinary);
     await assert.rejects(readFile(join(baseline.path, "new.txt")));
     assert.equal(await readlink(join(baseline.path, "linked.txt")), "target-old.txt");

@@ -13,6 +13,7 @@ import { WorktreeRegistry, captureWorktreePatch } from "../.pi/extensions/pi-wor
 import { bindParallel } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import { toReviewIssues } from "../.pi/extensions/pi-workflow-engine/src/review/review-issues.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import { gitCommit } from "./resume-fixtures.ts";
 
 async function fixture() {
   const cwd = await mkdtemp(join(tmpdir(), "patch-validation-"));
@@ -20,7 +21,7 @@ async function fixture() {
   git("init", "-q");
   await writeFile(join(cwd, "value.txt"), "broken\n");
   git("add", ".");
-  git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgSign=false", "commit", "-qm", "baseline");
+  gitCommit(cwd, "baseline");
   const baseline = { ref: git("rev-parse", "HEAD") };
   await writeFile(join(cwd, "value.txt"), "fixed\n");
   const captured = await captureWorktreePatch({ worktreePath: cwd, baselineOid: baseline.ref });

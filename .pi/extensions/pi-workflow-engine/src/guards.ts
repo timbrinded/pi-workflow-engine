@@ -6,8 +6,3 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 export function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
-
-/** A full SHA-1 or SHA-256 Git object ID. */
-export function isGitObjectId(value: string): boolean {
-  return /^[0-9a-f]{40,64}$/i.test(value);
-}

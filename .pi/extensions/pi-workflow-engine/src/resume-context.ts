@@ -3,12 +3,13 @@ import { lstat, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { throwIfAborted } from "./cancellation.ts";
 import { isMissingPathError } from "./filesystem-error.ts";
-import { isGitObjectId, isRecord } from "./guards.ts";
+import { isGitObjectId, parseGitTopLevel, runGit } from "./git.ts";
+import { isRecord } from "./guards.ts";
 import type {
   EffectiveAgentSessionIdentity,
   EffectiveToolIdentity,
 } from "./agent-session-identity.ts";
-import { runBoundedProcess, scrubbedGitEnv, type BoundedProcessResult } from "./process-runner.ts";
+import type { BoundedProcessResult } from "./process-runner.ts";
 import {
   BoundedFingerprint,
   captureDeclaredInputFingerprint,
@@ -16,7 +17,6 @@ import {
   FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
   isExcludedDeclaredInput,
   isPathWithin,
-  parseGitTopLevel,
   resolveDeclaredInputPaths,
   validateTreeFile,
   type FingerprintCapture,
@@ -144,9 +144,9 @@ export async function captureIsolatedRepositoryContext(
       return { kind: "unverifiable", reason: "isolated baseline is not a full commit object ID" };
     }
     const [commit, tree, entries] = await Promise.all([
-      runGit(cwd, ["rev-parse", "--verify", `${baselineOid}^{commit}`], signal),
-      runGit(cwd, ["rev-parse", "--verify", `${baselineOid}^{tree}`], signal),
-      runGit(cwd, ["ls-tree", "-r", "-z", "--full-tree", baselineOid], signal),
+      runContextGit(cwd, ["rev-parse", "--verify", `${baselineOid}^{commit}`], signal),
+      runContextGit(cwd, ["rev-parse", "--verify", `${baselineOid}^{tree}`], signal),
+      runContextGit(cwd, ["ls-tree", "-r", "-z", "--full-tree", baselineOid], signal),
     ]);
     throwIfAborted(signal);
     if (!commit.ok) return { kind: "unverifiable", reason: processFailureReason("isolated baseline commit probe", commit) };
@@ -232,7 +232,7 @@ async function inspectRepository(
   signal: AbortSignal | undefined,
 ): Promise<RepositoryInspection> {
   throwIfAborted(signal);
-  const probe = await runGit(cwd, ["rev-parse", "--is-inside-work-tree"], signal);
+  const probe = await runContextGit(cwd, ["rev-parse", "--is-inside-work-tree"], signal);
   throwIfAborted(signal);
   if (!probe.ok) {
     if (probe.failure.kind === "exit") {
@@ -250,8 +250,8 @@ async function inspectRepository(
   }
 
   const [rootResult, headResult] = await Promise.all([
-    runGit(cwd, ["rev-parse", "--show-toplevel"], signal),
-    runGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], signal),
+    runContextGit(cwd, ["rev-parse", "--show-toplevel"], signal),
+    runContextGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], signal),
   ]);
   throwIfAborted(signal);
   if (!rootResult.ok) {
@@ -284,12 +284,12 @@ async function captureGitVisibleState(
       "--ignore-submodules=none",
     ] as const;
     const [unstaged, unstagedRaw, staged, untrackedPaths, indexEntries, trackedFlags] = await Promise.all([
-      runGit(cwd, ["diff", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
-      runGit(cwd, ["diff", "--raw", "-z", "--no-abbrev", "--no-renames", ...diffFlags.slice(2), "--", ...GIT_VISIBLE_PATHS], signal),
-      runGit(cwd, ["diff", "--cached", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
-      runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--", ...GIT_VISIBLE_PATHS], signal),
-      runGit(cwd, ["ls-files", "--stage", "--full-name", "-z"], signal),
-      runGit(cwd, ["ls-files", "-v", "--full-name", "-z"], signal),
+      runContextGit(cwd, ["diff", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
+      runContextGit(cwd, ["diff", "--raw", "-z", "--no-abbrev", "--no-renames", ...diffFlags.slice(2), "--", ...GIT_VISIBLE_PATHS], signal),
+      runContextGit(cwd, ["diff", "--cached", ...diffFlags, "--", ...GIT_VISIBLE_PATHS], signal),
+      runContextGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--", ...GIT_VISIBLE_PATHS], signal),
+      runContextGit(cwd, ["ls-files", "--stage", "--full-name", "-z"], signal),
+      runContextGit(cwd, ["ls-files", "-v", "--full-name", "-z"], signal),
     ]);
     throwIfAborted(signal);
 
@@ -532,19 +532,14 @@ export function isAgentResumeContext(value: unknown): value is AgentResumeContex
   );
 }
 
-async function runGit(cwd: string, args: readonly string[], signal: AbortSignal | undefined): Promise<BoundedProcessResult> {
-  return await runBoundedProcess({
-    file: "git",
-    args,
+async function runContextGit(cwd: string, args: readonly string[], signal: AbortSignal | undefined): Promise<BoundedProcessResult> {
+  return await runGit({
     cwd,
-    env: scrubbedGitEnv(),
+    args,
+    label: "git resume-context capture",
     signal,
     timeoutMs: GIT_CONTEXT_TIMEOUT_MS,
     maxBufferBytes: GIT_CONTEXT_MAX_BYTES,
-    abortError: "git resume-context capture aborted",
-    timeoutError: `git resume-context capture timed out after ${GIT_CONTEXT_TIMEOUT_MS}ms`,
-    maxBufferError: `git resume-context capture exceeded ${GIT_CONTEXT_MAX_BYTES} bytes`,
-    exitError: (stderr, code, exitSignal) => stderr.trim() || `git exited with code ${code ?? `signal ${exitSignal ?? "unknown"}`}`,
   });
 }
 

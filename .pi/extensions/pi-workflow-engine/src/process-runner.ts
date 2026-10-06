@@ -95,17 +95,6 @@ const NODE_PROCESS_RUNNER_DEPENDENCIES: ProcessRunnerDependencies = {
   killChild: (child, signal) => child.kill(signal),
 };
 
-/**
- * Removes env-level diff overrides so child git commands emit plain patches. Setting them to an
- * empty string instead makes a plain `git diff` try to run an empty external diff command.
- */
-export function scrubbedGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env = { ...base };
-  delete env.GIT_EXTERNAL_DIFF;
-  delete env.GIT_DIFF_OPTS;
-  return env;
-}
-
 export async function runBoundedProcess(
   options: BoundedProcessOptions,
   dependencies: ProcessRunnerDependencies = NODE_PROCESS_RUNNER_DEPENDENCIES,

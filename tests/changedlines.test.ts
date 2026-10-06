@@ -10,6 +10,7 @@ import { captureReviewMaterial } from "../.pi/extensions/pi-workflow-engine/src/
 import { WorktreeRegistry } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import { changedLines, diffAnchor } from "../.pi/extensions/pi-workflow-engine/src/review/review-diff-lines.ts";
 import { buildCodeReviewScopeBlock } from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
+import { gitCommit } from "./resume-fixtures.ts";
 
 function lines(map: Map<string, Set<number>>, file: string): number[] {
   return [...(map.get(file) ?? [])].sort((a, b) => a - b);
@@ -134,7 +135,7 @@ for (const [key, value] of [["diff.mnemonicPrefix", "true"], ["diff.noprefix", "
       await mkdir(join(repo, "src"));
       await writeFile(join(repo, "src/app.ts"), "one\ntwo\n");
       git("add", ".");
-      git("-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgSign=false", "commit", "-qm", "initial");
+      gitCommit(repo, "initial");
       git("config", key, value);
       await writeFile(join(repo, "src/app.ts"), "one\nTWO\n");
       const target = parseAllowedDiffCommand("git diff HEAD");
@@ -153,7 +154,7 @@ for (const [key, value] of [["diff.mnemonicPrefix", "true"], ["diff.noprefix", "
       const fresh = await worktrees.add(undefined, material.snapshot.baseline);
       if ("error" in fresh) assert.fail(fresh.error);
       const validated = await worktrees.validatePatch(fresh.path, candidate);
-      assert.equal(validated.ok, true, validated.error ?? validated.stderr);
+      if (!validated.ok) assert.fail(validated.error);
     } finally {
       await worktrees.removeAll();
       await rm(repo, { recursive: true, force: true });

@@ -1,15 +1,14 @@
 import { createHash } from "node:crypto";
 import { throwIfAborted } from "../cancellation.ts";
-import { captureDiffTarget } from "../diff-capture.ts";
-import { isGitObjectId } from "../guards.ts";
+import { GIT_DIFF_MACHINE_FORMAT, isGitObjectId, runGit } from "../git.ts";
 import {
-  GIT_DIFF_MACHINE_FORMAT,
+  reviewDiffCommand,
   reviewGitDiffBaseline,
   type GitReviewDiffTarget,
   type PullRequestReviewDiffTarget,
   type ReviewDiffTarget,
 } from "../review-diff-target.ts";
-import { runBoundedProcess, scrubbedGitEnv, type BoundedProcessFailure, type BoundedProcessResult } from "../process-runner.ts";
+import type { BoundedProcessResult } from "../process-runner.ts";
 import { unknownErrorMessage } from "../unknown-error.ts";
 import type { WorktreeBaseline } from "../worktree.ts";
 import type { ReviewContext, ReviewSnapshotIdentity } from "./review-report.ts";
@@ -41,7 +40,6 @@ export interface CapturedReviewMaterial {
 export interface ReviewMaterialCaptureFailure {
   readonly ok: false;
   readonly error: string;
-  readonly failure: BoundedProcessFailure;
 }
 
 export type ReviewMaterialCaptureResult = CapturedReviewMaterial | ReviewMaterialCaptureFailure;
@@ -66,7 +64,7 @@ export async function captureReviewMaterial(
     if (!before.ok) {
       throwIfAborted(signal);
       return latestDiff === undefined
-        ? { ok: false, error: before.error, failure: before.failure }
+        ? { ok: false, error: before.error }
         : capturedWithoutSnapshot(latestDiff, `review diff could not be recaptured: ${before.error}`);
     }
     latestDiff = before.stdout;
@@ -93,7 +91,7 @@ export async function captureReviewMaterial(
         snapshot: {
           status: "verified",
           identity: {
-            diffFingerprint: fingerprintReviewDiff(after.stdout),
+            diffFingerprint: createHash("sha256").update(after.stdout).digest("hex"),
             baselineFingerprint: fingerprintReviewWorktreeBaseline(baseline),
           },
           baseline,
@@ -139,7 +137,14 @@ export function fingerprintReviewWorktreeBaseline(baseline: WorktreeBaseline): s
 }
 
 function captureReviewDiff(target: ReviewDiffTarget, cwd: string, signal: AbortSignal | undefined): Promise<BoundedProcessResult> {
-  return captureDiffTarget(target, { cwd, signal, timeoutMs: REVIEW_SNAPSHOT_TIMEOUT_MS, maxBufferBytes: REVIEW_SNAPSHOT_MAX_BYTES });
+  return runGit({
+    ...reviewDiffCommand(target),
+    cwd,
+    label: "diff capture",
+    signal,
+    timeoutMs: REVIEW_SNAPSHOT_TIMEOUT_MS,
+    maxBufferBytes: REVIEW_SNAPSHOT_MAX_BYTES,
+  });
 }
 
 async function captureReviewWorktreeBaseline(
@@ -161,7 +166,7 @@ async function resolvePullRequestBaseline(
   const viewed = await runReviewCommand("gh", ["pr", "view", number, "--json", "headRefOid,headRefName,headRepository,url"], cwd, signal);
   const details = viewed.ok ? parsePullRequestHead(viewed.stdout) : undefined;
   if (!details) {
-    throw new Error(`pull request head could not be resolved: ${viewed.error ?? (viewed.stderr.trim() || "invalid head commit")}`);
+    throw new Error(`pull request head could not be resolved: ${viewed.ok ? "invalid head commit" : viewed.error}`);
   }
 
   if (!(await commitExists(details.head, cwd, signal))) {
@@ -173,7 +178,7 @@ async function resolvePullRequestBaseline(
     );
     if (!fetched.ok || !(await commitExists(details.head, cwd, signal))) {
       throw new Error(
-        `pull request ${number} head ${details.head} is not available locally: ${fetched.error ?? (fetched.stderr.trim() || "fetch did not provide the commit")}`,
+        `pull request ${number} head ${details.head} is not available locally: ${fetched.ok ? "fetch did not provide the commit" : fetched.error}`,
       );
     }
   }
@@ -201,14 +206,10 @@ function parsePullRequestHead(
   const repository = candidate.headRepository?.nameWithOwner;
   if (typeof repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return undefined;
   // The PR URL carries the host gh resolved the PR on, which is not github.com for GitHub Enterprise.
-  const origin = httpOrigin(candidate.url);
-  return origin ? { head: candidate.headRefOid, branch: candidate.headRefName, repository, origin } : undefined;
-}
-
-function httpOrigin(value: unknown): string | undefined {
-  if (typeof value !== "string" || !URL.canParse(value)) return undefined;
-  const url = new URL(value);
-  return url.protocol === "https:" || url.protocol === "http:" ? url.origin : undefined;
+  if (typeof candidate.url !== "string" || !URL.canParse(candidate.url)) return undefined;
+  const url = new URL(candidate.url);
+  if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+  return { head: candidate.headRefOid, branch: candidate.headRefName, repository, origin: url.origin };
 }
 
 async function resolveGitDiffBaseline(
@@ -267,25 +268,17 @@ async function runReviewCommand(
   signal: AbortSignal | undefined,
   maxBufferBytes = REVIEW_COMMAND_MAX_BYTES,
 ) {
-  return await runBoundedProcess({
+  return await runGit({
     file,
-    args,
     cwd,
-    env: scrubbedGitEnv(),
+    args,
+    label: `${file} review snapshot command`,
     signal,
     timeoutMs: REVIEW_SNAPSHOT_TIMEOUT_MS,
     maxBufferBytes,
-    abortError: `${file} review snapshot command aborted`,
-    timeoutError: `${file} review snapshot command timed out after ${REVIEW_SNAPSHOT_TIMEOUT_MS}ms`,
-    maxBufferError: `${file} review snapshot command exceeded output limit`,
-    exitError: (stderr, code, processSignal) => stderr.trim() || `${file} exited with code ${code ?? `signal ${processSignal ?? "unknown"}`}`,
   });
 }
 
 function capturedWithoutSnapshot(diff: string, reason: string): CapturedReviewMaterial {
   return { ok: true, diff, snapshot: { status: "unavailable", reason } };
-}
-
-function fingerprintReviewDiff(diff: string): string {
-  return createHash("sha256").update(diff).digest("hex");
 }

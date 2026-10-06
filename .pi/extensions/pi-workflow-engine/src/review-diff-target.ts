@@ -1,5 +1,6 @@
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
+import { GIT_DIFF_MACHINE_FORMAT } from "./git.ts";
 
 export type GitDiffBaselineTarget =
   | { readonly kind: "working-tree" }
@@ -95,12 +96,6 @@ function classifyGitDiffBaseline(staged: boolean, operands: readonly string[]): 
 function isAllowedGitDiffFlag(token: string): boolean {
   return SAFE_GIT_DIFF_FLAGS.has(token) || /^-U\d+$/.test(token) || /^--unified=\d+$/.test(token) || /^--inter-hunk-context=\d+$/.test(token);
 }
-
-/**
- * Pins the git diff output that the engine parses or applies, so user config such as
- * diff.noprefix, diff.mnemonicPrefix, diff.srcPrefix or color.ui cannot change it.
- */
-export const GIT_DIFF_MACHINE_FORMAT = ["--no-color", "--src-prefix=a/", "--dst-prefix=b/"] as const;
 
 /** Executable argv. Git targets gain the machine-format pins, which stay out of the persisted and displayed target. */
 export function reviewDiffCommand(target: ReviewDiffTarget): { readonly file: "git" | "gh"; readonly args: readonly string[] } {
