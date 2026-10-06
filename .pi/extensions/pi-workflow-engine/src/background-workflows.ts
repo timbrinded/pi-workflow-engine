@@ -10,6 +10,7 @@ import {
 import { updateWorkflowRunDelivery } from "./workflow-run-background.ts";
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
 import { truncateText } from "./text.ts";
+import { workflowResultSummary } from "./workflow-execution.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { emptyWorkflowUsageTotals } from "./usage.ts";
 
@@ -368,10 +369,8 @@ function backgroundSummary(record: WorkflowRunRecord): string {
   if (record.result.kind === "unavailable") {
     return truncateText(`Workflow completed; retained result is unavailable: ${record.result.reason}`, SUMMARY_LIMIT);
   }
-  const value = record.result.value;
-  if (typeof value === "string") return truncateText(value, SUMMARY_LIMIT);
-  if (isRecord(value) && typeof value.summary === "string") return truncateText(value.summary, SUMMARY_LIMIT);
-  return "Workflow completed. Open run history for the retained result.";
+  const summary = workflowResultSummary(record.result.value);
+  return summary === undefined ? "Workflow completed. Open run history for the retained result." : truncateText(summary, SUMMARY_LIMIT);
 }
 
 function formatBackgroundDelivery(details: BackgroundWorkflowResultDetails): string {

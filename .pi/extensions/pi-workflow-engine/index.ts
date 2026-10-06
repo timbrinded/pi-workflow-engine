@@ -36,7 +36,7 @@ import {
   WORKFLOW_USAGE_LIMIT_DELAY_MAX_MS,
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
 } from "./src/options.ts";
-import { executeWorkflowInvocation, type WorkflowExecution, type WorkflowPerfDetails } from "./src/workflow-execution.ts";
+import { executeWorkflowInvocation, workflowResultSummary, type WorkflowExecution, type WorkflowPerfDetails } from "./src/workflow-execution.ts";
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
 import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
@@ -50,8 +50,7 @@ import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/w
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 
 function summarize(result: unknown): string {
-  if (typeof result === "object" && result !== null && "summary" in result && typeof result.summary === "string") return result.summary;
-  return typeof result === "string" ? result : "Workflow finished.";
+  return workflowResultSummary(result) ?? "Workflow finished.";
 }
 
 function formatMessageContent(

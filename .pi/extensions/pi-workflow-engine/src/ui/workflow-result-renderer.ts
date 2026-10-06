@@ -5,8 +5,9 @@ import { isRecord } from "../guards.ts";
 import { renderIssueDetails, renderIssuesTable } from "../review/review-format.ts";
 import { toReviewIssues } from "../review/review-issues.ts";
 import { formatCount } from "../text.ts";
+import { formatPerfSummary } from "../perf.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
-import type { WorkflowPerfDetails, WorkflowResultEnvelope } from "../workflow-execution.ts";
+import { workflowResultSummary, type WorkflowPerfDetails, type WorkflowResultEnvelope } from "../workflow-execution.ts";
 import { unknownErrorMessage } from "../unknown-error.ts";
 
 export function isWorkflowResult(value: unknown): value is WorkflowResultEnvelope {
@@ -108,7 +109,7 @@ function renderGenericWorkflowResult(
   perf?: WorkflowPerfDetails,
 ): string {
   const lines = [`${theme.fg("success", "✓")} ${theme.fg("accent", theme.bold(`Workflow: ${name}`))}`];
-  const summary = extractSummary(result);
+  const summary = workflowResultSummary(result);
   if (summary) lines.push(theme.fg("muted", summary));
   pushWorkflowDetailLines(lines, theme, { usage, metadata, perf });
   if (expanded) lines.push(theme.fg("dim", safeJson(result)));
@@ -136,9 +137,7 @@ export function formatWorkflowRunLine(metadata: WorkflowRunDisplayMetadata | und
 }
 
 export function formatWorkflowPerfLine(perf: WorkflowPerfDetails | undefined): string | undefined {
-  if (!perf) return undefined;
-  const parts = perf.aggregates.slice(0, 4).map((aggregate) => `${aggregate.name} ${Math.round(aggregate.total)}ms`);
-  return parts.length > 0 ? `Perf: ${parts.join(" · ")}` : "Perf: no samples";
+  return perf ? formatPerfSummary(perf.aggregates) : undefined;
 }
 
 function statsLine(stats: Record<string, string | number> | undefined, theme: Theme): string | undefined {
@@ -151,12 +150,6 @@ function statsLine(stats: Record<string, string | number> | undefined, theme: Th
   });
   if (parts.length === 0) return undefined;
   return theme.fg("dim", parts.join(" · "));
-}
-
-function extractSummary(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (isRecord(value) && typeof value.summary === "string") return value.summary;
-  return undefined;
 }
 
 function safeJson(value: unknown): string {

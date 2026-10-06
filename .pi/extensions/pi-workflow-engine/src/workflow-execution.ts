@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isRecord } from "./guards.ts";
 import type { ResolvedWorkflowRunOptions } from "./options.ts";
 import type { PerfAggregate, PerfSink, PerfSnapshot } from "./perf.ts";
 import type { WorkflowProgressSnapshot } from "./progress-types.ts";
@@ -24,6 +25,12 @@ export interface WorkflowResultEnvelope {
   readonly perf?: WorkflowPerfDetails;
   readonly runId?: string;
   readonly resumedFromRunId?: string;
+}
+
+/** A workflow result's own summary: the result itself when it is a string, else its string `summary` field. */
+export function workflowResultSummary(result: unknown): string | undefined {
+  if (typeof result === "string") return result;
+  return isRecord(result) && typeof result.summary === "string" ? result.summary : undefined;
 }
 
 export type ResolvedWorkflowRunner = (

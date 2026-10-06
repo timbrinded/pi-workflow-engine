@@ -106,6 +106,11 @@ export function createPerfRecorder(enabled: boolean, startedAt?: number): PerfSi
   return enabled ? new PerfRecorder(startedAt) : new NoopPerfRecorder(startedAt);
 }
 
+export function formatPerfSummary(aggregates: readonly PerfAggregate[]): string {
+  const parts = aggregates.slice(0, 4).map((aggregate) => `${aggregate.name} ${Math.round(aggregate.total)}ms`);
+  return parts.length > 0 ? `Perf: ${parts.join(" · ")}` : "Perf: no samples";
+}
+
 function aggregateSamples(samples: readonly PerfSample[]): PerfAggregate[] {
   const byName = new Map<string, number[]>();
   for (const sample of samples) {

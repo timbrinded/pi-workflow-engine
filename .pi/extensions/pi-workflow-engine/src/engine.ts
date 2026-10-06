@@ -8,7 +8,7 @@ import { abortReason, isWorkflowPauseError, linkAbortSignal, throwIfAborted } fr
 import { createBudget } from "./budget.ts";
 import { runAgent, type AgentExecutionOptions, type RunContext } from "./agent-runner.ts";
 import { ProgressTracker } from "./progress.ts";
-import { createPerfRecorder, type PerfSink, type PerfSnapshot } from "./perf.ts";
+import { createPerfRecorder, formatPerfSummary, type PerfSink } from "./perf.ts";
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "./usage.ts";
 import {
   resolveWorkflowRunOptions,
@@ -315,7 +315,7 @@ async function finalizeWorkflowRun(input: WorkflowFinalizationInput): Promise<vo
           if (!input.options.perf) return;
           const snapshot = input.perf.snapshot();
           await input.options.onPerfSnapshot?.(snapshot);
-          input.progress.log(formatPerfSummary(snapshot));
+          input.progress.log(formatPerfSummary(snapshot.aggregates));
         },
       },
       ...input.unlinkSignals.map((run, index) => ({
@@ -499,14 +499,6 @@ function namespaceProgressEvent(namespace: string, event: WorkflowProgressEvent)
     case "summary":
       return { ...event, key: `${namespace}.${event.key}` };
   }
-}
-
-function formatPerfSummary(snapshot: PerfSnapshot): string {
-  const parts = snapshot.aggregates
-    .filter((aggregate) => aggregate.count > 0)
-    .slice(0, 5)
-    .map((aggregate) => `${aggregate.name} ${Math.round(aggregate.total)}ms`);
-  return parts.length > 0 ? `perf: ${parts.join(", ")}` : "perf: no samples";
 }
 
 async function notifyLifecycleObserver(
