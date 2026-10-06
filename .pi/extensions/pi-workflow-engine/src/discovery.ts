@@ -77,7 +77,7 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
           ? {
               kind: "file",
               path: definition.path,
-              root: definition.root,
+              root: BUILTIN_SOURCE_ROOT,
               fingerprint: builtinSource.fingerprint,
             }
           : {
