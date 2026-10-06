@@ -202,6 +202,36 @@ test("runAgent records successful live results into the journal", async () => {
   assert.deepEqual(recorded, [{ key: verifiedJournalKey("hello", { label: "live", resumeInputs: [] }), value: "done" }]);
 });
 
+test("an agent that recovers through an agentRetries restart is still journaled", async () => {
+  const recorded: unknown[] = [];
+  const journal: WorkflowJournal = {
+    lookup(): JournalLookup {
+      return { hit: false };
+    },
+    async record(_key, value) {
+      recorded.push(value);
+      return { ok: true };
+    },
+  };
+  const failedTurn = { ...assistantTextMessage(""), stopReason: "error" as const, errorMessage: "503 service unavailable" };
+  let sessions = 0;
+  const createSession: CreateAgentSession = async () => {
+    sessions += 1;
+    if (sessions > 1) return createTextSession();
+    return { session: createAgentRunnerSession({ model: DEFAULT_SESSION_MODEL, messages: [failedTurn] }) };
+  };
+
+  const result = await runAgent(
+    createRunContext({ createSession, journal, agentRetries: 1, retryScheduler: { async sleep() {} } }),
+    "hello",
+    { label: "recovered", resume: "read-only", resumeInputs: [] },
+  );
+
+  assert.equal(result, "done");
+  assert.equal(sessions, 2);
+  assert.deepEqual(recorded, ["done"]);
+});
+
 test("shared-workspace agents run live without touching the journal by default", async () => {
   let lookups = 0;
   let records = 0;

@@ -110,7 +110,7 @@ export async function runAgent(
               rc.progress.log(`${label}: transient provider failure; retry ${providerRetries}/${agentRc.agentRetries} in ${delayMs}ms`);
               rc.perf.counter("agent.provider_retry", 1, tags);
               rc.perf.observe("agent.provider_retry_delay_ms", delayMs, tags);
-              attemptPlan = { kind: "off" };
+              // Keep the replay plan: the failed attempt recorded nothing, and the restart recaptures identity.
               await agentRc.retryScheduler.sleep(delayMs, agentRc.signal);
               continue;
             }
