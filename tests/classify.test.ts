@@ -40,6 +40,8 @@ function classifierRun(input: {
   readonly available?: readonly ClassifierModelRef[];
   readonly result?: ClassifierResult;
   readonly budget?: number;
+  readonly agentTimeoutMs?: number;
+  readonly classify?: ClassifierRegistry["classify"];
 } = {}): { rc: RunContext; usage: ReturnType<typeof createWorkflowUsageRecorder>; classified: ClassifierModelRef[] } {
   const classified: ClassifierModelRef[] = [];
   const registry: ClassifierRegistry = {
@@ -49,15 +51,15 @@ function classifierRun(input: {
     },
     getModelOfType: ((_type: string, provider: string, id: string) =>
       [JEV, CLEF].find((model) => model.provider === provider && model.id === id)) as ClassifierRegistry["getModelOfType"],
-    async classify(model) {
+    async classify(model, context, options) {
       classified.push(model);
-      return input.result ?? classifierResult();
+      return input.classify ? await input.classify(model, context, options) : input.result ?? classifierResult();
     },
   };
   const usage = createWorkflowUsageRecorder();
   const createSession: CreateAgentSession = async () => createTextSession();
   const rc: RunContext = {
-    ...createRunContext({ createSession, usage, budget: createBudget(input.budget ?? null, usage) }),
+    ...createRunContext({ createSession, usage, budget: createBudget(input.budget ?? null, usage), agentTimeoutMs: input.agentTimeoutMs }),
     createSession,
     modelRegistry: registry,
   };
@@ -102,4 +104,16 @@ test("a failed classifier call still counts its usage, and a spent budget stops 
   await runClassifier(spent.rc, CONTEXT);
   await assert.rejects(() => runClassifier(spent.rc, CONTEXT), WorkflowBudgetExceededError);
   assert.equal(spent.classified.length, 1);
+});
+
+test("a stalled classifier gives its concurrency slot back at the per-agent timeout", async () => {
+  const stalled = classifierRun({
+    agentTimeoutMs: 20,
+    classify: (_model, _context, options) =>
+      new Promise((resolve) => {
+        options?.signal?.addEventListener("abort", () => resolve(classifierResult({ stopReason: "aborted", answers: {} })), { once: true });
+      }),
+  });
+
+  await assert.rejects(() => runClassifier(stalled.rc, CONTEXT, { label: "slow" }), /slow: classifier timed out after 20ms/);
 });

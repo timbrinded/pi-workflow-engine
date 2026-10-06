@@ -1,6 +1,7 @@
 import type { ClassifierAnswer, ClassifierApi, ClassifierContext, ClassifierModel } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { RunContext } from "./agent-runner-types.ts";
+import { parseAgentModelRef } from "./agent-session.ts";
 import { assertWorkflowBudgetAvailable } from "./budget.ts";
 import { throwIfAborted } from "./cancellation.ts";
 import type { ClassifyOptions } from "./types.ts";
@@ -29,8 +30,8 @@ export class WorkflowClassifierError extends Error {
 
 /**
  * `api.classify()`: answer typed questions about JSON state with a classifier model through the host's
- * credentials, without a chat session. It shares the run's concurrency cap and budget, records usage
- * like an agent, and is not journaled, so a resumed run asks again.
+ * credentials, without a chat session. It shares the run's concurrency cap, budget, and per-agent timeout,
+ * records usage like an agent, and is not journaled, so a resumed run asks again.
  */
 export async function runClassifier(
   rc: RunContext,
@@ -38,20 +39,24 @@ export async function runClassifier(
   opts: ClassifyOptions = {},
 ): Promise<Record<string, ClassifierAnswer>> {
   const registry = rc.modelRegistry;
-  // Test runs inject a registry that can only resolve chat models.
-  if (!("classify" in registry)) throw new WorkflowClassifierUnavailableError("This run's model registry has no classifier models.");
   return await rc.semaphore.run(async () => {
     assertWorkflowBudgetAvailable(rc.budget);
     const model = await resolveClassifierModel(registry, opts.model);
     const label = opts.label ?? `classify:${model.provider}/${model.id}`;
-    const result = await registry.classify(model, context, { signal: rc.signal });
-    throwIfAborted(rc.signal);
-    // One classifier response is one model response: recording it like one keeps per-model usage and the budget whole.
+    // A stalled classifier must not hold a concurrency slot past the limit agents get.
+    const timeout = AbortSignal.timeout(rc.agentTimeoutMs);
+    const result = await registry.classify(model, context, { signal: rc.signal ? AbortSignal.any([rc.signal, timeout]) : timeout });
+    // One classifier response is one model response: recording it like one keeps per-model usage and the budget
+    // whole. Record before the abort check, since the provider charged for a call that returned as the run stopped.
     rc.usage.recordAgentSession({
       label,
       phase: opts.phase,
       messages: [{ role: "assistant", provider: result.provider, model: result.model, usage: result.usage }],
     });
+    throwIfAborted(rc.signal);
+    if (result.stopReason !== "stop" && timeout.aborted) {
+      throw new WorkflowClassifierError(`${label}: classifier timed out after ${rc.agentTimeoutMs}ms`);
+    }
     if (result.stopReason !== "stop") {
       throw new WorkflowClassifierError(`${label}: classifier ${result.stopReason}${result.errorMessage ? `: ${result.errorMessage}` : ""}`);
     }
@@ -69,8 +74,9 @@ async function resolveClassifierModel(registry: ClassifierRegistry, ref: string 
     }
     return available;
   }
-  const slash = ref.indexOf("/");
-  const model = slash > 0 ? registry.getModelOfType("classifier", ref.slice(0, slash), ref.slice(slash + 1)) : undefined;
-  if (!model) throw new WorkflowClassifierUnavailableError(`Classifier model "${ref}" not found; expected "provider/id".`);
+  // Same ref rules as agent({ model }): malformed refs throw, bare ids mean Anthropic.
+  const { provider, id } = parseAgentModelRef(ref);
+  const model = registry.getModelOfType("classifier", provider, id);
+  if (!model) throw new WorkflowClassifierUnavailableError(`Classifier model "${ref}" not found (resolved as ${provider}/${id}).`);
   return model;
 }

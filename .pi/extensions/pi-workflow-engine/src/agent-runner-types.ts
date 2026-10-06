@@ -77,7 +77,7 @@ export type RunContext = RunContextBase & (
     }
   | {
       /** Injected test sessions bypass Pi's resource loader and therefore do not resolve skills. */
-      modelRegistry: Pick<ModelRegistry, "find">;
+      modelRegistry: Pick<ModelRegistry, "find" | "classify" | "getAvailableOfType" | "getModelOfType">;
       createSession: CreateAgentSession;
     }
 );

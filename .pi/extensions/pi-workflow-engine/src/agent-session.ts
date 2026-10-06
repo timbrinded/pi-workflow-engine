@@ -25,7 +25,7 @@ import {
 } from "./structured-output.ts";
 import { providerErrorFromMessages } from "./agent-retry.ts";
 import { synchronizeWorkflowModelRuntime } from "./agent-session-providers.ts";
-import { hostToolProxy, isMcpToolName, type HostToolBridge } from "./host-tools.ts";
+import { hostToolProxy, isMcpToolName, WorkflowHostToolUnavailableError, type HostToolBridge } from "./host-tools.ts";
 import { matchesAgentToolHint, WorkflowToolHintUnavailableError } from "./tool-capabilities.ts";
 import { truncateText } from "./text.ts";
 import { WORKFLOW_TOOL_NAME, type AgentToolHint } from "./types.ts";
@@ -91,7 +91,7 @@ export async function openAgentSession(input: {
         }),
       ]
     : [];
-  customTools.push(...requestedHostTools(opts, rc.hostTools, (message) => rc.progress.log(`${label}: ${message}`)));
+  customTools.push(...requestedHostTools(opts, rc.hostTools));
   let session: AgentRunnerSession | undefined;
   try {
     throwIfAborted(rc.signal);
@@ -208,7 +208,7 @@ export async function promptAgentSession(input: {
   }
 }
 
-function parseAgentModelRef(modelRef: string): { readonly provider: string; readonly id: string } {
+export function parseAgentModelRef(modelRef: string): { readonly provider: string; readonly id: string } {
   const normalized = modelRef.trim();
   if (normalized.length === 0) {
     throw new Error('Invalid agent model ref: expected a bare model id or "provider/id".');
@@ -313,25 +313,17 @@ type SessionResourceLoaderOptions = NonNullable<CreateAgentSessionServicesOption
  * Proxies for the host MCP tools this agent asked for: those named in its allowlist, and open-world
  * research tools when it hints `external-search`. Local `search` hints never bridge, because host tools
  * run in the host session's working directory, not the agent's (an isolated worktree, for example).
+ * A named tool the run cannot reach fails the agent, like `requireToolHints`, rather than letting it
+ * work without a tool its prompt may rely on.
  */
-function requestedHostTools(
-  opts: AgentExecutionOptions,
-  bridge: HostToolBridge | undefined,
-  log: (message: string) => void,
-): ToolDefinition[] {
+function requestedHostTools(opts: AgentExecutionOptions, bridge: HostToolBridge | undefined): ToolDefinition[] {
   const named = new Set((opts.tools ?? []).filter(isMcpToolName));
   const externalSearch = opts.toolHints?.includes("external-search") ?? false;
   if (named.size === 0 && !externalSearch) return [];
   const available = bridge?.tools() ?? [];
   const selected = available.filter((tool) => named.has(tool.name) || (externalSearch && matchesAgentToolHint(tool, "external-search")));
   const missing = [...named].filter((name) => !selected.some((tool) => tool.name === name));
-  if (missing.length > 0) {
-    log(
-      bridge
-        ? `host MCP tool${missing.length === 1 ? "" : "s"} not available: ${missing.join(", ")}`
-        : `MCP tools reach subagents only in runs started by the workflow tool; unavailable: ${missing.join(", ")}`,
-    );
-  }
+  if (missing.length > 0) throw new WorkflowHostToolUnavailableError(missing, bridge !== undefined);
   return bridge ? selected.map((tool) => hostToolProxy(tool, bridge)) : [];
 }
 

@@ -396,6 +396,10 @@ test("inline compile errors are shaped for workflow tool results", () => {
   assert.equal(result.isError, true);
 });
 
+test("the workflow tool's guidelines carry the profile rule the Dynamax reminder no longer repeats", () => {
+  assert.match(captureWorkflowTool().promptGuidelines?.join("\n") ?? "", /profile: \\?"small\\?".*every `api\.agent\(\)` call/);
+});
+
 test("the workflow tool is a model-only orchestrator that codemode scripts cannot start", () => {
   assert.equal(captureWorkflowTool().exposure, "model-only");
 });
@@ -524,7 +528,12 @@ export default async function run({ phase, log }) {
 }
 `;
 
-  await assert.rejects(() => extension.tool.execute("call-failing-inspect", { script }, undefined, () => {}, ctx), /boom/);
+  // A failed run comes back as a failed call, so the usage it spent can still reach the session.
+  const failed = await extension.tool.execute("call-failing-inspect", { script }, undefined, () => {}, ctx);
+  assert.ok(isRecord(failed));
+  assert.equal(failed.isError, true);
+  assert.deepEqual(failed.details, { error: "workflow_failed", name: "failing-inspect-probe", message: "boom" });
+  assert.match(JSON.stringify(failed.content), /Workflow failing-inspect-probe failed: boom/);
   await inspector.handler("", ctx);
 
   const inspection = notifications.at(-1) ?? "";
@@ -562,7 +571,9 @@ export default async function run({ phase }) {
 }
 `;
 
-  await assert.rejects(() => extension.tool.execute("call-failed-state", { script }, undefined, () => {}, ctx), /boom/);
+  const failed = await extension.tool.execute("call-failed-state", { script }, undefined, () => {}, ctx);
+  assert.ok(isRecord(failed));
+  assert.equal(failed.isError, true);
   await inspector.handler("", ctx as ExtensionCommandContext);
 
   assert.match(customRenders().at(-1)?.[0] ?? "", /failed-state-probe.*✗ failed/);

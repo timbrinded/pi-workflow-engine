@@ -682,6 +682,19 @@ test("one-shot Dynamax status remains visible for the active turn", async () => 
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), undefined);
 });
 
+test("Dynamax appends to a prompt an earlier extension forced, since pi renders no sections then", async () => {
+  const captured = captureDynamax("ctrl+shift+x");
+  const input = captured.handlers.get("input")?.[0];
+  const beforeAgentStart = captured.handlers.get("before_agent_start")?.[0];
+  if (!input || !beforeAgentStart) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx } = createFakeContext("forced-prompt");
+
+  await input({ source: "interactive", text: "dynamax review this" }, ctx);
+  const result = await beforeAgentStart({ systemPrompt: "Forced.", systemPromptOptions: { sections: {}, forceSystemPrompt: "Forced." } }, ctx);
+
+  assert.deepEqual(result, { systemPrompt: `Forced.\n\n<${DYNAMAX_SECTION}>\n${DYNAMAX_REMINDER}\n</${DYNAMAX_SECTION}>` });
+});
+
 test("updateDynamaxSurfaces clears inactive UI", () => {
   const runtime = createDynamaxRuntime();
   const { ctx, ui } = createFakeContext("session-a");

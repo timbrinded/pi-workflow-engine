@@ -40,7 +40,8 @@ import { registerWorkflowRunCommand, WorkflowRunController } from "./src/workflo
 import { completeCurrentArgument, splitArgumentPrefix } from "./src/command-completions.ts";
 import { assertSupportedPiVersion } from "./src/pi-compat.ts";
 import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/workflow-format.ts";
-import { workflowUsageForPi } from "./src/usage.ts";
+import { workflowUsageForPi, type WorkflowUsageSnapshot } from "./src/usage.ts";
+import { unknownErrorMessage } from "./src/unknown-error.ts";
 import { createHostToolBridge } from "./src/host-tools.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
@@ -498,6 +499,7 @@ function registerWorkflowTool(
       "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
       "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
       "Subagents receive no skills by default. In inline workflows, pass `skills: [\"skill-name\"]` per `agent()` call when the user asks for a skill or a stage should use one; grant only the needed skills.",
+      "Set `profile: \"small\"`, `\"medium\"`, or `\"big\"` on every `api.agent()` call so the user's central model routes apply; use `model`/`thinkingLevel` only for an intentional override.",
       "Always pass a plain string as the first `api.agent()` argument; build prompts with template strings before calling agent().",
       "When using `isolation: \"worktree\"`, `api.agent()` returns `{ result, patch, changed }`; use `.result` for the answer and `.patch` for the isolated diff.",
       "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
@@ -649,7 +651,22 @@ function registerWorkflowTool(
       onUpdate?.({ content: [{ type: "text", text: `Running workflow ${resultName}.` }], details: { state: "running", name: resultName } });
       // Only this synchronous path may bridge host MCP tools: executeTool ends with the tool call.
       const hostTools = createHostToolBridge(() => pi.getAllTools(), ctx);
-      const envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, { ...runOptions, hostTools }, perfRecorder);
+      // Keep the latest usage: a failed run still reports what its agents spent instead of dropping it with the error.
+      let spent: WorkflowUsageSnapshot | undefined;
+      const onUsageSnapshot = (snapshot: WorkflowUsageSnapshot) => {
+        spent = snapshot;
+        return runOptions.onUsageSnapshot?.(snapshot);
+      };
+      let envelope: WorkflowResultEnvelope;
+      try {
+        envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, { ...runOptions, hostTools, onUsageSnapshot }, perfRecorder);
+      } catch (error) {
+        const message = unknownErrorMessage(error);
+        return {
+          ...workflowToolError(`Workflow ${resultName} failed: ${message}`, { error: "workflow_failed", name: resultName, message }),
+          usage: workflowUsageForPi(spent),
+        };
+      }
       reviewSessions.remember(ctx, envelope, runOptions);
       return {
         content: [{ type: "text", text: formatWorkflowResultForContext(envelope) }],

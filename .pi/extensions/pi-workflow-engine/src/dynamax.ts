@@ -236,7 +236,12 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
 
   pi.on("before_agent_start", (event, ctx) => {
     const runtime = getDynamaxRuntime(runtimes, ctx);
-    if (applyDynamaxPromptSection(event.systemPromptOptions.sections, runtime.state)) updateDynamaxSurfaces(ctx, runtime);
+    const options = event.systemPromptOptions;
+    if (!applyDynamaxPromptSection(options.sections, runtime.state)) return undefined;
+    updateDynamaxSurfaces(ctx, runtime);
+    // An earlier extension forced the whole prompt, and pi renders no sections then; append to its text instead.
+    if (options.forceSystemPrompt === undefined) return undefined;
+    return { systemPrompt: `${options.forceSystemPrompt}\n\n<${DYNAMAX_SECTION}>\n${DYNAMAX_REMINDER}\n</${DYNAMAX_SECTION}>` };
   });
 
   pi.on("agent_end", (_event, ctx) => {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { Type } from "typebox";
 import type { ExtensionToolContext, ToolInfo } from "@earendil-works/pi-coding-agent";
-import type { HostToolBridge } from "../.pi/extensions/pi-workflow-engine/src/host-tools.ts";
+import { WorkflowHostToolUnavailableError, type HostToolBridge } from "../.pi/extensions/pi-workflow-engine/src/host-tools.ts";
 import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import type { CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import {
@@ -624,7 +624,7 @@ test("external-search agents reach host MCP research tools through the host brid
   assert.deepEqual(proxyResult, { content: [{ type: "text", text: "host mcp__parallel__web_search" }], details: undefined });
 });
 
-test("an allowlisted MCP tool is bridged, its host failures stay failures, and runs without a bridge say why it is missing", async () => {
+test("an allowlisted MCP tool is bridged, its host failures stay failures, and an unreachable one fails the agent", async () => {
   const bridge = fakeHostTools([createToolInfo("mcp__linear__broken", "Create a Linear issue", MCP_SOURCE)]);
   let proxy: ToolDefinitionLike | undefined;
   const createSession: CreateAgentSession = async (options) => {
@@ -636,13 +636,21 @@ test("an allowlisted MCP tool is bridged, its host failures stay failures, and r
   assert.ok(isRecord(failed));
   assert.equal(failed.isError, true);
 
-  const progress = createProgress();
-  let proxiedWithoutBridge: readonly string[] = [];
-  const unbridgedSession: CreateAgentSession = async (options) => {
-    proxiedWithoutBridge = (options.customTools ?? []).map((tool) => tool.name);
+  // A named tool the run cannot reach fails the agent before any session starts, like requireToolHints.
+  let sessions = 0;
+  const countingSession: CreateAgentSession = async () => {
+    sessions += 1;
     return createTextSession();
   };
-  await runAgent(createRunContext({ createSession: unbridgedSession, progress }), "file it", { label: "filer", tools: ["read", "mcp__linear__broken"] });
-  assert.deepEqual(proxiedWithoutBridge, []);
-  assert.ok(progress.events.some((event) => /MCP tools reach subagents only in runs started by the workflow tool; unavailable: mcp__linear__broken/.test(event)));
+  await assert.rejects(
+    () => runAgent(createRunContext({ createSession: countingSession }), "file it", { tools: ["read", "mcp__linear__broken"] }),
+    (error: unknown) =>
+      error instanceof WorkflowHostToolUnavailableError &&
+      /MCP tools reach subagents only in runs started by the workflow tool; unavailable: mcp__linear__broken/.test(error.message),
+  );
+  await assert.rejects(
+    () => runAgent({ ...createRunContext({ createSession: countingSession }), hostTools: fakeHostTools([]) }, "file it", { tools: ["read", "read_mcp_resource"] }),
+    /Host MCP tools not available: read_mcp_resource/,
+  );
+  assert.equal(sessions, 0);
 });
