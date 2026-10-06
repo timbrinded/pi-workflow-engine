@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { throwIfAborted } from "../cancellation.ts";
-import { captureDiffTarget, type DiffCaptureFailure } from "../diff-capture.ts";
+import { captureDiffTarget, type DiffCaptureFailure, type DiffCaptureResult } from "../diff-capture.ts";
 import { isGitObjectId } from "../guards.ts";
 import {
   GIT_DIFF_MACHINE_FORMAT,
@@ -69,33 +69,31 @@ export async function captureReviewMaterial(
         ? { ok: false, error: before.error, failure: before.failure }
         : capturedWithoutSnapshot(latestDiff, `review diff could not be recaptured: ${before.error}`);
     }
-    latestDiff = before.diff;
+    latestDiff = before.stdout;
 
     let baseline: WorktreeBaseline;
     try {
       baseline = await captureReviewWorktreeBaseline(target, cwd, signal);
     } catch (error) {
       throwIfAborted(signal);
-      return capturedWithoutSnapshot(before.diff, `review baseline could not be captured: ${unknownErrorMessage(error)}`);
+      return capturedWithoutSnapshot(before.stdout, `review baseline could not be captured: ${unknownErrorMessage(error)}`);
     }
 
     const after = await captureReviewDiff(target, cwd, signal);
     if (!after.ok) {
       throwIfAborted(signal);
-      return capturedWithoutSnapshot(before.diff, `review diff could not be recaptured: ${after.error}`);
+      return capturedWithoutSnapshot(before.stdout, `review diff could not be recaptured: ${after.error}`);
     }
-    latestDiff = after.diff;
+    latestDiff = after.stdout;
 
-    const beforeFingerprint = fingerprintReviewDiff(before.diff);
-    const afterFingerprint = fingerprintReviewDiff(after.diff);
-    if (beforeFingerprint === afterFingerprint) {
+    if (before.stdout === after.stdout) {
       return {
         ok: true,
-        diff: after.diff,
+        diff: after.stdout,
         snapshot: {
           status: "verified",
           identity: {
-            diffFingerprint: afterFingerprint,
+            diffFingerprint: fingerprintReviewDiff(after.stdout),
             baselineFingerprint: fingerprintReviewWorktreeBaseline(baseline),
           },
           baseline,
@@ -140,20 +138,8 @@ export function fingerprintReviewWorktreeBaseline(baseline: WorktreeBaseline): s
     .digest("hex");
 }
 
-async function captureReviewDiff(
-  target: ReviewDiffTarget,
-  cwd: string,
-  signal: AbortSignal | undefined,
-): Promise<{ readonly ok: true; readonly diff: string } | { readonly ok: false; readonly error: string; readonly failure: DiffCaptureFailure }> {
-  const captured = await captureDiffTarget(target, {
-    cwd,
-    signal,
-    timeoutMs: REVIEW_SNAPSHOT_TIMEOUT_MS,
-    maxBufferBytes: REVIEW_SNAPSHOT_MAX_BYTES,
-  });
-  return captured.ok
-    ? { ok: true, diff: captured.stdout }
-    : { ok: false, error: captured.error, failure: captured.failure };
+function captureReviewDiff(target: ReviewDiffTarget, cwd: string, signal: AbortSignal | undefined): Promise<DiffCaptureResult> {
+  return captureDiffTarget(target, { cwd, signal, timeoutMs: REVIEW_SNAPSHOT_TIMEOUT_MS, maxBufferBytes: REVIEW_SNAPSHOT_MAX_BYTES });
 }
 
 async function captureReviewWorktreeBaseline(
