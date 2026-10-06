@@ -7,7 +7,6 @@ import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
   buildTemporaryWorkflowAuthorPrompt,
-  getLastWorkflowInspection,
   inlineCompileErrorResult,
   normalizeWorkflowToolRequest,
   openWorkflowInspector,
@@ -22,6 +21,7 @@ import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-e
 import {
   captureWorkflowExtension,
   captureWorkflowTool,
+  getLastWorkflowInspection,
 } from "./workflow-extension-fixtures.ts";
 
 const WORKFLOW_TOOL_TEST_CWD = mkdtempSync(join(tmpdir(), "pi-workflow-tool-tests-"));
