@@ -82,11 +82,8 @@ export function providerErrorFromMessages(
   }
   const failure = lastAssistantError(messages);
   if (!failure) return undefined;
-  const { errorMessage } = failure.message;
   return new WorkflowProviderError(
-    typeof errorMessage === "string" && errorMessage.length > 0
-      ? errorMessage
-      : "Provider session ended with an unspecified error.",
+    failure.errorMessage || "Provider session ended with an unspecified error.",
     {
       stopReason: "error",
       retryable: isRetryableAssistantError(failure.message as AssistantMessage),

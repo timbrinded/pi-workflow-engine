@@ -44,7 +44,7 @@ export class WorkflowProviderUsageLimitError extends WorkflowPauseError {
   }
 }
 
-/** The last assistant message when it ended its turn with a provider error, plus its non-empty provider metadata. */
+/** The last assistant message when it ended its turn with a provider error, its error text ("" if absent), and its non-empty provider metadata. */
 export function lastAssistantError(messages: readonly unknown[]) {
   const message = messages.findLast(isAssistantMessage);
   if (!message || message.stopReason !== "error") return undefined;
@@ -53,6 +53,7 @@ export function lastAssistantError(messages: readonly unknown[]) {
   const api = stringDetail(message.api);
   return {
     message,
+    errorMessage: typeof message.errorMessage === "string" ? message.errorMessage : "",
     details: { ...(provider ? { provider } : {}), ...(model ? { model } : {}), ...(api ? { api } : {}) },
   };
 }
@@ -63,8 +64,7 @@ export function providerUsageLimitFromMessages(
 ): WorkflowProviderUsageLimitError | undefined {
   const failure = lastAssistantError(messages);
   if (!failure) return undefined;
-  const { errorMessage } = failure.message;
-  const providerMessage = typeof errorMessage === "string" ? errorMessage.trim() : "";
+  const providerMessage = failure.errorMessage.trim();
   if (!providerMessage || !isUsageLimitMessage(providerMessage)) return undefined;
   return new WorkflowProviderUsageLimitError({
     stopReason: "error",
