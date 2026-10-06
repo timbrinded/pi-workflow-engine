@@ -390,6 +390,20 @@ test("inline compile errors are shaped for workflow tool results", () => {
   if (result.details.error !== "inline_compile_error") throw new Error("expected inline compile details");
   assert.match(result.details.message, /meta/);
   assert.match(result.content[0]?.text ?? "", /Inline workflow did not compile/);
+  assert.equal(result.isError, true);
+});
+
+test("the workflow tool is a model-only orchestrator that codemode scripts cannot start", () => {
+  assert.equal(captureWorkflowTool().exposure, "model-only");
+});
+
+test("workflow tool marks an unknown workflow as a failed call", async () => {
+  const result = await captureWorkflowTool().execute("call-unknown", { name: "does-not-exist" }, undefined, () => {}, HEADLESS_CTX);
+
+  assert.ok(isRecord(result));
+  assert.equal(result.isError, true);
+  assert.ok(isRecord(result.details));
+  assert.equal(result.details.error, "unknown_workflow");
 });
 
 test("workflow tool rejects blank resumeFromRunId", async () => {
@@ -408,6 +422,7 @@ export default async function run() {
   assert.ok(Array.isArray(content));
   assert.equal(content[0]?.text, "resumeFromRunId must be non-empty.");
   assert.deepEqual(result.details, { error: "invalid_resume_from_run_id" });
+  assert.equal(result.isError, true);
 });
 
 test("workflow tool requires a prior run for edited-source reuse", async () => {
@@ -425,6 +440,7 @@ test("workflow tool requires a prior run for edited-source reuse", async () => {
   assert.ok(Array.isArray(content));
   assert.equal(content[0]?.text, "resumeEditedWorkflow requires resumeFromRunId.");
   assert.deepEqual(result.details, { error: "invalid_edited_workflow_resume" });
+  assert.equal(result.isError, true);
 });
 
 test("workflow tool rejects background mode in finite print execution", async () => {
@@ -440,6 +456,7 @@ test("workflow tool rejects background mode in finite print execution", async ()
 
   assert.ok(isRecord(result));
   assert.deepEqual(result.details, { error: "background_unavailable", mode: "print" });
+  assert.equal(result.isError, true);
 });
 
 test("workflow tool returns a durable background run id and detaches from the initiating tool signal", async () => {

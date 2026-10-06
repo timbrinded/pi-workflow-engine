@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { createWorkflowUsageRecorder, emptyWorkflowUsageTotals, formatWorkflowUsageLine } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import {
+  createWorkflowUsageRecorder,
+  emptyWorkflowUsageTotals,
+  formatWorkflowUsageLine,
+  workflowUsageForPi,
+} from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 
 function assistantUsage(overrides: {
@@ -271,4 +276,23 @@ test("formatWorkflowUsageLine suppresses true zero usage", () => {
 
   assert.equal(recorder.snapshot().assistantMessages, 1);
   assert.equal(formatWorkflowUsageLine(recorder.snapshot()), undefined);
+});
+
+test("workflow usage converts to pi's Usage so the session cost includes subagent spend", () => {
+  const recorder = createWorkflowUsageRecorder();
+  assert.equal(workflowUsageForPi(recorder.snapshot()), undefined);
+
+  recorder.recordAgentSession({
+    label: "finder",
+    messages: [assistantUsage({ input: 100, output: 20, cacheRead: 300, cacheWrite: 40, costInput: 0.1, costOutput: 0.2, costCacheRead: 0.03, costCacheWrite: 0.04, costTotal: 0.37 })],
+  });
+
+  assert.deepEqual(workflowUsageForPi(recorder.snapshot()), {
+    input: 100,
+    output: 20,
+    cacheRead: 300,
+    cacheWrite: 40,
+    totalTokens: 460,
+    cost: { input: 0.1, output: 0.2, cacheRead: 0.03, cacheWrite: 0.04, total: 0.37 },
+  });
 });

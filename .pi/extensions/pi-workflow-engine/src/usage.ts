@@ -1,3 +1,4 @@
+import type { Usage } from "@earendil-works/pi-ai";
 import { isFiniteNumber, isRecord } from "./guards.ts";
 import { formatCount } from "./text.ts";
 
@@ -125,6 +126,13 @@ export function isWorkflowUsageSnapshot(value: unknown): value is WorkflowUsageS
 export function hasWorkflowUsage(snapshot: unknown): snapshot is WorkflowUsageSnapshot {
   if (!isWorkflowUsageSnapshot(snapshot)) return false;
   return snapshot.totals.totalTokens > 0 || snapshot.totals.cost.total > 0;
+}
+
+/** The run's subagent totals as pi's `Usage`, so a tool result adds them to the session's cost. */
+export function workflowUsageForPi(snapshot: unknown): Usage | undefined {
+  if (!hasWorkflowUsage(snapshot)) return undefined;
+  const { input, output, cacheRead, cacheWrite, totalTokens, cost } = snapshot.totals;
+  return { input, output, cacheRead, cacheWrite, totalTokens, cost: { ...cost } };
 }
 
 export function formatWorkflowUsageLine(snapshot: unknown): string | undefined {

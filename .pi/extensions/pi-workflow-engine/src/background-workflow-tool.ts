@@ -7,6 +7,7 @@ import { unknownErrorMessage } from "./unknown-error.ts";
 export interface BackgroundWorkflowToolResult {
   readonly content: Array<{ readonly type: "text"; readonly text: string }>;
   readonly details: Readonly<Record<string, unknown>>;
+  readonly isError?: true;
 }
 
 export interface BackgroundWorkflowToolStartInput {
@@ -25,6 +26,7 @@ export function backgroundUnavailableResult(mode: ExtensionContext["mode"]): Bac
       text: `Background workflows are unavailable in ${mode} mode because pi exits after the prompt. Run synchronously or use TUI/RPC mode.`,
     }],
     details: { error: "background_unavailable", mode },
+    isError: true,
   };
 }
 
@@ -63,6 +65,7 @@ export async function startBackgroundWorkflowTool(
     return {
       content: [{ type: "text", text: `Background workflow did not start: ${message}` }],
       details: { error: "background_start_failed", message, runId },
+      isError: true,
     };
   }
   return {
