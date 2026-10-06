@@ -19,7 +19,6 @@ export interface LensVerificationPipelineResult {
   verified: AdvisoryVerified[];
   rawCandidates: number;
   dropped: number;
-  refuted: number;
   coverage: AdvisoryStageCoverage[];
 }
 
@@ -71,7 +70,6 @@ export async function runLensVerificationPipeline(
   const { api, lenses, perLens, finderPhase = "Find", finderPrompt, verifierPrompt, boundCandidate } = options;
   const coverage: AdvisoryStageCoverage[] = [];
   let rawCandidates = 0;
-  let refuted = 0;
   api.phase(finderPhase);
   const found = await collectAdvisoryStage(api, "Find", lenses.map((lens) => ({ id: lens.label, run: async () => {
     const result = await api.agent(finderPrompt(lens), {
@@ -107,11 +105,57 @@ export async function runLensVerificationPipeline(
         tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS,
         profile: "small", schema: AdvisoryVerdictSchema,
       });
-      recordVerdictProgress(api.progress, candidate, judged, () => { refuted += 1; });
+      recordVerdictProgress(api.progress, candidate, judged);
       return { ...candidate, verdict: judged.verdict, evidence: judged.evidence, confidence: judged.confidence };
     },
   })), coverage);
-  return { verified, rawCandidates, dropped, refuted, coverage };
+  return { verified, rawCandidates, dropped, coverage };
+}
+
+export interface LensReviewConclusion {
+  /** Scoped file count reported in stats. */
+  files: number;
+  rank(finding: AdvisoryVerified): number;
+  /** Heading for each ranked finding's recommendation in the synthesis prompt. */
+  recommendationLabel: string;
+  /** Report used when no finding survives verification and challenge. */
+  empty: { summary: string; nextSteps: string[] };
+  synthesisPrompt(block: string, ranked: readonly AdvisoryVerified[], refuted: readonly AdvisoryVerified[]): string;
+}
+
+/** Rank and synthesize the findings that survived verification and challenge into the final report. */
+export async function concludeLensReview(
+  api: Pick<WorkflowApi, "agent" | "parallel" | "phase" | "progress" | "log">,
+  pipeline: LensVerificationPipelineResult,
+  verified: AdvisoryVerified[],
+  conclusion: LensReviewConclusion,
+) {
+  const { coverage } = pipeline;
+  const surviving = verified.filter((finding) => finding.verdict !== "REFUTED");
+  const stats: WorkflowRunStats = {
+    files: conclusion.files,
+    candidates: pipeline.rawCandidates,
+    verified: verified.length,
+    kept: surviving.length,
+    dropped: pipeline.dropped,
+    refuted: verified.length - surviving.length,
+  };
+  publishVerifiedKeptProgress(api, verified.length, surviving.length);
+  if (surviving.length === 0) {
+    return finishAdvisoryReport(emptyAdvisoryReport(conclusion.empty.summary, conclusion.empty.nextSteps, stats), coverage, verified);
+  }
+
+  const ranked = [...surviving].sort((a, b) => conclusion.rank(a) - conclusion.rank(b));
+  const block = ranked
+    .map(
+      (finding, index) =>
+        `### [${index}] IDs: ${finding.sourceCandidateIds.join(", ")} ${formatLocation(finding)} (${finding.verdict}, ${finding.category})\n` +
+        `${finding.summary}\nImpact: ${finding.impact}\nEvidence: ${formatEvidence(finding.evidence)}\n${conclusion.recommendationLabel}: ${finding.recommendation ?? "(none supplied)"}`,
+    )
+    .join("\n\n");
+  const refuted = verified.filter((finding) => finding.verdict === "REFUTED");
+  const resolved = await synthesizeAdvisoryReport(api, conclusion.synthesisPrompt(block, ranked, refuted), ranked, coverage);
+  return finishAdvisoryReport({ ...resolved, stats: { ...stats, kept: resolved.findings.length } }, coverage, verified);
 }
 
 export async function synthesizeAdvisoryReport(
@@ -173,11 +217,9 @@ export function recordVerdictProgress(
   progress: (event: WorkflowProgressEvent) => void,
   candidate: Pick<AdvisoryCandidate, "locations" | "summary">,
   verdict: Pick<AdvisoryVerdict, "verdict" | "evidence">,
-  onRefuted?: () => void,
 ): void {
   progress({ type: "counter_delta", key: `verdict.${verdict.verdict.toLowerCase()}`, label: verdict.verdict, delta: 1 });
   if (verdict.verdict === "REFUTED") {
-    onRefuted?.();
     progress({ type: "counter_delta", key: "refuted", label: "refuted", delta: 1 });
   }
   progress({

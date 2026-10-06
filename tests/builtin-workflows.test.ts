@@ -295,6 +295,26 @@ test("diagnose keeps refuted hypotheses out of final findings", async () => {
   );
 });
 
+test("diagnose counts hypotheses refuted by the challenge stage", async () => {
+  const api = createScriptedApi([
+    { symptom: "test fails", commands: [], files: ["src/example.ts"], observations: [] },
+    { candidates: [candidate("stale cache", "root-cause")] },
+    emptyCandidates(),
+    emptyCandidates(),
+    emptyCandidates(),
+    emptyCandidates(),
+    { verdict: "PLAUSIBLE", evidence: ["The cache is read before refresh."] },
+    { outcome: "counterexample", evidence: ["Refresh runs first."], experiment: "" },
+    { outcome: "refuted", evidence: ["Refresh runs first."], reason: "The cache is refreshed before use." },
+  ], "--challenge test fails");
+
+  const result = asReportResult(await diagnose(api));
+
+  assert.equal(result.stats.verified, 1);
+  assert.equal(result.stats.kept, 0);
+  assert.equal(result.stats.refuted, 1);
+});
+
 test("perf-review returns the empty report when no performance files are scoped", async () => {
   const api = createScriptedApi([
     {
