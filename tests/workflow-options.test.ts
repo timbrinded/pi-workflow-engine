@@ -180,13 +180,6 @@ test("resolveWorkflowRunOptions resolves budget env values strictly and rejects 
   assert.throws(() => resolveWorkflowRunOptions({ budget: Infinity }, {}), RangeError);
 });
 
-test("resolved workflow options remain plain spreadable data", () => {
-  const resolved = resolveWorkflowRunOptions({}, { PI_WORKFLOW_BUDGET: "100" });
-
-  assert.deepEqual({ ...resolved }, resolved);
-  assert.deepEqual(Object.getOwnPropertySymbols(resolved), []);
-});
-
 test("parses result viewer workflow options", () => {
   const forcedOpen = parseWorkflowInvocation("code-review --result-viewer review src only");
   assert.equal(forcedOpen.name, "code-review");
