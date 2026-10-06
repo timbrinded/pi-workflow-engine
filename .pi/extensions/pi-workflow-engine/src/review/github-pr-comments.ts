@@ -1,5 +1,5 @@
 import { throwIfAborted } from "../cancellation.ts";
-import { isRecord } from "../guards.ts";
+import { isFiniteNumber, isRecord } from "../guards.ts";
 import type { CommentableReviewIssue, ReviewIssue } from "./review-issues.ts";
 import { unknownErrorMessage } from "../unknown-error.ts";
 
@@ -199,7 +199,7 @@ function commentKey(body: string, path: string, line: number, headSha: string): 
 function numberField(value: unknown, key: string): number | undefined {
   if (!isRecord(value)) return undefined;
   const field = value[key];
-  return typeof field === "number" && Number.isFinite(field) ? field : undefined;
+  return isFiniteNumber(field) ? field : undefined;
 }
 
 function stringField(value: unknown, key: string): string | undefined {

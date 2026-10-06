@@ -41,6 +41,7 @@ import {
   registerDynamax,
   updateDynamaxSurfaces,
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { sessionKey } from "../.pi/extensions/pi-workflow-engine/src/session-identity.ts";
 import {
   decorateDynamaxEditor,
@@ -49,10 +50,6 @@ import {
   resolveDynamaxEffect,
   type DynamaxAnimationScheduler,
 } from "../.pi/extensions/pi-workflow-engine/src/ui/dynamax-editor-decoration.ts";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function createStubEditor(initialText = ""): EditorComponent {
   let text = initialText;

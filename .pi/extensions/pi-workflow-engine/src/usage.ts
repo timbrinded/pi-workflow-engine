@@ -1,4 +1,4 @@
-import { isRecord } from "./guards.ts";
+import { isFiniteNumber, isRecord } from "./guards.ts";
 import { formatCount } from "./text.ts";
 
 export interface WorkflowUsageCost {
@@ -119,7 +119,7 @@ export function isWorkflowUsageSnapshot(value: unknown): value is WorkflowUsageS
   if (!isRecord(value)) return false;
   if (!Array.isArray(value.agents) || !value.agents.every(isWorkflowAgentUsage)) return false;
   if (!isWorkflowUsageTotals(value.totals)) return false;
-  return finiteNumber(value.assistantMessages) !== undefined;
+  return isFiniteNumber(value.assistantMessages);
 }
 
 export function hasWorkflowUsage(snapshot: unknown): snapshot is WorkflowUsageSnapshot {
@@ -169,17 +169,17 @@ function isWorkflowAgentUsage(value: unknown): value is WorkflowAgentUsage {
   if (value.phase !== undefined && typeof value.phase !== "string") return false;
   if (value.provider !== undefined && typeof value.provider !== "string") return false;
   if (value.model !== undefined && typeof value.model !== "string") return false;
-  if (finiteNumber(value.assistantMessages) === undefined) return false;
+  if (!isFiniteNumber(value.assistantMessages)) return false;
   return isWorkflowUsageTotals(value.usage);
 }
 
 function isWorkflowUsageTotals(value: unknown): value is WorkflowUsageTotals {
   if (!isRecord(value)) return false;
-  if (finiteNumber(value.input) === undefined) return false;
-  if (finiteNumber(value.output) === undefined) return false;
-  if (finiteNumber(value.cacheRead) === undefined) return false;
-  if (finiteNumber(value.cacheWrite) === undefined) return false;
-  if (finiteNumber(value.totalTokens) === undefined) return false;
+  if (!isFiniteNumber(value.input)) return false;
+  if (!isFiniteNumber(value.output)) return false;
+  if (!isFiniteNumber(value.cacheRead)) return false;
+  if (!isFiniteNumber(value.cacheWrite)) return false;
+  if (!isFiniteNumber(value.totalTokens)) return false;
   if (!isWorkflowUsageCoverage(value.coverage)) return false;
   return isWorkflowUsageCost(value.cost);
 }
@@ -197,11 +197,11 @@ function isWorkflowUsageCoverage(value: unknown): value is WorkflowUsageComponen
 function isWorkflowUsageCost(value: unknown): value is WorkflowUsageCost {
   if (!isRecord(value)) return false;
   return (
-    finiteNumber(value.input) !== undefined &&
-    finiteNumber(value.output) !== undefined &&
-    finiteNumber(value.cacheRead) !== undefined &&
-    finiteNumber(value.cacheWrite) !== undefined &&
-    finiteNumber(value.total) !== undefined
+    isFiniteNumber(value.input) &&
+    isFiniteNumber(value.output) &&
+    isFiniteNumber(value.cacheRead) &&
+    isFiniteNumber(value.cacheWrite) &&
+    isFiniteNumber(value.total)
   );
 }
 
@@ -323,5 +323,5 @@ function isCoverageValue(value: unknown): value is WorkflowUsageCoverage {
 }
 
 function finiteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return isFiniteNumber(value) ? value : undefined;
 }

@@ -1,4 +1,5 @@
 import { WorkflowPauseError } from "./cancellation.ts";
+import { isRecord } from "./guards.ts";
 import {
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
   type ResolvedWorkflowRunOptions,
@@ -188,7 +189,7 @@ function isAssistantMessage(value: unknown): value is {
   readonly model?: unknown;
   readonly api?: unknown;
 } {
-  return typeof value === "object" && value !== null && "role" in value && value.role === "assistant";
+  return isRecord(value) && value.role === "assistant";
 }
 
 function stringDetail(value: unknown): string | undefined {

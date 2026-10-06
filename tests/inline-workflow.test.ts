@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 
 function createFakeApi(overrides: Partial<WorkflowApi> = {}, onAgent?: (opts: AgentOptions | undefined) => void): WorkflowApi {
@@ -26,10 +27,6 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}, onAgent?: (opts: Ag
     signal: undefined,
     ...overrides,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 test("compileInlineWorkflow extracts meta and runs a default async function", async () => {

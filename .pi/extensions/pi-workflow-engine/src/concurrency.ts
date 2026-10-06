@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { abortReason, isFatalWorkflowError, throwIfAborted } from "./cancellation.ts";
+import { isFiniteNumber } from "./guards.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 /**
@@ -252,7 +253,7 @@ function readSerializableDetails(
         typeof detail === "string" ||
         typeof detail === "boolean" ||
         detail === null ||
-        (typeof detail === "number" && Number.isFinite(detail))
+        isFiniteNumber(detail)
       ) {
         details[key] = detail;
       }
@@ -273,12 +274,12 @@ function readProperty(value: unknown, property: string): unknown {
 }
 
 function normalizeLimit(limit: number | undefined, itemCount: number): number {
-  if (limit === undefined || !Number.isFinite(limit)) return Math.max(1, itemCount);
+  if (!isFiniteNumber(limit)) return Math.max(1, itemCount);
   return Math.max(1, Math.min(itemCount, Math.trunc(limit)));
 }
 
 function normalizeDrainTimeout(timeoutMs: number | undefined): number {
-  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) return DEFAULT_FATAL_DRAIN_TIMEOUT_MS;
+  if (!isFiniteNumber(timeoutMs)) return DEFAULT_FATAL_DRAIN_TIMEOUT_MS;
   return Math.max(0, Math.trunc(timeoutMs));
 }
 

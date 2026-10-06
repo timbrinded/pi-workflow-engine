@@ -1,4 +1,5 @@
 import type { AdvisoryFinding, AdvisoryReport } from "../advisory-schema.ts";
+import { isFiniteNumber } from "../guards.ts";
 
 export type ReviewIssueAction = "fix" | "comment" | "close";
 
@@ -75,7 +76,7 @@ export function serializeReviewIssue(issue: ReviewIssue): SerializedReviewIssue 
 export type CommentableReviewIssue = ReviewIssue & { readonly file: string; readonly line: number };
 
 export function isCommentableIssue(issue: ReviewIssue): issue is CommentableReviewIssue {
-  return typeof issue.file === "string" && issue.file.trim().length > 0 && typeof issue.line === "number" && Number.isFinite(issue.line);
+  return typeof issue.file === "string" && issue.file.trim().length > 0 && isFiniteNumber(issue.line);
 }
 
 function formatIssueId(index: number): string {

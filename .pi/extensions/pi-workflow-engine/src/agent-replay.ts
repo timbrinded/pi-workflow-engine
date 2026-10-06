@@ -3,6 +3,7 @@ import { Value } from "typebox/value";
 import { captureAgentSkillIdentities, extractSkillSelectorsFromText } from "./agent-skills.ts";
 import type { AgentExecutionOptions, AgentRunnerSession, RunContext } from "./agent-runner-types.ts";
 import { captureEffectiveAgentSessionIdentity } from "./agent-session-identity.ts";
+import { isRecord } from "./guards.ts";
 import { FINAL_TOOL } from "./agent-session.ts";
 import type { AgentWorkspace, IsolatedAgentWorkspace } from "./agent-workspace.ts";
 import { captureAgentJournalKey } from "./journal.ts";
@@ -285,14 +286,13 @@ function isolatedCachedResult(value: unknown):
       readonly wrapper: { readonly result: unknown; readonly patch: string; readonly changed: boolean };
     }
   | { readonly ok: false; readonly reason: string } {
-  if (typeof value !== "object" || value === null) {
+  if (!isRecord(value)) {
     return { ok: false, reason: "cached isolated result is not an object" };
   }
-  const candidate = value as { readonly result?: unknown; readonly patch?: unknown; readonly changed?: unknown };
-  if (!("result" in candidate) || typeof candidate.patch !== "string" || typeof candidate.changed !== "boolean") {
+  if (!("result" in value) || typeof value.patch !== "string" || typeof value.changed !== "boolean") {
     return { ok: false, reason: "cached isolated result has an invalid wrapper" };
   }
-  const wrapper = { result: candidate.result, patch: candidate.patch, changed: candidate.changed };
+  const wrapper = { result: value.result, patch: value.patch, changed: value.changed };
   return { ok: true, wrapper };
 }
 
