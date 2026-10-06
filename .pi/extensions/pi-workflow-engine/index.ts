@@ -2,7 +2,8 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
-import { isAdvisoryReport } from "./src/advisory-schema.ts";
+import { isAdvisoryReport, type AdvisoryReport } from "./src/advisory-schema.ts";
+import { isRecord } from "./src/guards.ts";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressSource, WorkflowRef, WorkflowRunOptions } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
@@ -48,22 +49,30 @@ import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/w
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
 
-function summarize(result: unknown): string {
-  return workflowResultSummary(result) ?? "Workflow finished.";
-}
+/** Cap on the result JSON copied into the host agent's context; the run record keeps the full value. */
+const MAX_CONTEXT_RESULT_JSON_CHARS = 20_000;
 
 function formatMessageContent(envelope: WorkflowResultEnvelope): string {
   const details = formatWorkflowDetailLines(envelope);
   return `## Workflow: ${envelope.name}\n\n${formatResultForContext(envelope.result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
 }
 
+/** The host model only sees this text, never the envelope `details`, so it carries every result field. */
 function formatResultForContext(result: unknown): string {
-  if (!isAdvisoryReport(result)) return summarize(result);
+  if (typeof result === "string") return result;
+  if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(result);
+  const summary = workflowResultSummary(result);
+  if (summary !== undefined && isRecord(result) && Object.keys(result).length === 1) return summary;
+  const json = formatResultJson(result);
+  if (json === undefined) return summary ?? "Workflow finished.";
+  return summary === undefined ? json : `${summary}\n\n${json}`;
+}
 
-  const lines = [result.summary];
-  if (result.findings.length > 0) {
+function formatAdvisoryReportForContext(report: AdvisoryReport): string {
+  const lines = [report.summary];
+  if (report.findings.length > 0) {
     lines.push("", "Findings:");
-    result.findings.forEach((finding, index) => {
+    report.findings.forEach((finding, index) => {
       const id = `R${String(index + 1).padStart(3, "0")}`;
       lines.push(
         `\n### ${id}: ${finding.summary}`,
@@ -77,10 +86,23 @@ function formatResultForContext(result: unknown): string {
       );
     });
   }
-  if (result.nextSteps.length > 0) {
-    lines.push("", "Next steps:", ...result.nextSteps.map((step) => `- ${step}`));
+  if (report.nextSteps.length > 0) {
+    lines.push("", "Next steps:", ...report.nextSteps.map((step) => `- ${step}`));
   }
   return lines.join("\n");
+}
+
+function formatResultJson(result: unknown): string | undefined {
+  if (result === null || result === undefined) return undefined;
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(result, null, 2);
+  } catch {
+    return undefined;
+  }
+  if (json === undefined) return undefined;
+  if (json.length <= MAX_CONTEXT_RESULT_JSON_CHARS) return `Result:\n\`\`\`json\n${json}\n\`\`\``;
+  return `Result (first ${MAX_CONTEXT_RESULT_JSON_CHARS} of ${json.length} characters; truncated, the run record holds the full value):\n\`\`\`json\n${json.slice(0, MAX_CONTEXT_RESULT_JSON_CHARS)}\n\`\`\``;
 }
 
 function formatFindingLocation(location: { readonly file: string; readonly line?: number; readonly symbol?: string }): string {

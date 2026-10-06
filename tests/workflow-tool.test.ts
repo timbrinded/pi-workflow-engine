@@ -120,6 +120,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function toolResultText(value: unknown): string {
+  if (!isRecord(value) || !Array.isArray(value.content)) return "";
+  const first: unknown = value.content[0];
+  return isRecord(first) && typeof first.text === "string" ? first.text : "";
+}
+
 async function waitUntil(predicate: () => boolean | Promise<boolean>, label: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (await predicate()) return;
@@ -340,6 +346,32 @@ export default async function run({ args, phase }) {
   assert.equal(mod.meta.name, "tool-inline");
   assert.deepEqual(result, { summary: "from args" });
   assert.deepEqual(phases, ["Inline"]);
+});
+
+test("the workflow tool shows the host agent result fields beyond the summary", async () => {
+  const tool = captureWorkflowTool();
+  const run = async (name: string, result: string): Promise<string> => {
+    const script = `export const meta = { name: "${name}", description: "Result content probe" };
+export default async function run() { return ${result}; }`;
+    return toolResultText(await tool.execute(`call-${name}`, { script }, undefined, () => {}, HEADLESS_CTX));
+  };
+
+  const report = await run("research-shaped", `{ answer: "THE-ANSWER", sources: [{ url: "https://example.test/source" }] }`);
+  assert.match(report, /THE-ANSWER/);
+  assert.match(report, /https:\/\/example\.test\/source/);
+  assert.doesNotMatch(report, /Workflow finished\./);
+
+  const patch = await run("summary-and-patch", `{ summary: "Patch ready.", patch: "diff --git a/x b/x" }`);
+  assert.match(patch, /Patch ready\.\n\nResult:/);
+  assert.match(patch, /diff --git a\/x b\/x/);
+
+  const summaryOnly = await run("summary-only", `{ summary: "Just the summary." }`);
+  assert.match(summaryOnly, /Just the summary\./);
+  assert.doesNotMatch(summaryOnly, /Result/);
+
+  const oversized = await run("oversized", `{ blob: "x".repeat(50000) }`);
+  assert.match(oversized, /truncated/);
+  assert.ok(oversized.length < 25_000, `expected a bounded result, got ${oversized.length} characters`);
 });
 
 test("inline compile errors are shaped for workflow tool results", () => {
