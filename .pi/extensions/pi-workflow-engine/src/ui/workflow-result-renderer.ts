@@ -79,10 +79,11 @@ function renderAdvisoryResult(frame: ResultFrame, report: AdvisoryReportWithStat
     findings,
   ];
   const glyph = incomplete ? theme.fg("warning", GLYPH.warning) : theme.fg("success", GLYPH.done);
-  const lines = [
-    headerLine(glyph, frame, facts, severities),
-    ...indent(paragraph(report.summary, width, (line) => theme.fg("text", line), expanded ? undefined : COLLAPSED_SUMMARY_LINES)),
-  ];
+  const lines = [headerLine(glyph, frame, facts, severities)];
+  // An incomplete report's summary restates the header ("Incomplete review: n branch(es) failed…"); show it expanded only.
+  if (expanded || !incomplete) {
+    lines.push(...indent(paragraph(report.summary, width, (line) => theme.fg("text", line), expanded ? undefined : COLLAPSED_SUMMARY_LINES)));
+  }
   const gaps = report.gaps ?? [];
   if (!expanded && gaps.length > 0) lines.push(...indent([gapLine(gaps, theme)]));
 

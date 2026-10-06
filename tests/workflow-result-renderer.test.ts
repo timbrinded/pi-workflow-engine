@@ -39,6 +39,7 @@ function reviewReport() {
 function incompleteReport() {
   return {
     ...reviewReport(),
+    summary: "Incomplete review: 2 branch(es) failed. 3 finding(s) available; no clean conclusion is possible.",
     status: "incomplete" as const,
     coverage: [
       { stage: "Find", expected: 5, completed: 4, failed: 1, failures: [{ branch: "error-paths", reason: "provider failed" }] },
@@ -117,6 +118,8 @@ test("incomplete reviews warn in the header and keep the first gap visible colla
   assert.match(lines[0] ?? "", /^⚠ code-review {2}incomplete · 1 of 5 finders failed · 3 findings/);
   assert.ok(lines.some((line) => /✗ Find\/error-paths: provider failed · \+1 more/.test(line)));
   assert.doesNotMatch(lines.join("\n"), /✓|no findings/);
+  assert.doesNotMatch(lines.join("\n"), /Incomplete review:/, "the collapsed header already says what the generated summary says");
+  assert.match(render(view("code-review", incompleteReport()), true).join("\n"), /Incomplete review: 2 branch\(es\) failed/);
 
   const empty = render(view("code-review", { ...incompleteReport(), findings: [] }), false);
   assert.match(empty[0] ?? "", /^⚠ code-review {2}incomplete · 1 of 5 finders failed · no verified findings/);
