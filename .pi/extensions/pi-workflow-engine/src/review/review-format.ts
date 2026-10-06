@@ -14,12 +14,12 @@ const CONFIDENCE_WIDTH = 6;
 const CATEGORY_WIDTH = 8;
 const LOCATION_WIDTH = 30;
 const SUMMARY_WIDTH = 58;
+const COLUMN_WIDTHS = [ID_WIDTH, SEVERITY_WIDTH, CONFIDENCE_WIDTH, CATEGORY_WIDTH, LOCATION_WIDTH, SUMMARY_WIDTH] as const;
 
 export function renderIssuesTable(issues: readonly ReviewIssue[], theme: Theme, options: RenderIssuesTableOptions = {}): string {
-  const maxRows = options.maxRows ?? DEFAULT_MAX_ROWS;
-  const visible = maxRows >= 0 ? issues.slice(0, maxRows) : issues;
+  const visible = issues.slice(0, options.maxRows ?? DEFAULT_MAX_ROWS);
   const lines = [
-    renderRow(["ID", "Sev", "Conf", "Cat", "Location", "Summary"], theme.fg("dim", "│"), theme, true),
+    renderRow(["ID", "Sev", "Conf", "Cat", "Location", "Summary"], theme.fg("dim", "│"), theme),
     theme.fg("dim", renderSeparator()),
   ];
 
@@ -36,7 +36,6 @@ export function renderIssuesTable(issues: readonly ReviewIssue[], theme: Theme, 
         ],
         theme.fg("dim", "│"),
         theme,
-        false,
         issue,
       ),
     );
@@ -47,10 +46,6 @@ export function renderIssuesTable(issues: readonly ReviewIssue[], theme: Theme, 
   }
 
   return lines.join("\n");
-}
-
-export function renderIssueDetails(issue: ReviewIssue, theme: Theme): string {
-  return renderIssueDetailLines(issue, theme, 120).join("\n");
 }
 
 export function renderIssueDetailLines(issue: ReviewIssue, theme: Theme, width: number): string[] {
@@ -77,37 +72,22 @@ function fieldLines(label: string, value: string, width: number, theme: Theme, v
   return wrapped.map((line, index) => (index === 0 ? `${prefix}${separator}${line}` : `${continuation}${line}`));
 }
 
+/** A header row (no issue) is dimmed; issue rows colour their severity and confidence cells. */
 function renderRow(
   cells: readonly [string, string, string, string, string, string],
   separator: string,
   theme: Theme,
-  header: boolean,
   issue?: ReviewIssue,
 ): string {
-  const rendered = [
-    cell(cells[0], ID_WIDTH),
-    colorCell(cell(cells[1], SEVERITY_WIDTH), header ? "dim" : severityColor(issue?.finding.severity ?? "low"), theme),
-    colorCell(cell(cells[2], CONFIDENCE_WIDTH), header ? "dim" : confidenceColor(issue?.finding.confidence ?? "low"), theme),
-    cell(cells[3], CATEGORY_WIDTH),
-    cell(cells[4], LOCATION_WIDTH),
-    cell(cells[5], SUMMARY_WIDTH),
-  ];
-  if (header) {
-    return rendered.map((entry) => theme.fg("dim", entry)).join(` ${separator} `);
-  }
+  const rendered = cells.map((value, index) => truncateDisplay(value, COLUMN_WIDTHS[index]).padEnd(COLUMN_WIDTHS[index], " "));
+  if (!issue) return rendered.map((entry) => theme.fg("dim", entry)).join(` ${separator} `);
+  rendered[1] = theme.fg(severityColor(issue.finding.severity), rendered[1]);
+  rendered[2] = theme.fg(confidenceColor(issue.finding.confidence), rendered[2]);
   return rendered.join(` ${separator} `);
 }
 
-function cell(value: string, width: number): string {
-  return truncateDisplay(value, width).padEnd(width, " ");
-}
-
-function colorCell(value: string, color: WorkflowThemeColor, theme: Theme): string {
-  return theme.fg(color, value);
-}
-
 function renderSeparator(): string {
-  return [ID_WIDTH, SEVERITY_WIDTH, CONFIDENCE_WIDTH, CATEGORY_WIDTH, LOCATION_WIDTH, SUMMARY_WIDTH].map((width) => "─".repeat(width)).join("─┼─");
+  return COLUMN_WIDTHS.map((width) => "─".repeat(width)).join("─┼─");
 }
 
 export function severityColor(severity: ReviewIssue["finding"]["severity"]): WorkflowThemeColor {

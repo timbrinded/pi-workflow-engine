@@ -2,7 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Text } from "@earendil-works/pi-tui";
 import { isAdvisoryReport, type AdvisoryReportWithStats } from "../advisory-schema.ts";
 import { isRecord } from "../guards.ts";
-import { renderIssueDetails, renderIssuesTable } from "../review/review-format.ts";
+import { renderIssueDetailLines, renderIssuesTable } from "../review/review-format.ts";
 import { toReviewIssues } from "../review/review-issues.ts";
 import { formatCount } from "../text.ts";
 import { formatPerfSummary } from "../perf.ts";
@@ -57,10 +57,10 @@ function renderAdvisoryResult(view: WorkflowResultView, result: AdvisoryReportWi
 
   const issues = toReviewIssues(result);
   lines.push(theme.fg("dim", "Findings:"));
-  lines.push(renderIssuesTable(issues, theme, { maxRows: expanded ? issues.length : 12 }));
+  lines.push(renderIssuesTable(issues, theme, expanded ? { maxRows: issues.length } : {}));
   if (expanded) {
     for (const issue of issues) {
-      lines.push(renderIssueDetails(issue, theme));
+      lines.push(...renderIssueDetailLines(issue, theme, 120));
     }
   }
   if (expanded && result.nextSteps.length > 0) renderNextSteps(result.nextSteps, lines, theme);
