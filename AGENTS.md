@@ -37,7 +37,7 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 - `.pi/extensions/pi-workflow-engine/index.ts` — canonical pi extension entry; registers workflow commands and shortcuts, the `workflow` tool, and result rendering.
 - `.pi/extensions/pi-workflow-engine/src/agent-runner.ts` — **the bridge**. Each `agent()` is an in-process `createAgentSession(... SessionManager.inMemory())`. Structured output = one **terminating tool** whose `parameters` IS the schema; pi validates the call, `execute` captures the args in a closure, `terminate: true` ends the turn. No event parsing.
 - `.pi/extensions/pi-workflow-engine/src/concurrency.ts` — `Semaphore` (the single global concurrency cap, acquired inside every `agent()`), `parallel`, `pipeline`.
-- `.pi/extensions/pi-workflow-engine/src/engine.ts` — `runWorkflow()` binds the primitives to one run (shared semaphore + progress tracker). `DEFAULT_CONCURRENCY` lives here.
+- `.pi/extensions/pi-workflow-engine/src/engine.ts` — `runWorkflow()` binds the primitives to one run (shared semaphore + progress tracker). Run options and the default concurrency (`defaultConcurrency()`) resolve in `src/options.ts`.
 - `.pi/extensions/pi-workflow-engine/src/progress.ts` — live phase/agent tree via `ctx.ui.setWidget`; stderr breadcrumbs when headless.
 - `.pi/extensions/pi-workflow-engine/src/discovery.ts` + `.pi/extensions/pi-workflow-engine/src/workflows.ts` — static registry (`BUILTIN_WORKFLOWS`) plus best-effort dynamic drop-in loading.
 - `.pi/extensions/pi-workflow-engine/src/inline-workflow.ts` — inline workflow compiler (`script` string → `WorkflowModule`) with pure-literal `export const meta` extraction and injected Type schemas.

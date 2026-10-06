@@ -52,6 +52,7 @@ test("resolveWorkflowRunOptions clamps env and explicit tuning", () => {
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_USAGE_LIMIT_MAX_ATTEMPTS: "4" }).usageLimitMaxAttempts, 4);
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_USAGE_LIMIT_MAX_DELAY_MS: "120000" }).usageLimitMaxDelayMs, 120_000);
   assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_MAX_AGENTS: "1.5" }).maxAgents, DEFAULT_WORKFLOW_MAX_AGENTS);
+  assert.equal(resolveWorkflowRunOptions({}, { PI_WORKFLOW_CONCURRENCY: "2.5" }).concurrency, defaultConcurrency());
   assert.equal(
     resolveWorkflowRunOptions({}, { PI_WORKFLOW_AGENT_TIMEOUT_MS: "1500.75" }).agentTimeoutMs,
     DEFAULT_WORKFLOW_AGENT_TIMEOUT_MS,
@@ -106,23 +107,24 @@ test("parseWorkflowInvocation rejects non-integer agent limit options", () => {
   ]);
 });
 
-test("parseWorkflowInvocation preserves concurrency value consumption semantics", () => {
-  const equalsForm = parseWorkflowInvocation("code-review --concurrency=4 review src");
-  assert.equal(equalsForm.options.concurrency, 4);
-  assert.equal(equalsForm.args, "review src");
-
+test("parseWorkflowInvocation rejects invalid concurrency flags without consuming the next token", () => {
   const nextTokenForm = parseWorkflowInvocation("code-review --concurrency 4 review src");
   assert.equal(nextTokenForm.options.concurrency, 4);
   assert.equal(nextTokenForm.args, "review src");
 
-  const invalidValue = parseWorkflowInvocation("code-review --concurrency nope review src");
-  assert.equal(invalidValue.options.concurrency, undefined);
-  assert.equal(invalidValue.args, "review src");
+  const missingValue = parseWorkflowInvocation("code-review --parallel-limit HEAD~1");
+  assert.equal(missingValue.options.parallelSubmissionLimit, undefined);
+  assert.equal(missingValue.args, "HEAD~1");
+  assert.deepEqual(missingValue.optionErrors, ["--parallel-limit requires an integer"]);
 
-  const consumedOptionToken = parseWorkflowInvocation("code-review --concurrency --perf review src");
-  assert.equal(consumedOptionToken.options.concurrency, undefined);
-  assert.equal(consumedOptionToken.options.perf, undefined);
-  assert.equal(consumedOptionToken.args, "review src");
+  const followingFlag = parseWorkflowInvocation("code-review --concurrency --perf review src");
+  assert.equal(followingFlag.options.perf, true);
+  assert.equal(followingFlag.args, "review src");
+  assert.deepEqual(followingFlag.optionErrors, ["--concurrency requires an integer"]);
+
+  const invalidEquals = parseWorkflowInvocation("code-review --concurrency= --parallel-limit=2.5 review src");
+  assert.deepEqual(invalidEquals.options, {});
+  assert.deepEqual(invalidEquals.optionErrors, ["--concurrency requires an integer", "--parallel-limit requires an integer"]);
 });
 
 test("parseWorkflowInvocation rejects invalid budget flags without consuming positional args", () => {

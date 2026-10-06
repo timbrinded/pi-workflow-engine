@@ -56,9 +56,9 @@ export function resolveWorkflowRunOptions(
   input: WorkflowRunOptions = {},
   env: Record<string, string | undefined> = process.env,
 ): ResolvedWorkflowRunOptions {
-  const concurrency = clampInteger(input.concurrency ?? parseInteger(env.PI_WORKFLOW_CONCURRENCY), 1, 64, defaultConcurrency());
+  const concurrency = clampInteger(input.concurrency ?? parseWorkflowIntegerString(env.PI_WORKFLOW_CONCURRENCY), 1, 64, defaultConcurrency());
   const parallelSubmissionLimit = optionalClampedInteger(
-    input.parallelSubmissionLimit ?? parseInteger(env.PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT),
+    input.parallelSubmissionLimit ?? parseWorkflowIntegerString(env.PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT),
     1,
     10_000,
   );
@@ -129,12 +129,6 @@ function clampInteger(value: number | undefined, min: number, max: number, fallb
   return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
-function parseInteger(value: string | undefined): number | undefined {
-  if (value === undefined || value.trim() === "") return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
-}
-
 export function parseWorkflowIntegerString(value: string | undefined): number | undefined {
   if (value === undefined || value.trim() === "") return undefined;
   const parsed = Number(value);
@@ -143,7 +137,7 @@ export function parseWorkflowIntegerString(value: string | undefined): number | 
 
 function resolveBudget(inputBudget: number | undefined, envBudget: string | undefined): number | undefined {
   if (inputBudget !== undefined) return normalizeExplicitBudget(inputBudget);
-  return envBudget === undefined ? undefined : parseWorkflowBudgetString(envBudget);
+  return parseWorkflowBudgetString(envBudget);
 }
 
 function normalizeExplicitBudget(value: number): number {
@@ -153,8 +147,8 @@ function normalizeExplicitBudget(value: number): number {
   return value;
 }
 
-export function parseWorkflowBudgetString(value: string): number | undefined {
-  const trimmed = value.trim();
+export function parseWorkflowBudgetString(value: string | undefined): number | undefined {
+  const trimmed = value?.trim() ?? "";
   if (!/^\d+$/.test(trimmed)) return undefined;
   const parsed = Number(trimmed);
   if (!Number.isSafeInteger(parsed) || parsed < WORKFLOW_BUDGET_MIN || parsed > WORKFLOW_BUDGET_MAX) return undefined;

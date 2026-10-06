@@ -283,21 +283,30 @@ export function parseWorkflowInvocation(input: string): WorkflowInvocation {
   const space = trimmed.indexOf(" ");
   const name = space === -1 ? trimmed : trimmed.slice(0, space);
   const rest = space === -1 ? "" : trimmed.slice(space + 1).trim();
-  const { args, options, refreshDiscovery, optionErrors } = parseWorkflowOptions(rest);
-  const invocation: WorkflowInvocation = { name, args, options };
-  if (refreshDiscovery) invocation.refreshDiscovery = refreshDiscovery;
-  if (optionErrors) invocation.optionErrors = optionErrors;
-  return invocation;
+  return { name, ...parseWorkflowOptions(rest) };
 }
 
-const INVALID_BUDGET_OPTION = "--budget requires a positive integer output-token count";
 const INVALID_RESUME_OPTION = "--resume requires a workflow run id";
-const INVALID_MAX_AGENTS_OPTION = "--max-agents requires an integer";
-const INVALID_AGENT_TIMEOUT_OPTION = "--agent-timeout-ms requires an integer";
-const INVALID_AGENT_RETRIES_OPTION = "--agent-retries requires an integer";
 const INVALID_EDITED_RESUME_OPTION = "--resume-edited requires --resume <run-id>";
 
-function parseWorkflowOptions(input: string): { args: string; options: WorkflowRunOptions; refreshDiscovery?: boolean; optionErrors?: string[] } {
+interface NumericOptionFlag {
+  readonly flag: string;
+  readonly key: "concurrency" | "parallelSubmissionLimit" | "maxAgents" | "agentTimeoutMs" | "agentRetries" | "budget";
+  readonly parse: (value: string | undefined) => number | undefined;
+  readonly error: string;
+}
+
+/** `--flag=N` or `--flag N`; the next token is consumed only when it parses, so a following flag or argument survives. */
+const NUMERIC_OPTION_FLAGS: readonly NumericOptionFlag[] = [
+  { flag: "--concurrency", key: "concurrency", parse: parseWorkflowIntegerString, error: "--concurrency requires an integer" },
+  { flag: "--parallel-limit", key: "parallelSubmissionLimit", parse: parseWorkflowIntegerString, error: "--parallel-limit requires an integer" },
+  { flag: "--max-agents", key: "maxAgents", parse: parseWorkflowIntegerString, error: "--max-agents requires an integer" },
+  { flag: "--agent-timeout-ms", key: "agentTimeoutMs", parse: parseWorkflowIntegerString, error: "--agent-timeout-ms requires an integer" },
+  { flag: "--agent-retries", key: "agentRetries", parse: parseWorkflowIntegerString, error: "--agent-retries requires an integer" },
+  { flag: "--budget", key: "budget", parse: parseWorkflowBudgetString, error: "--budget requires a positive integer output-token count" },
+];
+
+function parseWorkflowOptions(input: string): Omit<WorkflowInvocation, "name" | "authorBrief"> {
   const tokens = input.split(/\s+/).filter(Boolean);
   const kept: string[] = [];
   const options: WorkflowRunOptions = {};
@@ -329,88 +338,15 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
       options.resultViewer = "skip";
       continue;
     }
-    if (token.startsWith("--concurrency=")) {
-      options.concurrency = parseNumericOption(token.slice("--concurrency=".length));
-      continue;
-    }
-    if (token === "--concurrency") {
-      const next = tokens[i + 1];
-      options.concurrency = parseNumericOption(next);
-      if (next !== undefined) i++;
-      continue;
-    }
-    if (token.startsWith("--parallel-limit=")) {
-      options.parallelSubmissionLimit = parseNumericOption(token.slice("--parallel-limit=".length));
-      continue;
-    }
-    if (token === "--parallel-limit") {
-      const next = tokens[i + 1];
-      options.parallelSubmissionLimit = parseNumericOption(next);
-      if (next !== undefined) i++;
-      continue;
-    }
-    if (token.startsWith("--max-agents=")) {
-      const parsed = parseWorkflowIntegerString(token.slice("--max-agents=".length));
-      if (parsed === undefined) optionErrors.push(INVALID_MAX_AGENTS_OPTION);
-      else options.maxAgents = parsed;
-      continue;
-    }
-    if (token === "--max-agents") {
-      const next = tokens[i + 1];
-      const parsed = parseWorkflowIntegerString(next);
-      if (parsed === undefined) optionErrors.push(INVALID_MAX_AGENTS_OPTION);
-      else {
-        options.maxAgents = parsed;
-        i++;
-      }
-      continue;
-    }
-    if (token.startsWith("--agent-timeout-ms=")) {
-      const parsed = parseWorkflowIntegerString(token.slice("--agent-timeout-ms=".length));
-      if (parsed === undefined) optionErrors.push(INVALID_AGENT_TIMEOUT_OPTION);
-      else options.agentTimeoutMs = parsed;
-      continue;
-    }
-    if (token === "--agent-timeout-ms") {
-      const next = tokens[i + 1];
-      const parsed = parseWorkflowIntegerString(next);
-      if (parsed === undefined) optionErrors.push(INVALID_AGENT_TIMEOUT_OPTION);
-      else {
-        options.agentTimeoutMs = parsed;
-        i++;
-      }
-      continue;
-    }
-    if (token.startsWith("--agent-retries=")) {
-      const parsed = parseWorkflowIntegerString(token.slice("--agent-retries=".length));
-      if (parsed === undefined) optionErrors.push(INVALID_AGENT_RETRIES_OPTION);
-      else options.agentRetries = parsed;
-      continue;
-    }
-    if (token === "--agent-retries") {
-      const next = tokens[i + 1];
-      const parsed = parseWorkflowIntegerString(next);
-      if (parsed === undefined) optionErrors.push(INVALID_AGENT_RETRIES_OPTION);
-      else {
-        options.agentRetries = parsed;
-        i++;
-      }
-      continue;
-    }
-    if (token.startsWith("--budget=")) {
-      const parsed = parseBudgetOption(token.slice("--budget=".length));
-      if (parsed === undefined) optionErrors.push(INVALID_BUDGET_OPTION);
-      else options.budget = parsed;
-      continue;
-    }
-    if (token === "--budget") {
-      const next = tokens[i + 1];
-      const parsed = next === undefined ? undefined : parseBudgetOption(next);
+    const numeric = NUMERIC_OPTION_FLAGS.find(({ flag }) => token === flag || token.startsWith(`${flag}=`));
+    if (numeric) {
+      const inline = token !== numeric.flag;
+      const parsed = numeric.parse(inline ? token.slice(numeric.flag.length + 1) : tokens[i + 1]);
       if (parsed === undefined) {
-        optionErrors.push(INVALID_BUDGET_OPTION);
+        optionErrors.push(numeric.error);
       } else {
-        options.budget = parsed;
-        i++;
+        options[numeric.key] = parsed;
+        if (!inline) i++;
       }
       continue;
     }
@@ -433,17 +369,12 @@ function parseWorkflowOptions(input: string): { args: string; options: WorkflowR
     kept.push(token);
   }
   if (options.resumeEditedWorkflow && !options.resumeFromRunId) optionErrors.push(INVALID_EDITED_RESUME_OPTION);
-  return { args: kept.join(" ").trim(), options, refreshDiscovery: refreshDiscovery || undefined, optionErrors: optionErrors.length > 0 ? optionErrors : undefined };
-}
-
-function parseBudgetOption(value: string): number | undefined {
-  return parseWorkflowBudgetString(value);
-}
-
-function parseNumericOption(value: string | undefined): number | undefined {
-  if (value === undefined) return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  return {
+    args: kept.join(" ").trim(),
+    options,
+    ...(refreshDiscovery ? { refreshDiscovery } : {}),
+    ...(optionErrors.length > 0 ? { optionErrors } : {}),
+  };
 }
 
 function compactInlinePreview(script: string | undefined): string {
