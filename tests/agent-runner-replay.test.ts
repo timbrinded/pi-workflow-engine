@@ -159,6 +159,7 @@ test("tool-free structured agents can replay without fingerprinting the workspac
             description: finalTool.description,
             parameters: finalTool.parameters,
             promptGuidelines: finalTool.promptGuidelines ?? [],
+            exposure: "direct",
             sourceInfo: { path: "<sdk:final_answer>", source: "sdk", scope: "temporary", origin: "top-level" },
           }];
         },
@@ -230,6 +231,7 @@ test("a structured agent that needed a schema re-prompt is still journaled", asy
       description: finalTool.description,
       parameters: finalTool.parameters,
       promptGuidelines: [],
+      exposure: "direct" as const,
       sourceInfo: { path: "<sdk:final_answer>", source: "sdk", scope: "temporary", origin: "top-level" } as const,
     };
     // Like pi, the active tool set drives the effective system prompt.

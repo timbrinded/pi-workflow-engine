@@ -269,6 +269,7 @@ export const TEST_TOOL: ToolInfo = {
   description: TEST_TOOL_DEFINITION.description,
   parameters: TEST_TOOL_DEFINITION.parameters,
   promptGuidelines: [],
+  exposure: "direct",
   sourceInfo: { path: "builtin:read", source: "builtin", scope: "temporary", origin: "top-level" },
 };
 
@@ -287,6 +288,7 @@ export function createToolInfo(
     description,
     parameters: TEST_TOOL_PARAMETERS,
     promptGuidelines: [],
+    exposure: "direct",
     sourceInfo,
   };
 }

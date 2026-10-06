@@ -179,7 +179,8 @@ test("production session services load skills, tools, and host runtime providers
     assert.equal(hostRegistry.getProviderAuthStatus("stored-only").source, "stored");
     const model = hostRegistry.find("runtime-only", "runtime-only-model");
     const storedModel = hostRegistry.find("stored-only", "stored-only-model");
-    const oauthModel = hostRegistry.find("openai-codex", "gpt-5.4");
+    // Any catalog model of the OAuth provider works; pinning one id breaks when pi retires it.
+    const oauthModel = hostRegistry.getAll().find((candidate) => candidate.provider === "openai-codex");
     assert.ok(model);
     assert.ok(storedModel);
     assert.ok(oauthModel);

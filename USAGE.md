@@ -2,7 +2,7 @@
 
 `pi-workflow-engine` adds zero-dependency Dynamax workflows to pi: opt into live, parallel subagents for the tasks that need a custom investigation instead of one long prompt. Most users only need these surfaces:
 
-This release requires **pi 0.80.10 or newer**. pi remains host-provided rather
+This release requires **pi 1.0.0 or newer**. pi remains host-provided rather
 than bundled by this package, and the extension rejects older runtimes at load
 time with an update message.
 
@@ -160,7 +160,7 @@ The default effect is `shine`. Set `PI_DYNAMAX_EFFECT=static` for a motionless
 cue or `PI_DYNAMAX_EFFECT=off` to disable it. A non-empty `NO_COLOR` also
 disables the default cue; an explicit `PI_DYNAMAX_EFFECT` value takes precedence.
 
-The implementation follows pi 0.80.10's [official `CustomEditor`
+The implementation follows pi's [official `CustomEditor`
 pattern](https://pi.dev/docs/latest/extensions#custom-editor): it decorates only
 the editor's rendered lines, retaining the wrapped editor's input, cursor,
 deletion, paste, multiline, undo, completion, IME, and app-keybinding behavior.
