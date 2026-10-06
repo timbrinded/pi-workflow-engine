@@ -172,7 +172,7 @@ async function resolvePullRequestBaseline(
   signal: AbortSignal | undefined,
 ): Promise<WorktreeBaseline> {
   const number = String(target.number);
-  const viewed = await runReviewCommand("gh", ["pr", "view", number, "--json", "headRefOid,headRefName,headRepository"], cwd, signal);
+  const viewed = await runReviewCommand("gh", ["pr", "view", number, "--json", "headRefOid,headRefName,headRepository,url"], cwd, signal);
   const details = viewed.ok ? parsePullRequestHead(viewed.stdout) : undefined;
   if (!details) {
     throw new Error(`pull request head could not be resolved: ${viewed.error ?? (viewed.stderr.trim() || "invalid head commit")}`);
@@ -181,7 +181,7 @@ async function resolvePullRequestBaseline(
   if (!(await commitExists(details.head, cwd, signal))) {
     const fetched = await runReviewCommand(
       "git",
-      ["fetch", "--no-tags", "--quiet", `https://github.com/${details.repository}.git`, details.branch],
+      ["fetch", "--no-tags", "--quiet", `${details.origin}/${details.repository}.git`, details.branch],
       cwd,
       signal,
     );
@@ -194,7 +194,9 @@ async function resolvePullRequestBaseline(
   return { ref: details.head };
 }
 
-function parsePullRequestHead(value: string): { readonly head: string; readonly branch: string; readonly repository: string } | undefined {
+function parsePullRequestHead(
+  value: string,
+): { readonly head: string; readonly branch: string; readonly repository: string; readonly origin: string } | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -206,12 +208,21 @@ function parsePullRequestHead(value: string): { readonly head: string; readonly 
     readonly headRefOid?: unknown;
     readonly headRefName?: unknown;
     readonly headRepository?: { readonly nameWithOwner?: unknown } | null;
+    readonly url?: unknown;
   };
   if (typeof candidate.headRefOid !== "string" || !isGitObjectId(candidate.headRefOid)) return undefined;
   if (typeof candidate.headRefName !== "string" || candidate.headRefName.length === 0 || candidate.headRefName.includes("\0")) return undefined;
   const repository = candidate.headRepository?.nameWithOwner;
   if (typeof repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return undefined;
-  return { head: candidate.headRefOid, branch: candidate.headRefName, repository };
+  // The PR URL carries the host gh resolved the PR on, which is not github.com for GitHub Enterprise.
+  const origin = httpOrigin(candidate.url);
+  return origin ? { head: candidate.headRefOid, branch: candidate.headRefName, repository, origin } : undefined;
+}
+
+function httpOrigin(value: unknown): string | undefined {
+  if (typeof value !== "string" || !URL.canParse(value)) return undefined;
+  const url = new URL(value);
+  return url.protocol === "https:" || url.protocol === "http:" ? url.origin : undefined;
 }
 
 async function resolveGitDiffBaseline(
