@@ -30,6 +30,7 @@ import {
 import { ProjectWorkflowRunStore, type WorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
 import { WorkflowRunsBrowser } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-runs-browser.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
+import { WORKFLOW_INSPECTOR_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import type { WorkflowUsageLimitSchedulerClock } from "../.pi/extensions/pi-workflow-engine/src/workflow-usage-limit-scheduler.ts";
 import { createTestTheme, plain } from "./fixtures/theme.ts";
 
@@ -323,19 +324,20 @@ test("TUI workflow runs open the runs browser and return to it on the same run a
         factory: (tui: TUI, theme: Theme, keybindings: never, done: (value: T) => void) => Component,
         options?: unknown,
       ): Promise<T> => {
-        assert.deepEqual(options, WORKFLOW_VIEWER_OVERLAY_OPTIONS);
         let result: T | undefined;
         const tui = { requestRender() {}, terminal: { rows: 40, columns: 120 } } as unknown as TUI;
         const component = factory(tui, createTestTheme(), undefined as never, (value) => {
           result = value;
         });
         if (component instanceof WorkflowRunsBrowser) {
+          assert.deepEqual(options, WORKFLOW_VIEWER_OVERLAY_OPTIONS);
           opened.push("browser");
           const first = opened.length === 1;
           if (first) component.handleInput("\u001b[B");
           cursorRows.push(component.render(100).map(plain).find((line) => line.startsWith("│ ›")) ?? "");
           component.handleInput(first ? "\r" : "q");
         } else {
+          assert.deepEqual(options, WORKFLOW_INSPECTOR_OVERLAY_OPTIONS);
           opened.push("inspector");
           component.handleInput?.("q");
         }
