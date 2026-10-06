@@ -296,3 +296,22 @@ test("workflow usage converts to pi's Usage so the session cost includes subagen
     cost: { input: 0.1, output: 0.2, cacheRead: 0.03, cacheWrite: 0.04, total: 0.37 },
   });
 });
+
+test("tool results that report usage, such as codemode classifier calls, count toward the agent", () => {
+  const recorder = createWorkflowUsageRecorder();
+
+  recorder.recordAgentSession({
+    label: "scripted",
+    messages: [
+      assistantUsage({ input: 100, output: 10, costTotal: 0.01 }),
+      { role: "toolResult", content: [], usage: { input: 40, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 42, cost: { input: 0.004, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.005 } } },
+      { role: "toolResult", content: [] },
+    ],
+  });
+
+  const agent = recorder.snapshot().agents[0];
+  assert.equal(agent?.assistantMessages, 1);
+  assert.equal(agent?.usage.input, 140);
+  assert.equal(agent?.usage.output, 12);
+  assert.ok(Math.abs((agent?.usage.cost.total ?? 0) - 0.015) < 1e-9);
+});

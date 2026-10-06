@@ -2,9 +2,11 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
   createAgentSessionFromServices,
   createAgentSessionServices,
+  createCodemodeExtension,
   defineTool,
   SessionManager,
   type CreateAgentSessionOptions,
+  type CreateAgentSessionServicesOptions,
   type ModelRegistry,
   type Skill,
   type ToolDefinition,
@@ -23,11 +25,14 @@ import {
 } from "./structured-output.ts";
 import { providerErrorFromMessages } from "./agent-retry.ts";
 import { synchronizeWorkflowModelRuntime } from "./agent-session-providers.ts";
+import { hostToolProxy, isMcpToolName, type HostToolBridge } from "./host-tools.ts";
 import { matchesAgentToolHint, WorkflowToolHintUnavailableError } from "./tool-capabilities.ts";
 import { truncateText } from "./text.ts";
 import { WORKFLOW_TOOL_NAME, type AgentToolHint } from "./types.ts";
 
 export const FINAL_TOOL = "final_answer";
+/** pi's codemode tool; SDK sessions only have it when their resource loader registers the extension. */
+export const CODEMODE_TOOL = "codemode";
 
 const SCHEMA_REPROMPT =
   `You ended your turn without calling the ${FINAL_TOOL} tool, so no result was recorded. ` +
@@ -76,6 +81,8 @@ export async function openAgentSession(input: {
           description:
             "Return your final structured answer. This MUST be your last action — do not write a normal reply after calling it.",
           parameters: opts.schema,
+          // The agent's own terminal action: a codemode script must not answer on its behalf.
+          exposure: "model-only",
           async execute(_toolCallId, params) {
             captured = true;
             structuredResult = params;
@@ -84,6 +91,7 @@ export async function openAgentSession(input: {
         }),
       ]
     : [];
+  customTools.push(...requestedHostTools(opts, rc.hostTools, (message) => rc.progress.log(`${label}: ${message}`)));
   let session: AgentRunnerSession | undefined;
   try {
     throwIfAborted(rc.signal);
@@ -262,7 +270,7 @@ async function prepareAgentSessionResources(input: {
   const preparedSkills = prepareAgentSkillResources(skillOptions);
   const services = await createAgentSessionServices({
     cwd,
-    resourceLoaderOptions: preparedSkills.resourceLoaderOptions,
+    resourceLoaderOptions: { ...preparedSkills.resourceLoaderOptions, ...codemodeExtension(opts) },
   });
   await synchronizeWorkflowModelRuntime({
     host: rc.modelRegistry,
@@ -287,6 +295,44 @@ async function prepareAgentSessionResources(input: {
         ...commonSessionOptions(sessionOptions),
       }),
   };
+}
+
+/**
+ * SDK sessions load none of pi's built-in extensions, so codemode is registered only for agents whose
+ * allowlist names it. Scripts can call just the agent's other allowed tools. Mode "on" keeps those
+ * tools declared whatever the user's `codemode.mode`, so the author's allowlist stays what the model sees.
+ */
+function codemodeExtension(opts: AgentExecutionOptions): Pick<SessionResourceLoaderOptions, "extensionFactories"> {
+  if (!opts.tools?.includes(CODEMODE_TOOL)) return {};
+  return { extensionFactories: [{ name: CODEMODE_TOOL, factory: createCodemodeExtension({ mode: "on" }), replaceable: true }] };
+}
+
+type SessionResourceLoaderOptions = NonNullable<CreateAgentSessionServicesOptions["resourceLoaderOptions"]>;
+
+/**
+ * Proxies for the host MCP tools this agent asked for: those named in its allowlist, and open-world
+ * research tools when it hints `external-search`. Local `search` hints never bridge, because host tools
+ * run in the host session's working directory, not the agent's (an isolated worktree, for example).
+ */
+function requestedHostTools(
+  opts: AgentExecutionOptions,
+  bridge: HostToolBridge | undefined,
+  log: (message: string) => void,
+): ToolDefinition[] {
+  const named = new Set((opts.tools ?? []).filter(isMcpToolName));
+  const externalSearch = opts.toolHints?.includes("external-search") ?? false;
+  if (named.size === 0 && !externalSearch) return [];
+  const available = bridge?.tools() ?? [];
+  const selected = available.filter((tool) => named.has(tool.name) || (externalSearch && matchesAgentToolHint(tool, "external-search")));
+  const missing = [...named].filter((name) => !selected.some((tool) => tool.name === name));
+  if (missing.length > 0) {
+    log(
+      bridge
+        ? `host MCP tool${missing.length === 1 ? "" : "s"} not available: ${missing.join(", ")}`
+        : `MCP tools reach subagents only in runs started by the workflow tool; unavailable: ${missing.join(", ")}`,
+    );
+  }
+  return bridge ? selected.map((tool) => hostToolProxy(tool, bridge)) : [];
 }
 
 function linkSessionAbort(signal: AbortSignal | undefined, session: AgentRunnerSession): () => void {

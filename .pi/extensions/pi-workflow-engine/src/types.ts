@@ -10,6 +10,7 @@ import type { WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "./progres
 import type { WorkflowUsageSnapshot } from "./usage.ts";
 import type { WorktreeBaseline } from "./worktree.ts";
 import type { WorkflowModelProfileName } from "./model-profiles.ts";
+import type { HostToolBridge } from "./host-tools.ts";
 import type { WorkflowRunState } from "./workflow-run-record.ts";
 
 export type { WorkflowLaneItemStatus } from "./progress-types.ts";
@@ -79,6 +80,8 @@ export interface WorkflowRunOptions {
   signal?: AbortSignal;
   /** Internal recorder override for command/tool invocation timing. */
   perfRecorder?: PerfSink;
+  /** Internal bridge to the host session's MCP tools, available while a `workflow` tool call runs. */
+  hostTools?: HostToolBridge;
   /** Resolve a sub-workflow reference to a module, enabling `api.workflow()`. When omitted, `api.workflow()` throws. */
   resolveWorkflow?: (ref: WorkflowRef) => Promise<LoadedWorkflow>;
   /** Called with the final performance snapshot when perf is enabled. */

@@ -177,6 +177,7 @@ export async function runResolvedWorkflow(
       budget,
       journal,
       worktrees,
+      hostTools: resolvedOptions.hostTools,
     };
 
     // perf.total_ms wraps the whole tree: sub-workflows run inside this span via api.workflow().

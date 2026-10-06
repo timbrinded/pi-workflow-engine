@@ -14,6 +14,7 @@ import { Type } from "typebox";
 import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/agent-limits.ts";
 import { defaultAgentRetryScheduler } from "../.pi/extensions/pi-workflow-engine/src/agent-retry.ts";
 import {
+  CODEMODE_TOOL,
   FINAL_TOOL,
   openAgentSession,
 } from "../.pi/extensions/pi-workflow-engine/src/agent-session.ts";
@@ -232,6 +233,20 @@ test("production session services load skills, tools, and host runtime providers
     assert.ok(session.getActiveToolNames().includes(FINAL_TOOL));
     assert.ok(session.getToolDefinition("read"));
     assert.ok(session.getToolDefinition(FINAL_TOOL));
+    // SDK sessions load no built-ins: codemode exists only for agents that allowlist it.
+    assert.equal(session.getAllTools().some((tool) => tool.name === CODEMODE_TOOL), false);
+    const scripted = await openAgentSession({
+      rc,
+      prompt: "Batch the reads.",
+      opts: { label: "codemode-session", tools: ["read", CODEMODE_TOOL], schema: Type.Object({ ok: Type.Boolean() }) },
+      cwd,
+      model,
+      label: "codemode-session",
+    });
+    sessions.push(scripted.session);
+    assert.deepEqual([...scripted.session.getActiveToolNames()].sort(), [CODEMODE_TOOL, FINAL_TOOL, "read"]);
+    // The agent answers itself; a script cannot call final_answer on its behalf.
+    assert.equal(scripted.session.getAllTools().find((tool) => tool.name === FINAL_TOOL)?.exposure, "model-only");
     assert.ok("modelRuntime" in session);
     assert.ok(session.modelRuntime instanceof ModelRuntime);
     const childProvider = session.modelRuntime.getRegisteredProviderConfig("runtime-only");

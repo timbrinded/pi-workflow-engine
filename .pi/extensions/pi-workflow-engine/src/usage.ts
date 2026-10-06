@@ -82,9 +82,14 @@ export class WorkflowUsageRecorder implements WorkflowUsageSink {
       const parsed = parseAssistantUsageMessage(message);
       return parsed ? [parsed] : [];
     });
-    if (assistantMessages.length === 0) return;
+    // Tools that call models themselves, such as codemode running a classifier, report it on their result.
+    const toolUsage = input.messages.flatMap((message) => {
+      const parsed = parseToolResultUsage(message);
+      return parsed ? [parsed] : [];
+    });
+    if (assistantMessages.length === 0 && toolUsage.length === 0) return;
 
-    const usage = sumTotals(assistantMessages.map((message) => message.usage));
+    const usage = sumTotals([...assistantMessages.map((message) => message.usage), ...toolUsage]);
     const latestMetadata = assistantMessages.findLast((message) => message.provider !== undefined || message.model !== undefined);
     this.agents.push({
       label: input.label,
@@ -223,6 +228,11 @@ function parseAssistantUsageMessage(message: unknown): AssistantUsageMessage | u
     model: typeof message.model === "string" ? message.model : undefined,
     usage,
   };
+}
+
+function parseToolResultUsage(message: unknown): WorkflowUsageTotals | undefined {
+  if (!isRecord(message) || message.role !== "toolResult") return undefined;
+  return parseUsageTotals(message.usage);
 }
 
 function parseUsageTotals(value: unknown): WorkflowUsageTotals | undefined {

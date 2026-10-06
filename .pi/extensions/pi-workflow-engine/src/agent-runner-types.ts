@@ -8,6 +8,7 @@ import type { WorkflowBudget } from "./budget.ts";
 import type { Semaphore } from "./concurrency.ts";
 import type { WorkflowAgentLimiter } from "./agent-limits.ts";
 import type { AgentRetryScheduler } from "./agent-retry.ts";
+import type { HostToolBridge } from "./host-tools.ts";
 import type { ResolvedWorkflowModelProfiles } from "./model-profiles.ts";
 import type { WorkflowJournal } from "./journal.ts";
 import type { PerfSink } from "./perf.ts";
@@ -63,6 +64,8 @@ interface RunContextBase {
   budget: WorkflowBudget;
   journal: WorkflowJournal;
   worktrees: WorktreeRegistry;
+  /** Host MCP tools subagents may call; set only for a synchronous `workflow` tool run. */
+  hostTools?: HostToolBridge;
 }
 
 /** Shared per-run context threaded into every agent() call. */

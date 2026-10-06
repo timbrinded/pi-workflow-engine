@@ -41,6 +41,7 @@ import { completeCurrentArgument, splitArgumentPrefix } from "./src/command-comp
 import { assertSupportedPiVersion } from "./src/pi-compat.ts";
 import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/workflow-format.ts";
 import { workflowUsageForPi } from "./src/usage.ts";
+import { createHostToolBridge } from "./src/host-tools.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -500,6 +501,8 @@ function registerWorkflowTool(
       "Always pass a plain string as the first `api.agent()` argument; build prompts with template strings before calling agent().",
       "When using `isolation: \"worktree\"`, `api.agent()` returns `{ result, patch, changed }`; use `.result` for the answer and `.patch` for the isolated diff.",
       "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
+      "Add \"codemode\" to an inline agent's `tools` when it should batch or filter many tool calls in one script; its scripts can call only that agent's other allowed tools.",
+      "Host MCP tools reach subagents only in synchronous workflow tool runs: name them in `tools` (e.g. `mcp__server__tool`), or use `toolHints: [\"external-search\"]` to pick up MCP web research tools.",
       "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
       ADAPTIVE_WORKFLOW_GUIDANCE,
       "Set background: true only when the user explicitly wants the workflow to continue after this tool call; the tool returns a durable run ID and completion is delivered later.",
@@ -643,7 +646,9 @@ function registerWorkflowTool(
       }
       // Marks the tool row as running (rendered `● running <name>`) until the envelope replaces it.
       onUpdate?.({ content: [{ type: "text", text: `Running workflow ${resultName}.` }], details: { state: "running", name: resultName } });
-      const envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
+      // Only this synchronous path may bridge host MCP tools: executeTool ends with the tool call.
+      const hostTools = createHostToolBridge(() => pi.getAllTools(), ctx);
+      const envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, { ...runOptions, hostTools }, perfRecorder);
       reviewSessions.remember(ctx, envelope, runOptions);
       return {
         content: [{ type: "text", text: formatWorkflowResultForContext(envelope) }],
