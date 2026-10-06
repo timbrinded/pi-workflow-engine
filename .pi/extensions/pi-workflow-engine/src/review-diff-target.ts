@@ -126,12 +126,5 @@ export function reviewGitDiffBaseline(target: GitReviewDiffTarget): GitDiffBasel
 export function isReviewDiffTarget(value: unknown): value is ReviewDiffTarget {
   if (!Value.Check(ReviewDiffTargetSchema, value)) return false;
   const parsed = parseAllowedDiffCommand(formatReviewDiffTarget(value));
-  return !("error" in parsed) && sameReviewDiffTarget(parsed, value);
-}
-
-function sameReviewDiffTarget(left: ReviewDiffTarget, right: ReviewDiffTarget): boolean {
-  if (left.kind !== right.kind) return false;
-  if (left.kind === "pull-request") return right.kind === "pull-request" && left.number === right.number;
-  if (right.kind !== "git" || left.args.length !== right.args.length) return false;
-  return left.args.every((arg, index) => arg === right.args[index]);
+  return !("error" in parsed) && Value.Equal(parsed, value);
 }

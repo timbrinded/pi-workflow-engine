@@ -27,13 +27,9 @@ export type ReviewSnapshotIdentity = Static<typeof ReviewSnapshotIdentitySchema>
 export type ReviewContext = Static<typeof ReviewContextSchema>;
 export type ReviewReport = Static<typeof ReviewReportSchema>;
 
+/** The schema check covers the nested context; the diff target also has to round-trip through the allowlist parser. */
 export function isReviewReport(value: unknown): value is ReviewReport {
-  if (!Value.Check(ReviewReportSchema, value)) return false;
-  return value.reviewContext === undefined || isReviewContext(value.reviewContext);
-}
-
-export function isReviewContext(value: unknown): value is ReviewContext {
-  return Value.Check(ReviewContextSchema, value) && isReviewDiffTarget(value.diffTarget);
+  return Value.Check(ReviewReportSchema, value) && (value.reviewContext === undefined || isReviewDiffTarget(value.reviewContext.diffTarget));
 }
 
 /** Prompt-facing context retains the canonical display command without persisting duplicate identity. */
