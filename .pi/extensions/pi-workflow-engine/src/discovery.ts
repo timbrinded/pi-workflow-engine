@@ -29,12 +29,15 @@ async function loadDir(
   } catch {
     return [];
   }
+  const candidates = entries.filter(
+    (name) => !excludeFiles.has(name) && name.endsWith(".ts") && !name.startsWith("_") && !name.startsWith("."),
+  );
+  // The shipped workflows/ dir holds only excluded built-ins; skip the tree hash when nothing will be imported.
+  if (candidates.length === 0) return [];
 
   const before = provenanceRoot ? await captureSourceTreeFingerprint(provenanceRoot) : undefined;
   const modules: Array<{ readonly path: string; readonly module: Parameters<typeof loadWorkflow>[0] }> = [];
-  for (const name of entries) {
-    if (excludeFiles.has(name)) continue;
-    if (!name.endsWith(".ts") || name.startsWith("_") || name.startsWith(".")) continue;
+  for (const name of candidates) {
     try {
       const path = join(dir, name);
       const importUrl = pathToFileURL(path);
