@@ -213,7 +213,7 @@ test("RPC command and inspector surfaces use native selection and text instead o
   await command.handler("", ctx);
   assert.equal(selectCalls, 1);
   assert.equal(customCalls, 0);
-  assert.match(notifications.at(-1) ?? "", /Usage: \/workflow/);
+  assert.deepEqual(notifications, [], "dismissing the picker is a cancel, not a usage error");
 
   const inspection = {
     name: "rpc-inspection",
@@ -660,7 +660,7 @@ test("the picker's authored temporary workflow activates Dynamax for the run it 
       armedBeforeIdle = { status: statuses.get("dynamax"), sent: extension.sentUserMessages.length };
     },
     ui: {
-      select: async (_title: string, options: readonly string[]) => options.find((option) => option.startsWith("Author temporary")),
+      select: async (_title: string, options: readonly string[]) => options.find((option) => option.startsWith("+ author a one-off workflow")),
       editor: async () => "inspect src and summarize risks",
       notify: () => {},
       setStatus: (key: string, value: string | undefined) => statuses.set(key, value),

@@ -244,8 +244,8 @@ test("pickWorkflow cancels when the code-review target prompt is dismissed", asy
     hasUI: true,
     mode: "tui",
     ui: {
-      async select() {
-        return "code-review — Review code";
+      async custom() {
+        return "code-review";
       },
       async input() {
         return undefined;
@@ -256,7 +256,7 @@ test("pickWorkflow cancels when the code-review target prompt is dismissed", asy
   assert.equal(await pickWorkflow(workflows, ctx), undefined);
 });
 
-test("pickWorkflow maps Pi's native selection label back to the workflow name", async () => {
+test("pickWorkflow maps Pi's native selection label back to the workflow name outside the TUI", async () => {
   let offered: readonly string[] = [];
   const workflows = new Map<string, WorkflowModule>([
     [
@@ -273,7 +273,7 @@ test("pickWorkflow maps Pi's native selection label back to the workflow name", 
   ]);
   const ctx = {
     hasUI: true,
-    mode: "tui",
+    mode: "rpc",
     ui: {
       async select(_title: string, options: readonly string[]) {
         offered = options;

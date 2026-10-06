@@ -1,10 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import { keyText, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import { getSelectListTheme, keyText, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem, SelectItem } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import { WORKFLOW_TOOL_NAME, type LoadedWorkflow, type WorkflowModule, type WorkflowProgressSource, type WorkflowRef } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
+import { WorkflowPicker } from "./src/ui/workflow-picker.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./src/ui/workflow-viewer-layout.ts";
 import type { PerfSink } from "./src/perf.ts";
 import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
@@ -80,7 +81,7 @@ export async function resolveWorkflowRef(ref: WorkflowRef, perf?: PerfSink): Pro
 }
 
 const AUTHOR_TEMP_WORKFLOW_VALUE = "__author-temporary-workflow__";
-const AUTHOR_TEMP_WORKFLOW_LABEL = "Author temporary one-shot workflow";
+const AUTHOR_TEMP_WORKFLOW_LABEL = "+ author a one-off workflow";
 const AUTHOR_TEMP_WORKFLOW_DESCRIPTION = "Ask the host agent to author and run an inline workflow.";
 
 const WORKFLOW_OPTION_COMPLETIONS = [
@@ -115,21 +116,22 @@ async function workflowArgumentCompletions(argumentPrefix: string): Promise<Auto
   return completeCurrentArgument(argumentPrefix, WORKFLOW_OPTION_COMPLETIONS);
 }
 
+/** Registered workflows in discovery order (built-ins first), then the author option. */
 async function selectWorkflowValue(workflows: ReadonlyMap<string, WorkflowModule>, ctx: ExtensionCommandContext): Promise<string | undefined> {
+  const workflowItems: SelectItem[] = [...workflows.values()].map((workflow) => ({
+    value: workflow.meta.name,
+    label: workflow.meta.name,
+    description: workflow.meta.description,
+  }));
+  if (ctx.mode === "tui") {
+    const items = [...workflowItems, { value: AUTHOR_TEMP_WORKFLOW_VALUE, label: AUTHOR_TEMP_WORKFLOW_LABEL }];
+    return await ctx.ui.custom<string | undefined>((...[, theme, , done]) => new WorkflowPicker(items, theme, getSelectListTheme(), done));
+  }
   const choices = [
-    {
-      value: AUTHOR_TEMP_WORKFLOW_VALUE,
-      display: `${AUTHOR_TEMP_WORKFLOW_LABEL} — ${AUTHOR_TEMP_WORKFLOW_DESCRIPTION}`,
-    },
-    ...[...workflows.values()].map((workflow) => ({
-      value: workflow.meta.name,
-      display: `${workflow.meta.name} — ${workflow.meta.description}`,
-    })),
+    ...workflowItems.map((item) => ({ value: item.value, display: `${item.label} — ${item.description}` })),
+    { value: AUTHOR_TEMP_WORKFLOW_VALUE, display: `${AUTHOR_TEMP_WORKFLOW_LABEL} — ${AUTHOR_TEMP_WORKFLOW_DESCRIPTION}` },
   ];
-  const selected = await ctx.ui.select(
-    "Run workflow",
-    choices.map((choice) => choice.display),
-  );
+  const selected = await ctx.ui.select("Run a workflow", choices.map((choice) => choice.display));
   return choices.find((choice) => choice.display === selected)?.value;
 }
 
@@ -430,14 +432,15 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
       const { discoverWorkflows } = await loadDiscovery();
       const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: invocation.refreshDiscovery, perf: perfRecorder });
       const available = [...workflows.keys()].join(", ") || "(none)";
-      const selection: WorkflowPickerSelection | undefined = invocation.name
-        ? { kind: "run", name: invocation.name, args: invocation.args }
-        : ctx.hasUI ? await pickWorkflow(workflows, ctx) : undefined;
-
-      if (!selection) {
+      if (!invocation.name && !ctx.hasUI) {
         ctx.ui.notify(`Usage: /workflow <name> [args]. Available: ${available}`, "warning");
         return;
       }
+      const selection: WorkflowPickerSelection | undefined = invocation.name
+        ? { kind: "run", name: invocation.name, args: invocation.args }
+        : await pickWorkflow(workflows, ctx);
+      // Dismissing the picker or one of its follow-up prompts is a deliberate cancel, not a usage error.
+      if (!selection) return;
 
       if (selection.kind === "author") {
         // A send while the agent streams is rejected, which would leave the one-shot armed for an unrelated prompt.
