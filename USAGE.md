@@ -465,12 +465,12 @@ Guaranteed built-ins are statically registered:
 
 1. Add `.pi/extensions/pi-workflow-engine/workflows/<name>.ts`.
 2. Import it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`.
-3. Add it to `BUILTIN_WORKFLOWS`.
+3. Add a `defineBuiltinWorkflow(mod, "<name>.ts")` entry to `BUILTIN_WORKFLOW_DEFINITIONS`.
 
 Drop-in workflows are also discovered best-effort from:
 
-- `.pi/extensions/pi-workflow-engine/workflows/*.ts`
-- `~/.pi/agent/workflows/*.ts`
+- `~/.pi/agent/workflows/*.ts`: the user-level drop-in directory, which survives `pi update`.
+- The extension's own `workflows/*.ts` directory: `.pi/extensions/pi-workflow-engine/workflows/` in a working copy or a project-vendored copy. Files added to an installed package are replaced by `pi update`.
 
 Use `/workflow <name> --refresh` after adding a drop-in file.
 
