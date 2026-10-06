@@ -97,10 +97,8 @@ export class WorkflowUsageRecorder implements WorkflowUsageSink {
   }
 
   snapshot(): WorkflowUsageSnapshot {
-    const agents = this.agents.map((agent) => ({
-      ...agent,
-      usage: cloneTotals(agent.usage),
-    }));
+    // Recorded entries are never mutated; copying the array keeps each snapshot point-in-time.
+    const agents = [...this.agents];
     return {
       agents,
       totals: sumTotals(agents.map((agent) => agent.usage)),
