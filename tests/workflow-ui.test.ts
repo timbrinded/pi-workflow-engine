@@ -1,48 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { createTestTheme } from "./fixtures/theme.ts";
 import { agentDetailParts, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
 import { formatCount } from "../.pi/extensions/pi-workflow-engine/src/text.ts";
-import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import {
   centerWorkflowViewerViewport,
   fitWorkflowViewerRow,
 } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
 import { isAdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
-import { renderWorkflowWidgetLines } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
-import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
-
-const usageSnapshot: WorkflowUsageSnapshot = {
-  agents: [
-    {
-      label: "finder",
-      phase: "Find",
-      provider: "anthropic",
-      model: "claude-test",
-      assistantMessages: 1,
-      usage: {
-        input: 12345,
-        output: 1800,
-        cacheRead: 40000,
-        cacheWrite: 5000,
-        totalTokens: 59145,
-        coverage: { input: "complete", output: "complete", cacheRead: "complete", cacheWrite: "complete" },
-        cost: { input: 0.01, output: 0.1, cacheRead: 0.003, cacheWrite: 0.01, total: 0.123 },
-      },
-    },
-  ],
-  totals: {
-    input: 12345,
-    output: 1800,
-    cacheRead: 40000,
-    cacheWrite: 5000,
-    totalTokens: 59145,
-    coverage: { input: "complete", output: "complete", cacheRead: "complete", cacheWrite: "complete" },
-    cost: { input: 0.01, output: 0.1, cacheRead: 0.003, cacheWrite: 0.01, total: 0.123 },
-  },
-  assistantMessages: 1,
-};
 
 test("workflow formatting helpers format durations, counts, agents, and truncation", () => {
   assert.equal(formatDuration(0), "0s");
@@ -72,60 +37,6 @@ test("workflow formatting helpers format durations, counts, agents, and truncati
 
   const viewport = centerWorkflowViewerViewport([0, 1, 2, 3, 4, 5], 3, 4);
   assert.deepEqual(viewport, { visible: [3, 4, 5], percentage: 100 });
-});
-
-test("workflow widget renders the workflow usage summary", () => {
-  const now = Date.now();
-  const snapshot: WorkflowProgressSnapshot = {
-    runId: "usage-surfaces-test",
-    title: "usage-surfaces",
-    startedAt: now - 1_000,
-    currentPhase: "Find",
-    phases: [],
-    counters: [],
-    summary: [],
-    lanes: [],
-    laneOverflow: [],
-    logs: [],
-    usage: usageSnapshot,
-  };
-  const expected = "Usage: fresh 12.3k · cache read 40k · cache write 5k · output 1.8k · cost $0.123 · agents 1";
-  const theme = createTestTheme();
-
-  assert.ok(renderWorkflowWidgetLines(snapshot, theme).join("\n").includes(expected));
-});
-
-test("workflow widget renders bounded rows for large snapshots", () => {
-  const theme = createTestTheme();
-  const snapshot = {
-    runId: "large-snapshot-test",
-    title: "large",
-    startedAt: Date.now() - 1_000,
-    currentPhase: "Fan-out",
-    phases: [
-      {
-        title: "Find",
-        agents: Array.from({ length: 1_000 }, (_value, index) => ({
-          id: index + 1,
-          label: `agent:${index}`,
-          status: index % 3 === 0 ? "running" as const : "done" as const,
-          startedAt: Date.now() - 500,
-          doneAt: index % 3 === 0 ? undefined : Date.now(),
-          toolUses: index % 2,
-        })),
-      },
-    ],
-    counters: [],
-    summary: [],
-    lanes: [],
-    laneOverflow: [],
-    logs: ["latest update"],
-  };
-
-  const lines = renderWorkflowWidgetLines(snapshot, theme);
-  assert.ok(lines.length <= 10);
-  assert.match(lines.join("\n"), /\+\d+ more/);
-  assert.match(lines.at(-1) ?? "", /latest update/);
 });
 
 test("advisory reports are structurally recognized", () => {

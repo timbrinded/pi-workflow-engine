@@ -1,13 +1,50 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { DEFAULT_LANE_ITEM_LIMIT, ProgressTracker } from "../.pi/extensions/pi-workflow-engine/src/progress.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
-import { createWorkflowUsageRecorder, formatWorkflowUsageLine } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
-import { createTestTheme } from "./fixtures/theme.ts";
+import { createWorkflowUsageRecorder } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
+import { createTestTheme, plain } from "./fixtures/theme.ts";
 
 function headlessContext(): ExtensionContext {
   return { hasUI: false } as unknown as ExtensionContext;
+}
+
+type WidgetFactory = (tui: { requestRender(): void }, theme: Theme) => Component;
+
+/** A UI context that records statuses and widgets the way pi's TUI or RPC mode receives them. */
+function uiContext(mode: "tui" | "rpc") {
+  const statuses = new Map<string, string>();
+  const widgets = new Map<string, string[] | WidgetFactory>();
+  const registrations = new Map<string, number>();
+  let renders = 0;
+  const tui = { requestRender: () => void renders++ };
+  const ctx = {
+    hasUI: true,
+    mode,
+    ui: {
+      theme: createTestTheme(),
+      setStatus(key: string, value: string | undefined) {
+        if (value === undefined) statuses.delete(key);
+        else statuses.set(key, value);
+      },
+      setWidget(key: string, value: string[] | WidgetFactory | undefined) {
+        if (value === undefined) {
+          widgets.delete(key);
+          return;
+        }
+        widgets.set(key, value);
+        registrations.set(key, (registrations.get(key) ?? 0) + 1);
+      },
+    },
+  } as unknown as ExtensionContext;
+  const mount = (key: string): Component => {
+    const widget = widgets.get(key);
+    if (typeof widget !== "function") throw new Error(`expected a widget component factory for ${key}`);
+    return widget(tui, createTestTheme());
+  };
+  return { ctx, statuses, widgets, registrations, mount, renders: () => renders };
 }
 
 test("ProgressTracker tracks rows by id and keeps status counts correct", () => {
@@ -63,84 +100,58 @@ test("ProgressTracker snapshots copy retained state", () => {
   assert.equal(DEFAULT_LANE_ITEM_LIMIT, 200);
 });
 
-test("ProgressTracker publishes the shared usage line in compact status", () => {
-  const statuses: string[] = [];
-  const ctx = {
-    hasUI: true,
-    ui: {
-      theme: createTestTheme(),
-      setStatus(_key: string, value: string | undefined) {
-        if (value !== undefined) statuses.push(value);
-      },
-      setWidget() {},
-    },
-  } as unknown as ExtensionContext;
+test("ProgressTracker status names the phase, progress and elapsed time and leaves usage to the widget", () => {
+  const { ctx, statuses } = uiContext("rpc");
   const recorder = createWorkflowUsageRecorder();
   recorder.recordAgentSession({
     label: "finder",
-    messages: [
-      {
-        role: "assistant",
-        usage: {
-          input: 100,
-          output: 20,
-          cacheRead: 50,
-          cacheWrite: 0,
-          cost: { total: 0.01 },
-        },
-      },
-    ],
+    messages: [{ role: "assistant", usage: { input: 100, output: 20, cacheRead: 50, cacheWrite: 0, cost: { total: 0.01 } } }],
   });
-  const usage = recorder.snapshot();
-  const usageLine = formatWorkflowUsageLine(usage);
   const tracker = new ProgressTracker(ctx, "status-test", "status-test-run");
 
   try {
-    tracker.updateUsage(usage);
-    assert.equal(tracker.snapshot().usage, usage);
-    assert.ok(usageLine);
-    assert.ok(statuses.at(-1)?.includes(usageLine));
+    tracker.phase("Find");
+    const done = tracker.agentQueued("Find", "find:a");
+    tracker.agentStart(done);
+    tracker.agentDone(done);
+    tracker.agentStart(tracker.agentQueued("Find", "find:b"));
+    tracker.updateUsage(recorder.snapshot());
+
+    const status = plain(statuses.get("workflow:status-test-run") ?? "");
+    assert.match(status, /^◆ status-test · Find 1\/2 · \d+s$/);
   } finally {
     tracker.done();
   }
 });
 
-test("concurrent progress trackers use string widgets and clear their run-scoped surfaces in every UI mode", () => {
+test("TUI runs mount one width-aware widget that redraws on change; string-only UIs get pre-rendered lines", () => {
   for (const mode of ["tui", "rpc"] as const) {
-    const statuses = new Map<string, string>();
-    const widgets = new Map<string, string[]>();
-    const ctx = {
-      hasUI: true,
-      mode,
-      ui: {
-        theme: createTestTheme(),
-        setStatus(key: string, value: string | undefined) {
-          if (value === undefined) statuses.delete(key);
-          else statuses.set(key, value);
-        },
-        setWidget(key: string, value: string[] | undefined) {
-          if (value === undefined) widgets.delete(key);
-          else {
-            assert.ok(Array.isArray(value), `${mode} widgets must use Pi's string[] surface`);
-            widgets.set(key, value);
-          }
-        },
-      },
-    } as unknown as ExtensionContext;
-    const first = new ProgressTracker(ctx, "first", "run-first");
-    const second = new ProgressTracker(ctx, "second", "run-second");
+    const ui = uiContext(mode);
+    const first = new ProgressTracker(ui.ctx, "first", "run-first", undefined, { plannedPhases: ["Find", "Verify"] });
+    const second = new ProgressTracker(ui.ctx, "second", "run-second");
 
     first.phase("Find");
     second.phase("Verify");
-    assert.deepEqual([...statuses.keys()].sort(), ["workflow:run-first", "workflow:run-second"]);
-    assert.deepEqual([...widgets.keys()].sort(), ["workflow:run-first", "workflow:run-second"]);
+    const component = mode === "tui" ? ui.mount("workflow:run-first") : undefined;
+    const rendersBefore = ui.renders();
+    first.agentStart(first.agentQueued("Find", "find:logic-bugs"));
 
+    const lines = component ? component.render(60) : ui.widgets.get("workflow:run-first");
+    if (!Array.isArray(lines)) throw new Error(`${mode}: expected rendered widget lines`);
+    assert.ok(lines.every((line) => visibleWidth(line) <= (component ? 60 : 100)), `${mode}: ${lines.map(plain).join("\n")}`);
+    assert.match(lines.map(plain).join("\n"), /● Find[\s\S]*● logic-bugs[\s\S]*○ Verify/);
+    if (mode === "tui") {
+      assert.equal(ui.registrations.get("workflow:run-first"), 1, "the component is registered once and redrawn in place");
+      assert.ok(ui.renders() > rendersBefore);
+    }
+
+    assert.deepEqual([...ui.statuses.keys()].sort(), ["workflow:run-first", "workflow:run-second"]);
     first.done();
-    assert.deepEqual([...statuses.keys()], ["workflow:run-second"]);
-    assert.deepEqual([...widgets.keys()], ["workflow:run-second"]);
+    assert.deepEqual([...ui.widgets.keys()], ["workflow:run-second"]);
+    assert.deepEqual([...ui.statuses.keys()], ["workflow:run-second"]);
     second.done();
-    assert.equal(statuses.size, 0);
-    assert.equal(widgets.size, 0);
+    assert.equal(ui.widgets.size, 0);
+    assert.equal(ui.statuses.size, 0);
   }
 });
 
@@ -191,7 +202,7 @@ test("ProgressTracker records late agent events after done without reviving its 
   }
 });
 
-test("ProgressTracker refreshes native widget lines for elapsed time and stops refreshing when done", () => {
+test("ProgressTracker redraws once a second for elapsed time and stops when done", () => {
   let now = Date.parse("2026-01-01T00:00:00Z");
   const originalDateNow = Date.now;
   const originalSetInterval = globalThis.setInterval;
@@ -207,28 +218,22 @@ test("ProgressTracker refreshes native widget lines for elapsed time and stops r
   globalThis.clearInterval = ((interval: ReturnType<typeof setInterval>) => {
     if (interval === fakeInterval) intervalCleared = true;
   }) as typeof clearInterval;
-  const widgets: string[][] = [];
-  const ctx = {
-    hasUI: true,
-    mode: "tui",
-    ui: {
-      theme: createTestTheme(),
-      setStatus() {},
-      setWidget(_key: string, value: string[] | undefined) {
-        if (value !== undefined) widgets.push(value);
-      },
-    },
-  } as unknown as ExtensionContext;
-  const tracker = new ProgressTracker(ctx, "timer-test", "timer-test-run");
+  const ui = uiContext("tui");
+  const tracker = new ProgressTracker(ui.ctx, "timer-test", "timer-test-run");
 
   try {
     tracker.phase("Long-running");
+    const component = ui.mount("workflow:timer-test-run");
     assert.ok(tick);
-    assert.match(widgets.at(-1)?.[0] ?? "", /0s/);
+    assert.match(plain(component.render(80)[0] ?? ""), /\b0s\b/);
+    assert.match(plain(ui.statuses.get("workflow:timer-test-run") ?? ""), /\b0s$/);
 
     now += 1_000;
+    const rendersBefore = ui.renders();
     tick();
-    assert.match(widgets.at(-1)?.[0] ?? "", /1s/);
+    assert.ok(ui.renders() > rendersBefore);
+    assert.match(plain(component.render(80)[0] ?? ""), /\b1s\b/);
+    assert.match(plain(ui.statuses.get("workflow:timer-test-run") ?? ""), /\b1s$/);
 
     tracker.done();
     assert.equal(intervalCleared, true);

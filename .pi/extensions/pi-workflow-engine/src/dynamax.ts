@@ -5,6 +5,7 @@ import type { DynamaxShortcuts } from "./dynamax-shortcuts.ts";
 import { isRecord } from "./guards.ts";
 import { sessionKey } from "./session-identity.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
+import { setWorkflowInspectorShortcut } from "./ui/workflow-widget.ts";
 import {
   decorateDynamaxEditor,
   resolveDynamaxEffect,
@@ -151,6 +152,7 @@ export function appendDynamaxSystemReminder(systemPrompt: string, state: Dynamax
 export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, options: DynamaxRegistrationOptions): DynamaxHandle {
   const runtimes: DynamaxRuntimeStore = new Map();
   const effect = options.effect ?? resolveDynamaxEffect();
+  setWorkflowInspectorShortcut(shortcuts.inspector);
   let editorInstallation: DynamaxEditorInstallation | undefined;
   const markOneShot = (ctx: ExtensionContext): void => {
     const runtime = getDynamaxRuntime(runtimes, ctx);

@@ -96,7 +96,9 @@ export async function runResolvedWorkflow(
 ): Promise<unknown> {
   const runId = resolvedOptions.runId ?? createWorkflowRunId();
   let durableProgress: DurableWorkflowRun | undefined;
-  const progress = new ProgressTracker(ctx, mod.meta.name, runId, (snapshot) => durableProgress?.updateProgress(snapshot));
+  const progress = new ProgressTracker(ctx, mod.meta.name, runId, (snapshot) => durableProgress?.updateProgress(snapshot), {
+    plannedPhases: mod.meta.phases?.map((phase) => phase.title),
+  });
   const perf = resolvedOptions.perfRecorder ?? createPerfRecorder(resolvedOptions.perf);
   const usage = createWorkflowUsageRecorder((snapshot) => progress.updateUsage(snapshot));
   const budget = createBudget(resolvedOptions.budget, usage);

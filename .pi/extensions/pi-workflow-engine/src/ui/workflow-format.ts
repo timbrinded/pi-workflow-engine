@@ -1,8 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { AgentRowSnapshot, PhaseSnapshot, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "../progress-types.ts";
-import { formatCount } from "../text.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
+import { dot, GLYPH } from "./kit.ts";
 
 export type WorkflowDisplayStatus = WorkflowLaneItemStatus | "queued" | "done" | "failed";
 export type WorkflowThemeColor = Parameters<Theme["fg"]>[0];
@@ -21,6 +21,11 @@ export function formatDuration(ms: number): string {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
+}
+
+/** Whole seconds, for clocks that tick once a second (`0s`, `12s`, `1m 4s`). */
+export function formatElapsed(ms: number): string {
+  return formatDuration(Math.floor(Math.max(0, ms) / 1_000) * 1_000);
 }
 
 export function statusIcon(status: WorkflowDisplayStatus, theme: Theme): string {
@@ -99,20 +104,17 @@ export function formatWorkflowInspection(inspection: WorkflowInspectionSource): 
   return lines.join("\n");
 }
 
+/** Footer status: `◆ review · Find 6/10 · 12s`. Usage and counters live in the widget, not here. */
 export function statusTextFromCounts(snapshot: WorkflowProgressSnapshot, counts: WorkflowStatusCounts, theme: Theme): string | undefined {
   if (snapshot.doneAt !== undefined) return undefined;
 
-  const complete = counts.done + counts.failed;
-  const active = counts.running + counts.queued;
-  const kept = snapshot.counters.find((counter) => counter.key === "kept" || counter.label.toLowerCase() === "kept");
   const displayName = snapshot.title === "code-review" ? "review" : snapshot.title;
-
-  const parts = [theme.fg("accent", displayName), theme.fg("muted", snapshot.currentPhase)];
-  if (counts.total > 0) parts.push(theme.fg("muted", `${complete}/${counts.total}`));
-  if (kept) parts.push(theme.fg("success", `${formatCount(kept.value)} kept`));
-  else if (active > 0) parts.push(theme.fg("muted", `${active} active`));
-
-  return parts.join(theme.fg("dim", " · "));
+  const progress = counts.total > 0 ? ` ${counts.done + counts.failed}/${counts.total}` : "";
+  return [
+    `${theme.fg("accent", GLYPH.workflow)} ${theme.fg("accent", displayName)}`,
+    theme.fg("muted", `${snapshot.currentPhase}${progress}`),
+    theme.fg("dim", formatElapsed(Date.now() - snapshot.startedAt)),
+  ].join(dot(theme));
 }
 
 export function countAgents(phases: readonly PhaseSnapshot[]): WorkflowStatusCounts {

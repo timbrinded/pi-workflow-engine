@@ -1,10 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 import type { WorkflowProgressEvent } from "./types.ts";
 import type { AgentRowStatus, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "./progress-types.ts";
-import { formatWorkflowUsageLine, type WorkflowUsageSnapshot } from "./usage.ts";
+import type { WorkflowUsageSnapshot } from "./usage.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { statusTextFromCounts, type WorkflowStatusCounts } from "./ui/workflow-format.ts";
-import { renderWorkflowWidgetLines } from "./ui/workflow-widget.ts";
+import { renderWorkflowWidget, STRING_WIDGET_WIDTH, WidthAwareWidget } from "./ui/workflow-widget.ts";
 
 interface AgentRow {
   id: number;
@@ -41,6 +42,11 @@ const LOG_LIMIT = 24;
 const WIDGET_REFRESH_INTERVAL_MS = 1_000;
 export const DEFAULT_LANE_ITEM_LIMIT = 200;
 
+export interface ProgressTrackerOptions {
+  /** Phase titles from the workflow's `meta.phases`, shown as upcoming until the run reaches them. */
+  readonly plannedPhases?: readonly string[];
+}
+
 /**
  * Tracks live workflow state for widgets, footer/status text, result renderers,
  * and headless stderr breadcrumbs.
@@ -63,14 +69,22 @@ export class ProgressTracker {
   private usageSnapshot: WorkflowUsageSnapshot | undefined;
   private widgetRefreshInterval: ReturnType<typeof setInterval> | undefined;
   private readonly surfaceKey: string;
+  private readonly plannedPhases: readonly string[] | undefined;
+  /** Latest published snapshot; the TUI widget renders it at whatever width the terminal has. */
+  private latest: WorkflowProgressSnapshot | undefined;
+  /** Set once the TUI has instantiated this run's widget component. */
+  private tui: Pick<TUI, "requestRender"> | undefined;
+  private widgetRegistered = false;
 
   constructor(
     private readonly ctx: ExtensionContext,
     private readonly title: string,
     private readonly runId: string,
     private readonly onSnapshot?: (snapshot: WorkflowProgressSnapshot) => void,
+    options: ProgressTrackerOptions = {},
   ) {
     this.surfaceKey = `workflow:${runId}`;
+    this.plannedPhases = options.plannedPhases?.length ? [...options.plannedPhases] : undefined;
     this.ensurePhase(this.currentPhase);
   }
 
@@ -192,6 +206,7 @@ export class ProgressTracker {
       startedAt: this.startedAt,
       doneAt: this.doneAt,
       currentPhase: this.currentPhase,
+      plannedPhases: this.plannedPhases,
       phases: this.phases.map((phase) => ({
         title: phase.title,
         agents: phase.agents.map((agent) => ({ ...agent })),
@@ -234,22 +249,44 @@ export class ProgressTracker {
     this.onSnapshot?.(snapshot);
     // Agents that outlive a fatal drain still report after done(); record them without reviving live surfaces.
     if (!this.ctx.hasUI || this.doneAt !== undefined) return;
+    this.latest = snapshot;
     this.publishWidget(snapshot);
     this.startWidgetRefresh();
     this.publishStatus(snapshot);
   }
 
-  private publishWidget(snapshot = this.snapshot()): void {
+  /**
+   * In the TUI the widget is a width-aware component registered once and redrawn on demand; surfaces
+   * that only take strings (RPC) get lines pre-rendered at a nominal width on every publish.
+   */
+  private publishWidget(snapshot: WorkflowProgressSnapshot): void {
+    if (this.ctx.mode !== "tui") {
+      this.ctx.ui.setWidget(this.surfaceKey, renderWorkflowWidget(snapshot, STRING_WIDGET_WIDTH, this.ctx.ui.theme), { placement: "aboveEditor" });
+      return;
+    }
+    if (this.widgetRegistered) {
+      this.tui?.requestRender();
+      return;
+    }
+    this.widgetRegistered = true;
     this.ctx.ui.setWidget(
       this.surfaceKey,
-      renderWorkflowWidgetLines(snapshot, this.ctx.ui.theme),
+      (tui, theme) => {
+        this.tui = tui;
+        return new WidthAwareWidget((width) => (this.latest ? renderWorkflowWidget(this.latest, width, theme) : []));
+      },
       { placement: "aboveEditor" },
     );
   }
 
+  /** Elapsed time ticks even when no agent reports, so redraw the widget and status once a second. */
   private startWidgetRefresh(): void {
     if (this.widgetRefreshInterval !== undefined) return;
-    this.widgetRefreshInterval = setInterval(() => this.publishWidget(), WIDGET_REFRESH_INTERVAL_MS);
+    this.widgetRefreshInterval = setInterval(() => {
+      if (!this.latest) return;
+      this.publishWidget(this.latest);
+      this.publishStatus(this.latest);
+    }, WIDGET_REFRESH_INTERVAL_MS);
   }
 
   private stopWidgetRefresh(): void {
@@ -259,9 +296,7 @@ export class ProgressTracker {
   }
 
   private publishStatus(snapshot: WorkflowProgressSnapshot): void {
-    const status = statusTextFromCounts(snapshot, this.statusCounts(), this.ctx.ui.theme);
-    const usage = formatWorkflowUsageLine(snapshot.usage);
-    const next = usage ? `${status} · ${usage}` : status;
+    const next = statusTextFromCounts(snapshot, this.statusCounts(), this.ctx.ui.theme);
     if (next === this.lastStatusText) return;
     this.ctx.ui.setStatus(this.surfaceKey, next);
     this.lastStatusText = next;
@@ -276,6 +311,8 @@ export class ProgressTracker {
     this.ctx.ui.setWidget(this.surfaceKey, undefined);
     this.ctx.ui.setStatus(this.surfaceKey, undefined);
     this.lastStatusText = undefined;
+    this.latest = undefined;
+    this.tui = undefined;
   }
 }
 

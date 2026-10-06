@@ -3,7 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ProgressTracker } from "../../.pi/extensions/pi-workflow-engine/src/progress.ts";
 import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import { countAgents, statusTextFromCounts } from "../../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
-import { renderWorkflowWidgetLines } from "../../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
+import { renderWorkflowWidget } from "../../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
 import { createTestTheme } from "../../tests/fixtures/theme.ts";
 import { intFlag, parseBenchArgs, runBenchmark, writeBenchmarkOutput } from "./lib.ts";
 
@@ -19,10 +19,10 @@ const statusTextMs = await runBenchmark("ui.status_text", iterations, () => {
   statusTextFromCounts(snapshot, countAgents(snapshot.phases), theme);
 });
 const widgetRenderMs = await runBenchmark("ui.widget_render", iterations, () => {
-  renderWorkflowWidgetLines(snapshot, theme);
+  renderWorkflowWidget(snapshot, 120, theme);
 });
 const repeatRenderMs = await runBenchmark("ui.widget_repeat", iterations, () => {
-  for (let i = 0; i < 100; i++) renderWorkflowWidgetLines(snapshot, theme);
+  for (let i = 0; i < 100; i++) renderWorkflowWidget(snapshot, 120, theme);
 });
 const progressEventMs = await runBenchmark("ui.progress_events", iterations, () => {
   simulateProgressEvents(Math.min(agents, 1_000), Math.min(laneItems, 1_000));
