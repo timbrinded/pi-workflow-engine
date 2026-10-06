@@ -460,6 +460,41 @@ test("invalid cached text values are treated as misses", async () => {
   assert.ok(progress.events.includes("log:invalid-cache: cached result invalidated (cached text result is not a string)"));
 });
 
+test("null cached structured values are treated as misses", async () => {
+  const progress = createProgress();
+  const journal: WorkflowJournal = {
+    lookup() {
+      return { hit: true, value: null };
+    },
+    async record() {
+      return { ok: true };
+    },
+  };
+  const result = await runAgent(
+    createRunContext({
+      createSession: async (options) => {
+        const created = createTextSession();
+        return {
+          session: {
+            ...created.session,
+            async prompt() {
+              await executeTestFinalAnswer(options, { ok: true });
+            },
+          },
+        };
+      },
+      progress,
+      journal,
+    }),
+    "hello",
+    { label: "null-cache", resume: "read-only", resumeInputs: [], schema: Type.Object({ ok: Type.Boolean() }) },
+  );
+  assert.deepEqual(result, { ok: true });
+  assert.ok(progress.events.includes(
+    "log:null-cache: cached result invalidated (cached structured result does not match the current schema)",
+  ));
+});
+
 test("runAgent returns live results when journal append fails", async () => {
   const progress = createProgress();
   const journal: WorkflowJournal = {

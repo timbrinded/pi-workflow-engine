@@ -271,7 +271,6 @@ async function validateCachedResult(
       ? { ok: true }
       : { ok: false, reason: "cached text result is not a string" };
   }
-  if (result === null) return { ok: true };
   try {
     return Value.Check(opts.schema, result)
       ? { ok: true }
