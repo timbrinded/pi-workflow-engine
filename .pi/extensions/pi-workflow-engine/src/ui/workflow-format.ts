@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { AgentRowSnapshot, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "../progress-types.ts";
+import type { AgentRowSnapshot, PhaseSnapshot, WorkflowLaneItemStatus, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatCount } from "../text.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
 
@@ -51,10 +51,7 @@ export interface AgentDetailOptions {
   includeQueuedStatus?: boolean;
 }
 
-export function agentDetailParts(agent: AgentRowSnapshot, now?: number): string[];
-export function agentDetailParts(agent: AgentRowSnapshot, options?: AgentDetailOptions): string[];
-export function agentDetailParts(agent: AgentRowSnapshot, optionsOrNow: AgentDetailOptions | number = {}): string[] {
-  const options = typeof optionsOrNow === "number" ? { now: optionsOrNow } : optionsOrNow;
+export function agentDetailParts(agent: AgentRowSnapshot, options: AgentDetailOptions = {}): string[] {
   const now = options.now ?? Date.now();
   const includeQueuedStatus = options.includeQueuedStatus ?? true;
   const parts: string[] = [];
@@ -96,7 +93,7 @@ export function workflowInspectionSnapshot(inspection: WorkflowInspectionSource)
 
 export function formatWorkflowInspection(inspection: WorkflowInspectionSource): string {
   const snapshot = workflowInspectionSnapshot(inspection);
-  const counts = countSnapshotAgents(snapshot);
+  const counts = countAgents(snapshot.phases);
   const lines = [
     `Workflow inspector: ${inspection.name}`,
     `Run: ${snapshot.runId}`,
@@ -110,8 +107,7 @@ export function formatWorkflowInspection(inspection: WorkflowInspectionSource): 
 }
 
 export function statusText(snapshot: WorkflowProgressSnapshot, theme: Theme): string | undefined {
-  const counts = countSnapshotAgents(snapshot);
-  return statusTextFromCounts(snapshot, counts, theme);
+  return statusTextFromCounts(snapshot, countAgents(snapshot.phases), theme);
 }
 
 export function statusTextFromCounts(snapshot: WorkflowStatusSource, counts: WorkflowStatusCounts, theme: Theme): string | undefined {
@@ -130,9 +126,9 @@ export function statusTextFromCounts(snapshot: WorkflowStatusSource, counts: Wor
   return parts.join(theme.fg("dim", " · "));
 }
 
-function countSnapshotAgents(snapshot: WorkflowProgressSnapshot): WorkflowStatusCounts {
+export function countAgents(phases: readonly PhaseSnapshot[]): WorkflowStatusCounts {
   const counts = { queued: 0, running: 0, done: 0, failed: 0, total: 0 };
-  for (const phase of snapshot.phases) {
+  for (const phase of phases) {
     for (const agent of phase.agents) {
       counts[agent.status]++;
       counts.total++;

@@ -2,7 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatWorkflowUsageLine } from "../usage.ts";
 import { formatCount } from "../text.ts";
-import { agentDetailParts, agentLabelColor, formatDuration, statusIcon } from "./workflow-format.ts";
+import { agentDetailParts, agentLabelColor, countAgents, formatDuration, statusIcon, type WorkflowStatusCounts } from "./workflow-format.ts";
 
 const MAX_WIDGET_LINES = 10;
 
@@ -40,31 +40,12 @@ export function renderWorkflowWidgetLines(
   return lines.slice(0, MAX_WIDGET_LINES);
 }
 
-interface AgentCounts {
-  queued: number;
-  running: number;
-  done: number;
-  failed: number;
-  total: number;
-}
-
-function countAgents(phases: readonly PhaseSnapshot[]): AgentCounts {
-  const counts: AgentCounts = { queued: 0, running: 0, done: 0, failed: 0, total: 0 };
-  for (const phase of phases) {
-    for (const agent of phase.agents) {
-      counts[agent.status]++;
-      counts.total++;
-    }
-  }
-  return counts;
-}
-
 function visibleBodyLines(phases: readonly PhaseSnapshot[], budget: number, theme: Theme): { lines: string[]; hidden: number } {
   const lines: string[] = [];
   let totalRows = 0;
   const visit = (phase: PhaseSnapshot): void => {
     if (phase.agents.length === 0 && phase.title === "Workflow") return;
-    const counts = countPhaseAgents(phase);
+    const counts = countAgents([phase]);
     totalRows++;
     if (lines.length < budget) lines.push(phaseLine(phase.title, counts, theme));
     appendAgentGroup(phase.agents, (agent) => agent.status === "running" || agent.status === "queued", lines, budget, theme, () => totalRows++);
@@ -97,13 +78,7 @@ function appendAgentGroup(
   }
 }
 
-function countPhaseAgents(phase: PhaseSnapshot): AgentCounts {
-  const counts: AgentCounts = { queued: 0, running: 0, done: 0, failed: 0, total: phase.agents.length };
-  for (const agent of phase.agents) counts[agent.status]++;
-  return counts;
-}
-
-function phaseLine(title: string, counts: AgentCounts, theme: Theme): string {
+function phaseLine(title: string, counts: WorkflowStatusCounts, theme: Theme): string {
   const parts: string[] = [];
   if (counts.running > 0) parts.push(`${counts.running} running`);
   if (counts.done > 0) parts.push(`${counts.done} done`);

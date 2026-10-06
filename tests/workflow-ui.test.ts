@@ -61,7 +61,7 @@ test("workflow formatting helpers format durations, counts, agents, and truncati
   const queuedAgent = { id: 1, label: "scope", status: "queued" as const, toolUses: 0 };
   assert.deepEqual(agentDetailParts(queuedAgent), ["queued"]);
   assert.deepEqual(agentDetailParts(queuedAgent, { includeQueuedStatus: false }), []);
-  assert.deepEqual(agentDetailParts({ id: 2, label: "find", status: "running" as const, startedAt: 0, toolUses: 0 }, 1_500), ["1s"]);
+  assert.deepEqual(agentDetailParts({ id: 2, label: "find", status: "running" as const, startedAt: 0, toolUses: 0 }, { now: 1_500 }), ["1s"]);
 
   const ascii = truncateDisplay("abcdef", 4);
   assert.ok(visibleWidth(ascii) <= 4);
