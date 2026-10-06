@@ -140,7 +140,6 @@ test("research preserves citation context through verification and filters rejec
       lanes: [{ id: "status", title: "Current status", objective: "Find the current specification.", queries: ["current specification"] }],
     },
     {
-      laneId: "status",
       evidence: [
         {
           claim: "The specification changed.",
@@ -227,7 +226,6 @@ test("research keeps verified claims when synthesis fails and lists failed lanes
   const api = scriptedApi([
     TWO_LANE_PLAN,
     {
-      laneId: "docs",
       evidence: [{ claim: "The specification changed.", importance: "high", stance: "supports", evidence: "The changelog lists a new requirement.", source }],
       gaps: [],
     },

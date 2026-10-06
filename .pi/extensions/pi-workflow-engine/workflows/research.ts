@@ -12,7 +12,6 @@ import {
   buildClaimCandidates,
   fallbackResearchReport,
   normalizeResearchLanes,
-  sanitizeLaneResults,
   sanitizeResearchReport,
   sanitizeVerification,
   unavailableResearchReport,
@@ -72,7 +71,7 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
         `Research one bounded lane using only installed external web-search, browsing, or URL-extraction tools.\n\n` +
           `Question: ${question}\n` +
           `Scope constraints: ${plan.scopeConstraints.join("; ") || "(none)"}\n` +
-          `Lane id: ${lane.id}\nLane: ${lane.title}\nObjective: ${lane.objective}\n` +
+          `Lane: ${lane.title}\nObjective: ${lane.objective}\n` +
           `Queries:\n${lane.queries.map((query) => `- ${query}`).join("\n")}\n\n` +
           "Open the supporting pages instead of citing a search-results page. Prefer primary and authoritative sources; use independent sources when useful. " +
           "Return concrete claims with importance, whether each page supports or conflicts with the claim, a short passage or precise paraphrase, and the exact page title and URL. " +
@@ -104,8 +103,7 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
   const gathered = gatherResults.flatMap((result) => (result.ok ? [result.value] : []));
   const failedLanes = lanes.filter((_, index) => !gatherResults[index]!.ok);
 
-  const laneResults = sanitizeLaneResults(gathered);
-  const candidates = buildClaimCandidates(laneResults);
+  const candidates = buildClaimCandidates(gathered);
   if (candidates.length === 0) return unavailableResearchReport(failedLanes.length > 0 ? "lanes-failed" : "no-evidence");
   progress({ type: "counter", key: "research.claims", label: "claims to verify", value: candidates.length });
   log(`${candidates.length} bounded claim(s) selected for independent verification`);

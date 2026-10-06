@@ -1,5 +1,4 @@
 import {
-  MAX_RESEARCH_LANES,
   MAX_VERIFICATION_CLAIMS,
   type ResearchClaimCandidate,
   type ResearchEvidence,
@@ -22,31 +21,21 @@ export function normalizeResearchLanes(plan: ResearchPlan): ResearchLane[] {
     const id = normalizedText(lane.id);
     const title = normalizedText(lane.title);
     const objective = normalizedText(lane.objective);
-    const queries = dedupeText(lane.queries).slice(0, 4);
+    const queries = dedupeText(lane.queries);
     if (!id || !title || !objective || queries.length === 0 || seen.has(id.toLowerCase())) continue;
     seen.add(id.toLowerCase());
     lanes.push({ id, title, objective, queries });
-    if (lanes.length >= MAX_RESEARCH_LANES) break;
   }
   return lanes;
 }
 
-export function sanitizeLaneResults(results: readonly ResearchLaneResult[]): ResearchLaneResult[] {
-  return results.map((result) => ({
-    laneId: normalizedText(result.laneId),
-    gaps: dedupeText(result.gaps),
-    evidence: dedupeEvidence(result.evidence.map(sanitizeEvidence).filter(isDefined)),
-  }));
-}
-
 export function buildClaimCandidates(results: readonly ResearchLaneResult[]): ResearchClaimCandidate[] {
   const byClaim = new Map<string, { claim: string; importance: ResearchEvidence["importance"]; evidence: ResearchEvidence[] }>();
-  for (const item of results.flatMap((result) => result.evidence)) {
-    const key = normalizedText(item.claim).toLowerCase();
-    if (!key) continue;
+  for (const item of results.flatMap((result) => result.evidence.map(sanitizeEvidence).filter(isDefined))) {
+    const key = item.claim.toLowerCase();
     const current = byClaim.get(key);
     if (!current) {
-      byClaim.set(key, { claim: normalizedText(item.claim), importance: item.importance, evidence: [item] });
+      byClaim.set(key, { claim: item.claim, importance: item.importance, evidence: [item] });
       continue;
     }
     if (IMPORTANCE_RANK[item.importance] < IMPORTANCE_RANK[current.importance]) current.importance = item.importance;

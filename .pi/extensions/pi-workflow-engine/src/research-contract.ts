@@ -39,7 +39,6 @@ export const ResearchEvidenceSchema = Type.Object({
 export type ResearchEvidence = Static<typeof ResearchEvidenceSchema>;
 
 export const ResearchLaneResultSchema = Type.Object({
-  laneId: Type.String({ minLength: 1 }),
   evidence: Type.Array(ResearchEvidenceSchema, { maxItems: MAX_LANE_EVIDENCE }),
   gaps: Type.Array(Type.String()),
 });
