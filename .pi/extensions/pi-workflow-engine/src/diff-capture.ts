@@ -1,5 +1,5 @@
 import type { PerfSink } from "./perf.ts";
-import { runBoundedProcess, type BoundedProcessFailure } from "./process-runner.ts";
+import { runBoundedProcess, scrubbedGitEnv, type BoundedProcessFailure } from "./process-runner.ts";
 import { parseAllowedDiffCommand, reviewDiffCommand, type ReviewDiffTarget } from "./review-diff-target.ts";
 
 export {
@@ -61,7 +61,7 @@ export async function captureDiffTarget(target: ReviewDiffTarget, options: DiffC
     file: command.file,
     args: command.args,
     cwd: options.cwd,
-    env: diffCaptureEnv(options.env),
+    env: scrubbedGitEnv(options.env),
     signal: options.signal,
     timeoutMs: options.timeoutMs,
     maxBufferBytes: options.maxBufferBytes,
@@ -74,8 +74,4 @@ export async function captureDiffTarget(target: ReviewDiffTarget, options: DiffC
   options.perf?.observe("diff.capture_ms", result.durationMs);
   options.perf?.observe("diff.bytes", result.bytes);
   return result;
-}
-
-function diffCaptureEnv(env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv {
-  return { ...(env ?? process.env), GIT_EXTERNAL_DIFF: "", GIT_DIFF_OPTS: "" };
 }

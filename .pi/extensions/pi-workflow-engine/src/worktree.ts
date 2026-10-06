@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { runBoundedProcess } from "./process-runner.ts";
+import { runBoundedProcess, scrubbedGitEnv } from "./process-runner.ts";
 import {
   FINGERPRINT_EXCLUDED_RELATIVE_PATHS,
   isExcludedDeclaredInput,
@@ -550,14 +550,11 @@ export const spawnGitRunner: WorktreeGitRunner = {
 };
 
 async function runGitCommand(options: WorktreeGitCommandOptions): Promise<WorktreeGitCommandResult> {
-  const env = { ...process.env, ...options.env };
-  delete env.GIT_EXTERNAL_DIFF;
-  delete env.GIT_DIFF_OPTS;
   return await runBoundedProcess({
     file: "git",
     args: options.args,
     cwd: options.cwd,
-    env,
+    env: scrubbedGitEnv({ ...process.env, ...options.env }),
     stdin: options.stdin,
     signal: options.signal,
     timeoutMs: options.timeoutMs,
