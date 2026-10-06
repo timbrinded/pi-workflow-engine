@@ -120,8 +120,9 @@ export function parseProviderResetHint(
       : { resetHint: boundedHint(iso) };
   }
 
+  // Units must be whole words on the hint's line ("6m0s" stays compact; "1 month" and "30\nmessage" are not durations).
   const labelled = message.match(
-    /(?:retry[- ]after|try again in|resets? in|available again in|x-ratelimit-reset(?:-[a-z-]+)?)\s*[:=]?\s*((?:\d+(?:\.\d+)?\s*(?:milliseconds?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\s*)+)/i,
+    /(?:retry[- ]after|try again in|resets? in|available again in|x-ratelimit-reset(?:-[a-z-]+)?)\s*[:=]?\s*((?:\d+(?:\.\d+)?[ \t]*(?:milliseconds?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)(?![a-z])[ \t]*)+)/i,
   );
   if (labelled?.[1]) {
     const delayMs = parseDurationMs(labelled[1]);

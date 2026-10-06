@@ -60,6 +60,19 @@ test("provider reset hints parse OpenAI durations, Anthropic seconds, and RFC333
   );
 });
 
+test("reset hint durations require whole unit words on the same line", () => {
+  assert.deepEqual(parseProviderResetHint("Monthly usage limit reached. Your quota resets in 1 month.", NOW), {});
+  assert.deepEqual(parseProviderResetHint("Please try again in 10 more seconds.", NOW), {});
+  assert.deepEqual(
+    parseProviderResetHint("429 rate_limit_error retry-after: 30\nmessage: slow down", NOW),
+    { resetHint: "retry-after: 30", resetAt: NOW + 30_000 },
+  );
+  assert.deepEqual(
+    parseProviderResetHint("Rate limited; try again in 1h30m.", NOW),
+    { resetHint: "try again in 1h30m", resetAt: NOW + 5_400_000 },
+  );
+});
+
 test("malformed reset hints retain diagnostic text without inventing a deadline", () => {
   assert.deepEqual(
     parseProviderResetHint("retry-after: sometime-later", NOW),
