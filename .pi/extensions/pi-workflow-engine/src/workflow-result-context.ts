@@ -1,8 +1,9 @@
 import { formatAdvisoryLocation, isAdvisoryReport, type AdvisoryFinding, type AdvisoryReport } from "./advisory-schema.ts";
 import { isRecord } from "./guards.ts";
 import { toReviewIssues } from "./review/review-issues.ts";
+import { formatPerfSummary } from "./perf.ts";
 import { prettyJson } from "./text.ts";
-import { formatWorkflowDetailLines } from "./ui/workflow-result-renderer.ts";
+import { formatWorkflowUsageLine } from "./usage.ts";
 import { workflowResultSummary, type WorkflowResultEnvelope } from "./workflow-execution.ts";
 
 /** Cap on the result JSON copied into the host agent's context; the run record keeps the full value. */
@@ -12,6 +13,18 @@ const MAX_CONTEXT_RESULT_JSON_CHARS = 20_000;
 export function formatWorkflowResultForContext(envelope: WorkflowResultEnvelope): string {
   const details = formatWorkflowDetailLines(envelope);
   return `## Workflow: ${envelope.name}\n\n${formatResultForContext(envelope.result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
+}
+
+/** Run id, usage and perf lines appended for the host model. */
+function formatWorkflowDetailLines(envelope: WorkflowResultEnvelope): string[] {
+  const run = envelope.runId
+    ? envelope.resumedFromRunId ? `Run: ${envelope.runId} (resumed from ${envelope.resumedFromRunId})` : `Run: ${envelope.runId}`
+    : undefined;
+  return [
+    run,
+    formatWorkflowUsageLine(envelope.usage),
+    envelope.perf ? formatPerfSummary(envelope.perf.aggregates) : undefined,
+  ].filter((line): line is string => line !== undefined);
 }
 
 function formatResultForContext(result: unknown): string {

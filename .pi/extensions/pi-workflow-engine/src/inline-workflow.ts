@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { createHash } from "node:crypto";
-import type { LoadedWorkflow, WorkflowApi } from "./types.ts";
+import type { LoadedWorkflow, WorkflowApi, WorkflowMeta } from "./types.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { parseWorkflowMeta } from "./workflow-module.ts";
 
@@ -38,6 +38,16 @@ export function compileInlineWorkflow(source: string): LoadedWorkflow {
     default: (api) => executor(api, Type),
     source: { kind: "fingerprint", fingerprint: createHash("sha256").update(source).digest("hex") },
   };
+}
+
+/** The script's pure-literal meta, read without compiling or running anything; undefined when it does not parse. */
+export function readInlineWorkflowMeta(source: string): WorkflowMeta | undefined {
+  try {
+    const parsed = parseWorkflowMeta(extractMetaLiteral(source).value);
+    return "meta" in parsed ? parsed.meta : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function extractMetaLiteral(source: string): { readonly value: unknown; readonly endOffset: number } {

@@ -18,6 +18,8 @@ export interface WorkflowPerfDetails {
 export interface WorkflowResultEnvelope {
   readonly name: string;
   readonly result: unknown;
+  /** Optional so envelopes persisted before it existed still render. */
+  readonly startedAt?: number;
   readonly completedAt: number;
   readonly usage?: WorkflowUsageSnapshot;
   readonly perf?: WorkflowPerfDetails;
@@ -86,10 +88,12 @@ export async function executeWorkflowInvocation(input: WorkflowExecutionInput): 
       );
     },
   };
+  const startedAt = Date.now();
   const result = await input.runResolvedWorkflow(input.ctx, input.mod, input.args, runOptions);
   return {
     name: input.name,
     result,
+    startedAt,
     completedAt: Date.now(),
     usage: usageSnapshot,
     perf: perfSnapshot?.enabled ? { aggregates: perfSnapshot.aggregates } : undefined,

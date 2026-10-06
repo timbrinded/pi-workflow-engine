@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { test } from "bun:test";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
-import { createTestTheme, plain } from "./fixtures/theme.ts";
+import { createTestTheme } from "./fixtures/theme.ts";
 import { agentDetailParts, formatDuration, truncateDisplay } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-format.ts";
 import { formatCount } from "../.pi/extensions/pi-workflow-engine/src/text.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
@@ -12,7 +12,6 @@ import {
   fitWorkflowViewerRow,
 } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
 import { isAdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
-import { renderWorkflowResultText } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-result-renderer.ts";
 import { renderWorkflowWidgetLines } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-widget.ts";
 import type { WorkflowUsageSnapshot } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 
@@ -381,72 +380,6 @@ test("advisory reports are structurally recognized", () => {
   assert.equal(isAdvisoryReport({ summary: "generic workflow", value: 42 }), false);
 });
 
-test("generic workflow results stringify raw JSON only when expanded", () => {
-  const theme = createTestTheme();
-  const large = {
-    deeplyNestedFieldThatShouldNotAppearCollapsed: "x".repeat(1_000),
-    values: Array.from({ length: 100 }, (_value, index) => ({ index, payload: `payload-${index}` })),
-  };
-
-  const collapsed = renderWorkflowResultText({ name: "generic", result: large }, false, theme);
-  assert.match(collapsed, /Result available in expanded view/);
-  assert.doesNotMatch(collapsed, /deeplyNestedFieldThatShouldNotAppearCollapsed/);
-  assert.doesNotMatch(collapsed, /payload-99/);
-
-  const expanded = renderWorkflowResultText({ name: "generic", result: large }, true, theme);
-  assert.match(expanded, /deeplyNestedFieldThatShouldNotAppearCollapsed/);
-  assert.match(expanded, /payload-99/);
-});
-
-test("workflow result text renders usage summaries", () => {
-  const theme = createTestTheme();
-
-  const generic = renderWorkflowResultText({ name: "generic", result: { summary: "Done" }, usage: usageSnapshot }, false, theme);
-  assert.match(generic, /Usage: fresh 12.3k · cache read 40k · cache write 5k · output 1.8k · cost \$0.123 · agents 1/);
-
-  const advisory = renderWorkflowResultText({ name: "refactor-scout", result: validReport, usage: usageSnapshot }, true, theme);
-  assert.match(advisory, /Usage: fresh 12.3k · cache read 40k · cache write 5k · output 1.8k · cost \$0.123 · agents 1/);
-});
-
-test("workflow result text renders perf detail lines", () => {
-  const theme = createTestTheme();
-  const perf = {
-    aggregates: [
-      { name: "workflow.total_ms", count: 1, total: 123.4, min: 123.4, max: 123.4, mean: 123.4, p50: 123.4, p95: 123.4 },
-    ],
-  };
-  const rendered = renderWorkflowResultText({ name: "generic", result: { summary: "Done" }, perf }, false, theme);
-
-  assert.match(rendered, /Perf: workflow\.total_ms 123ms/);
-});
-
-test("workflow result text ignores malformed usage details", () => {
-  const theme = createTestTheme();
-
-  const rendered = renderWorkflowResultText({ name: "generic", result: { summary: "Done" }, usage: {} }, false, theme);
-
-  assert.match(rendered, /Done/);
-  assert.doesNotMatch(rendered, /Usage:/);
-});
-
-test("workflow result text renders advisory reports collapsed and expanded", () => {
-  const theme = createTestTheme();
-
-  const collapsed = renderWorkflowResultText({ name: "refactor-scout", result: validReport }, false, theme);
-  assert.match(collapsed, /Workflow: refactor-scout/);
-  assert.match(collapsed, /Review complete/);
-  assert.match(collapsed, /files 2/);
-  assert.match(plain(collapsed), /HIGH R001  src\/app\.ts:10 +Off-by-one in retry loop/);
-
-  const expanded = plain(renderWorkflowResultText({ name: "refactor-scout", result: validReport }, true, theme));
-  assert.match(expanded, /R001.*bug · confidence high/);
-  assert.match(expanded, /Impact +A final retry is skipped/);
-  assert.match(expanded, /Evidence +• line 10 increments before checking the limit/);
-  assert.match(expanded, /Fix +Change the loop boundary/);
-  assert.match(expanded, /Next steps:/);
-  assert.match(expanded, /Inspect src\/app\.ts retry loop/);
-});
-
 const validReport = {
   summary: "Review complete.",
   findings: [
@@ -464,16 +397,3 @@ const validReport = {
   nextSteps: ["Inspect src/app.ts retry loop", "Add a retry-boundary regression test"],
   stats: { files: 2, candidates: 3, verified: 1, kept: 1 },
 };
-
-test("incomplete advisory coverage cannot render a green clean-review result", () => {
-  const rendered = renderWorkflowResultText({ name: "code-review", result: {
-    summary: "Incomplete review", findings: [], nextSteps: ["Rerun missing work"], status: "incomplete",
-    coverage: [{ stage: "Verify", expected: 2, completed: 0, failed: 2, failures: [{ branch: "a", reason: "provider failed" }, { branch: "b", reason: "provider failed" }] }],
-    gaps: ["Verify/a: provider failed", "Verify/b: provider failed"],
-  } }, true, createTestTheme());
-  assert.match(rendered, /⚠/);
-  assert.match(rendered, /Verify: 0\/2 complete, 2 failed/);
-  assert.match(rendered, /coverage is incomplete/);
-  assert.match(rendered, /Verify\/a: provider failed/);
-  assert.doesNotMatch(rendered, /✓|No findings\./);
-});

@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import { VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
+import { keyText, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import { WORKFLOW_TOOL_NAME, type LoadedWorkflow, type WorkflowModule, type WorkflowProgressSource, type WorkflowRef } from "./src/types.ts";
 import { WorkflowInspector } from "./src/ui/workflow-inspector.ts";
@@ -11,7 +11,8 @@ import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
 import { ReviewSessionCoordinator } from "./src/review/review-session-coordinator.ts";
-import { isWorkflowResult, renderWorkflowResult } from "./src/ui/workflow-result-renderer.ts";
+import { isWorkflowResult, renderWorkflowResult, type WorkflowResultHints } from "./src/ui/workflow-result-renderer.ts";
+import { renderWorkflowToolCall, renderWorkflowToolResult } from "./src/ui/workflow-tool-renderer.ts";
 import {
   parseWorkflowInvocation,
   resolveWorkflowRunOptions,
@@ -37,7 +38,6 @@ import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/
 import { registerWorkflowRunCommand, WorkflowRunController } from "./src/workflow-run-controller.ts";
 import { completeCurrentArgument, splitArgumentPrefix } from "./src/command-completions.ts";
 import { assertSupportedPiVersion } from "./src/pi-compat.ts";
-import { truncateText } from "./src/text.ts";
 import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/workflow-format.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
@@ -386,7 +386,8 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
 
   pi.registerMessageRenderer("workflow-result", (message, { expanded }, theme) => {
     const details = message.details;
-    return renderWorkflowResult(isWorkflowResult(details) ? details : { name: "workflow", result: details ?? message.content }, expanded, theme);
+    const view = isWorkflowResult(details) ? details : { name: "workflow", result: details ?? message.content };
+    return renderWorkflowResult(view, expanded, theme, workflowResultHints(shortcuts));
   });
 
   pi.registerCommand("workflow:inspector", {
@@ -456,7 +457,12 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
 
-  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows);
+  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts);
+}
+
+/** Result footers advertise the configured triage shortcut and pi's current expand key, read at render time. */
+function workflowResultHints(shortcuts: DynamaxShortcuts): WorkflowResultHints {
+  return { triage: shortcuts.results ?? "/workflow:results", expand: keyText("app.tools.expand") || undefined };
 }
 
 /** Register the host-facing workflow tool independently from command and lifecycle surfaces. */
@@ -464,6 +470,7 @@ function registerWorkflowTool(
   pi: ExtensionAPI,
   reviewSessions: ReviewSessionCoordinator,
   backgroundWorkflows: BackgroundWorkflowCoordinator,
+  shortcuts: DynamaxShortcuts,
 ): void {
   pi.registerTool({
     name: WORKFLOW_TOOL_NAME,
@@ -541,24 +548,12 @@ function registerWorkflowTool(
       background: Type.Optional(Type.Boolean({ description: "Return a durable run ID immediately and deliver completion to this conversation later" })),
     }),
     renderCall(args, theme) {
-      const suffix = args.args ? ` ${theme.fg("dim", args.args)}` : "";
-      const background = args.background ? ` ${theme.fg("dim", "(background)")}` : "";
-      if (args.name?.trim()) {
-        return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", args.name.trim())}${background}${suffix}`, 0, 0);
-      }
-      const preview = truncateText((args.script ?? "").replace(/\s+/g, " ").trim(), 60);
-      const previewSuffix = preview ? ` ${theme.fg("dim", preview)}` : "";
-      return new Text(`▸ ${theme.fg("toolTitle", theme.bold("workflow"))} ${theme.fg("accent", "inline")}${background}${suffix}${previewSuffix}`, 0, 0);
+      return renderWorkflowToolCall(args, theme);
     },
-    renderResult(result, { expanded, isPartial }, theme) {
-      if (isPartial) return new Text(theme.fg("accent", "Running workflow…"), 0, 0);
-      const details = result.details;
-      if (isWorkflowResult(details)) return renderWorkflowResult(details, expanded, theme);
-      const first = result.content[0];
-      const text = first?.type === "text" ? first.text : "Workflow finished.";
-      return new Text(theme.fg("muted", text), 0, 0);
+    renderResult(result, options, theme, context) {
+      return renderWorkflowToolResult(result, options, theme, context.args, workflowResultHints(shortcuts));
     },
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const request = normalizeWorkflowToolRequest(params);
       if (request.kind === "error") return invalidWorkflowInvocationResult();
       const resumeFromRunId = params.resumeFromRunId?.trim();
@@ -644,6 +639,8 @@ function registerWorkflowTool(
           },
         });
       }
+      // Marks the tool row as running (rendered `● running <name>`) until the envelope replaces it.
+      onUpdate?.({ content: [{ type: "text", text: `Running workflow ${resultName}.` }], details: { state: "running", name: resultName } });
       const envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, runOptions, perfRecorder);
       reviewSessions.remember(ctx, envelope, runOptions);
       return {
