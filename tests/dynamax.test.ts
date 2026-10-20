@@ -185,6 +185,11 @@ function captureDynamax(
   return { commands, shortcuts, handlers, handle };
 }
 
+/** Run every handler registered for `event`, as pi does; an event with none is a no-op. */
+async function emit(captured: CapturePiResult, event: string, payload: unknown, ctx: ExtensionContext): Promise<void> {
+  for (const handler of captured.handlers.get(event) ?? []) await handler(payload, ctx);
+}
+
 function createFakeContext(
   sessionId: string,
   hasUI = true,
@@ -660,19 +665,26 @@ test("a turn budget pool supplies the remainder until it is spent; an explicit b
   assert.deepEqual(resolveTurnBudget(undefined, pool, range), { kind: "spent", total: 50_000 });
 });
 
-test("the input hook sets the turn pool from user prompts only, and the run's end clears it", async () => {
+test("the input hook sets the turn pool from user prompts only, and the run's settling clears it", async () => {
   const captured = captureDynamax();
   const input = captured.handlers.get("input")?.[0];
-  const agentEnd = captured.handlers.get("agent_end")?.[0];
-  if (!input || !agentEnd) throw new Error("expected Dynamax lifecycle handlers");
+  if (!input) throw new Error("expected Dynamax lifecycle handlers");
   const { ctx } = createFakeContext("turn-budget");
 
   await input({ source: "extension", text: "+500k from an extension" }, ctx);
   assert.equal(captured.handle.turnBudget(ctx), undefined);
-  await input({ source: "interactive", text: "+500k audit the parser" }, ctx);
+  await input({ source: "interactive", text: "dynamax +500k audit the parser" }, ctx);
+  await emit(captured, "before_agent_start", { messageType: "user", systemPrompt: "base", systemPromptOptions: { selectedTools: ["workflow"], sections: {} } }, ctx);
   assert.equal(captured.handle.turnBudget(ctx)?.total, 500_000);
-  await agentEnd({ messages: [] }, ctx);
+
+  // pi ends a loop with agent_end and continues the same run after a provider retry or overflow compaction.
+  await emit(captured, "agent_end", { type: "agent_end", messages: [] }, ctx);
+  assert.equal(captured.handle.turnBudget(ctx)?.total, 500_000);
+  assert.equal(captured.handle.isActive(ctx), true);
+
+  await emit(captured, "agent_settled", { type: "agent_settled", aborted: false }, ctx);
   assert.equal(captured.handle.turnBudget(ctx), undefined);
+  assert.equal(captured.handle.isActive(ctx), false);
 });
 
 test("resolveDynamaxShortcuts reads configurable workflow UI shortcuts", () => {
@@ -772,8 +784,7 @@ test("one-shot Dynamax status remains visible for the active turn", async () => 
   const captured = captureDynamax("ctrl+shift+x");
   const input = captured.handlers.get("input")?.[0];
   const beforeAgentStart = captured.handlers.get("before_agent_start")?.[0];
-  const agentEnd = captured.handlers.get("agent_end")?.[0];
-  if (!input || !beforeAgentStart || !agentEnd) throw new Error("expected Dynamax lifecycle handlers");
+  if (!input || !beforeAgentStart) throw new Error("expected Dynamax lifecycle handlers");
   const { ctx, ui } = createFakeContext("session-a");
 
   await input({ source: "interactive", text: "dynamax inspect this branch" }, ctx);
@@ -786,7 +797,9 @@ test("one-shot Dynamax status remains visible for the active turn", async () => 
   assert.equal(sections[DYNAMAX_SECTION], DYNAMAX_REMINDER);
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax · this turn");
 
-  await agentEnd({ messages: [] }, ctx);
+  await emit(captured, "agent_end", { type: "agent_end", messages: [] }, ctx);
+  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax · this turn", "a loop ending is not the run settling");
+  await emit(captured, "agent_settled", { type: "agent_settled", aborted: false }, ctx);
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), undefined);
 });
 

@@ -497,12 +497,14 @@ test("the workflow tool is a model-only orchestrator that codemode scripts canno
   assert.equal(captureWorkflowTool().exposure, "model-only");
 });
 
-test("a +N prompt directive defaults the run budget to the turn pool until the turn ends", async () => {
+test("a +N prompt directive defaults the run budget to the turn pool until the run settles", async () => {
   const extension = captureWorkflowExtension();
   const input = extension.handlers.get("input")?.[0];
-  const agentEnd = extension.handlers.get("agent_end")?.[0];
-  if (!input || !agentEnd) throw new Error("expected input and agent_end handlers");
+  if (!input) throw new Error("expected an input handler");
   const ctx = { ...HEADLESS_CTX, sessionManager: createSessionManager("turn-budget-tool") } as ExtensionContext;
+  const emit = async (event: string, payload: unknown) => {
+    for (const handler of extension.handlers.get(event) ?? []) await handler(payload, ctx);
+  };
   const script = `
 export const meta = { name: "turn-budget-probe", description: "Reports its budget" };
 export default async function run({ budget }) {
@@ -515,7 +517,10 @@ export default async function run({ budget }) {
   await input({ source: "interactive", text: "+5k run the probe" }, ctx);
   assert.match(await budgetOf(), /budget 5000/);
   assert.match(await budgetOf({ budget: 1234 }), /budget 1234/);
-  await agentEnd({ messages: [] }, ctx);
+  // A provider retry or overflow compaction ends a loop with agent_end and continues the same run.
+  await emit("agent_end", { type: "agent_end", messages: [] });
+  assert.match(await budgetOf(), /budget 5000/);
+  await emit("agent_settled", { type: "agent_settled", aborted: false });
   assert.match(await budgetOf(), /budget null/);
 });
 

@@ -32,7 +32,7 @@ export interface DynamaxTurnBudget {
 
 export interface DynamaxRuntime {
   state: DynamaxState;
-  /** Set by a budget directive in a user prompt, cleared when that run ends. */
+  /** Set by a budget directive in a user prompt, cleared when that run settles. */
   turnBudget?: DynamaxTurnBudget;
 }
 
@@ -317,7 +317,9 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
     return appendSectionToForcedPrompt(options, DYNAMAX_SECTION);
   });
 
-  pi.on("agent_end", (_event, ctx) => {
+  // Not agent_end: pi emits that per agent loop, and one run continues in fresh loops after a
+  // provider retry, overflow compaction, or queued follow-up. agent_settled fires once per run.
+  pi.on("agent_settled", (_event, ctx) => {
     const runtime = getDynamaxRuntime(runtimes, ctx);
     if (!runtime.state.sticky) runtime.state.turnActive = false;
     runtime.turnBudget = undefined;

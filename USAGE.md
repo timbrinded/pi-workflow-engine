@@ -642,7 +642,8 @@ and each synchronous run's output tokens are subtracted once it finishes,
 failed or not. When less than one token remains, the tool refuses the call and
 tells the agent the turn's budget is spent. An explicit `budget` on the call
 still wins but its spend is still subtracted. The pool clears when the run that
-received the prompt ends.
+received the prompt settles, so it still covers the run after pi retries a
+provider error or compacts an overflowing context within that run.
 
 Background runs receive the current remainder as their budget but do not draw
 the pool down, because their usage lands after the turn. Parallel `workflow`
