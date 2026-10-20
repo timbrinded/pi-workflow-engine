@@ -145,6 +145,25 @@ test("api.workflow() passes args through to the child", async () => {
   assert.equal(result, "got:payload");
 });
 
+test("api.workflow() hands a JSON value to the child verbatim as input and as JSON text as args", async () => {
+  const progress = createProgress();
+  const rc = createRc(progress, new Semaphore(4));
+  const child = workflowModule("child", async (api) => ({ args: api.args, input: api.input }));
+  const parent = workflowModule("parent", async (api) => ({
+    json: await api.workflow("child", { target: "src", depth: 2 }),
+    text: await api.workflow("child", "HEAD~3"),
+    none: await api.workflow("child"),
+  }));
+
+  const result = await runWorkflowWithContext(rc, progress, parent, "", contextOpts(async () => child));
+
+  assert.deepEqual(result, {
+    json: { args: '{"target":"src","depth":2}', input: { target: "src", depth: 2 } },
+    text: { args: "HEAD~3", input: "HEAD~3" },
+    none: { args: "", input: "" },
+  });
+});
+
 test("api.workflow() nesting rejection is promise-shaped", async () => {
   const progress = createProgress();
   const rc = createRc(progress, new Semaphore(4));

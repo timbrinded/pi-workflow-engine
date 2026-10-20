@@ -161,6 +161,7 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
     log() {},
     progress() {},
     args: "",
+    input: "",
     cwd: process.cwd(),
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
     signal: undefined,
@@ -367,6 +368,28 @@ export default async function run() { return { summary: "${value}" }; }`;
   const record = await new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD).load(rerunId);
   assert.equal(record?.options.resumeEditedWorkflow, true, "scriptPath with resumeFromRunId implies edited-workflow resume");
   assert.equal(record?.scriptFile, `${rerunId}.script.js`);
+});
+
+test("JSON tool args reach the workflow verbatim and as text, and count as redacted arguments", async () => {
+  const tool = captureWorkflowTool();
+  const script = `export const meta = { name: "json-args-probe", description: "JSON args probe" };
+export default async function run({ args, input }) { return { summary: args, kind: Array.isArray(input) ? "array" : typeof input }; }`;
+  const store = new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD);
+  const run = async (args: unknown) => {
+    const result = await tool.execute("call-json-args", args === undefined ? { script } : { script, args }, undefined, () => {}, HEADLESS_CTX);
+    assert.ok(isRecord(result) && isRecord(result.details) && typeof result.details.runId === "string");
+    return { details: result.details, record: await store.load(result.details.runId) };
+  };
+
+  const json = await run({ files: ["a.ts"], strict: true });
+  assert.deepEqual(json.details.result, { summary: '{"files":["a.ts"],"strict":true}', kind: "object" });
+  assert.equal(json.record?.options.argumentsPresent, true);
+
+  assert.deepEqual((await run(["x"])).details.result, { summary: '["x"]', kind: "array" });
+  assert.deepEqual((await run("plain text")).details.result, { summary: "plain text", kind: "string" });
+  const omitted = await run(undefined);
+  assert.deepEqual(omitted.details.result, { summary: "", kind: "string" });
+  assert.equal(omitted.record?.options.argumentsPresent, false);
 });
 
 test("a scriptPath outside the working directory is a rejected call", async () => {

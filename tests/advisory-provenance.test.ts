@@ -14,7 +14,7 @@ import refactorScout from "../.pi/extensions/pi-workflow-engine/workflows/refact
 const candidate: AdvisoryCandidate = { summary: "Wrong condition", category: "bug", locations: [{ file: "src/app.ts", line: 2 }], impact: "Drops requests" };
 function apiFor(handler: (prompt: string, options: AgentOptions) => unknown): WorkflowApi {
   return { agent: (async (prompt: string, options: AgentOptions = {}) => handler(prompt, options)) as WorkflowApi["agent"],
-    parallel: bindParallel({}), pipeline, phase() {}, log() {}, progress() {}, args: "", cwd: process.cwd(), signal: undefined,
+    parallel: bindParallel({}), pipeline, phase() {}, log() {}, progress() {}, args: "", input: "", cwd: process.cwd(), signal: undefined,
     budget: { total: null, spent: () => 0, remaining: () => Infinity }, workflow: async () => undefined,
     classify: async () => {
       throw new Error("no classifier is configured in this test");

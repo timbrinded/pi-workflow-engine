@@ -19,7 +19,7 @@ export interface CapturedTool {
       script?: string;
       scriptPath?: string;
       name?: string;
-      args?: string;
+      args?: unknown;
       resumeFromRunId?: string;
       resumeEditedWorkflow?: boolean;
       background?: boolean;

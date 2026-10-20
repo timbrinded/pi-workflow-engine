@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { isRecord } from "../guards.ts";
 import { readInlineWorkflowMeta } from "../inline-workflow.ts";
+import { workflowArgsText } from "../workflow-input.ts";
 import { GLYPH, hangingWrap, keyHints, spread } from "./kit.ts";
 import { LinesComponent, shortRunId, type WorkflowResultHints } from "./result-layout.ts";
 import { isWorkflowResult, workflowResultComponent } from "./workflow-result-renderer.ts";
@@ -11,7 +12,8 @@ export interface WorkflowToolCallArgs {
   readonly name?: string;
   readonly script?: string;
   readonly scriptPath?: string;
-  readonly args?: string;
+  /** A string or any JSON value. */
+  readonly args?: unknown;
   readonly background?: boolean;
   readonly resumeFromRunId?: string;
 }
@@ -23,7 +25,7 @@ export interface WorkflowToolResultView {
 
 /** A named workflow, or an inline one identified by its literal meta (`inline` until that parses). */
 export function workflowToolTitle(args: WorkflowToolCallArgs): { readonly name: string; readonly detail?: string } {
-  const detail = collapseWhitespace(args.args ?? "");
+  const detail = collapseWhitespace(workflowArgsText(args.args));
   const named = args.name?.trim();
   if (named) return { name: named, detail: detail || undefined };
   const meta = args.script ? readInlineWorkflowMeta(args.script) : undefined;

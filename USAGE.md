@@ -446,6 +446,8 @@ Core primitives:
 
 Every subagent's system prompt states that its final message is returned verbatim to the workflow program as data, not shown to a person, so a text agent replies with only the output its task asks for: no greeting, preamble, narration, or offer of further help. The instruction is appended after any `APPEND_SYSTEM.md` pi discovers, which subagents keep loading.
 
+`args` holds the invocation's arguments as text and `input` holds them verbatim. A slash command passes a string, so both are that string. The `workflow` tool's `args` field and `workflow(ref, args)` also accept any JSON value: `input` is the value and `args` its JSON text, so workflows written for string arguments keep working. Omitted arguments are `""` in both. Like string arguments, JSON arguments are never written to the run record, so a run that had any cannot be resumed or restarted from `/workflow:runs`.
+
 Schema agents accept structured output only through the validated, terminating `final_answer` tool. If the first response omits it, the engine makes at most **two repair attempts** (three prompt attempts total). Repair prompts expose only `final_answer` when the active pi session supports tool restriction. Clean exhaustion throws `WorkflowStructuredOutputError` with code `WORKFLOW_STRUCTURED_OUTPUT_NONCOMPLIANCE`; provider failures and host cancellation still propagate unchanged.
 
 Use settled mode when the workflow must distinguish a successful `null` from a failed branch. It preserves input order and returns `{ ok: true, value }` or `{ ok: false, error: { name?, message, code?, details? } }` for every thunk. Default parallel mode still turns recoverable structured-output exhaustion into a `null` slot, while settled mode retains the typed code and attempt details. Genuine workflow cancellation still rejects the whole `parallel()` call and cancels siblings.
@@ -502,12 +504,12 @@ Cleanup is a required finalizer. The engine attempts every registered worktree r
 
 ### Compose workflows
 
-`workflow(ref, args?)` runs a registered workflow by name, or an inline-format script file via `{ scriptPath }`, as a sub-step, returning its result. The child shares the parent run's concurrency cap, total-agent limit, per-agent timeout, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
+`workflow(ref, args?)` runs a registered workflow by name, or an inline-format script file via `{ scriptPath }`, as a sub-step, returning its result. `args` is a string or any JSON value, which the child reads as `input` and, as text, `args`. The child shares the parent run's concurrency cap, total-agent limit, per-agent timeout, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
 
 ```ts
 export default async function run({ workflow }: WorkflowApi) {
   const review = await workflow("code-review", "HEAD~3");
-  const audit = await workflow({ scriptPath: "scripts/audit.js" });
+  const audit = await workflow({ scriptPath: "scripts/audit.js" }, { paths: ["src/"], strict: true });
   return { review, audit };
 }
 ```

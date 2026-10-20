@@ -20,6 +20,7 @@ import { showWorkflowInspector } from "./ui/workflow-inspector.ts";
 import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
 import { WorktreeRegistry } from "./worktree.ts";
 import { runFinalizers } from "./finalizers.ts";
+import { workflowArgsText, workflowInputPresent } from "./workflow-input.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
   captureWorkflowResumeContext,
@@ -77,22 +78,23 @@ export interface WorkflowEngineDependencies {
 /**
  * Run a workflow module: build the per-run primitives (binding agent/parallel/pipeline
  * to a shared semaphore + progress tracker), invoke the workflow, return its result.
+ * `input` is a slash command's argument string or a tool call's JSON value.
  */
 export async function runWorkflow(
   ctx: ExtensionContext,
   mod: LoadedWorkflow,
-  args: string,
+  input: unknown,
   options: WorkflowRunOptions = {},
   dependencies: WorkflowEngineDependencies = {},
 ): Promise<unknown> {
-  return await runResolvedWorkflow(ctx, mod, args, resolveWorkflowRunOptions(options), dependencies);
+  return await runResolvedWorkflow(ctx, mod, input, resolveWorkflowRunOptions(options), dependencies);
 }
 
 /** Execute an options-normalized workflow without re-reading environment defaults. */
 export async function runResolvedWorkflow(
   ctx: ExtensionContext,
   mod: LoadedWorkflow,
-  args: string,
+  input: unknown,
   resolvedOptions: ResolvedWorkflowRunOptions,
   dependencies: WorkflowEngineDependencies = {},
 ): Promise<unknown> {
@@ -109,7 +111,7 @@ export async function runResolvedWorkflow(
   const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
   const runStore = new ProjectWorkflowRunStore(ctx.cwd);
   const scriptPath = await persistInlineScript(ctx.cwd, runId, mod);
-  const argumentsPresent = args.length > 0;
+  const argumentsPresent = workflowInputPresent(input);
   let persistenceFailureReported = false;
   const durableRun = new DurableWorkflowRun(
     runStore,
@@ -193,7 +195,7 @@ export async function runResolvedWorkflow(
 
     // perf.total_ms wraps the whole tree: sub-workflows run inside this span via api.workflow().
     return perf.time("workflow.total_ms", () =>
-      runWorkflowWithContext(rc, progress, mod, args, {
+      runWorkflowWithContext(rc, progress, mod, input, {
         abortController: runAbortController,
         submissionLimit: resolvedOptions.parallelSubmissionLimit ?? resolvedOptions.concurrency * 2,
         resolveWorkflow: resolvedOptions.resolveWorkflow,
@@ -400,10 +402,12 @@ export async function runWorkflowWithContext(
   rc: WorkflowRunContext,
   progress: WorkflowProgress,
   mod: LoadedWorkflow,
-  args: string,
+  input: unknown,
   opts: WorkflowContextOptions,
 ): Promise<unknown> {
   const depth = opts.depth ?? 0;
+  // Converted before any agent runs, so an argument with no JSON form rejects the call up front.
+  const args = workflowArgsText(input);
   const scope = createWorkflowScope(progress, opts.progressPrefix ?? "", opts.progressNamespace);
   const resumeContext: AgentResumeBaseContext = {
     workflow: await captureWorkflowResumeContext(mod, rc.signal),
@@ -424,7 +428,8 @@ export async function runWorkflowWithContext(
           const childController = new AbortController();
           const unlink = linkAbortSignal(rc.signal, childController);
           try {
-            return await runWorkflowWithContext({ ...rc, signal: childController.signal }, progress, childMod, childArgs ?? "", {
+            const childInput = childArgs === undefined ? "" : childArgs;
+            return await runWorkflowWithContext({ ...rc, signal: childController.signal }, progress, childMod, childInput, {
               abortController: childController,
               submissionLimit: opts.submissionLimit,
               resolveWorkflow: opts.resolveWorkflow,
@@ -452,6 +457,7 @@ export async function runWorkflowWithContext(
     log: scope.log,
     progress: scope.event,
     args,
+    input,
     cwd: rc.cwd,
     budget: rc.budget,
     signal: rc.signal,

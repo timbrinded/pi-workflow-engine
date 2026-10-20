@@ -41,7 +41,7 @@ export function workflowResultSummary(result: unknown): string | undefined {
 export type ResolvedWorkflowRunner = (
   ctx: ExtensionContext,
   mod: LoadedWorkflow,
-  args: string,
+  args: unknown,
   options: ResolvedWorkflowRunOptions,
 ) => Promise<unknown>;
 
@@ -49,7 +49,8 @@ export interface WorkflowExecutionInput {
   readonly ctx: ExtensionContext;
   readonly name: string;
   readonly mod: LoadedWorkflow;
-  readonly args: string;
+  /** A slash command's argument string, or a tool call's string or JSON value. */
+  readonly args: unknown;
   readonly options: ResolvedWorkflowRunOptions;
   readonly perfRecorder?: PerfSink;
   readonly runResolvedWorkflow: ResolvedWorkflowRunner;

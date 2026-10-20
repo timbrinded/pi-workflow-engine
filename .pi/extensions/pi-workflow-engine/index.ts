@@ -57,6 +57,7 @@ import { WORKFLOWS_SECTION, WorkflowCatalogPrompt } from "./src/workflow-catalog
 import { registerWorkflowSizeCommand, resolveWorkflowSize, workflowSettingsPaths } from "./src/workflow-settings.ts";
 import { isRecord } from "./src/guards.ts";
 import { workflowToolReach } from "./src/workflow-tool-reach.ts";
+import { workflowArgsText } from "./src/workflow-input.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -386,23 +387,25 @@ export async function sendWorkflowResult(
   await reviewSessions.present(ctx, retained, options);
 }
 
+/** `input` is a slash command's argument string, or a tool call's string or JSON value. */
 async function executeResolvedWorkflow(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   name: string,
   mod: LoadedWorkflow,
-  args: string,
+  input: unknown,
   options: ResolvedWorkflowRunOptions,
   perfRecorder?: PerfSink,
 ): Promise<WorkflowResultEnvelope> {
   const { runResolvedWorkflow } = await loadEngine();
   let liveInspection: ActiveWorkflowInspection | undefined;
   const inspections = workflowInspectionState(pi, ctx);
+  const args = workflowArgsText(input);
   return await executeWorkflowInvocation({
     ctx,
     name,
     mod,
-    args,
+    args: input,
     options,
     perfRecorder,
     runResolvedWorkflow,
@@ -646,7 +649,12 @@ function registerWorkflowTool(
             "Path, relative to the working directory, of a file holding an inline workflow script, such as the persisted script a result names to edit and rerun. With resumeFromRunId, edits to the script are accepted as with resumeEditedWorkflow. Provide exactly one of name, script, or scriptPath.",
         }),
       ),
-      args: Type.Optional(Type.String({ description: "Arguments for the workflow (e.g. target or focus)" })),
+      args: Type.Optional(
+        Type.Unknown({
+          description:
+            "Arguments for the workflow: a string (e.g. target or focus) or any JSON value. The workflow reads the value as `api.input` and its text (JSON for non-strings) as `api.args`.",
+        }),
+      ),
       concurrency: Type.Optional(Type.Number({ description: "Optional per-run agent concurrency cap" })),
       parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
       maxAgents: Type.Optional(
@@ -761,7 +769,8 @@ function registerWorkflowTool(
         resultName = mod.meta.name;
       }
 
-      const resultArgs = params.args ?? "";
+      // Omitted args match a slash command without arguments; any other value, null included, is kept verbatim.
+      const resultArgs: unknown = params.args === undefined ? "" : params.args;
       if (params.background) {
         return await startBackgroundWorkflowTool({
           coordinator: backgroundWorkflows,
