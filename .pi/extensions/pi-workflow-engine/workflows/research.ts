@@ -165,9 +165,14 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
   }
 
   const report = sanitizeResearchReport(synthesis, synthesisInputs);
-  if (failedLanes.length === 0) return report;
-  const laneGap = `${failedLanes.length} of ${lanes.length} research lane(s) failed (${failedLanes.map((lane) => lane.title).join(", ")}); coverage is incomplete.`;
-  return { ...report, limitations: [...report.limitations, laneGap] };
+  const gaps: string[] = [];
+  if (failedLanes.length > 0) {
+    gaps.push(`${failedLanes.length} of ${lanes.length} research lane(s) failed (${failedLanes.map((lane) => lane.title).join(", ")}); coverage is incomplete.`);
+  }
+  if (overCap > 0) {
+    gaps.push(`${overCap} lower-priority claim(s) were not independently verified; verification is capped at ${MAX_VERIFICATION_CLAIMS} claims.`);
+  }
+  return gaps.length === 0 ? report : { ...report, limitations: [...report.limitations, ...gaps] };
 }
 
 function verificationPrompt(question: string, candidate: ResearchClaimCandidate): string {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import research from "../.pi/extensions/pi-workflow-engine/workflows/research.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import {
   dedupeSources,
   sanitizeResearchReport,
@@ -252,7 +253,7 @@ test("research keeps verified claims when synthesis fails and lists failed lanes
   assert.ok(result.limitations.some((limitation) => limitation.includes("1 of 2 research lane(s) failed (News coverage)")), JSON.stringify(result.limitations));
 });
 
-test("research logs how many claims the verification cap left unverified", async () => {
+test("research reports how many claims the verification cap left unverified", async () => {
   const source = { title: "Official specification", url: "https://example.com/spec" };
   const evidence = (claim: string, importance: "high" | "low") => ({ claim, importance, stance: "supports", evidence: `The page states: ${claim}`, source });
   // Fifteen distinct claims across three lanes; the three low-importance ones fall past the cap of twelve.
@@ -268,10 +269,13 @@ test("research logs how many claims the verification cap left unverified", async
     new Error("synthesis provider unavailable"),
   ], "What changed?");
 
-  await research(api);
+  const report = await research(api);
 
   const verifierPrompts = api.calls.filter((call) => call.options?.phase === "Verify").map((call) => call.prompt);
   assert.equal(verifierPrompts.length, MAX_VERIFICATION_CLAIMS);
   assert.ok(verifierPrompts.every((prompt) => prompt.includes("Importance: high")));
   assert.ok(api.logs.includes(`Dropped 3 lower-priority claim(s) over the verification cap of ${MAX_VERIFICATION_CLAIMS}`), JSON.stringify(api.logs));
+  // The cut is in the report too, so a reader who never sees the run log still knows coverage is partial.
+  assert.ok(isRecord(report) && Array.isArray(report.limitations));
+  assert.ok(report.limitations.includes(`3 lower-priority claim(s) were not independently verified; verification is capped at ${MAX_VERIFICATION_CLAIMS} claims.`), JSON.stringify(report.limitations));
 });
