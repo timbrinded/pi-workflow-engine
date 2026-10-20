@@ -1,4 +1,4 @@
-import { CustomEditor, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, type BeforeAgentStartEvent, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import type { EditorComponent } from "@earendil-works/pi-tui";
 import { completeCurrentArgument } from "./command-completions.ts";
 import type { DynamaxShortcuts } from "./dynamax-shortcuts.ts";
@@ -54,8 +54,9 @@ function disposeDynamaxDecorations(decorations: Set<DynamaxEditorDecoration>): v
   decorations.clear();
 }
 
+/** With no argument the command toggles sticky mode, so these name only the explicit forms. */
 const DYNAMAX_ACTION_COMPLETIONS = [
-  { value: "on", description: "Keep Dynamax enabled for this session" },
+  { value: "on", description: "Make workflow orchestration the default for this session" },
   { value: "off", description: "Disable sticky and pending Dynamax modes" },
   { value: "status", description: "Show the current Dynamax state" },
 ] as const;
@@ -70,6 +71,13 @@ export const DYNAMAX_SECTION = "dynamax";
 export const DYNAMAX_REMINDER =
   "The user opted into dynamax multi-agent orchestration for this request, so the workflow tool is permitted. " +
   "Run a registered workflow by name, or author an inline workflow script when none fits, following the workflow tool's guidelines.";
+
+/** Sticky mode is a standing default for the session, not a one-request permission. */
+export const DYNAMAX_STICKY_REMINDER =
+  "Dynamax is on for this session. Orchestrate every substantive task with the workflow tool by default: " +
+  "scout inline first to find the work list, then run one single-phase workflow per phase (understand, design, implement, review) " +
+  "and read each result before choosing the next. Lean toward adversarial verification of findings. " +
+  "Work without a workflow only for conversational turns and trivial or already-verified edits.";
 
 export function createDynamaxState(): DynamaxState {
   return { sticky: false, oneShotPending: false, turnActive: false };
@@ -131,12 +139,21 @@ export function dynamaxStatusText(state: DynamaxState, theme: Theme): string {
 /**
  * Add the opt-in section for this run and consume a pending one-shot. pi rebuilds `sections` for every
  * run, so an inactive run simply leaves it out and pi records the removal as a patch.
+ *
+ * Sticky mode covers every run, including one a custom message started (`sendMessage` with
+ * `triggerTurn`, such as a background completion). Only a user prompt consumes the one-shot: the
+ * opt-in belongs to the request the user typed it in.
  */
-export function applyDynamaxPromptSection(sections: Record<string, string>, state: DynamaxState): boolean {
-  if (!state.sticky && !state.oneShotPending) return false;
-  state.oneShotPending = false;
+export function applyDynamaxPromptSection(
+  sections: Record<string, string>,
+  state: DynamaxState,
+  messageType: BeforeAgentStartEvent["messageType"] = "user",
+): boolean {
+  const oneShot = messageType === "user" && state.oneShotPending;
+  if (!state.sticky && !oneShot) return false;
+  if (oneShot) state.oneShotPending = false;
   state.turnActive = true;
-  sections[DYNAMAX_SECTION] = DYNAMAX_REMINDER;
+  sections[DYNAMAX_SECTION] = state.sticky ? DYNAMAX_STICKY_REMINDER : DYNAMAX_REMINDER;
   return true;
 }
 
@@ -232,7 +249,7 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
   pi.on("before_agent_start", (event, ctx) => {
     const runtime = getDynamaxRuntime(runtimes, ctx);
     const options = event.systemPromptOptions;
-    if (!applyDynamaxPromptSection(options.sections, runtime.state)) return undefined;
+    if (!applyDynamaxPromptSection(options.sections, runtime.state, event.messageType)) return undefined;
     updateDynamaxSurfaces(ctx, runtime);
     return appendSectionToForcedPrompt(options, DYNAMAX_SECTION);
   });
@@ -253,15 +270,12 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
   }
 
   pi.registerCommand("workflow:dynamax", {
-    description: "Toggle Dynamax workflow orchestration: /workflow:dynamax [on|off|status]",
+    description: "Toggle sticky Dynamax orchestration for this session: /workflow:dynamax [on|off|status]",
     getArgumentCompletions: (argumentPrefix) => completeCurrentArgument(argumentPrefix, DYNAMAX_ACTION_COMPLETIONS),
     handler: async (args, ctx) => {
       const runtime = getDynamaxRuntime(runtimes, ctx);
-      const action = args.trim().toLowerCase();
-      if (action === "") {
-        ctx.ui.notify(`Dynamax ${describeDynamaxState(runtime.state)}. Usage: /workflow:dynamax [on|off|status]`, "info");
-        return;
-      }
+      const typed = args.trim().toLowerCase();
+      const action = typed === "" ? (runtime.state.sticky ? "off" : "on") : typed;
       if (action === "on") {
         enableDynamaxSticky(runtime.state);
         updateDynamaxSurfaces(ctx, runtime);
@@ -278,7 +292,7 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
         ctx.ui.notify(`Dynamax ${describeDynamaxState(runtime.state)}`, "info");
         return;
       }
-      ctx.ui.notify("Usage: /workflow:dynamax [on|off|status]", "warning");
+      ctx.ui.notify("Usage: /workflow:dynamax [on|off|status] (no argument toggles sticky mode)", "warning");
     },
   });
 

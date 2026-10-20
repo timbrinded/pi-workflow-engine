@@ -147,6 +147,7 @@ dynamax use parallel agents to review this design and report the risks
 Sticky mode and inspector shortcut:
 
 ```text
+/workflow:dynamax          # toggle sticky mode
 /workflow:dynamax on
 /workflow:dynamax off
 /workflow:dynamax status
@@ -154,7 +155,7 @@ Sticky mode and inspector shortcut:
 
 The workflow inspector and code-review results viewer are also registered as first-class shortcuts shown by `/hotkeys`. The defaults are `ctrl+shift+m` for the inspector and `ctrl+shift+r` for the latest review results. `ctrl+o` is intentionally not used because pi already uses it for tool-output expansion and tree filtering.
 
-When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives a `<dynamax>` system prompt section that permits the workflow tool (pi appends it as a section patch, so the cached prompt head is kept), stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. The footer status states the mode compactly: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its prompt, and `◆ dynamax · this turn` while that run is active; off mode clears it. A running workflow names itself in its own status next to it.
+When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives a `<dynamax>` system prompt section that permits the workflow tool (pi appends it as a section patch, so the cached prompt head is kept), stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` (or `/workflow:dynamax` while sticky mode is off) is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off` (or `/workflow:dynamax` again). Sticky mode is a standing default rather than a one-request permission: its `<dynamax>` section tells the host agent to orchestrate every substantive task with the workflow tool, scouting inline first and then running one single-phase workflow per phase (understand, design, implement, review), reading each result before choosing the next, and to work without a workflow only for conversational turns and trivial or already-verified edits. It applies to every run in the session, including runs that a custom message starts, such as a background workflow waking the agent; a one-shot is consumed only by the user prompt that carried it. The footer status states the mode compactly: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its prompt, and `◆ dynamax · this turn` while that run is active; off mode clears it. A running workflow names itself in its own status next to it.
 
 ### Prompt editor cue
 

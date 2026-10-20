@@ -29,6 +29,7 @@ import {
   createDynamaxState,
   DYNAMAX_REMINDER,
   DYNAMAX_SECTION,
+  DYNAMAX_STICKY_REMINDER,
   DYNAMAX_STATUS_KEY,
   type DynamaxRegistrationOptions,
   type DynamaxRuntimeStore,
@@ -553,12 +554,79 @@ test("dynamax sticky mode remains active until cleared", () => {
   assert.equal(isDynamaxActive(state), true);
   const sections: Record<string, string> = {};
   applyDynamaxPromptSection(sections, state);
-  assert.match(sections[DYNAMAX_SECTION] ?? "", /workflow tool is permitted/);
+  assert.equal(sections[DYNAMAX_SECTION], DYNAMAX_STICKY_REMINDER);
   assert.equal(state.sticky, true);
   assert.equal(isDynamaxActive(state), true);
 
   clearDynamax(state);
   assert.equal(isDynamaxActive(state), false);
+});
+
+test("sticky Dynamax is a standing default, distinct from the one-request opt-in", () => {
+  assert.match(DYNAMAX_STICKY_REMINDER, /on for this session/);
+  assert.match(DYNAMAX_STICKY_REMINDER, /by default/);
+  assert.match(DYNAMAX_STICKY_REMINDER, /one single-phase workflow per phase/);
+  assert.notEqual(DYNAMAX_STICKY_REMINDER, DYNAMAX_REMINDER);
+
+  // A typed `dynamax` while sticky is covered by the standing default.
+  const state = createDynamaxState();
+  enableDynamaxSticky(state);
+  markDynamaxOneShot(state);
+  const sections: Record<string, string> = {};
+  applyDynamaxPromptSection(sections, state, "user");
+  assert.equal(sections[DYNAMAX_SECTION], DYNAMAX_STICKY_REMINDER);
+  assert.equal(state.oneShotPending, false);
+});
+
+test("a run a custom message starts keeps sticky Dynamax but never consumes the one-shot", () => {
+  const sticky = createDynamaxState();
+  enableDynamaxSticky(sticky);
+  const custom: Record<string, string> = {};
+  assert.equal(applyDynamaxPromptSection(custom, sticky, "custom"), true);
+  assert.equal(custom[DYNAMAX_SECTION], DYNAMAX_STICKY_REMINDER);
+
+  const armed = createDynamaxState();
+  markDynamaxOneShot(armed);
+  const triggered: Record<string, string> = {};
+  assert.equal(applyDynamaxPromptSection(triggered, armed, "custom"), false);
+  assert.deepEqual(triggered, {});
+  assert.equal(armed.oneShotPending, true, "the one-shot waits for the user's prompt");
+  const prompted: Record<string, string> = {};
+  assert.equal(applyDynamaxPromptSection(prompted, armed, "user"), true);
+  assert.equal(prompted[DYNAMAX_SECTION], DYNAMAX_REMINDER);
+});
+
+test("the before_agent_start hook passes the run's message type through", async () => {
+  const captured = captureDynamax("ctrl+shift+x");
+  const input = captured.handlers.get("input")?.[0];
+  const beforeAgentStart = captured.handlers.get("before_agent_start")?.[0];
+  if (!input || !beforeAgentStart) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx } = createFakeContext("message-type");
+
+  await input({ source: "interactive", text: "dynamax look into it" }, ctx);
+  const custom: Record<string, string> = {};
+  await beforeAgentStart({ messageType: "custom", systemPrompt: "base", systemPromptOptions: { sections: custom } }, ctx);
+  assert.equal(custom[DYNAMAX_SECTION], undefined);
+  const user: Record<string, string> = {};
+  await beforeAgentStart({ messageType: "user", systemPrompt: "base", systemPromptOptions: { sections: user } }, ctx);
+  assert.equal(user[DYNAMAX_SECTION], DYNAMAX_REMINDER);
+});
+
+test("/workflow:dynamax with no argument toggles sticky mode", async () => {
+  const command = captureDynamax().commands.get("workflow:dynamax");
+  if (!command) throw new Error("expected /workflow:dynamax command");
+  const { ctx, ui } = createFakeContext("toggle");
+
+  await command.handler("", ctx);
+  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax");
+  assert.match(ui.notifications.at(-1)?.message ?? "", /on for this session/);
+
+  await command.handler("", ctx);
+  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), undefined);
+  assert.match(ui.notifications.at(-1)?.message ?? "", /is off/);
+
+  await command.handler("sideways", ctx);
+  assert.match(ui.notifications.at(-1)?.message ?? "", /no argument toggles sticky mode/);
 });
 
 test("resolveDynamaxShortcuts reads configurable workflow UI shortcuts", () => {
@@ -618,9 +686,9 @@ test("registerDynamax registers a first-class shortcut that opens the workflow i
   await shortcut?.handler(ctx);
   assert.equal(inspectorOpened, 1);
 
-  await command.handler("", ctx);
+  await command.handler("status", ctx);
   assert.equal(ui.customComponent, undefined);
-  assert.match(ui.notifications.at(-1)?.message ?? "", /Usage: \/workflow:dynamax/);
+  assert.match(ui.notifications.at(-1)?.message ?? "", /Dynamax sticky off/);
 });
 
 test("dynamax command state stays isolated per session", async () => {

@@ -72,10 +72,12 @@ dynamax investigate this flaky test using separate timing, fixture, diff, and ex
 dynamax argue both implementation options, then have another agent challenge the recommendation
 ```
 
-The token enables Dynamax for one turn. Sticky mode remains active for the pi
-session:
+The token enables Dynamax for that one request. Sticky mode instead makes
+workflow orchestration the default for every substantive task in the pi session;
+`/workflow:dynamax` with no argument toggles it:
 
 ```text
+/workflow:dynamax
 /workflow:dynamax on
 /workflow:dynamax off
 /workflow:dynamax status
