@@ -20,14 +20,12 @@ export function formatWorkflowCatalog(workflows: Iterable<WorkflowMeta>, sizeLin
       const whenToUse = meta.whenToUse?.trim();
       return `- ${meta.name}${description ? `: ${description}` : ""}${whenToUse ? ` ${whenToUse}` : ""}`;
     });
-  const parts = lines.length === 0
-    ? []
-    : [
-        "Registered workflows the workflow tool runs by `name`, passing the target or instructions as `args` (only once the user opted into workflow orchestration):",
-        ...lines,
-      ];
-  if (sizeLine) parts.push(...(parts.length > 0 ? ["", sizeLine] : [sizeLine]));
-  return parts.length > 0 ? parts.join("\n") : undefined;
+  const blocks: string[] = [];
+  if (lines.length > 0) {
+    blocks.push(["Registered workflows the workflow tool runs by `name`, passing the target or instructions as `args` (only once the user opted into workflow orchestration):", ...lines].join("\n"));
+  }
+  if (sizeLine) blocks.push(sizeLine);
+  return blocks.length > 0 ? blocks.join("\n\n") : undefined;
 }
 
 export interface WorkflowCatalogSources {
