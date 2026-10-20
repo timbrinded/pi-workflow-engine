@@ -34,6 +34,7 @@ import {
   type WorkflowRunStore,
 } from "./workflow-run-store.ts";
 import { createWorkflowRunRecord } from "./workflow-run-record.ts";
+import { canRelaunchWorkflowRun } from "./workflow-run-history.ts";
 import { sealWorkflowRunScript } from "./workflow-run-seal.ts";
 import {
   createProviderUsageLimitPauseRecord,
@@ -111,20 +112,20 @@ export async function runResolvedWorkflow(
   const journalPath = workflowJournalPath(ctx.cwd, runId);
   const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
   const runStore = new ProjectWorkflowRunStore(ctx.cwd);
-  const script = await persistInlineScript(ctx.cwd, runId, mod);
-  const argumentsPresent = workflowInputPresent(input);
+  const script = await sealRunScript(ctx.cwd, runId, mod);
   let persistenceFailureReported = false;
+  const initialRecord = createWorkflowRunRecord({
+    runId,
+    workflow: mod,
+    options: resolvedOptions,
+    progress: progress.snapshot(),
+    argumentsPresent: workflowInputPresent(input),
+    scriptPersisted: script.path !== undefined,
+    scriptSeal: script.seal,
+  });
   const durableRun = new DurableWorkflowRun(
     runStore,
-    createWorkflowRunRecord({
-      runId,
-      workflow: mod,
-      options: resolvedOptions,
-      progress: progress.snapshot(),
-      argumentsPresent,
-      scriptPersisted: script !== undefined,
-      scriptSeal: script?.seal,
-    }),
+    initialRecord,
     (error) => {
       if (persistenceFailureReported) return;
       persistenceFailureReported = true;
@@ -163,7 +164,7 @@ export async function runResolvedWorkflow(
         resumedFromRunId: resolvedOptions.resumeFromRunId,
         journalPath,
         recordPath: workflowRunRecordPath(ctx.cwd, runId),
-        ...(script === undefined ? {} : { scriptPath: script.path }),
+        ...(script.path === undefined ? {} : { scriptPath: script.path }),
       }),
     );
     progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
@@ -238,12 +239,7 @@ export async function runResolvedWorkflow(
     durableRun.transition({
       state: "paused",
       progress: progress.snapshot(),
-      // Mirrors canRelaunchWorkflowRun: a registered workflow resolves again by name, an inline one from its sealed script.
-      ...createProviderUsageLimitPauseRecord(
-        pauseError,
-        resolvedOptions,
-        (mod.source.kind === "file" || script?.seal !== undefined) && !argumentsPresent,
-      ),
+      ...createProviderUsageLimitPauseRecord(pauseError, resolvedOptions, canRelaunchWorkflowRun(initialRecord)),
     });
   } else if (pauseError) {
     durableRun.transition({
@@ -266,24 +262,26 @@ export async function runResolvedWorkflow(
 }
 
 /**
- * Write an inline run's script beside its record and seal it for this install; a failed write or seal
- * only costs the run its relaunch from `/workflow:runs`.
+ * Seal a run whose code came from a script for this install, so a repository cannot ship a run record
+ * whose relaunch runs its own code. An inline run's script is also written beside its record; a saved
+ * script resolves again by name, and the seal pins the content that ran. A failed write or seal only
+ * costs the run its relaunch from `/workflow:runs`.
  */
-async function persistInlineScript(
-  cwd: string,
-  runId: string,
-  mod: LoadedWorkflow,
-): Promise<{ readonly path: string; readonly seal?: string } | undefined> {
-  if (mod.inlineScript === undefined || mod.source.kind !== "fingerprint") return undefined;
-  let path: string;
-  try {
-    path = await persistWorkflowRunScript(cwd, runId, mod.inlineScript);
-  } catch (error) {
-    process.stderr.write(`[${mod.meta.name}] script persistence failed: ${unknownErrorMessage(error)}\n`);
-    return undefined;
+async function sealRunScript(cwd: string, runId: string, mod: LoadedWorkflow): Promise<{ readonly path?: string; readonly seal?: string }> {
+  const { source } = mod;
+  const savedScript = source.kind === "file" && source.selfContained === true;
+  if (!savedScript && (source.kind !== "fingerprint" || mod.inlineScript === undefined)) return {};
+  let path: string | undefined;
+  if (mod.inlineScript !== undefined && source.kind === "fingerprint") {
+    try {
+      path = await persistWorkflowRunScript(cwd, runId, mod.inlineScript);
+    } catch (error) {
+      process.stderr.write(`[${mod.meta.name}] script persistence failed: ${unknownErrorMessage(error)}\n`);
+      return {};
+    }
   }
   try {
-    return { path, seal: await sealWorkflowRunScript(runId, mod.source.fingerprint) };
+    return { path, seal: await sealWorkflowRunScript(runId, source.fingerprint) };
   } catch (error) {
     process.stderr.write(`[${mod.meta.name}] script seal failed, so /workflow:runs cannot relaunch this run: ${unknownErrorMessage(error)}\n`);
     return { path };

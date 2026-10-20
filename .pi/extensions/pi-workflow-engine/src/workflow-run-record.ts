@@ -103,7 +103,8 @@ interface WorkflowRunRecordBase {
   readonly scriptFile?: string;
   /**
    * This install's HMAC over the run id and source fingerprint, proving the engine recorded the script
-   * rather than a repository shipping it. An inline run relaunches from `/workflow:runs` only with one.
+   * rather than a repository shipping it. A run of an inline or saved script relaunches from
+   * `/workflow:runs` only with one.
    */
   readonly scriptSeal?: string;
   readonly options: PersistedWorkflowRunOptions;
@@ -136,7 +137,7 @@ export function createWorkflowRunRecord(input: {
   readonly argumentsPresent?: boolean;
   /** Whether the run's inline script was persisted beside the record. */
   readonly scriptPersisted?: boolean;
-  /** The persisted script's seal; see {@link WorkflowRunRecordBase.scriptSeal}. */
+  /** The run's script seal; see {@link WorkflowRunRecordBase.scriptSeal}. */
   readonly scriptSeal?: string;
 }): WorkflowRunRecord {
   const runId = validateWorkflowRunId(input.runId);
@@ -148,7 +149,7 @@ export function createWorkflowRunRecord(input: {
     workflow: persistedWorkflowIdentity(input.workflow),
     journalFile: `${runId}.jsonl`,
     scriptFile: input.scriptPersisted ? workflowRunScriptFile(runId) : undefined,
-    scriptSeal: input.scriptPersisted ? input.scriptSeal : undefined,
+    scriptSeal: input.scriptSeal,
     options: persistedWorkflowRunOptions(input.options, input.argumentsPresent ?? false),
     createdAt: input.progress.startedAt,
     updatedAt: input.progress.startedAt,
@@ -498,7 +499,8 @@ export function isWorkflowRunRecord(value: unknown): value is WorkflowRunRecord 
   if (!isPersistedWorkflowIdentity(value.workflow) || !isPersistedWorkflowRunOptions(value.options)) return false;
   if (value.journalFile !== `${value.runId}.jsonl`) return false;
   if (value.scriptFile !== undefined && value.scriptFile !== workflowRunScriptFile(value.runId)) return false;
-  if (value.scriptSeal !== undefined && (!isWorkflowRunScriptSeal(value.scriptSeal) || value.scriptFile === undefined)) return false;
+  // A seal covers an inline run's persisted script or a saved script, which resolves again by name.
+  if (value.scriptSeal !== undefined && (!isWorkflowRunScriptSeal(value.scriptSeal) || (value.scriptFile === undefined && value.workflow.sourceKind !== "file"))) return false;
   if (!isFiniteNumber(value.createdAt) || !isFiniteNumber(value.updatedAt)) return false;
   if (value.startedAt !== undefined && !isFiniteNumber(value.startedAt)) return false;
   if (value.endedAt !== undefined && !isFiniteNumber(value.endedAt)) return false;

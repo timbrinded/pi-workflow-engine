@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -34,6 +34,7 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
 import { sealWorkflowRunScript } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-seal.ts";
 import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
+import { discoverWorkflows } from "../.pi/extensions/pi-workflow-engine/src/discovery.ts";
 import { WorkflowRunsBrowser } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-runs-browser.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
 import { WORKFLOW_INSPECTOR_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
@@ -555,6 +556,47 @@ test("a repository's own inline run record and script never relaunch, however it
     await background.sessionShutdown(ctx);
     await restoreAgentDir();
     await rm(attackerAgentDir, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a project's saved script relaunches only from this install's sealed record of the content that ran", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-saved-script-"));
+  const notifications: Notification[] = [];
+  const ctx = context(cwd, notifications, "rpc");
+  const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
+  const scriptPath = join(cwd, ".pi", "workflows", "planted.js");
+  const discover = async () => (await discoverWorkflows(cwd, { userWorkflowDir: join(cwd, "no-user-dir"), projectDir: cwd })).get("planted");
+  const relaunched: string[] = [];
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => await discover(),
+    execute: async (_ctx, name) => {
+      relaunched.push(name);
+    },
+  });
+  const store = new ProjectWorkflowRunStore(cwd);
+  try {
+    await mkdir(join(cwd, ".pi", "workflows"), { recursive: true });
+    await writeFile(scriptPath, 'export const meta = { name: "planted", description: "" };\nexport default async function run() { return { summary: "ran" }; }\n');
+    const saved = await discover();
+    if (!saved) throw new Error("expected the saved script to be discovered");
+
+    // A repository ships a completed record for its own script, which this install never sealed.
+    await store.save(inlineRunRecord("planted-forged", saved, "completed", undefined));
+    await controller.handleCommand("restart planted-forged", ctx);
+    assert.equal(notifications.at(-1)?.level, "error");
+    assert.match(notifications.at(-1)?.message ?? "", /run planted-forged was not recorded by this pi install, or its script changed since; run planted again by name/);
+
+    await runWorkflow(ctx as ExtensionContext, saved, "", { runId: "planted-genuine", background: backgroundOrigin(ctx, 1) });
+    await controller.handleCommand("restart planted-genuine", ctx);
+    assert.deepEqual(relaunched, ["planted"]);
+
+    await writeFile(scriptPath, 'export const meta = { name: "planted", description: "" };\nexport default async function run() { return { summary: "edited" }; }\n');
+    await controller.handleCommand("restart planted-genuine", ctx);
+    assert.match(notifications.at(-1)?.message ?? "", /run planted-genuine was not recorded by this pi install, or its script changed since/);
+    assert.deepEqual(relaunched, ["planted"]);
+  } finally {
+    await background.sessionShutdown(ctx);
     await rm(cwd, { recursive: true, force: true });
   }
 });

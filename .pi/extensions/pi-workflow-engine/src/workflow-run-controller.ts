@@ -17,6 +17,7 @@ import {
   formatWorkflowRunSummary,
   isWorkflowRunLifecycleAction,
   parseWorkflowRunsCommand,
+  isInlineWorkflowRun,
   retainedWorkflowRunOutcome,
   supersedingRuns,
   WORKFLOW_RUN_ACTIONS,
@@ -281,28 +282,24 @@ export class WorkflowRunController {
   ): Promise<{ readonly workflow: LoadedWorkflow; readonly fingerprint: string }> {
     if (record.workflow.sourceKind === "fingerprint") {
       if (record.scriptFile === undefined) throw new Error(`inline workflow ${record.workflow.name} did not retain its script`);
-      // A repository can ship a record and script of its own, so the seal is checked before the script is read.
-      const fingerprint = record.workflow.sourceFingerprint;
-      if (
-        fingerprint === undefined
-        || record.scriptSeal === undefined
-        || !(await verifyWorkflowRunScriptSeal(record.runId, fingerprint, record.scriptSeal))
-      ) {
-        throw new Error(unsealedInlineRunMessage(record.runId));
-      }
+      const fingerprint = await sealedFingerprint(record);
       let source: string;
       try {
         source = await readWorkflowRunScript(ctx.cwd, record.runId);
       } catch (error) {
         throw new Error(`inline workflow script ${record.scriptFile} is unavailable: ${unknownErrorMessage(error)}`);
       }
-      if (inlineScriptFingerprint(source) !== fingerprint) throw new Error(unsealedInlineRunMessage(record.runId));
+      if (inlineScriptFingerprint(source) !== fingerprint) throw new Error(unsealedRunMessage(record));
       return { workflow: compileInlineWorkflow(source), fingerprint };
     }
     const workflow = await this.dependencies.resolveWorkflow(record.workflow.name, ctx);
     if (!workflow) throw new Error(`registered workflow ${record.workflow.name} is unavailable`);
     if (workflow.source.kind !== "file") {
       throw new Error(`registered workflow ${record.workflow.name} no longer has verifiable file provenance`);
+    }
+    // A repository can also ship a saved script under the name a forged record claims.
+    if (workflow.source.selfContained === true && (await sealedFingerprint(record)) !== workflow.source.fingerprint) {
+      throw new Error(unsealedRunMessage(record));
     }
     return { workflow, fingerprint: workflow.source.fingerprint };
   }
@@ -381,9 +378,28 @@ export class WorkflowRunController {
   }
 }
 
-/** Why an inline record's script will not run: its seal is this install's, and covers the script as recorded. */
-function unsealedInlineRunMessage(runId: string): string {
-  return `inline run ${runId} was not recorded by this pi install, or its script changed since; rerun it with the workflow tool's scriptPath (${WORKFLOW_RUNS_DIR}/${workflowRunScriptFile(runId)})`;
+/**
+ * The fingerprint a script-sourced record's seal covers. A repository can ship a record of its own, so
+ * the seal is checked before any script is read; it is this install's, over the script as recorded.
+ */
+async function sealedFingerprint(record: WorkflowRunRecord): Promise<string> {
+  const fingerprint = record.workflow.sourceFingerprint;
+  if (
+    fingerprint === undefined
+    || record.scriptSeal === undefined
+    || !(await verifyWorkflowRunScriptSeal(record.runId, fingerprint, record.scriptSeal))
+  ) {
+    throw new Error(unsealedRunMessage(record));
+  }
+  return fingerprint;
+}
+
+/** Why a script-sourced record will not run, and how to run the script anyway. */
+function unsealedRunMessage(record: WorkflowRunRecord): string {
+  const rerun = isInlineWorkflowRun(record)
+    ? `rerun it with the workflow tool's scriptPath (${WORKFLOW_RUNS_DIR}/${workflowRunScriptFile(record.runId)})`
+    : `run ${record.workflow.name} again by name`;
+  return `${isInlineWorkflowRun(record) ? "inline run" : "run"} ${record.runId} was not recorded by this pi install, or its script changed since; ${rerun}`;
 }
 
 /**
