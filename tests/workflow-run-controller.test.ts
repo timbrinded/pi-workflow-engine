@@ -518,7 +518,8 @@ test("provider-limit timers resume from the journal and manual stop cancels pend
   try {
     await assert.rejects(runWorkflow(ctx as ExtensionContext, limited, "", {
       runId: "auto-resume-source",
-      background: backgroundOrigin(ctx, 1),
+      // Started under Dynamax: its successor must wake the agent too.
+      background: backgroundOrigin(ctx, 1, true),
       autoResumeOnUsageLimit: true,
       usageLimitMaxAttempts: 3,
     }), WorkflowProviderUsageLimitError);
@@ -533,6 +534,8 @@ test("provider-limit timers resume from the journal and manual stop cancels pend
       && record.options.usageLimitAttempt === 1
       && record.state === "completed"
     ));
+    const successor = (await store.list()).find((record) => record.options.resumeFromRunId === "auto-resume-source");
+    assert.equal(successor?.background?.origin.wakeOnComplete, true);
     // The source stays paused after its resume; re-entering the session must not resume it again.
     const scheduledBeforeReentry = clock.delays.length;
     controller.sessionShutdown(ctx);

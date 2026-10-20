@@ -262,6 +262,8 @@ export class WorkflowRunController {
       ctx,
       name: workflow.meta.name,
       options,
+      // A relaunch continues the original run, so it delivers the way that run would have.
+      wakeOnComplete: record.background?.origin.wakeOnComplete === true,
       execute: (backgroundCtx, backgroundOptions) =>
         this.dependencies.execute(backgroundCtx, workflow.meta.name, workflow, backgroundOptions),
     });
