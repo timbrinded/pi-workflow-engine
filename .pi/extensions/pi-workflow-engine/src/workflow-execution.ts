@@ -1,3 +1,4 @@
+import { relative } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isRecord } from "./guards.ts";
 import type { ResolvedWorkflowRunOptions } from "./options.ts";
@@ -25,6 +26,10 @@ export interface WorkflowResultEnvelope {
   readonly perf?: WorkflowPerfDetails;
   readonly runId?: string;
   readonly resumedFromRunId?: string;
+  /** The run's replay journal, relative to the workflow cwd. */
+  readonly journalPath?: string;
+  /** An inline run's persisted script, relative to the workflow cwd. */
+  readonly scriptPath?: string;
 }
 
 /** A workflow result's own summary: the result itself when it is a string, else its string `summary` field. */
@@ -99,6 +104,8 @@ export async function executeWorkflowInvocation(input: WorkflowExecutionInput): 
     perf: perfSnapshot?.enabled ? { aggregates: perfSnapshot.aggregates } : undefined,
     runId: runMetadata?.runId,
     resumedFromRunId: runMetadata?.resumedFromRunId,
+    journalPath: runMetadata && relative(input.ctx.cwd, runMetadata.journalPath),
+    scriptPath: runMetadata?.scriptPath && relative(input.ctx.cwd, runMetadata.scriptPath),
   };
 }
 

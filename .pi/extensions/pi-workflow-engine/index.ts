@@ -1,10 +1,18 @@
+import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { getSelectListTheme, keyText, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, SelectItem } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import type { WorkflowRunState } from "./src/workflow-run-record.ts";
-import { WORKFLOW_TOOL_NAME, type LoadedWorkflow, type WorkflowModule, type WorkflowProgressSource, type WorkflowRef } from "./src/types.ts";
+import {
+  WORKFLOW_TOOL_NAME,
+  type LoadedWorkflow,
+  type WorkflowModule,
+  type WorkflowProgressSource,
+  type WorkflowRef,
+  type WorkflowRunMetadata,
+} from "./src/types.ts";
 import { showWorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import { WorkflowPicker } from "./src/ui/workflow-picker.ts";
 import type { PerfSink } from "./src/perf.ts";
@@ -32,7 +40,7 @@ import {
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
 } from "./src/options.ts";
 import { executeWorkflowInvocation, type WorkflowResultEnvelope } from "./src/workflow-execution.ts";
-import { formatWorkflowResultForContext } from "./src/workflow-result-context.ts";
+import { formatWorkflowResultForContext, formatWorkflowRunFileLines } from "./src/workflow-result-context.ts";
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
 import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
@@ -46,6 +54,7 @@ import { createHostToolBridge } from "./src/host-tools.ts";
 import { appendSectionToForcedPrompt } from "./src/prompt-sections.ts";
 import { WORKFLOWS_SECTION, WorkflowCatalogPrompt } from "./src/workflow-catalog.ts";
 import { registerWorkflowSizeCommand, resolveWorkflowSize, workflowSettingsPaths } from "./src/workflow-settings.ts";
+import { isRecord } from "./src/guards.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -55,6 +64,7 @@ const WORKFLOW_AUTHORING_SKILL_PATH = fileURLToPath(new URL("../../../skills/wor
 type DiscoveryModule = typeof import("./src/discovery.ts");
 type EngineModule = typeof import("./src/engine.ts");
 type InlineWorkflowModule = typeof import("./src/inline-workflow.ts");
+type WorkflowScriptFileModule = typeof import("./src/workflow-script-file.ts");
 
 async function loadDiscovery(): Promise<DiscoveryModule> {
   return await import("./src/discovery.ts");
@@ -68,6 +78,10 @@ async function loadInlineWorkflow(): Promise<InlineWorkflowModule> {
   return await import("./src/inline-workflow.ts");
 }
 
+async function loadWorkflowScriptFile(): Promise<WorkflowScriptFileModule> {
+  return await import("./src/workflow-script-file.ts");
+}
+
 async function createInvocationPerf(options: ResolvedWorkflowRunOptions): Promise<PerfSink | undefined> {
   if (!options.perf) return undefined;
   const { createPerfRecorder } = await import("./src/perf.ts");
@@ -75,9 +89,18 @@ async function createInvocationPerf(options: ResolvedWorkflowRunOptions): Promis
 }
 
 /**
- * Resolve an `api.workflow()` reference to a registered workflow module. Throws on an unknown name.
+ * Resolve an `api.workflow()` reference: a registered workflow by name, or an inline-format script file
+ * via `{ scriptPath }` under `cwd`. Throws on an unknown name, a scriptPath outside `cwd` or unreadable,
+ * or a compile error.
  */
-export async function resolveWorkflowRef(ref: WorkflowRef, perf?: PerfSink): Promise<LoadedWorkflow> {
+export async function resolveWorkflowRef(cwd: string, ref: WorkflowRef, perf?: PerfSink): Promise<LoadedWorkflow> {
+  if (typeof ref !== "string") {
+    // Inline scripts are untyped, so check the shape the type promises.
+    const scriptPath: unknown = isRecord(ref) ? ref.scriptPath : undefined;
+    if (typeof scriptPath !== "string") throw new Error("workflow() expects a workflow name or { scriptPath }");
+    const { compileWorkflowScriptFile } = await loadWorkflowScriptFile();
+    return await compileWorkflowScriptFile(cwd, scriptPath);
+  }
   const { discoverWorkflows } = await loadDiscovery();
   const workflows = await discoverWorkflows(EXTENSION_DIR, { perf });
   const mod = workflows.get(ref);
@@ -213,6 +236,7 @@ Do not edit files unless the user explicitly requested edits.`;
 export interface WorkflowToolRequestParams {
   readonly name?: string;
   readonly script?: string;
+  readonly scriptPath?: string;
   readonly resumeFromRunId?: string;
   readonly background?: boolean;
 }
@@ -220,6 +244,7 @@ export interface WorkflowToolRequestParams {
 export type WorkflowToolRequest =
   | { readonly kind: "named"; readonly name: string }
   | { readonly kind: "inline"; readonly script: string }
+  | { readonly kind: "script-path"; readonly scriptPath: string }
   | { readonly kind: "error"; readonly error: "invalid_workflow_invocation"; readonly message: string };
 
 export interface WorkflowToolErrorResult<TDetails = WorkflowToolErrorDetails> {
@@ -229,21 +254,25 @@ export interface WorkflowToolErrorResult<TDetails = WorkflowToolErrorDetails> {
   readonly isError: true;
 }
 
-type WorkflowToolErrorDetails = { readonly error: "invalid_workflow_invocation" } | { readonly error: "inline_compile_error"; readonly message: string };
+type WorkflowToolErrorDetails =
+  | { readonly error: "invalid_workflow_invocation" }
+  | { readonly error: "inline_compile_error"; readonly message: string }
+  | { readonly error: "invalid_script_path"; readonly message: string };
 
 function workflowToolError<TDetails>(text: string, details: TDetails): WorkflowToolErrorResult<TDetails> {
   return { content: [{ type: "text", text }], details, isError: true };
 }
 
-const INVALID_WORKFLOW_INVOCATION_MESSAGE = "Provide exactly one workflow name or inline workflow script.";
+const INVALID_WORKFLOW_INVOCATION_MESSAGE = "Provide exactly one of a workflow name, an inline workflow script, or a scriptPath.";
 
 export function normalizeWorkflowToolRequest(params: WorkflowToolRequestParams): WorkflowToolRequest {
   const name = params.name?.trim() ?? "";
   const script = params.script?.trim() ?? "";
-  const hasName = name.length > 0;
-  const hasScript = script.length > 0;
-  if (hasName === hasScript) return { kind: "error", error: "invalid_workflow_invocation", message: INVALID_WORKFLOW_INVOCATION_MESSAGE };
-  return hasName ? { kind: "named", name } : { kind: "inline", script };
+  const scriptPath = params.scriptPath?.trim() ?? "";
+  const provided = [name, script, scriptPath].filter((value) => value.length > 0).length;
+  if (provided !== 1) return { kind: "error", error: "invalid_workflow_invocation", message: INVALID_WORKFLOW_INVOCATION_MESSAGE };
+  if (name) return { kind: "named", name };
+  return script ? { kind: "inline", script } : { kind: "script-path", scriptPath };
 }
 
 export function invalidWorkflowInvocationResult(): WorkflowToolErrorResult {
@@ -252,6 +281,36 @@ export function invalidWorkflowInvocationResult(): WorkflowToolErrorResult {
 
 export function inlineCompileErrorResult(message: string): WorkflowToolErrorResult {
   return workflowToolError(`Inline workflow did not compile: ${message}`, { error: "inline_compile_error", message });
+}
+
+function invalidScriptPathResult(message: string): WorkflowToolErrorResult {
+  return workflowToolError(message, { error: "invalid_script_path", message });
+}
+
+/** Compile the tool's inline `script` or `scriptPath` file, shaping contract failures as tool errors. */
+async function compileInlineToolWorkflow(
+  cwd: string,
+  request: { readonly kind: "inline"; readonly script: string } | { readonly kind: "script-path"; readonly scriptPath: string },
+): Promise<LoadedWorkflow | WorkflowToolErrorResult> {
+  const inline = await loadInlineWorkflow();
+  let source: string;
+  if (request.kind === "inline") {
+    source = request.script;
+  } else {
+    const scriptFile = await loadWorkflowScriptFile();
+    try {
+      source = await scriptFile.readWorkflowScriptFile(cwd, request.scriptPath);
+    } catch (error) {
+      if (error instanceof scriptFile.WorkflowScriptPathError) return invalidScriptPathResult(error.message);
+      throw error;
+    }
+  }
+  try {
+    return inline.compileInlineWorkflow(source);
+  } catch (error) {
+    if (error instanceof inline.InlineWorkflowCompileError) return inlineCompileErrorResult(error.message);
+    throw error;
+  }
 }
 
 export type WorkflowPickerSelection =
@@ -316,7 +375,7 @@ async function executeResolvedWorkflow(
     options,
     perfRecorder,
     runResolvedWorkflow,
-    resolveWorkflow: (ref) => resolveWorkflowRef(ref, perfRecorder),
+    resolveWorkflow: (ref) => resolveWorkflowRef(ctx.cwd, ref, perfRecorder),
     onProgressSource(source) {
       if (source) {
         liveInspection = bindActiveWorkflowInspection(name, args, source);
@@ -539,8 +598,14 @@ function registerWorkflowTool(
       "Set resumeEditedWorkflow: true only with resumeFromRunId when the user explicitly accepts reusing behaviorally identical calls after workflow source edits.",
     ],
     parameters: Type.Object({
-      name: Type.Optional(Type.String({ description: "Workflow name, e.g. code-review. Provide exactly one of name or script." })),
-      script: Type.Optional(Type.String({ description: "Inline workflow script. Provide exactly one of script or name." })),
+      name: Type.Optional(Type.String({ description: "Workflow name, e.g. code-review. Provide exactly one of name, script, or scriptPath." })),
+      script: Type.Optional(Type.String({ description: "Inline workflow script. Provide exactly one of name, script, or scriptPath." })),
+      scriptPath: Type.Optional(
+        Type.String({
+          description:
+            "Path, relative to the working directory, of a file holding an inline workflow script, such as the persisted script a result names to edit and rerun. With resumeFromRunId, edits to the script are accepted as with resumeEditedWorkflow. Provide exactly one of name, script, or scriptPath.",
+        }),
+      ),
       args: Type.Optional(Type.String({ description: "Arguments for the workflow (e.g. target or focus)" })),
       concurrency: Type.Optional(Type.Number({ description: "Optional per-run agent concurrency cap" })),
       parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
@@ -631,7 +696,8 @@ function registerWorkflowTool(
         budget: budget.budget,
         perf: params.perf,
         resumeFromRunId,
-        resumeEditedWorkflow: params.resumeEditedWorkflow,
+        // Rerunning an edited script file is the point of scriptPath; each call's own replay identity still guards reuse.
+        resumeEditedWorkflow: params.resumeEditedWorkflow === true || request.kind === "script-path",
         signal,
       });
       const perfRecorder = await createInvocationPerf(runOptions);
@@ -649,13 +715,9 @@ function registerWorkflowTool(
         mod = named;
         resultName = request.name;
       } else {
-        const inline = await loadInlineWorkflow();
-        try {
-          mod = inline.compileInlineWorkflow(request.script);
-        } catch (error) {
-          if (error instanceof inline.InlineWorkflowCompileError) return inlineCompileErrorResult(error.message);
-          throw error;
-        }
+        const compiled = await compileInlineToolWorkflow(ctx.cwd, request);
+        if ("isError" in compiled) return compiled;
+        mod = compiled;
         resultName = mod.meta.name;
       }
 
@@ -692,13 +754,39 @@ function registerWorkflowTool(
         spent = snapshot;
         return runOptions.onUsageSnapshot?.(snapshot);
       };
+      // A failed run still names its run, script and journal, so the host can fix the script and resume.
+      let run: WorkflowRunMetadata | undefined;
+      const onRunMetadata = (metadata: WorkflowRunMetadata) => {
+        run = metadata;
+        return runOptions.onRunMetadata?.(metadata);
+      };
       let envelope: WorkflowResultEnvelope;
       try {
-        envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, { ...runOptions, hostTools, onUsageSnapshot }, perfRecorder);
+        envelope = await executeResolvedWorkflow(
+          pi,
+          ctx,
+          resultName,
+          mod,
+          resultArgs,
+          { ...runOptions, hostTools, onUsageSnapshot, onRunMetadata },
+          perfRecorder,
+        );
       } catch (error) {
         const message = unknownErrorMessage(error);
+        const runLines = run
+          ? [
+              `Run: ${run.runId}`,
+              ...formatWorkflowRunFileLines({
+                scriptPath: run.scriptPath && relative(ctx.cwd, run.scriptPath),
+                journalPath: relative(ctx.cwd, run.journalPath),
+              }),
+            ]
+          : [];
         return {
-          ...workflowToolError(`Workflow ${resultName} failed: ${message}`, { error: "workflow_failed", name: resultName, message }),
+          ...workflowToolError(
+            [`Workflow ${resultName} failed: ${message}`, ...(runLines.length > 0 ? ["", ...runLines] : [])].join("\n"),
+            { error: "workflow_failed", name: resultName, message },
+          ),
           usage: workflowUsageForPi(spent),
         };
       } finally {

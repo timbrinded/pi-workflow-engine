@@ -1,3 +1,4 @@
+import { relative } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BackgroundWorkflowCoordinator, backgroundOrigin } from "./background-workflows.ts";
 import { createWorkflowRunId } from "./journal.ts";
@@ -43,6 +44,7 @@ export async function startBackgroundWorkflowTool(
     runId,
     background: backgroundOrigin(input.ctx, Date.now(), input.wakeOnComplete),
   };
+  let scriptPath: string | undefined;
   try {
     await input.coordinator.start({
       ctx: input.ctx,
@@ -55,6 +57,7 @@ export async function startBackgroundWorkflowTool(
             ...backgroundOptions,
             signal,
             onRunMetadata(metadata) {
+              scriptPath = metadata.scriptPath && relative(input.ctx.cwd, metadata.scriptPath);
               onStarted();
               return backgroundOptions.onRunMetadata?.(metadata);
             },
@@ -73,7 +76,7 @@ export async function startBackgroundWorkflowTool(
   return {
     content: [{
       type: "text",
-      text: `Background workflow "${input.name}" started.\nRun ID: ${runId}\nDurable record: .pi/.workflow-runs/${runId}.run.json`,
+      text: `Background workflow "${input.name}" started.\nRun ID: ${runId}\nDurable record: .pi/.workflow-runs/${runId}.run.json${scriptPath ? `\nScript: ${scriptPath}` : ""}`,
     }],
     details: { background: true, state: "running", name: input.name, runId },
   };

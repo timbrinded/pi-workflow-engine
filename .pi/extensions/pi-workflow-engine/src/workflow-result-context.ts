@@ -15,15 +15,28 @@ export function formatWorkflowResultForContext(envelope: WorkflowResultEnvelope)
   return `## Workflow: ${envelope.name}\n\n${formatResultForContext(envelope.result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
 }
 
-/** Run id, usage and perf lines appended for the host model. */
+/** Run id, run files, usage and perf lines appended for the host model. */
 function formatWorkflowDetailLines(envelope: WorkflowResultEnvelope): string[] {
   const run = envelope.runId
     ? envelope.resumedFromRunId ? `Run: ${envelope.runId} (resumed from ${envelope.resumedFromRunId})` : `Run: ${envelope.runId}`
     : undefined;
   return [
     run,
+    ...formatWorkflowRunFileLines(envelope),
     formatWorkflowUsageLine(envelope.usage),
     envelope.perf ? formatPerfSummary(envelope.perf.aggregates) : undefined,
+  ].filter((line): line is string => line !== undefined);
+}
+
+/**
+ * Where the host model can read what the run did: the persisted script it can edit and rerun with
+ * `scriptPath`, and the replay journal of completed agent results.
+ */
+export function formatWorkflowRunFileLines(files: { readonly scriptPath?: string; readonly journalPath?: string }): string[] {
+  return [
+    files.scriptPath ? `Script: ${files.scriptPath}` : undefined,
+    files.journalPath ? `Journal: ${files.journalPath}` : undefined,
+    files.journalPath ? "If the result is empty or unexpected, read the journal before diagnosing." : undefined,
   ].filter((line): line is string => line !== undefined);
 }
 

@@ -16,8 +16,8 @@ import type { WorkflowRunState } from "./workflow-run-record.ts";
 
 export type { WorkflowLaneItemStatus } from "./progress-types.ts";
 
-/** A reference to a registered workflow by name. */
-export type WorkflowRef = string;
+/** A registered workflow by name, or an inline-format script file under the workflow cwd. */
+export type WorkflowRef = string | { readonly scriptPath: string };
 
 /** One declared phase of a workflow. */
 export interface WorkflowPhaseMeta {
@@ -50,6 +50,8 @@ export interface WorkflowRunMetadata {
   readonly resumedFromRunId?: string;
   readonly journalPath: string;
   readonly recordPath: string;
+  /** The inline run's persisted script; absent for registered workflows or when the write failed. */
+  readonly scriptPath?: string;
 }
 
 export interface WorkflowBackgroundOrigin {
@@ -241,10 +243,11 @@ export interface WorkflowApi {
    */
   classify(context: ClassifierContext, opts?: ClassifyOptions): Promise<Record<string, ClassifierAnswer>>;
   /**
-   * Run another registered workflow inline as a sub-step and return its result. The child shares
+   * Run another workflow inline as a sub-step and return its result: a registered workflow by name, or
+   * an inline-format script file via `{ scriptPath }` relative to the workflow cwd. The child shares
    * this run's concurrency cap, abort signal, and perf sink. Nests one level only: calling
-   * `workflow()` from within a sub-workflow rejects. Rejects on unknown name — catch it to handle
-   * a missing sub-workflow gracefully.
+   * `workflow()` from within a sub-workflow rejects. Rejects on an unknown name, a scriptPath outside
+   * the cwd or unreadable, or a script compile error — catch it to handle a missing sub-workflow gracefully.
    */
   workflow(ref: WorkflowRef, args?: string): Promise<unknown>;
   /**
@@ -294,4 +297,6 @@ export interface WorkflowModule {
 export interface LoadedWorkflow extends WorkflowModule {
   readonly source: WorkflowSourceIdentity;
   readonly isolatedWorktreeBaseline?: WorktreeBaseline;
+  /** An inline run's script source, persisted beside its run record so the run can be read and relaunched. */
+  readonly inlineScript?: string;
 }

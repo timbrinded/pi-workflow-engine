@@ -19,8 +19,10 @@ import {
   DurableWorkflowRun,
   ProjectWorkflowRunStore,
   workflowRunRecordPath,
+  workflowRunScriptPath,
   type WorkflowRunStore,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { WorkflowProviderUsageLimitError } from "../.pi/extensions/pi-workflow-engine/src/provider-usage-limit.ts";
 
 const USAGE: WorkflowUsageSnapshot = {
@@ -483,6 +485,47 @@ test("run record retention keeps only the newest configured records", async () =
 
     await store.prune(1);
     assert.deepEqual((await store.list()).map((record) => record.runId), ["new"]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the runs directory ignores its own files without replacing an existing ignore file", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-run-gitignore-"));
+  try {
+    await new ProjectWorkflowRunStore(cwd).save(completedRecord("ignored-run"));
+    const ignorePath = join(cwd, ".pi", ".workflow-runs", ".gitignore");
+    assert.equal(await readFile(ignorePath, "utf8"), "*\n");
+
+    await writeFile(ignorePath, "# kept by the user\n*\n");
+    await new ProjectWorkflowRunStore(cwd).save(completedRecord("second-run"));
+    assert.equal(await readFile(ignorePath, "utf8"), "# kept by the user\n*\n");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("an inline run persists its script beside the record, and pruning the record removes it", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-run-script-"));
+  try {
+    const source = 'export const meta = { name: "persisted-inline", description: "" };\nexport default async function run() { return "ok"; }\n';
+    let metadata: WorkflowRunMetadata | undefined;
+    await runWorkflow(fakeContext(cwd), compileInlineWorkflow(source), "", {
+      runId: "inline-script-run",
+      onRunMetadata(value) {
+        metadata = value;
+      },
+    });
+    await runWorkflow(fakeContext(cwd), workflow("registered-shape"), "", { runId: "no-script-run" });
+    const store = new ProjectWorkflowRunStore(cwd);
+
+    assert.equal((await store.load("inline-script-run"))?.scriptFile, "inline-script-run.script.js");
+    assert.equal(metadata?.scriptPath, workflowRunScriptPath(cwd, "inline-script-run"));
+    assert.equal(await readFile(workflowRunScriptPath(cwd, "inline-script-run"), "utf8"), source);
+    assert.equal((await store.load("no-script-run"))?.scriptFile, undefined);
+
+    await store.prune(0);
+    await assert.rejects(() => stat(workflowRunScriptPath(cwd, "inline-script-run")));
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

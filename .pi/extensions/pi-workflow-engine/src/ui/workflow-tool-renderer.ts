@@ -10,6 +10,7 @@ import { isWorkflowResult, workflowResultComponent } from "./workflow-result-ren
 export interface WorkflowToolCallArgs {
   readonly name?: string;
   readonly script?: string;
+  readonly scriptPath?: string;
   readonly args?: string;
   readonly background?: boolean;
   readonly resumeFromRunId?: string;
@@ -26,7 +27,9 @@ export function workflowToolTitle(args: WorkflowToolCallArgs): { readonly name: 
   const named = args.name?.trim();
   if (named) return { name: named, detail: detail || undefined };
   const meta = args.script ? readInlineWorkflowMeta(args.script) : undefined;
-  return { name: meta?.name ?? "inline", detail: detail || collapseWhitespace(meta?.description ?? "") || undefined };
+  // The row renders synchronously, so a script file is named by its path rather than read for its meta.
+  const fallback = meta?.description ?? args.scriptPath ?? "";
+  return { name: meta?.name ?? "inline", detail: detail || collapseWhitespace(fallback) || undefined };
 }
 
 /** `▸ workflow code-review · HEAD~3 (background)`: the detail is shortened before the tags are. */

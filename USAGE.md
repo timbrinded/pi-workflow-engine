@@ -285,6 +285,10 @@ Record replacement is atomic, corrupt or unsupported-version files are ignored i
 
 Persistence is intentionally bounded and private by default. Raw workflow args, prompts, subagent transcripts, progress logs, lane details, agent errors, environment data, credentials, and tool-output-shaped fields are not stored. Final results are limited to bounded plain JSON; credential- and transcript-shaped fields are redacted, and unsupported or cyclic results are marked unavailable instead of executing accessors or breaking the workflow. Loading history only parses these data files and never imports or executes workflow code.
 
+An inline run (a tool `script` or `scriptPath`) also saves its script to `.pi/.workflow-runs/<run-id>.script.js`, a separate file the record only references, because the record never holds prompts. The script holds nothing new: pi's session transcript already contains it as the tool call's arguments. A pruned record takes its script with it. Whenever the engine creates `.pi/.workflow-runs/`, it adds a `.gitignore` containing `*` so run files stay out of the project's git history; an existing `.gitignore` there is never replaced.
+
+The result handed to the host agent names the run's files after the run ID: `Script:` for an inline run, and `Journal:` with a reminder to read the journal before diagnosing an empty or unexpected result. A failed inline run lists the same lines after its error, and a background start names the script too. To iterate, edit the script and rerun it with `scriptPath` (see [Author an inline workflow](#author-an-inline-workflow)).
+
 ### Background workflows
 
 The host-facing `workflow` tool accepts `background: true`. It returns as soon as the run ID and origin metadata are durably recorded, while the normal workflow engine continues in-process with the same concurrency, budget, worktree, progress, usage, and resume rules. Synchronous execution remains the default, and the `/workflow` slash command remains synchronous.
@@ -305,7 +309,7 @@ Provider usage-window continuation is a separate, explicit background option:
 }
 ```
 
-It is off by default and schedules only registered file workflows whose invocation had no arguments; inline scripts and argument-bearing runs still pause safely but require an explicit manual decision because their executable input is not persisted. A recognized provider usage or quota failure aborts the current fan-out before queued agents can open new sessions, preserves the replay journal, and records a sanitized provider message, provider identity, reset hint, total attempt number, and next eligible time. Transport failures and ordinary provider errors keep the existing per-agent `agentRetries` behavior and do not create a provider-limit pause.
+It is off by default and schedules only registered file workflows and inline runs whose script was persisted, and only when the invocation had no arguments; argument-bearing runs still pause safely but require an explicit manual decision because their arguments are not persisted. A recognized provider usage or quota failure aborts the current fan-out before queued agents can open new sessions, preserves the replay journal, and records a sanitized provider message, provider identity, reset hint, total attempt number, and next eligible time. Transport failures and ordinary provider errors keep the existing per-agent `agentRetries` behavior and do not create a provider-limit pause.
 
 Reset parsing accepts provider duration hints such as `retry-after: 60` and `x-ratelimit-reset-tokens: 6m0s`, plus future RFC3339 timestamps. Missing, past, or malformed hints use a 60-second fallback; delays are clamped to at least 5 seconds and at most `usageLimitMaxDelayMs`. The default maximum is three total run attempts, including the initial run. When the eligible time arrives, the extension starts a new background run with `resumeFromRunId`; after a process restart, it re-arms only the remaining delay. `/workflow:runs resume` and `/workflow:runs stop` cancel any pending timer, and the attempt cap prevents an infinite resume loop.
 
@@ -327,7 +331,7 @@ The same operations are available without the selection UI:
 /workflow:inspector <run-id>
 ```
 
-Inspect is always safe. Stop is available for a background run active in the current session and for a retained paused run with a pending resume timer. Resume is limited to paused registered workflows whose source fingerprint is unchanged and whose invocation had no redacted arguments; it starts a new background run ID with `resumeFromRunId` journal replay. A paused run already resumed by a queued, running, paused, or completed run is listed as `resumed as <run-id>` and offers no second resume; once every resume of it has failed or been stopped, manual resume is offered again, while automatic provider-limit resume never fires twice for the same paused run. Restart is limited to completed, failed, or stopped registered workflows that had no arguments and also creates a new background run ID. Inline workflows and argument-bearing invocations are intentionally not relaunched because their executable input was not persisted. In `print` and `json` modes, list and inspect return formatted text without opening TUI components, while resume/restart report that background execution requires TUI or RPC mode.
+Inspect is always safe. Stop is available for a background run active in the current session and for a retained paused run with a pending resume timer. Resume is limited to paused runs whose source fingerprint is unchanged and whose invocation had no redacted arguments; it starts a new background run ID with `resumeFromRunId` journal replay. A paused run already resumed by a queued, running, paused, or completed run is listed as `resumed as <run-id>` and offers no second resume; once every resume of it has failed or been stopped, manual resume is offered again, while automatic provider-limit resume never fires twice for the same paused run. Restart is limited to completed, failed, or stopped runs that had no arguments and also creates a new background run ID. A registered workflow relaunches by name; an inline run relaunches from its persisted `<run-id>.script.js`, so it is relaunchable only while that script is retained, and fails with a clear message if the file was deleted. Argument-bearing invocations are intentionally not relaunched because their arguments were not persisted. In `print` and `json` modes, list and inspect return formatted text without opening TUI components, while resume/restart report that background execution requires TUI or RPC mode.
 
 Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively. The viewer lists findings most severe first with the selected finding's full detail beside the list (below it in narrow terminals); `space` or `enter` selects a finding, `a` toggles all, `f` generates patch previews and `c` posts PR comments for the selection, and `pgup`/`pgdn` scroll a long detail. The viewer is sized to its content and shows scroll hints only when something is clipped. `/workflow:results` or `ctrl+shift+r` reopens the most recent validated code-review report in the current pi session without rerunning the workflow; selections reset when it reopens.
 
@@ -349,6 +353,8 @@ The `workflow` tool exposes the same features as `resumeFromRunId` and the opt-i
 With edited-workflow resume enabled, unchanged calls are reused while changed or newly added calls run live. Matching uses a stable behavioral hash, not call or completion order. Repeated identical calls are deliberately ambiguous and run live unless each logical call has a stable, distinct `cacheKey`. The new run record retains the opt-in policy and reports cached and live agent totals. The engine only inspects the prior run's JSON journal; it never loads or executes the prior workflow source.
 
 This option can return a result produced before an orchestration edit when that call's explicit identity did not change. Use it only when the unchanged call is still semantically valid in the edited workflow, and prefer stable `cacheKey` values for repeated logical calls. Omit `--resume-edited` or `resumeEditedWorkflow` for the fail-closed default.
+
+A tool call with `scriptPath` and `resumeFromRunId` implies `resumeEditedWorkflow: true`, because rerunning an edited script file is what `scriptPath` is for. Only the whole-script fingerprint check is relaxed; each call's own replay identity still decides whether its cached result is reused.
 
 Replay is explicit for agents that share the workflow directory and automatic for isolated patch-producing agents:
 
@@ -496,16 +502,17 @@ Cleanup is a required finalizer. The engine attempts every registered worktree r
 
 ### Compose workflows
 
-`workflow(ref, args?)` runs a registered workflow by name as a sub-step, returning its result. The child shares the parent run's concurrency cap, total-agent limit, per-agent timeout, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
+`workflow(ref, args?)` runs a registered workflow by name, or an inline-format script file via `{ scriptPath }`, as a sub-step, returning its result. The child shares the parent run's concurrency cap, total-agent limit, per-agent timeout, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
 
 ```ts
 export default async function run({ workflow }: WorkflowApi) {
   const review = await workflow("code-review", "HEAD~3");
-  return { review };
+  const audit = await workflow({ scriptPath: "scripts/audit.js" });
+  return { review, audit };
 }
 ```
 
-Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name. Inside `parallel()` or `pipeline()`, recoverable branch errors become `null` results, so filter nulls before synthesis; a genuine run abort still rejects.
+A `scriptPath` is resolved against the workflow cwd and must stay inside it after symlinks are resolved; the file follows the [inline workflow rules](#author-an-inline-workflow) and is fingerprinted by content like an inline script. Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name, a `scriptPath` outside the cwd or unreadable, or a script that does not compile. Inside `parallel()` or `pipeline()`, recoverable branch errors become `null` results, so filter nulls before synthesis; a genuine run abort still rejects.
 
 ### Classify between stages
 
@@ -576,6 +583,8 @@ Inline rules:
 Inline workflows run in-process with extension permissions, so treat them as trusted task automation.
 
 The host agent's reference for writing these scripts is the bundled `workflow-authoring` skill (`skills/workflow-authoring/SKILL.md`). The `workflow` tool's guidelines stay short (the opt-in rule, the target and `Type` rules, profiles, the worktree return shape, host MCP reach, and the run-mode flags) and tell the model to read the skill before it writes or edits a script. The skill covers the full API, why fan-out uses `api.parallel` rather than `Promise.all` and defaults to `api.pipeline`, verification and completeness patterns, budget loops, worktree edits, resume, and saving a reusable workflow.
+
+The tool also takes `scriptPath` in place of `script`: a file holding an inline script, relative to the working directory and inside it after symlinks are resolved. Each tool call gives exactly one of `name`, `script`, or `scriptPath`. Every inline run saves its script as `.pi/.workflow-runs/<run-id>.script.js` and names it in the result, so iterating does not need the script pasted again: edit that file (or a copy), then call the tool with `scriptPath` and `resumeFromRunId` set to the previous run. Replayable agent calls (see [Resume a run](#resume-a-run)) that the edit left unchanged are reused; edited and new calls run live.
 
 ## Runtime knobs
 

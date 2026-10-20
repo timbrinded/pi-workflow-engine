@@ -25,7 +25,8 @@ import {
   type WorkflowRunLifecycleAction,
 } from "./workflow-run-history.ts";
 import { stopWorkflowRunRecord, type WorkflowRunRecord } from "./workflow-run-record.ts";
-import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
+import { ProjectWorkflowRunStore, readWorkflowRunScript, type WorkflowRunStore } from "./workflow-run-store.ts";
+import { compileInlineWorkflow } from "./inline-workflow.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
   WorkflowUsageLimitScheduler,
@@ -232,14 +233,10 @@ export class WorkflowRunController {
   ): Promise<string> {
     const unavailable = backgroundUnavailableResult(ctx.mode);
     if (unavailable) throw new Error(unavailable.content[0].text);
-    const workflow = await this.dependencies.resolveWorkflow(record.workflow.name);
-    if (!workflow) throw new Error(`registered workflow ${record.workflow.name} is unavailable`);
-    if (workflow.source.kind !== "file") {
-      throw new Error(`registered workflow ${record.workflow.name} no longer has verifiable file provenance`);
-    }
+    const { workflow, fingerprint } = await this.relaunchWorkflow(ctx, record);
     if (
       action === "resume"
-      && workflow.source.fingerprint !== record.workflow.sourceFingerprint
+      && fingerprint !== record.workflow.sourceFingerprint
     ) {
       throw new Error("workflow source changed, so journal replay cannot resume safely");
     }
@@ -270,6 +267,31 @@ export class WorkflowRunController {
     const message = result.content[0].text;
     if (typeof result.details.error === "string") throw new Error(message);
     return message;
+  }
+
+  /** The module a relaunch runs: an inline run's persisted script, else the registered workflow of the same name. */
+  private async relaunchWorkflow(
+    ctx: ExtensionContext,
+    record: WorkflowRunRecord,
+  ): Promise<{ readonly workflow: LoadedWorkflow; readonly fingerprint: string }> {
+    if (record.workflow.sourceKind === "fingerprint") {
+      if (record.scriptFile === undefined) throw new Error(`inline workflow ${record.workflow.name} did not retain its script`);
+      let source: string;
+      try {
+        source = await readWorkflowRunScript(ctx.cwd, record.runId);
+      } catch (error) {
+        throw new Error(`inline workflow script ${record.scriptFile} is unavailable: ${unknownErrorMessage(error)}`);
+      }
+      const workflow = compileInlineWorkflow(source);
+      if (workflow.source.kind !== "fingerprint") throw new Error(`inline workflow ${record.workflow.name} has no script fingerprint`);
+      return { workflow, fingerprint: workflow.source.fingerprint };
+    }
+    const workflow = await this.dependencies.resolveWorkflow(record.workflow.name);
+    if (!workflow) throw new Error(`registered workflow ${record.workflow.name} is unavailable`);
+    if (workflow.source.kind !== "file") {
+      throw new Error(`registered workflow ${record.workflow.name} no longer has verifiable file provenance`);
+    }
+    return { workflow, fingerprint: workflow.source.fingerprint };
   }
 
   private async autoResume(ctx: ExtensionContext, runId: string, attempt: number): Promise<void> {

@@ -37,6 +37,7 @@ export function compileInlineWorkflow(source: string): LoadedWorkflow {
     meta: parsedMeta.meta,
     default: (api) => executor(api, Type),
     source: { kind: "fingerprint", fingerprint: createHash("sha256").update(source).digest("hex") },
+    inlineScript: source,
   };
 }
 

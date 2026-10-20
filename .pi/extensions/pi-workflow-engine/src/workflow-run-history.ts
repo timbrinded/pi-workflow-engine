@@ -86,9 +86,14 @@ export function availableWorkflowRunActions(
 }
 
 export function canRelaunchWorkflowRun(record: WorkflowRunRecord): boolean {
+  return hasRelaunchableWorkflowSource(record) && record.options.argumentsPresent === false;
+}
+
+/** A registered workflow resolves again by name; an inline one relaunches from the script persisted beside its record. */
+export function hasRelaunchableWorkflowSource(record: WorkflowRunRecord): boolean {
+  if (typeof record.workflow.sourceFingerprint !== "string") return false;
   return record.workflow.sourceKind === "file"
-    && typeof record.workflow.sourceFingerprint === "string"
-    && record.options.argumentsPresent === false;
+    || (record.workflow.sourceKind === "fingerprint" && record.scriptFile !== undefined);
 }
 
 export function formatWorkflowRunHistory(

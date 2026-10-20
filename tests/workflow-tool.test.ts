@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -325,10 +325,62 @@ test("normalizeWorkflowToolRequest accepts inline workflow requests", () => {
   assert.deepEqual(normalizeWorkflowToolRequest({ script }), { kind: "inline", script });
 });
 
-test("normalizeWorkflowToolRequest rejects both or neither workflow target", () => {
+test("normalizeWorkflowToolRequest accepts a script file path", () => {
+  assert.deepEqual(normalizeWorkflowToolRequest({ scriptPath: " scripts/run.js " }), { kind: "script-path", scriptPath: "scripts/run.js" });
+});
+
+test("normalizeWorkflowToolRequest rejects more or fewer than one workflow target", () => {
   assert.equal(normalizeWorkflowToolRequest({ name: "code-review", script: "export const meta = {};" }).kind, "error");
+  assert.equal(normalizeWorkflowToolRequest({ script: "export const meta = {};", scriptPath: "run.js" }).kind, "error");
+  assert.equal(normalizeWorkflowToolRequest({ name: "code-review", scriptPath: "run.js" }).kind, "error");
   assert.equal(normalizeWorkflowToolRequest({}).kind, "error");
-  assert.equal(normalizeWorkflowToolRequest({ name: "   ", script: "   " }).kind, "error");
+  assert.equal(normalizeWorkflowToolRequest({ name: "   ", script: "   ", scriptPath: " " }).kind, "error");
+});
+
+test("an inline run names its persisted script and journal, and reruns from the edited script by scriptPath", async () => {
+  const tool = captureWorkflowTool();
+  const script = (value: string) => `export const meta = { name: "iterate-probe", description: "Iterate probe" };
+export default async function run() { return { summary: "${value}" }; }`;
+
+  const first = await tool.execute("call-iterate-first", { script: script("first pass") }, undefined, () => {}, HEADLESS_CTX);
+  assert.ok(isRecord(first) && isRecord(first.details));
+  const runId = first.details.runId;
+  if (typeof runId !== "string") throw new Error("expected a run id");
+  const scriptPath = `.pi/.workflow-runs/${runId}.script.js`;
+  const text = toolResultText(first);
+  assert.match(text, new RegExp(`Script: ${scriptPath.replaceAll(".", "\\.")}`));
+  assert.match(text, new RegExp(`Journal: \\.pi/\\.workflow-runs/${runId}\\.jsonl`));
+  assert.match(text, /If the result is empty or unexpected, read the journal before diagnosing\./);
+  assert.equal(readFileSync(join(WORKFLOW_TOOL_TEST_CWD, scriptPath), "utf8"), script("first pass"));
+  assert.equal(readFileSync(join(WORKFLOW_TOOL_TEST_CWD, ".pi/.workflow-runs/.gitignore"), "utf8"), "*\n");
+
+  writeFileSync(join(WORKFLOW_TOOL_TEST_CWD, scriptPath), script("edited pass"));
+  const rerun = await tool.execute("call-iterate-rerun", { scriptPath, resumeFromRunId: runId }, undefined, () => {}, HEADLESS_CTX);
+  assert.ok(isRecord(rerun) && isRecord(rerun.details));
+  assert.match(toolResultText(rerun), /edited pass/);
+  assert.equal(rerun.details.resumedFromRunId, runId);
+  const rerunId = rerun.details.runId;
+  if (typeof rerunId !== "string") throw new Error("expected a rerun id");
+  const record = await new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD).load(rerunId);
+  assert.equal(record?.options.resumeEditedWorkflow, true, "scriptPath with resumeFromRunId implies edited-workflow resume");
+  assert.equal(record?.scriptFile, `${rerunId}.script.js`);
+});
+
+test("a scriptPath outside the working directory is a rejected call", async () => {
+  const result = await captureWorkflowTool().execute("call-escape", { scriptPath: "../escape.js" }, undefined, () => {}, HEADLESS_CTX);
+
+  assert.ok(isRecord(result) && isRecord(result.details));
+  assert.equal(result.isError, true);
+  assert.equal(result.details.error, "invalid_script_path");
+});
+
+test("a failed inline run names its script and journal for the next attempt", async () => {
+  const script = `export const meta = { name: "failing-iterate", description: "Failing iterate probe" };
+export default async function run() { throw new Error("broken step"); }`;
+  const failed = await captureWorkflowTool().execute("call-failing-iterate", { script }, undefined, () => {}, HEADLESS_CTX);
+
+  const text = toolResultText(failed);
+  assert.match(text, /Workflow failing-iterate failed: broken step\n\nRun: \S+\nScript: \.pi\/\.workflow-runs\/\S+\.script\.js\nJournal: /);
 });
 
 test("inline workflow request compiles and runs without LLM calls", async () => {
@@ -538,6 +590,7 @@ export default async function run() {
   const runId = result.details.runId;
   assert.equal(typeof runId, "string");
   if (typeof runId !== "string") throw new Error("expected background run id");
+  assert.match(toolResultText(result), new RegExp(`\\nScript: \\.pi/\\.workflow-runs/${runId}\\.script\\.js$`));
 
   const store = new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD);
   await waitUntil(

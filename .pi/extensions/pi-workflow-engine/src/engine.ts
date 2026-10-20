@@ -27,6 +27,7 @@ import {
 } from "./resume-context.ts";
 import {
   DurableWorkflowRun,
+  persistWorkflowRunScript,
   ProjectWorkflowRunStore,
   workflowRunRecordPath,
   type WorkflowRunStore,
@@ -107,6 +108,8 @@ export async function runResolvedWorkflow(
   const journalPath = workflowJournalPath(ctx.cwd, runId);
   const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
   const runStore = new ProjectWorkflowRunStore(ctx.cwd);
+  const scriptPath = await persistInlineScript(ctx.cwd, runId, mod);
+  const argumentsPresent = args.length > 0;
   let persistenceFailureReported = false;
   const durableRun = new DurableWorkflowRun(
     runStore,
@@ -115,7 +118,8 @@ export async function runResolvedWorkflow(
       workflow: mod,
       options: resolvedOptions,
       progress: progress.snapshot(),
-      argumentsPresent: args.length > 0,
+      argumentsPresent,
+      scriptPersisted: scriptPath !== undefined,
     }),
     (error) => {
       if (persistenceFailureReported) return;
@@ -155,6 +159,7 @@ export async function runResolvedWorkflow(
         resumedFromRunId: resolvedOptions.resumeFromRunId,
         journalPath,
         recordPath: workflowRunRecordPath(ctx.cwd, runId),
+        ...(scriptPath === undefined ? {} : { scriptPath }),
       }),
     );
     progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
@@ -229,7 +234,12 @@ export async function runResolvedWorkflow(
     durableRun.transition({
       state: "paused",
       progress: progress.snapshot(),
-      ...createProviderUsageLimitPauseRecord(pauseError, resolvedOptions, mod.source.kind === "file" && args.length === 0),
+      // Mirrors canRelaunchWorkflowRun: a registered workflow resolves again by name, an inline one from its persisted script.
+      ...createProviderUsageLimitPauseRecord(
+        pauseError,
+        resolvedOptions,
+        (mod.source.kind === "file" || scriptPath !== undefined) && !argumentsPresent,
+      ),
     });
   } else if (pauseError) {
     durableRun.transition({
@@ -249,6 +259,17 @@ export async function runResolvedWorkflow(
 
   if (outcome.ok) return outcome.value;
   throw outcome.error;
+}
+
+/** Write an inline run's script beside its record; a failed write only costs the run its relaunch. */
+async function persistInlineScript(cwd: string, runId: string, mod: LoadedWorkflow): Promise<string | undefined> {
+  if (mod.inlineScript === undefined) return undefined;
+  try {
+    return await persistWorkflowRunScript(cwd, runId, mod.inlineScript);
+  } catch (error) {
+    process.stderr.write(`[${mod.meta.name}] script persistence failed: ${unknownErrorMessage(error)}\n`);
+    return undefined;
+  }
 }
 
 function backgroundPauseError(error: unknown, ...signals: Array<AbortSignal | undefined>): unknown {

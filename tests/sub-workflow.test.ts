@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "bun:test";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -405,10 +408,37 @@ test("parent and sub-workflow agents share the run's live-agent limit", async ()
 });
 
 test("resolveWorkflowRef resolves a registered workflow by name", async () => {
-  const mod = await resolveWorkflowRef("code-review");
+  const mod = await resolveWorkflowRef(process.cwd(), "code-review");
   assert.equal(mod.meta.name, "code-review");
 });
 
 test("resolveWorkflowRef rejects an unknown name", async () => {
-  await assert.rejects(() => resolveWorkflowRef("does-not-exist"), /Unknown workflow/);
+  await assert.rejects(() => resolveWorkflowRef(process.cwd(), "does-not-exist"), /Unknown workflow/);
+});
+
+test("resolveWorkflowRef compiles a scriptPath under the cwd and rejects one that escapes it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-sub-workflow-script-"));
+  const cwd = join(root, "project");
+  try {
+    await mkdir(join(cwd, "scripts"), { recursive: true });
+    const script = 'export const meta = { name: "child-script", description: "" };\nexport default async function run({ args }) { return `child:${args}`; }\n';
+    await writeFile(join(cwd, "scripts", "child.js"), script);
+    await writeFile(join(root, "outside.js"), script);
+    await symlink(join(root, "outside.js"), join(cwd, "scripts", "linked.js"));
+
+    const child = await resolveWorkflowRef(cwd, { scriptPath: "scripts/child.js" });
+    assert.equal(child.meta.name, "child-script");
+    assert.equal(child.source.kind, "fingerprint");
+
+    const progress = createProgress();
+    const parent = workflowModule("parent", async (api) => api.workflow({ scriptPath: "scripts/child.js" }, "payload"));
+    const result = await runWorkflowWithContext(createRc(progress, new Semaphore(1)), progress, parent, "", contextOpts((ref) => resolveWorkflowRef(cwd, ref)));
+    assert.equal(result, "child:payload");
+
+    await assert.rejects(() => resolveWorkflowRef(cwd, { scriptPath: "../outside.js" }), /outside the working directory/);
+    await assert.rejects(() => resolveWorkflowRef(cwd, { scriptPath: "scripts/linked.js" }), /outside the working directory/);
+    await assert.rejects(() => resolveWorkflowRef(cwd, { scriptPath: "scripts/missing.js" }), /could not be resolved/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

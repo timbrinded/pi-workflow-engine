@@ -27,7 +27,12 @@ import {
   transitionWorkflowRun,
   type WorkflowRunRecord,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-record.ts";
-import { ProjectWorkflowRunStore, type WorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import {
+  ProjectWorkflowRunStore,
+  workflowRunScriptPath,
+  type WorkflowRunStore,
+} from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { WorkflowRunsBrowser } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-runs-browser.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
 import { WORKFLOW_INSPECTOR_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
@@ -423,6 +428,55 @@ test("workflow runs command resumes paused runs and restarts terminal runs with 
       );
     });
     assert.ok(sent.length >= 2);
+  } finally {
+    await background.sessionShutdown(ctx);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("inline runs restart and resume from their persisted script, and only while it is retained", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-inline-"));
+  const notifications: Notification[] = [];
+  const branch: unknown[] = [];
+  const ctx = context(cwd, notifications, "rpc", branch);
+  const background = new BackgroundWorkflowCoordinator({
+    sendMessage(message) {
+      branch.push({ type: "message", message: { role: "custom", ...message } });
+    },
+  } as Pick<ExtensionAPI, "sendMessage">);
+  const relaunched: LoadedWorkflow[] = [];
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => undefined,
+    execute: async (backgroundCtx, _name, workflowToRun, options) => {
+      relaunched.push(workflowToRun);
+      await runResolvedWorkflow(backgroundCtx, workflowToRun, "", options);
+    },
+  });
+  const store = new ProjectWorkflowRunStore(cwd);
+  const inline = compileInlineWorkflow('export const meta = { name: "inline-lifecycle", description: "" };\nexport default async function run() { return { summary: "inline lifecycle result" }; }\n');
+  try {
+    await runWorkflow(ctx as ExtensionContext, inline, "", { runId: "inline-restart-source", background: backgroundOrigin(ctx, 1) });
+    const pausedSignal = new AbortController();
+    pausedSignal.abort(new WorkflowPauseError("paused for inline lifecycle test"));
+    await assert.rejects(runWorkflow(ctx as ExtensionContext, inline, "", {
+      runId: "inline-resume-source",
+      background: backgroundOrigin(ctx, 2),
+      signal: pausedSignal.signal,
+    }));
+
+    await controller.handleCommand("restart inline-restart-source", ctx);
+    assert.match(notifications.at(-1)?.message ?? "", /Background workflow "inline-lifecycle" started[\s\S]*\nScript: /);
+    await controller.handleCommand("resume inline-resume-source", ctx);
+    await waitFor(async () => (await store.list()).some((record) =>
+      record.options.resumeFromRunId === "inline-resume-source" && record.state === "completed"
+    ));
+    assert.equal(relaunched.length, 2);
+    assert.ok(relaunched.every((workflowToRun) => workflowToRun.inlineScript === inline.inlineScript));
+
+    await rm(workflowRunScriptPath(cwd, "inline-restart-source"));
+    await controller.handleCommand("restart inline-restart-source", ctx);
+    assert.equal(notifications.at(-1)?.level, "error");
+    assert.match(notifications.at(-1)?.message ?? "", /inline workflow script inline-restart-source\.script\.js is unavailable/);
   } finally {
     await background.sessionShutdown(ctx);
     await rm(cwd, { recursive: true, force: true });

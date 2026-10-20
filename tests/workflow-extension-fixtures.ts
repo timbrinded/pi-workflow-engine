@@ -14,7 +14,15 @@ export interface CapturedTool {
   readonly promptGuidelines?: readonly string[];
   execute(
     toolCallId: string,
-    params: { script?: string; name?: string; args?: string; resumeFromRunId?: string; resumeEditedWorkflow?: boolean; background?: boolean },
+    params: {
+      script?: string;
+      scriptPath?: string;
+      name?: string;
+      args?: string;
+      resumeFromRunId?: string;
+      resumeEditedWorkflow?: boolean;
+      background?: boolean;
+    },
     signal: AbortSignal | undefined,
     onUpdate: () => void,
     ctx: ExtensionContext,

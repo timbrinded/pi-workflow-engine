@@ -6,6 +6,7 @@ import {
   availableWorkflowRunActions,
   canRelaunchWorkflowRun,
   formatWorkflowRunDuration,
+  hasRelaunchableWorkflowSource,
   type WorkflowRunActionContext,
   type WorkflowRunLifecycleAction,
 } from "../workflow-run-history.ts";
@@ -446,8 +447,8 @@ function describeOutcome(record: WorkflowRunRecord): string | undefined {
 /** Why a finished or paused run cannot be relaunched, mirroring `canRelaunchWorkflowRun`. */
 function relaunchBlocker(record: WorkflowRunRecord): string | undefined {
   if (record.state === "queued" || record.state === "running" || canRelaunchWorkflowRun(record)) return undefined;
-  if (record.workflow.sourceKind !== "file" || typeof record.workflow.sourceFingerprint !== "string") {
-    return "the workflow source cannot be verified";
+  if (!hasRelaunchableWorkflowSource(record)) {
+    return record.workflow.sourceKind === "fingerprint" ? "its inline script was not retained" : "the workflow source cannot be verified";
   }
   return record.options.argumentsPresent !== false ? "its arguments were not retained" : undefined;
 }
