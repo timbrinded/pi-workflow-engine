@@ -16,6 +16,7 @@ import {
 import { showWorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import { WorkflowPicker } from "./src/ui/workflow-picker.ts";
 import type { PerfSink } from "./src/perf.ts";
+import type { DiscoverWorkflowsOptions } from "./src/discovery.ts";
 import { registerDynamax, resolveTurnBudget, type DynamaxHandle } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
@@ -98,6 +99,15 @@ function projectWorkflowDir(ctx: WorkflowDiscoveryContext): string | undefined {
   return ctx.isProjectTrusted() ? ctx.cwd : undefined;
 }
 
+/** Every workflow a session can run, with the project-trust gate applied in this one place. */
+async function discoverForSession(
+  ctx: WorkflowDiscoveryContext,
+  options: Omit<DiscoverWorkflowsOptions, "projectDir"> = {},
+): Promise<Map<string, LoadedWorkflow>> {
+  const { discoverWorkflows } = await loadDiscovery();
+  return await discoverWorkflows(EXTENSION_DIR, { ...options, projectDir: projectWorkflowDir(ctx) });
+}
+
 /**
  * Resolve an `api.workflow()` reference: a registered workflow by name, or an inline-format script file
  * via `{ scriptPath }` under the cwd. Throws on an unknown name, a scriptPath outside the cwd or
@@ -111,8 +121,7 @@ export async function resolveWorkflowRef(ctx: WorkflowDiscoveryContext, ref: Wor
     const { compileWorkflowScriptFile } = await loadWorkflowScriptFile();
     return await compileWorkflowScriptFile(ctx.cwd, scriptPath);
   }
-  const { discoverWorkflows } = await loadDiscovery();
-  const workflows = await discoverWorkflows(EXTENSION_DIR, { perf, projectDir: projectWorkflowDir(ctx) });
+  const workflows = await discoverForSession(ctx, { perf });
   const mod = workflows.get(ref);
   if (!mod) {
     const available = [...workflows.keys()].join(", ") || "(none)";
@@ -141,12 +150,12 @@ const WORKFLOW_OPTION_COMPLETIONS = [
   { value: "--resume=", description: "Resume from a retained workflow run ID" },
 ] as const;
 
-/** Completions get no context, so the project's scripts come from the active session's plain data. */
-async function workflowArgumentCompletions(argumentPrefix: string, session: WorkflowSessionDirs | undefined): Promise<AutocompleteItem[] | null> {
+/** Completions get no context, so the project's scripts come from the active session's tracked dir. */
+async function workflowArgumentCompletions(argumentPrefix: string, projectDir: string | undefined): Promise<AutocompleteItem[] | null> {
   const parts = splitArgumentPrefix(argumentPrefix);
   if (parts.completed.length === 0) {
     const { discoverWorkflows } = await loadDiscovery();
-    const workflows = await discoverWorkflows(EXTENSION_DIR, { projectDir: session?.projectDir });
+    const workflows = await discoverWorkflows(EXTENSION_DIR, { projectDir });
     return completeCurrentArgument(
       argumentPrefix,
       [...workflows.values()].map((workflow) => ({
@@ -159,22 +168,18 @@ async function workflowArgumentCompletions(argumentPrefix: string, session: Work
 }
 
 /**
- * Plain data from the active session, kept for surfaces pi calls without a context. Session
- * replacement invalidates a context, so only these values are kept.
+ * The active session's trusted project dir, kept for surfaces pi calls without a context. Session
+ * replacement invalidates a context, so only this value is kept.
  */
-interface WorkflowSessionDirs {
-  readonly projectDir?: string;
-}
-
-function trackWorkflowSessionDirs(pi: ExtensionAPI): () => WorkflowSessionDirs | undefined {
-  let current: WorkflowSessionDirs | undefined;
+function trackProjectWorkflowDir(pi: ExtensionAPI): () => string | undefined {
+  let projectDir: string | undefined;
   pi.on("session_start", (_event, ctx) => {
-    current = { projectDir: projectWorkflowDir(ctx) };
+    projectDir = projectWorkflowDir(ctx);
   });
   pi.on("session_shutdown", () => {
-    current = undefined;
+    projectDir = undefined;
   });
-  return () => current;
+  return () => projectDir;
 }
 
 /** Registered workflows in discovery order (built-ins first), then the author option. */
@@ -450,11 +455,10 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   assertSupportedPiVersion(VERSION);
   const reviewSessions = createReviewSessionCoordinator(pi);
   const backgroundWorkflows = new BackgroundWorkflowCoordinator(pi);
-  const sessionDirs = trackWorkflowSessionDirs(pi);
+  const sessionProjectDir = trackProjectWorkflowDir(pi);
   const workflowRuns = new WorkflowRunController(backgroundWorkflows, {
     async resolveWorkflow(name, ctx) {
-      const { discoverWorkflows } = await loadDiscovery();
-      return (await discoverWorkflows(EXTENSION_DIR, { projectDir: projectWorkflowDir(ctx) })).get(name);
+      return (await discoverForSession(ctx)).get(name);
     },
     async execute(ctx, name, workflow, options) {
       const perfRecorder = await createInvocationPerf(options);
@@ -465,8 +469,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   backgroundWorkflows.onRunSettled((ctx, runId) => workflowRuns.runSettled(ctx, runId));
   const workflowCatalog = new WorkflowCatalogPrompt({
     async discover(ctx) {
-      const { discoverWorkflows } = await loadDiscovery();
-      return [...(await discoverWorkflows(EXTENSION_DIR, { projectDir: projectWorkflowDir(ctx) })).values()].map((workflow) => workflow.meta);
+      return [...(await discoverForSession(ctx)).values()].map((workflow) => workflow.meta);
     },
     size: (ctx) => resolveWorkflowSize(workflowSettingsPaths(ctx.cwd)).size,
   });
@@ -533,7 +536,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   // /workflow <name> [args] — user-invoked.
   pi.registerCommand("workflow", {
     description: "Run a multi-agent workflow: /workflow <name> [args]",
-    getArgumentCompletions: (argumentPrefix) => workflowArgumentCompletions(argumentPrefix, sessionDirs()),
+    getArgumentCompletions: (argumentPrefix) => workflowArgumentCompletions(argumentPrefix, sessionProjectDir()),
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const invocation = parseWorkflowInvocation(args);
       if (invocation.optionErrors.length > 0) {
@@ -542,12 +545,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
       }
       const options = resolveWorkflowRunOptions(invocation.options);
       const perfRecorder = await createInvocationPerf(options);
-      const { discoverWorkflows } = await loadDiscovery();
-      const workflows = await discoverWorkflows(EXTENSION_DIR, {
-        refresh: invocation.refreshDiscovery,
-        perf: perfRecorder,
-        projectDir: projectWorkflowDir(ctx),
-      });
+      const workflows = await discoverForSession(ctx, { refresh: invocation.refreshDiscovery, perf: perfRecorder });
       const available = [...workflows.keys()].join(", ") || "(none)";
       if (!invocation.name && !ctx.hasUI) {
         ctx.ui.notify(`Usage: /workflow <name> [args]. Available: ${available}`, "warning");
@@ -748,8 +746,7 @@ function registerWorkflowTool(
       let resultName: string;
 
       if (request.kind === "named") {
-        const { discoverWorkflows } = await loadDiscovery();
-        const workflows = await discoverWorkflows(EXTENSION_DIR, { perf: perfRecorder, projectDir: projectWorkflowDir(ctx) });
+        const workflows = await discoverForSession(ctx, { perf: perfRecorder });
         const named = workflows.get(request.name);
         if (!named) {
           const available = [...workflows.keys()].join(", ") || "(none)";
