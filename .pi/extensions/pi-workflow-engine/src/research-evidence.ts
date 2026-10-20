@@ -29,7 +29,8 @@ export function normalizeResearchLanes(plan: ResearchPlan): ResearchLane[] {
   return lanes;
 }
 
-export function buildClaimCandidates(results: readonly ResearchLaneResult[]): ResearchClaimCandidate[] {
+/** Distinct claims, most important first, bounded to {@link MAX_VERIFICATION_CLAIMS}; `overCap` counts the claims cut. */
+export function buildClaimCandidates(results: readonly ResearchLaneResult[]): { candidates: ResearchClaimCandidate[]; overCap: number } {
   const byClaim = new Map<string, { claim: string; importance: ResearchEvidence["importance"]; evidence: ResearchEvidence[] }>();
   for (const item of results.flatMap((result) => result.evidence.map(sanitizeEvidence).filter(isDefined))) {
     const key = item.claim.toLowerCase();
@@ -41,9 +42,8 @@ export function buildClaimCandidates(results: readonly ResearchLaneResult[]): Re
     if (IMPORTANCE_RANK[item.importance] < IMPORTANCE_RANK[current.importance]) current.importance = item.importance;
     current.evidence = dedupeEvidence([...current.evidence, item]);
   }
-  return [...byClaim.values()]
-    .sort((left, right) => IMPORTANCE_RANK[left.importance] - IMPORTANCE_RANK[right.importance])
-    .slice(0, MAX_VERIFICATION_CLAIMS);
+  const ranked = [...byClaim.values()].sort((left, right) => IMPORTANCE_RANK[left.importance] - IMPORTANCE_RANK[right.importance]);
+  return { candidates: ranked.slice(0, MAX_VERIFICATION_CLAIMS), overCap: Math.max(0, ranked.length - MAX_VERIFICATION_CLAIMS) };
 }
 
 export function sanitizeVerification(

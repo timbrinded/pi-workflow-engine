@@ -115,12 +115,14 @@ because only those runs can reach the host's MCP tools.
 
 The workflow bounds decomposition to four lanes and verification to twelve
 claims, while the engine's concurrency, total-agent, timeout, cancellation, and
-token-budget limits still apply. Gatherers retain direct page titles and URLs;
-search-results URLs are rejected, sources are canonicalized and deduplicated,
-and separate verifier agents classify claims as supported, conflicting,
-uncertain, inferred, or rejected before synthesis. External research calls use
-`resume: "off"` because live web evidence, time, and service state are outside
-the journal's deterministic replay surface.
+token-budget limits still apply. When gatherers find more than twelve distinct
+claims, the most important are verified and the run log says how many
+lower-priority claims the cap left unverified. Gatherers retain direct page
+titles and URLs; search-results URLs are rejected, sources are canonicalized and
+deduplicated, and separate verifier agents classify claims as supported,
+conflicting, uncertain, inferred, or rejected before synthesis. External
+research calls use `resume: "off"` because live web evidence, time, and service
+state are outside the journal's deterministic replay surface.
 
 ## Use Dynamax for custom workflows
 

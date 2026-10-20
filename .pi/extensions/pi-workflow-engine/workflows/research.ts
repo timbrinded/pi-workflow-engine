@@ -1,5 +1,6 @@
 import {
   MAX_RESEARCH_LANES,
+  MAX_VERIFICATION_CLAIMS,
   ResearchLaneResultSchema,
   ResearchPlanSchema,
   ResearchReportSchema,
@@ -105,10 +106,11 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
   const gathered = gatherResults.flatMap((result) => (result.ok ? [result.value] : []));
   const failedLanes = lanes.filter((_, index) => !gatherResults[index]!.ok);
 
-  const candidates = buildClaimCandidates(gathered);
+  const { candidates, overCap } = buildClaimCandidates(gathered);
   if (candidates.length === 0) return unavailableResearchReport(failedLanes.length > 0 ? "lanes-failed" : "no-evidence");
   progress({ type: "counter", key: "research.claims", label: "claims to verify", value: candidates.length });
   log(`${candidates.length} bounded claim(s) selected for independent verification`);
+  if (overCap > 0) log(`Dropped ${overCap} lower-priority claim(s) over the verification cap of ${MAX_VERIFICATION_CLAIMS}`);
 
   phase("Verify");
   const verificationResults = await parallel(
