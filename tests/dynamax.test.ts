@@ -670,7 +670,7 @@ test("a standalone +N directive sets a turn budget; other plus signs do not", ()
   }
 });
 
-test("a turn budget pool supplies the remainder until it is spent; an explicit budget wins", () => {
+test("a turn budget pool caps every run until it is spent; an explicit budget can only lower the cap", () => {
   const range = { min: 1, max: 1_000_000 };
   const pool = createDynamaxTurnBudget(50_000);
   assert.deepEqual(resolveTurnBudget(undefined, undefined, range), { kind: "budget", budget: undefined });
@@ -679,10 +679,12 @@ test("a turn budget pool supplies the remainder until it is spent; an explicit b
   pool.spend(Number.NaN);
   assert.deepEqual(resolveTurnBudget(undefined, pool, range), { kind: "budget", budget: 20_000 });
   assert.deepEqual(resolveTurnBudget(7_000, pool, range), { kind: "budget", budget: 7_000 });
+  assert.deepEqual(resolveTurnBudget(30_000, pool, range), { kind: "budget", budget: 20_000 });
   assert.deepEqual(resolveTurnBudget(undefined, createDynamaxTurnBudget(5_000_000), range), { kind: "budget", budget: 1_000_000 });
   pool.spend(25_000);
   assert.equal(pool.remaining(), 0);
   assert.deepEqual(resolveTurnBudget(undefined, pool, range), { kind: "spent", total: 50_000 });
+  assert.deepEqual(resolveTurnBudget(7_000, pool, range), { kind: "spent", total: 50_000 });
 });
 
 test("the input hook sets the turn pool from user prompts only, and the run's settling clears it", async () => {

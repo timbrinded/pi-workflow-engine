@@ -641,7 +641,8 @@ with the pool's remainder as its budget (clamped to the tool's budget range),
 and each synchronous run's output tokens are subtracted once it finishes,
 failed or not. When less than one token remains, the tool refuses the call and
 tells the agent the turn's budget is spent. An explicit `budget` on the call
-still wins but its spend is still subtracted. The pool clears when the run that
+can only lower that ceiling, is refused the same way once the pool is spent, and
+its spend is subtracted too. The pool clears when the run that
 received the prompt settles, so it still covers the run after pi retries a
 provider error or compacts an overflowing context within that run.
 
