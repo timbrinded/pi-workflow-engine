@@ -34,6 +34,7 @@ import {
   type WorkflowRunStore,
 } from "./workflow-run-store.ts";
 import { createWorkflowRunRecord } from "./workflow-run-record.ts";
+import { sealWorkflowRunScript } from "./workflow-run-seal.ts";
 import {
   createProviderUsageLimitPauseRecord,
   WorkflowProviderUsageLimitError,
@@ -110,7 +111,7 @@ export async function runResolvedWorkflow(
   const journalPath = workflowJournalPath(ctx.cwd, runId);
   const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
   const runStore = new ProjectWorkflowRunStore(ctx.cwd);
-  const scriptPath = await persistInlineScript(ctx.cwd, runId, mod);
+  const script = await persistInlineScript(ctx.cwd, runId, mod);
   const argumentsPresent = workflowInputPresent(input);
   let persistenceFailureReported = false;
   const durableRun = new DurableWorkflowRun(
@@ -121,7 +122,8 @@ export async function runResolvedWorkflow(
       options: resolvedOptions,
       progress: progress.snapshot(),
       argumentsPresent,
-      scriptPersisted: scriptPath !== undefined,
+      scriptPersisted: script !== undefined,
+      scriptSeal: script?.seal,
     }),
     (error) => {
       if (persistenceFailureReported) return;
@@ -161,7 +163,7 @@ export async function runResolvedWorkflow(
         resumedFromRunId: resolvedOptions.resumeFromRunId,
         journalPath,
         recordPath: workflowRunRecordPath(ctx.cwd, runId),
-        ...(scriptPath === undefined ? {} : { scriptPath }),
+        ...(script === undefined ? {} : { scriptPath: script.path }),
       }),
     );
     progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
@@ -236,11 +238,11 @@ export async function runResolvedWorkflow(
     durableRun.transition({
       state: "paused",
       progress: progress.snapshot(),
-      // Mirrors canRelaunchWorkflowRun: a registered workflow resolves again by name, an inline one from its persisted script.
+      // Mirrors canRelaunchWorkflowRun: a registered workflow resolves again by name, an inline one from its sealed script.
       ...createProviderUsageLimitPauseRecord(
         pauseError,
         resolvedOptions,
-        (mod.source.kind === "file" || scriptPath !== undefined) && !argumentsPresent,
+        (mod.source.kind === "file" || script?.seal !== undefined) && !argumentsPresent,
       ),
     });
   } else if (pauseError) {
@@ -263,14 +265,28 @@ export async function runResolvedWorkflow(
   throw outcome.error;
 }
 
-/** Write an inline run's script beside its record; a failed write only costs the run its relaunch. */
-async function persistInlineScript(cwd: string, runId: string, mod: LoadedWorkflow): Promise<string | undefined> {
-  if (mod.inlineScript === undefined) return undefined;
+/**
+ * Write an inline run's script beside its record and seal it for this install; a failed write or seal
+ * only costs the run its relaunch from `/workflow:runs`.
+ */
+async function persistInlineScript(
+  cwd: string,
+  runId: string,
+  mod: LoadedWorkflow,
+): Promise<{ readonly path: string; readonly seal?: string } | undefined> {
+  if (mod.inlineScript === undefined || mod.source.kind !== "fingerprint") return undefined;
+  let path: string;
   try {
-    return await persistWorkflowRunScript(cwd, runId, mod.inlineScript);
+    path = await persistWorkflowRunScript(cwd, runId, mod.inlineScript);
   } catch (error) {
     process.stderr.write(`[${mod.meta.name}] script persistence failed: ${unknownErrorMessage(error)}\n`);
     return undefined;
+  }
+  try {
+    return { path, seal: await sealWorkflowRunScript(runId, mod.source.fingerprint) };
+  } catch (error) {
+    process.stderr.write(`[${mod.meta.name}] script seal failed, so /workflow:runs cannot relaunch this run: ${unknownErrorMessage(error)}\n`);
+    return { path };
   }
 }
 

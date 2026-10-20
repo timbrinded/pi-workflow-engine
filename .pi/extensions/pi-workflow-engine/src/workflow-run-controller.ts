@@ -6,7 +6,7 @@ import type {
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { BackgroundWorkflowCoordinator } from "./background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./background-workflow-tool.ts";
-import { validateWorkflowRunId } from "./journal.ts";
+import { validateWorkflowRunId, WORKFLOW_RUNS_DIR } from "./journal.ts";
 import { resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "./options.ts";
 import type { LoadedWorkflow } from "./types.ts";
 import {
@@ -21,12 +21,14 @@ import {
   supersedingRuns,
   WORKFLOW_RUN_ACTIONS,
   WORKFLOW_RUN_HISTORY_LIMIT,
+  workflowRunDisplayName,
   type WorkflowRunActionContext,
   type WorkflowRunLifecycleAction,
 } from "./workflow-run-history.ts";
-import { stopWorkflowRunRecord, type WorkflowRunRecord } from "./workflow-run-record.ts";
+import { stopWorkflowRunRecord, workflowRunScriptFile, type WorkflowRunRecord } from "./workflow-run-record.ts";
+import { verifyWorkflowRunScriptSeal } from "./workflow-run-seal.ts";
 import { ProjectWorkflowRunStore, readWorkflowRunScript, type WorkflowRunStore } from "./workflow-run-store.ts";
-import { compileInlineWorkflow } from "./inline-workflow.ts";
+import { compileInlineWorkflow, inlineScriptFingerprint } from "./inline-workflow.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
   WorkflowUsageLimitScheduler,
@@ -162,7 +164,7 @@ export class WorkflowRunController {
       }
       const actions = availableWorkflowRunActions(record, runs);
       const selectedAction = await ctx.ui.select(
-        `${record.workflow.name} · ${record.runId}`,
+        `${workflowRunDisplayName(record)} · ${record.runId}`,
         [...actions],
       );
       const action = actions.find((candidate) => candidate === selectedAction);
@@ -279,15 +281,23 @@ export class WorkflowRunController {
   ): Promise<{ readonly workflow: LoadedWorkflow; readonly fingerprint: string }> {
     if (record.workflow.sourceKind === "fingerprint") {
       if (record.scriptFile === undefined) throw new Error(`inline workflow ${record.workflow.name} did not retain its script`);
+      // A repository can ship a record and script of its own, so the seal is checked before the script is read.
+      const fingerprint = record.workflow.sourceFingerprint;
+      if (
+        fingerprint === undefined
+        || record.scriptSeal === undefined
+        || !(await verifyWorkflowRunScriptSeal(record.runId, fingerprint, record.scriptSeal))
+      ) {
+        throw new Error(unsealedInlineRunMessage(record.runId));
+      }
       let source: string;
       try {
         source = await readWorkflowRunScript(ctx.cwd, record.runId);
       } catch (error) {
         throw new Error(`inline workflow script ${record.scriptFile} is unavailable: ${unknownErrorMessage(error)}`);
       }
-      const workflow = compileInlineWorkflow(source);
-      if (workflow.source.kind !== "fingerprint") throw new Error(`inline workflow ${record.workflow.name} has no script fingerprint`);
-      return { workflow, fingerprint: workflow.source.fingerprint };
+      if (inlineScriptFingerprint(source) !== fingerprint) throw new Error(unsealedInlineRunMessage(record.runId));
+      return { workflow: compileInlineWorkflow(source), fingerprint };
     }
     const workflow = await this.dependencies.resolveWorkflow(record.workflow.name, ctx);
     if (!workflow) throw new Error(`registered workflow ${record.workflow.name} is unavailable`);
@@ -351,7 +361,7 @@ export class WorkflowRunController {
         .filter((record) => availableWorkflowRunActions(record, runs).includes(action))
         .map((record) => ({
           value: record.runId,
-          description: `${record.state} · ${record.workflow.name}`,
+          description: `${record.state} · ${workflowRunDisplayName(record)}`,
         })),
     );
   }
@@ -365,10 +375,15 @@ export class WorkflowRunController {
       { value: "last", description: "Inspect the current or most recent in-session workflow" },
       ...records.map((record) => ({
         value: record.runId,
-        description: `${record.state} · ${record.workflow.name}`,
+        description: `${record.state} · ${workflowRunDisplayName(record)}`,
       })),
     ]);
   }
+}
+
+/** Why an inline record's script will not run: its seal is this install's, and covers the script as recorded. */
+function unsealedInlineRunMessage(runId: string): string {
+  return `inline run ${runId} was not recorded by this pi install, or its script changed since; rerun it with the workflow tool's scriptPath (${WORKFLOW_RUNS_DIR}/${workflowRunScriptFile(runId)})`;
 }
 
 /**

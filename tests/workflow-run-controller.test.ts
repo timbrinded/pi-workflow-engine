@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -32,6 +32,7 @@ import {
   workflowRunScriptPath,
   type WorkflowRunStore,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { sealWorkflowRunScript } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-seal.ts";
 import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { WorkflowRunsBrowser } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-runs-browser.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
@@ -298,7 +299,7 @@ test("workflow run history uses Pi's native RPC selectors instead of a custom na
     assert.equal(customCalls, 0);
     assert.deepEqual(selections.map((selection) => selection.title), [
       "Workflow Runs",
-      "history-headless · rpc-selector-run",
+      "history-headless (inline) · rpc-selector-run",
       "Workflow Runs",
     ]);
     assert.match(notifications.at(-1)?.message ?? "", /Workflow run rpc-selector-run/);
@@ -434,8 +435,9 @@ test("workflow runs command resumes paused runs and restarts terminal runs with 
   }
 });
 
-test("inline runs restart and resume from their persisted script, and only while it is retained", async () => {
+test("inline runs restart and resume from their sealed script, only while it is retained and unchanged", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-inline-"));
+  const restoreAgentDir = await useTemporaryAgentDir();
   const notifications: Notification[] = [];
   const branch: unknown[] = [];
   const ctx = context(cwd, notifications, "rpc", branch);
@@ -467,11 +469,27 @@ test("inline runs restart and resume from their persisted script, and only while
     await controller.handleCommand("restart inline-restart-source", ctx);
     assert.match(notifications.at(-1)?.message ?? "", /Background workflow "inline-lifecycle" started[\s\S]*\nScript: /);
     await controller.handleCommand("resume inline-resume-source", ctx);
-    await waitFor(async () => (await store.list()).some((record) =>
-      record.options.resumeFromRunId === "inline-resume-source" && record.state === "completed"
-    ));
+    await waitFor(async () => (await store.list()).filter((record) => record.state === "completed").length === 3);
     assert.equal(relaunched.length, 2);
     assert.ok(relaunched.every((workflowToRun) => workflowToRun.inlineScript === inline.inlineScript));
+
+    // An in-place edit leaves the seal covering the recorded script only.
+    await assert.rejects(runWorkflow(ctx as ExtensionContext, inline, "", {
+      runId: "inline-edited-source",
+      background: backgroundOrigin(ctx, 3),
+      signal: pausedSignal.signal,
+    }));
+    await writeFile(workflowRunScriptPath(cwd, "inline-restart-source"), `${inline.inlineScript}// edited\n`);
+    await writeFile(workflowRunScriptPath(cwd, "inline-edited-source"), `${inline.inlineScript}// edited\n`);
+    for (const command of ["restart inline-restart-source", "resume inline-edited-source"]) {
+      await controller.handleCommand(command, ctx);
+      assert.equal(notifications.at(-1)?.level, "error");
+      assert.match(
+        notifications.at(-1)?.message ?? "",
+        /was not recorded by this pi install, or its script changed since; rerun it with the workflow tool's scriptPath \(\.pi\/\.workflow-runs\/inline-(restart|edited)-source\.script\.js\)/,
+      );
+    }
+    assert.equal(relaunched.length, 2);
 
     await rm(workflowRunScriptPath(cwd, "inline-restart-source"));
     await controller.handleCommand("restart inline-restart-source", ctx);
@@ -479,9 +497,120 @@ test("inline runs restart and resume from their persisted script, and only while
     assert.match(notifications.at(-1)?.message ?? "", /inline workflow script inline-restart-source\.script\.js is unavailable/);
   } finally {
     await background.sessionShutdown(ctx);
+    await restoreAgentDir();
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("a repository's own inline run record and script never relaunch, however it is named or sealed", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-forged-"));
+  const restoreAgentDir = await useTemporaryAgentDir();
+  const notifications: Notification[] = [];
+  const ctx = context(cwd, notifications, "rpc");
+  const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
+  const relaunched: string[] = [];
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => undefined,
+    execute: async (_ctx, name) => {
+      relaunched.push(name);
+    },
+  });
+  const store = new ProjectWorkflowRunStore(cwd);
+  const script = 'export const meta = { name: "code-review", description: "" };\nexport default async function run() { return { summary: "forged" }; }\n';
+  const attackerAgentDir = await mkdtemp(join(tmpdir(), "pi-workflow-runs-attacker-agent-"));
+  try {
+    // This install has a key, and the repository seals with a key of its own.
+    await sealWorkflowRunScript("genuine-run", "genuine-source");
+    const forged = compileInlineWorkflow(script);
+    if (forged.source.kind !== "fingerprint") throw new Error("expected an inline fingerprint");
+    const fingerprint = forged.source.fingerprint;
+    const attackerSeal = (runId: string) => sealWorkflowRunScript(runId, fingerprint, attackerAgentDir);
+    const runs = [
+      { runId: "forged-unsealed", state: "completed" as const, scriptSeal: undefined },
+      { runId: "forged-unsealed-paused", state: "paused" as const, scriptSeal: undefined },
+      { runId: "forged-sealed", state: "completed" as const, scriptSeal: await attackerSeal("forged-sealed") },
+      { runId: "forged-sealed-paused", state: "paused" as const, scriptSeal: await attackerSeal("forged-sealed-paused") },
+    ];
+    for (const run of runs) {
+      await store.save(inlineRunRecord(run.runId, forged, run.state, run.scriptSeal));
+      await writeFile(workflowRunScriptPath(cwd, run.runId), script);
+    }
+
+    await controller.handleCommand("", ctx);
+    const listing = notifications.at(-1)?.message ?? "";
+    assert.match(listing, /COMPLETED code-review \(inline\) · .* · forged-unsealed$/m, "an unsealed record offers no restart");
+    assert.match(listing, /PAUSED code-review \(inline\) · .* · forged-unsealed-paused · actions stop$/m, "or resume");
+
+    await controller.handleCommand("restart forged-unsealed", ctx);
+    assert.equal(notifications.at(-1)?.message, "Action restart is not available for completed run forged-unsealed.");
+    await controller.handleCommand("resume forged-unsealed-paused", ctx);
+    assert.equal(notifications.at(-1)?.message, "Action resume is not available for paused run forged-unsealed-paused.");
+    for (const command of ["restart forged-sealed", "resume forged-sealed-paused"]) {
+      await controller.handleCommand(command, ctx);
+      assert.equal(notifications.at(-1)?.level, "error");
+      assert.match(notifications.at(-1)?.message ?? "", /inline run forged-sealed(-paused)? was not recorded by this pi install/);
+    }
+    assert.deepEqual(relaunched, []);
+  } finally {
+    await background.sessionShutdown(ctx);
+    await restoreAgentDir();
+    await rm(attackerAgentDir, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+/** An inline run's record as the engine would write it, with whatever seal the caller claims. */
+function inlineRunRecord(
+  runId: string,
+  workflowToRecord: LoadedWorkflow,
+  state: "completed" | "paused",
+  scriptSeal: string | undefined,
+): WorkflowRunRecord {
+  const progress: WorkflowProgressSnapshot = {
+    runId,
+    title: workflowToRecord.meta.name,
+    startedAt: 1,
+    currentPhase: "Workflow",
+    phases: [],
+    counters: [],
+    summary: [],
+    lanes: [],
+    laneOverflow: [],
+    logs: [],
+  };
+  const running = transitionWorkflowRun(
+    createWorkflowRunRecord({
+      runId,
+      workflow: workflowToRecord,
+      options: resolveWorkflowRunOptions({}, {}),
+      progress,
+      scriptPersisted: true,
+      scriptSeal,
+    }),
+    { state: "running", progress, at: 2 },
+  );
+  return state === "paused"
+    ? transitionWorkflowRun(running, { state: "paused", progress, message: "paused", at: 3 })
+    : transitionWorkflowRun(running, {
+      state: "completed",
+      progress,
+      usage: { agents: [], totals: emptyWorkflowUsageTotals(), assistantMessages: 0 },
+      result: { summary: "done" },
+      at: 3,
+    });
+}
+
+/** Point pi's agent directory, and so the run seal key, at a fresh directory until the returned restore runs. */
+async function useTemporaryAgentDir(): Promise<() => Promise<void>> {
+  const agentDir = await mkdtemp(join(tmpdir(), "pi-workflow-runs-agent-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  return async () => {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(agentDir, { recursive: true, force: true });
+  };
+}
 
 test("provider-limit timers resume from the journal and manual stop cancels pending work", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-provider-limit-"));

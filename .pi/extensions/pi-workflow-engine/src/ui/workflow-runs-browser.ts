@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { decodeKittyPrintable, matchesKey, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { decodeKittyPrintable, matchesKey, truncateToWidth, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { isRecord } from "../guards.ts";
 import { formatCount, truncateText } from "../text.ts";
 import {
@@ -7,6 +7,7 @@ import {
   canRelaunchWorkflowRun,
   formatWorkflowRunDuration,
   hasRelaunchableWorkflowSource,
+  isInlineWorkflowRun,
   type WorkflowRunActionContext,
   type WorkflowRunLifecycleAction,
 } from "../workflow-run-history.ts";
@@ -73,9 +74,12 @@ const OUTCOME_LINES = 3;
 const OUTCOME_CHARS = 600;
 const LIST_MIN = 3;
 const REFRESH_MS = 1_000;
+const INLINE_TAG = "inline";
 
 interface RunCells {
   readonly name: string;
+  /** `inline` for a run of an inline script; it stays visible however far the name is truncated. */
+  readonly tag: string;
   readonly state: string;
   readonly duration: string;
   readonly age: string;
@@ -213,9 +217,12 @@ export class WorkflowRunsBrowser implements Component {
     const style = STATE_STYLE[record.state];
     const selected = index === this.cursor;
     const cursor = selected ? this.theme.fg("accent", GLYPH.cursor) : " ";
-    const name = fit(cells.name, layout.name);
+    const tagWidth = cells.tag ? visibleWidth(cells.tag) + 1 : 0;
+    const name = truncateToWidth(cells.name, Math.max(1, layout.name - tagWidth), "…");
+    const tag = cells.tag ? ` ${this.theme.fg("dim", cells.tag)}` : "";
+    const padding = " ".repeat(Math.max(0, layout.name - visibleWidth(name) - tagWidth));
     const parts = [
-      `${cursor} ${this.theme.fg(style.color, style.glyph)} ${selected ? this.theme.bold(name) : name}`,
+      `${cursor} ${this.theme.fg(style.color, style.glyph)} ${selected ? this.theme.bold(name) : name}${tag}${padding}`,
       this.theme.fg(style.color, fit(cells.state, layout.state)),
     ];
     if (layout.duration > 0) parts.push(this.theme.fg("muted", padStartVisible(cells.duration, layout.duration)));
@@ -367,7 +374,7 @@ interface ColumnLayout {
 function columnLayout(cells: readonly RunCells[], width: number): ColumnLayout {
   const widest = (pick: (cell: RunCells) => string) => Math.max(0, ...cells.map((cell) => visibleWidth(pick(cell))));
   let layout: ColumnLayout = {
-    name: Math.min(NAME_MAX, widest((cell) => cell.name)),
+    name: Math.min(NAME_MAX, widest((cell) => (cell.tag ? `${cell.name} ${cell.tag}` : cell.name))),
     state: widest((cell) => cell.state),
     duration: widest((cell) => cell.duration),
     age: widest((cell) => cell.age),
@@ -390,6 +397,7 @@ function runCells(record: WorkflowRunRecord, now: number): RunCells {
   const cost = record.usage?.totals.cost.total ?? 0;
   return {
     name: record.workflow.name,
+    tag: isInlineWorkflowRun(record) ? INLINE_TAG : "",
     state: record.state,
     duration: record.state === "queued" ? "" : formatWorkflowRunDuration(record, now),
     age: relativeTime(record.createdAt, now),
@@ -448,7 +456,9 @@ function describeOutcome(record: WorkflowRunRecord): string | undefined {
 function relaunchBlocker(record: WorkflowRunRecord): string | undefined {
   if (record.state === "queued" || record.state === "running" || canRelaunchWorkflowRun(record)) return undefined;
   if (!hasRelaunchableWorkflowSource(record)) {
-    return record.workflow.sourceKind === "fingerprint" ? "its inline script was not retained" : "the workflow source cannot be verified";
+    if (!isInlineWorkflowRun(record)) return "the workflow source cannot be verified";
+    if (record.scriptFile === undefined) return "its inline script was not retained";
+    return "its inline script has no seal from this pi install";
   }
   return record.options.argumentsPresent !== false ? "its arguments were not retained" : undefined;
 }

@@ -67,6 +67,35 @@ test("the details pane adds facts the row does not show and explains unavailable
   assert.match(render(browser, 112).join("\n"), /Restart\s+unavailable · its arguments were not retained/);
 });
 
+test("an inline run is tagged in its row, and without a seal its relaunch is explained, not offered", () => {
+  const inline = (name: string): WorkflowRunRecord => ({
+    ...record(COMPLETED_ID, name, "completed", NOW - 120_000),
+    workflow: { name, sourceKind: "fingerprint", sourceFingerprint: "script" },
+    scriptFile: `${COMPLETED_ID}.script.js`,
+  });
+  const tui = { requestRender() {}, terminal: { rows: 45, columns: 140 } } as Pick<TUI, "requestRender" | "terminal">;
+  let choice: WorkflowRunsBrowserChoice | undefined;
+  const runs = { activeRunIds: new Set<string>(), resumedAs: new Map<string, string>() };
+  const browser = new WorkflowRunsBrowser({
+    records: [inline("code-review"), record(FAILED_ID, "code-review", "failed", NOW - 300_000)],
+    runs,
+  }, tui, createTestTheme(), (value) => {
+    choice = value;
+  }, { now: () => NOW });
+
+  const lines = render(browser, 112);
+  const rows = lines.filter((line) => /^│ [› ] [✓●✗⚠■○] /.test(line));
+  assert.match(rows[0] ?? "", /✓ code-review inline\s+completed/);
+  assert.doesNotMatch(rows[1] ?? "", /inline/, "a registered workflow's run is not tagged");
+  assert.match(lines.join("\n"), /Restart\s+unavailable · its inline script has no seal from this pi install/);
+  browser.handleInput("R");
+  assert.equal(choice, undefined);
+  assert.match(footer(browser), /restart unavailable · its inline script has no seal from this pi install/);
+
+  const long = new WorkflowRunsBrowser({ records: [inline("an-inline-workflow-named-to-pose-as-another")], runs }, tui, createTestTheme(), () => {}, { now: () => NOW });
+  assert.match(render(long, 50).find((line) => /^│ › ✓ /.test(line)) ?? "", /… inline /, "truncating the name keeps the tag");
+});
+
 test("a long outcome wraps to at most three detail lines", () => {
   const failed = record(FAILED_ID, "code-review", "failed", NOW - 300_000, false, "provider error ".repeat(400));
   const tui = { requestRender() {}, terminal: { rows: 45, columns: 140 } } as Pick<TUI, "requestRender" | "terminal">;
