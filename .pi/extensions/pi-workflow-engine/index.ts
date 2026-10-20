@@ -327,22 +327,13 @@ async function compileInlineToolWorkflow(
   cwd: string,
   request: { readonly kind: "inline"; readonly script: string } | { readonly kind: "script-path"; readonly scriptPath: string },
 ): Promise<LoadedWorkflow | WorkflowToolErrorResult> {
-  const inline = await loadInlineWorkflow();
-  let source: string;
-  if (request.kind === "inline") {
-    source = request.script;
-  } else {
-    const scriptFile = await loadWorkflowScriptFile();
-    try {
-      source = await scriptFile.readWorkflowScriptFile(cwd, request.scriptPath);
-    } catch (error) {
-      if (error instanceof scriptFile.WorkflowScriptPathError) return invalidScriptPathResult(error.message);
-      throw error;
-    }
-  }
+  const [inline, scriptFile] = await Promise.all([loadInlineWorkflow(), loadWorkflowScriptFile()]);
   try {
-    return inline.compileInlineWorkflow(source);
+    return request.kind === "inline"
+      ? inline.compileInlineWorkflow(request.script)
+      : await scriptFile.compileWorkflowScriptFile(cwd, request.scriptPath);
   } catch (error) {
+    if (error instanceof scriptFile.WorkflowScriptPathError) return invalidScriptPathResult(error.message);
     if (error instanceof inline.InlineWorkflowCompileError) return inlineCompileErrorResult(error.message);
     throw error;
   }
