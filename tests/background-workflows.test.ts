@@ -216,6 +216,79 @@ test("a run started under Dynamax wakes the agent on delivery while other runs a
   }
 });
 
+/** The run file lines a delivery names, relative to the workflow cwd. */
+function runFileLines(runId: string): string[] {
+  const dir = join(".pi", ".workflow-runs");
+  return [
+    `Record: ${join(dir, `${runId}.run.json`)}`,
+    `Script: ${join(dir, `${runId}.script.js`)}`,
+    `Journal: ${join(dir, `${runId}.jsonl`)}`,
+    "If the result is empty or unexpected, read the journal before diagnosing.",
+  ];
+}
+
+function inlineWorkflow(name: string, run: LoadedWorkflow["default"]): LoadedWorkflow {
+  return { ...workflow(name, run), inlineScript: `export const meta = { name: "${name}", description: "inline" };` };
+}
+
+test("a woken delivery carries the full result and run files, while a silent one keeps the summary", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-content-"));
+  const harness: SessionHarness = { branch: [], idle: true };
+  const ctx = context(cwd, "session-content", harness);
+  const result = { summary: "Review done.", findings: [{ id: "F1", detail: "off-by-one in the pager" }] };
+  try {
+    for (const [runId, wakeOnComplete] of [["background-woken-content", true], ["background-silent-content", false]] as const) {
+      await runWorkflow(ctx, inlineWorkflow(runId, async () => result), "", {
+        runId,
+        background: backgroundOrigin(ctx, 1, wakeOnComplete),
+      });
+    }
+    const sent: SentMessage[] = [];
+    await new BackgroundWorkflowCoordinator(fakePi(harness, sent)).sessionStarted(ctx);
+    const content = (runId: string) =>
+      sent.find((message) => isRecord(message.details) && message.details.runId === runId)?.content ?? "";
+
+    // pi hands the model only a custom message's content, so a woken agent needs the result there.
+    const woken = content("background-woken-content");
+    assert.match(woken, /"detail": "off-by-one in the pager"/);
+    for (const line of runFileLines("background-woken-content")) assert.ok(woken.includes(line), line);
+
+    const silent = content("background-silent-content");
+    assert.match(silent, /Review done\./);
+    assert.doesNotMatch(silent, /off-by-one/);
+    for (const line of runFileLines("background-silent-content")) assert.ok(silent.includes(line), line);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a woken delivery of a failed inline run carries its whole error and run files", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-failed-inline-"));
+  const harness: SessionHarness = { branch: [], idle: true };
+  const ctx = context(cwd, "session-failed-inline", harness);
+  const runId = "background-failed-inline";
+  // Longer than the silent summary's bound, so the woken agent must not get a truncated error.
+  const error = `inline script broke: ${"step failed; ".repeat(60)}end of error`;
+  try {
+    await assert.rejects(
+      runWorkflow(ctx, inlineWorkflow(runId, async () => {
+        throw new Error(error);
+      }), "", { runId, background: backgroundOrigin(ctx, 1, true) }),
+      /inline script broke/,
+    );
+    const sent: SentMessage[] = [];
+    await new BackgroundWorkflowCoordinator(fakePi(harness, sent)).sessionStarted(ctx);
+
+    assert.equal(sent.length, 1);
+    const content = sent[0]?.content ?? "";
+    assert.match(content, /State: failed/);
+    assert.ok(content.includes(`Workflow failed: ${error}`));
+    for (const line of runFileLines(runId)) assert.ok(content.includes(line), line);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("the wake request survives a restart, so recovery delivery still starts a turn", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-wake-restart-"));
   const harness: SessionHarness = { branch: [], idle: true };

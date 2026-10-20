@@ -40,7 +40,8 @@ export function formatWorkflowRunFileLines(files: { readonly scriptPath?: string
   ].filter((line): line is string => line !== undefined);
 }
 
-function formatResultForContext(result: unknown): string {
+/** A workflow result as the host model reads it: advisory reports as findings, other values as bounded JSON. */
+export function formatResultForContext(result: unknown): string {
   if (typeof result === "string") return result;
   if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(result);
   const summary = workflowResultSummary(result);

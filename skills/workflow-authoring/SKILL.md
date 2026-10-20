@@ -146,11 +146,11 @@ Give `isolation: "worktree"` only to agents that edit files. The agent runs in a
 - Every result names its run ID. Pass `resumeFromRunId: "<run id>"` to the tool to replay completed agent calls whose prompt, options, and execution identity still match; the rest run live.
 - Shared-workspace agents replay only with `resume: "read-only"` (use it for advisory agents); isolated agents replay by default. `resume: "off"` forces a live call. Give repeated identical calls a distinct `cacheKey`, such as `` `verify:${finding.id}` ``.
 - After editing the script, `resumeEditedWorkflow: true` (with `resumeFromRunId`) reuses calls that did not change. Use it only when the user accepts that.
-- The journal at `.pi/.workflow-runs/<runId>.jsonl` holds one line per completed replayable agent call (`resume: "read-only"` or isolated) with its result; `<runId>.run.json` beside it holds the run state, compact progress, and final error. Read them before diagnosing an empty or unexpected result: a replayable call missing from the journal failed or never ran, while calls without a replay policy are never journaled.
+- The journal at `.pi/.workflow-runs/<runId>.jsonl` holds one line per completed replayable agent call (`resume: "read-only"` or isolated) with its result; `<runId>.run.json` beside it holds the run state, compact progress, and the final result or error. Read them before diagnosing an empty or unexpected result: a replayable call missing from the journal failed or never ran, while calls without a replay policy are never journaled.
 
 ## Run modes
 
-- `background: true` only when the user wants the run to continue after this tool call; the tool returns a run ID and the result arrives later as a message. Under Dynamax that message starts a new turn, so you wake to read it and choose the next step; otherwise it arrives silently for the next turn. `autoResumeOnUsageLimit: true` only for such a background run when the user wants bounded automatic continuation after a provider usage window.
+- `background: true` only when the user wants the run to continue after this tool call; the tool returns a run ID and the result arrives later as a message naming the run's record and journal (and script, for an inline run). Under Dynamax that message carries the full result or error and starts a new turn, so you wake to read it and choose the next step; otherwise it arrives silently for the next turn with only the summary, and the record holds the rest. `autoResumeOnUsageLimit: true` only for such a background run when the user wants bounded automatic continuation after a provider usage window.
 - Every call provides exactly one of `name`, `script`, or `scriptPath`.
 
 ## Save a reusable workflow
