@@ -2,6 +2,7 @@ import { CustomEditor, type ExtensionAPI, type ExtensionContext, type Theme } fr
 import type { EditorComponent } from "@earendil-works/pi-tui";
 import { completeCurrentArgument } from "./command-completions.ts";
 import type { DynamaxShortcuts } from "./dynamax-shortcuts.ts";
+import { appendSectionToForcedPrompt } from "./prompt-sections.ts";
 import { sessionKey } from "./session-identity.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { dot, GLYPH } from "./ui/kit.ts";
@@ -233,9 +234,7 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
     const options = event.systemPromptOptions;
     if (!applyDynamaxPromptSection(options.sections, runtime.state)) return undefined;
     updateDynamaxSurfaces(ctx, runtime);
-    // An earlier extension forced the whole prompt, and pi renders no sections then; append to its text instead.
-    if (options.forceSystemPrompt === undefined) return undefined;
-    return { systemPrompt: `${options.forceSystemPrompt}\n\n<${DYNAMAX_SECTION}>\n${DYNAMAX_REMINDER}\n</${DYNAMAX_SECTION}>` };
+    return appendSectionToForcedPrompt(options, DYNAMAX_SECTION);
   });
 
   pi.on("agent_end", (_event, ctx) => {

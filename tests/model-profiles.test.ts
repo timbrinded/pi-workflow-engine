@@ -21,7 +21,10 @@ import {
   workflowModelProfileArgumentCompletions,
 } from "../.pi/extensions/pi-workflow-engine/src/model-profile-command.ts";
 import type { CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
+import { runWorkflowWithContext } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
+import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import {
+  createProgress,
   createRegistry,
   createRunContext,
   createTextSession,
@@ -230,6 +233,47 @@ test("runAgent sends the selected profile model and effort into the pi session",
   assert.equal(result, "done");
   assert.equal(observedModel, profiled);
   assert.equal(observedThinking, "minimal");
+});
+
+test("a declared phase profile routes only agents that name that phase and choose no model or profile", async () => {
+  const host = testModel("anthropic", "host");
+  const small = testModel("openai", "small-route");
+  const big = testModel("openai", "big-route");
+  const explicit = testModel("openrouter", "explicit");
+  const profiles: ResolvedWorkflowModelProfiles = {
+    ...hostWorkflowModelProfiles(host),
+    small: { name: "small", model: small, thinkingLevel: "low", source: "user", configPath: "user.json" },
+    big: { name: "big", model: big, thinkingLevel: "high", source: "user", configPath: "user.json" },
+  };
+  const observed: Array<string | undefined> = [];
+  const createSession: CreateAgentSession = async (options) => {
+    observed.push(options.model?.id);
+    return createTextSession();
+  };
+  const progress = { ...createProgress(), phase() {} };
+  const mod: LoadedWorkflow = {
+    meta: { name: "phase-profiles", description: "", phases: [{ title: "Find", profile: "small" }] },
+    source: { kind: "fingerprint", fingerprint: "phase-profiles" },
+    async default(api) {
+      await api.agent("phase profile", { phase: "Find" });
+      await api.agent("own profile", { phase: "Find", profile: "big" });
+      await api.agent("own model", { phase: "Find", model: "openrouter/explicit" });
+      // The global phase is shared by concurrent branches, so it never selects a phase profile.
+      api.phase("Find");
+      await api.agent("global phase");
+      await api.agent("undeclared phase", { phase: "Other" });
+    },
+  };
+
+  await runWorkflowWithContext(
+    createRunContext({ createSession, hostModel: host, modelRegistry: createRegistry([explicit]), modelProfiles: profiles, progress }),
+    progress,
+    mod,
+    "",
+    { abortController: new AbortController(), submissionLimit: 4 },
+  );
+
+  assert.deepEqual(observed, ["small-route", "big-route", "explicit", "host", "host"]);
 });
 
 test("/workflow:models parser keeps scope and profile configuration explicit", () => {

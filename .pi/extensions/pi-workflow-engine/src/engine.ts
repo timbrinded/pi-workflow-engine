@@ -15,7 +15,7 @@ import {
   resolveWorkflowRunOptions,
   type ResolvedWorkflowRunOptions,
 } from "./options.ts";
-import type { AgentOptions, IsolatedAgentResult, LoadedWorkflow, WorkflowApi, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
+import type { AgentOptions, IsolatedAgentResult, LoadedWorkflow, WorkflowApi, WorkflowMeta, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
 import { showWorkflowInspector } from "./ui/workflow-inspector.ts";
 import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
 import { WorktreeRegistry } from "./worktree.ts";
@@ -349,7 +349,7 @@ function createWorkflowAgent(
   function agent<S extends TSchema>(prompt: string, opts: AgentOptions<S> & { schema: S }): Promise<Static<S>>;
   function agent(prompt: string, opts?: AgentOptions): Promise<string>;
   function agent(prompt: string, agentOpts?: AgentOptions): Promise<unknown> {
-    const scopedOptions = scope.agentOptions(agentOpts);
+    const scopedOptions = scope.agentOptions(withPhaseProfile(mod.meta, agentOpts));
     const executionOptions: AgentExecutionOptions =
       scopedOptions.isolation === "worktree" && mod.isolatedWorktreeBaseline !== undefined
         ? { ...scopedOptions, worktreeBaseline: mod.isolatedWorktreeBaseline }
@@ -357,6 +357,17 @@ function createWorkflowAgent(
     return runAgent(rc, prompt, executionOptions, resumeContext);
   }
   return agent;
+}
+
+/**
+ * Routing order is the agent's `model`, then its `profile`, then its declared phase's `profile`, then
+ * the host. Only an explicit `opts.phase` selects a phase profile: the global `phase()` is shared
+ * state that concurrent `parallel`/`pipeline` branches race on.
+ */
+function withPhaseProfile(meta: WorkflowMeta, opts: AgentOptions | undefined): AgentOptions | undefined {
+  if (opts?.phase === undefined || opts.model !== undefined || opts.profile !== undefined) return opts;
+  const profile = meta.phases?.find((phase) => phase.title === opts.phase)?.profile;
+  return profile === undefined ? opts : { ...opts, profile };
 }
 
 /**

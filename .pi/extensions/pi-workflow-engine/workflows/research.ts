@@ -24,6 +24,7 @@ import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 export const meta: WorkflowMeta = {
   name: "research",
   description: "Source-grounded external research: decompose → gather direct-page evidence → independently verify claims → cited synthesis.",
+  whenToUse: "Use for questions that need current external sources and cited, independently verified claims; needs an installed web search or browsing tool; args are the question and any scope constraints.",
   phases: [{ title: "Plan" }, { title: "Gather" }, { title: "Verify" }, { title: "Synthesize" }],
 };
 

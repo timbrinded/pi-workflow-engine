@@ -23,6 +23,7 @@ import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 export const meta: WorkflowMeta = {
   name: "code-review",
   description: "Fan-out review of the branch's open PR (or branch vs main): scope → per-angle find → independent verify → synthesize.",
+  whenToUse: "Use to review a PR, branch diff, ref range, or focused target for correctness bugs and cleanups, with every finding independently verified; args are the target or review instructions, blank auto-detects the diff.",
   phases: [{ title: "Scope" }, { title: "Find" }, { title: "Verify" }, { title: "Challenge" }, { title: "Synthesize" }],
 };
 

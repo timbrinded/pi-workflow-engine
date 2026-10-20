@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, KeyId } from "@earendil-works/pi-tui";
 import workflowEngine from "../.pi/extensions/pi-workflow-engine/index.ts";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import {
   DEFAULT_DYNAMAX_INSPECTOR_SHORTCUT,
   DEFAULT_REVIEW_RESULTS_SHORTCUT,
@@ -32,12 +33,28 @@ export interface CapturedCommand {
   handler(args: string, ctx: ExtensionCommandContext): unknown | Promise<unknown>;
 }
 
+export type CapturedHandler = (event: unknown, ctx: ExtensionContext) => unknown;
+
+/** The slice of `before_agent_start` options the extension reads and writes. */
+export interface CapturedPromptOptions {
+  readonly selectedTools: string[];
+  readonly sections: Record<string, string>;
+  forceSystemPrompt?: string;
+}
+
 export interface CapturedWorkflowExtension {
   readonly tool: CapturedTool;
   readonly shortcuts: readonly CapturedShortcut[];
   readonly commands: ReadonlyMap<string, CapturedCommand>;
+  readonly handlers: ReadonlyMap<string, readonly CapturedHandler[]>;
   readonly sentMessages: readonly unknown[];
   readonly sentUserMessages: readonly unknown[];
+  /** Run every `before_agent_start` handler in order, chaining a returned prompt the way pi does. */
+  beforeAgentStart(
+    options: CapturedPromptOptions,
+    ctx: ExtensionContext,
+    messageType?: "user" | "custom",
+  ): Promise<CapturedPromptOptions>;
 }
 
 /** Register the full extension against a no-op pi host and expose its public surfaces. */
@@ -52,8 +69,11 @@ export function captureWorkflowExtension(
   const capturedCommands = new Map<string, CapturedCommand>();
   const sentMessages: unknown[] = [];
   const sentUserMessages: unknown[] = [];
+  const handlers = new Map<string, CapturedHandler[]>();
   const fakePi = {
-    on: () => {},
+    on: (event: string, handler: CapturedHandler) => {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+    },
     registerCommand: (name: string, command: CapturedCommand) => {
       capturedCommands.set(name, command);
     },
@@ -74,7 +94,26 @@ export function captureWorkflowExtension(
   } as unknown as ExtensionAPI;
   workflowEngine(fakePi, shortcuts);
   if (!capturedTool) throw new Error("workflow tool was not registered");
-  return { tool: capturedTool, shortcuts: capturedShortcuts, commands: capturedCommands, sentMessages, sentUserMessages };
+  async function beforeAgentStart(
+    options: CapturedPromptOptions,
+    ctx: ExtensionContext,
+    messageType: "user" | "custom" = "user",
+  ): Promise<CapturedPromptOptions> {
+    for (const handler of handlers.get("before_agent_start") ?? []) {
+      const result: unknown = await handler({ type: "before_agent_start", messageType, systemPrompt: "", systemPromptOptions: options }, ctx);
+      if (isRecord(result) && typeof result.systemPrompt === "string") options.forceSystemPrompt = result.systemPrompt;
+    }
+    return options;
+  }
+  return {
+    tool: capturedTool,
+    shortcuts: capturedShortcuts,
+    commands: capturedCommands,
+    handlers,
+    sentMessages,
+    sentUserMessages,
+    beforeAgentStart,
+  };
 }
 
 export function captureWorkflowTool(): CapturedTool {

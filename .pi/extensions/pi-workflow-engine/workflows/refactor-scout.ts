@@ -18,6 +18,7 @@ import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 export const meta: WorkflowMeta = {
   name: "refactor-scout",
   description: "Advisory-only refactor scout: scope → per-lens find → independent verify → synthesize safe refactor opportunities.",
+  whenToUse: "Use to find small, behaviour-preserving refactors (duplication, complexity, type safety, boundaries, dead code) in a path or module without changing it; args name the target.",
   phases: [{ title: "Scope" }, { title: "Find" }, { title: "Verify" }, { title: "Challenge" }, { title: "Synthesize" }],
 };
 

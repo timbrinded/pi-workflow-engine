@@ -28,7 +28,7 @@ export default async function run(api) {
 ```
 
 - The script is plain JavaScript compiled in-process: no TypeScript annotations, `as` casts, or interfaces.
-- It must start with `export const meta = { ... };`, a pure literal: strings, numbers, booleans, `null`, arrays, and objects only. No variables, calls, template literals, spreads, computed keys, or raw newlines inside strings. `name` is required; `description` and `phases` are optional.
+- It must start with `export const meta = { ... };`, a pure literal: strings, numbers, booleans, `null`, arrays, and objects only. No variables, calls, template literals, spreads, computed keys, or raw newlines inside strings. `name` is required; `description`, `whenToUse` (the situation that should make a model pick it), and `phases` are optional. Each phase is `{ title, detail?, profile? }`.
 - Exactly one `export default` follows the meta: an `async function` or `async (api) => { ... }` with a block body. Nothing may follow it but `;` and comments. Put helpers and constants inside the function body.
 - No `import` statements, no dynamic `import()`, no other exports.
 - `Type` (TypeBox) is an injected global: write `Type.Object(...)` directly. It is not a property of `api`. Using the injected `Type` keeps schemas on pi's bundled TypeBox, so validation works.
@@ -67,6 +67,7 @@ Add `"codemode"` to an agent's `tools` when it should batch or filter many tool 
 ## Profiles, labels, and phases
 
 - Set `profile` on every `agent()` call: `small` for scouting, finding, and verifying; `medium` for judgement and synthesis; `big` for the hardest reasoning. Use `model`/`thinkingLevel` only for a deliberate override.
+- A phase declared as `{ title: "Verify", profile: "small" }` routes agents that pass `phase: "Verify"` and set neither `profile` nor `model`. Routing order: the agent's `model`, its `profile`, its phase's `profile`, then the host model.
 - Inside `parallel` and `pipeline`, pass `phase` and `label` in each agent's options. The global `phase()` is one shared value that every concurrent branch reads and writes, so calling it inside fan-out branches races and misfiles rows. Call `phase()` only between sequential stages.
 
 ## Concurrency rules

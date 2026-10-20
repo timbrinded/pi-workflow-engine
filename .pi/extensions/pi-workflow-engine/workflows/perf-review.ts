@@ -17,6 +17,7 @@ import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 export const meta: WorkflowMeta = {
   name: "perf-review",
   description: "Advisory-only performance review: scope slow path → per-lens bottleneck hypotheses → verify evidence → synthesize measurements and safe optimizations.",
+  whenToUse: "Use for a slow path, startup cost, or performance concern where measured bottlenecks and safe optimizations matter more than guesses; args name the path, workload, or command.",
   phases: [{ title: "Scope" }, { title: "Find" }, { title: "Verify" }, { title: "Challenge" }, { title: "Synthesize" }],
 };
 

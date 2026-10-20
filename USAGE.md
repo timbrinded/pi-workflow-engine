@@ -83,7 +83,11 @@ secrets stay in pi's provider configuration. The engine never ranks models by
 price, model-name substrings, or assumed capability.
 
 Routing is resolved per field: an agent's explicit `model` or `thinkingLevel`
-wins, then its requested profile, then host inheritance. A configured profile
+wins, then its requested profile, then the profile of its declared phase, then
+host inheritance. A phase profile comes from `meta.phases` (`{ title, profile }`)
+and applies only to an agent that passes that title as its `phase` option and
+sets neither `model` nor `profile`; the global `phase()` call never selects one,
+because concurrent branches share it. A configured profile
 without `thinkingLevel` inherits the host effort. An entirely unconfigured tier
 uses the host model and the built-in bounded effort for that tier (`low`,
 `medium`, or `high` respectively); `/workflow:models` labels that route as a host
@@ -192,6 +196,8 @@ Configure either shortcut by creating `~/.pi/agent/extensions/pi-workflow-engine
 Set either shortcut to `null` to disable it while keeping `/workflow:inspector` and `/workflow:results` available.
 
 With Dynamax enabled, the host agent usually calls the `workflow` tool with `script`: a one-off inline workflow tailored to your prompt. It can still call a saved workflow by `name` when one already fits.
+
+Every run that can call the `workflow` tool also carries a `<workflows>` system prompt section: the catalog of registered workflows, one line each with its name, `description`, and `whenToUse`, sorted by name. It is built once per pi session from workflow discovery and reused, so its text is identical on every turn and keeps the provider's prompt cache; start a new session or `/reload` to list workflows added since.
 
 ### Adaptive multi-pass authoring
 
@@ -355,6 +361,11 @@ import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 export const meta: WorkflowMeta = {
   name: "my-workflow",
   description: "Find and summarize something important.",
+  whenToUse: "Use when the user wants the important thing found and summarized; args name the target.",
+  phases: [
+    { title: "Find", detail: "Two independent finders", profile: "small" },
+    { title: "Synthesize", profile: "medium" },
+  ],
 };
 
 const Finding = Type.Object({
@@ -392,6 +403,8 @@ export default async function run({ agent, parallel, phase, args }: WorkflowApi)
   });
 }
 ```
+
+`meta.name` is required. `description` and `whenToUse` describe the workflow in the picker and in the host's workflow catalog, so write `whenToUse` as the situation that should make a model choose it and what `args` it expects. `phases` declares the progress phases up front; each may add a one-line `detail` and a default `profile` for agents that pass that phase title as their `phase` option.
 
 Core primitives:
 

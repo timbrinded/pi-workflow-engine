@@ -19,11 +19,22 @@ export type { WorkflowLaneItemStatus } from "./progress-types.ts";
 /** A reference to a registered workflow by name. */
 export type WorkflowRef = string;
 
+/** One declared phase of a workflow. */
+export interface WorkflowPhaseMeta {
+  title: string;
+  /** One line on what the phase does. */
+  detail?: string;
+  /** Profile for agents that pass this title as `phase` and set neither `model` nor `profile`. */
+  profile?: WorkflowModelProfileName;
+}
+
 /** Metadata every workflow module must export. */
 export interface WorkflowMeta {
   name: string;
   description: string;
-  phases?: Array<{ title: string }>;
+  /** When a host model should choose this workflow; listed in the system prompt's workflow catalog. */
+  whenToUse?: string;
+  phases?: WorkflowPhaseMeta[];
 }
 
 export interface WorkflowRunStats {

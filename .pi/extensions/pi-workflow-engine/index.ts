@@ -43,6 +43,8 @@ import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/w
 import { workflowUsageForPi, type WorkflowUsageSnapshot } from "./src/usage.ts";
 import { unknownErrorMessage } from "./src/unknown-error.ts";
 import { createHostToolBridge } from "./src/host-tools.ts";
+import { appendSectionToForcedPrompt } from "./src/prompt-sections.ts";
+import { WORKFLOWS_SECTION, WorkflowCatalogPrompt } from "./src/workflow-catalog.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -368,6 +370,11 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
   backgroundWorkflows.onRunSettled((ctx, runId) => workflowRuns.runSettled(ctx, runId));
+  // Before Dynamax, so the stable catalog section precedes the per-turn opt-in section.
+  registerWorkflowCatalog(pi, new WorkflowCatalogPrompt(async () => {
+    const { discoverWorkflows } = await loadDiscovery();
+    return [...(await discoverWorkflows(EXTENSION_DIR)).values()].map((workflow) => workflow.meta);
+  }));
   const dynamax = registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
   registerWorkflowModelProfileCommand(pi);
   registerWorkflowRunCommand(pi, workflowRuns);
@@ -469,6 +476,21 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   });
 
   registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts);
+}
+
+/** Add the `<workflows>` catalog to every run that can call the workflow tool. */
+function registerWorkflowCatalog(pi: ExtensionAPI, catalog: WorkflowCatalogPrompt): void {
+  pi.on("session_start", (_event, ctx) => catalog.forget(ctx));
+  pi.on("session_shutdown", (_event, ctx) => catalog.forget(ctx));
+  pi.on("before_agent_start", async (event, ctx) => {
+    const options = event.systemPromptOptions;
+    // Subagent sessions withhold the workflow tool, so they skip the catalog as well.
+    if (!options.selectedTools.includes(WORKFLOW_TOOL_NAME)) return undefined;
+    const text = await catalog.section(ctx);
+    if (text === undefined) return undefined;
+    options.sections[WORKFLOWS_SECTION] = text;
+    return appendSectionToForcedPrompt(options, WORKFLOWS_SECTION);
+  });
 }
 
 /** Result footers advertise the configured triage and inspector shortcuts and pi's current expand key, read at render time. */
