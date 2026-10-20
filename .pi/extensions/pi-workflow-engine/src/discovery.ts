@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -9,6 +9,7 @@ import { loadWorkflow, parseWorkflowModule } from "./workflow-module.ts";
 import { BUILTIN_SOURCE_ROOT, BUILTIN_WORKFLOW_DEFINITIONS, BUILTIN_WORKFLOW_FILES } from "./workflows.ts";
 import { captureSourceTreeFingerprint, type FingerprintCapture } from "./tree-fingerprint.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
+import { readBoundedScriptFile } from "./workflow-script-file.ts";
 
 export interface DiscoverWorkflowsOptions {
   readonly refresh?: boolean;
@@ -56,7 +57,8 @@ async function loadScriptDir(dir: string): Promise<LoadedWorkflow[]> {
   for (const name of entries.filter((entry) => isWorkflowFileCandidate(entry, ".js")).sort()) {
     const path = join(dir, name);
     try {
-      const source = await readFile(path, "utf8");
+      // Discovery runs on every lookup, so a linked FIFO or huge file must not stall it.
+      const source = await readBoundedScriptFile(path, path);
       const compiled = compileInlineWorkflow(source);
       workflows.push(loadWorkflow(compiled, { kind: "file", path, root: dir, fingerprint: inlineScriptFingerprint(source), selfContained: true }));
     } catch (error) {

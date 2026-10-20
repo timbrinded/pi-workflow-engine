@@ -29,17 +29,24 @@ export async function readWorkflowScriptFile(cwd: string, scriptPath: string): P
     throw new WorkflowScriptPathError(`scriptPath ${scriptPath} could not be resolved: ${unknownErrorMessage(error)}`);
   }
   if (!isPathWithin(root, file)) throw new WorkflowScriptPathError(`scriptPath ${scriptPath} resolves outside the working directory`);
-  const unreadable = (error: unknown) =>
-    new WorkflowScriptPathError(`scriptPath ${scriptPath} could not be read: ${unknownErrorMessage(error)}`);
+  return await readBoundedScriptFile(file, `scriptPath ${scriptPath}`);
+}
+
+/**
+ * Read a workflow script only if it is a regular file within the size limit: a FIFO or device would
+ * block the read or never end. `label` names the file in errors.
+ */
+export async function readBoundedScriptFile(file: string, label: string): Promise<string> {
+  const unreadable = (error: unknown) => new WorkflowScriptPathError(`${label} could not be read: ${unknownErrorMessage(error)}`);
   let info: Stats;
   try {
     info = await stat(file);
   } catch (error) {
     throw unreadable(error);
   }
-  if (!info.isFile()) throw new WorkflowScriptPathError(`scriptPath ${scriptPath} is not a regular file`);
+  if (!info.isFile()) throw new WorkflowScriptPathError(`${label} is not a regular file`);
   if (info.size > MAX_WORKFLOW_SCRIPT_FILE_BYTES) {
-    throw new WorkflowScriptPathError(`scriptPath ${scriptPath} is ${info.size} bytes, over the ${MAX_WORKFLOW_SCRIPT_FILE_BYTES}-byte limit`);
+    throw new WorkflowScriptPathError(`${label} is ${info.size} bytes, over the ${MAX_WORKFLOW_SCRIPT_FILE_BYTES}-byte limit`);
   }
   try {
     return await readFile(file, "utf8");

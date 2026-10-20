@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,6 +10,7 @@ import { inlineScriptFingerprint } from "../.pi/extensions/pi-workflow-engine/sr
 import { captureWorkflowResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import type { WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { BUILTIN_WORKFLOW_DEFINITIONS } from "../.pi/extensions/pi-workflow-engine/src/workflows.ts";
+import { MAX_WORKFLOW_SCRIPT_FILE_BYTES } from "../.pi/extensions/pi-workflow-engine/src/workflow-script-file.ts";
 
 const extensionDir = fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/", import.meta.url));
 
@@ -236,6 +238,34 @@ test("saved scripts written or edited after discovery resolve by name without a 
     await rm(tempRepo, { recursive: true, force: true });
     await rm(project, { recursive: true, force: true });
     await rm(dirname(userWorkflowDir), { recursive: true, force: true });
+  }
+});
+
+test("discovery skips a saved script that is a FIFO or over the size limit instead of stalling", async () => {
+  const tempRepo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-bounded-"));
+  const project = await mkdtemp(join(tmpdir(), "workflow-engine-bounded-project-"));
+  const projectWorkflowDir = join(project, ".pi", "workflows");
+  const script = (name: string) => `export const meta = { name: "${name}", description: "" };\nexport default async function run() { return 1; }\n`;
+  const notes: string[] = [];
+  const consoleError = console.error;
+  console.error = (...values: unknown[]) => void notes.push(values.join(" "));
+  try {
+    await mkdir(projectWorkflowDir, { recursive: true });
+    await writeFile(join(projectWorkflowDir, "fine.js"), script("fine"));
+    await writeFile(join(projectWorkflowDir, "huge.js"), `${script("huge")}//${"x".repeat(MAX_WORKFLOW_SCRIPT_FILE_BYTES)}\n`);
+    // With no writer, reading a FIFO would never return, and discovery runs on every lookup.
+    const fifo = spawnSync("mkfifo", [join(projectWorkflowDir, "pipe.js")]).status === 0;
+
+    const workflows = await discoverWorkflows(tempRepo, { refresh: true, userWorkflowDir: join(tempRepo, "no-user-dir"), projectDir: project });
+
+    assert.ok(workflows.has("fine"));
+    assert.equal(workflows.has("huge"), false);
+    assert.ok(notes.some((note) => note.includes("huge.js") && note.includes("byte limit")));
+    if (fifo) assert.ok(notes.some((note) => note.includes("pipe.js") && note.includes("not a regular file")));
+  } finally {
+    console.error = consoleError;
+    await rm(tempRepo, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
   }
 });
 
