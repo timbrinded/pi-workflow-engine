@@ -87,6 +87,7 @@ test("/workflow:size updates the session's catalog line and keeps maxAgents as t
   const ctx = {
     cwd,
     hasUI: false,
+    isProjectTrusted: () => true,
     sessionManager: { getSessionFile: () => undefined, getSessionId: () => "size-command" },
     ui: { notify: (message: string) => notifications.push(message) },
   } as unknown as ExtensionCommandContext;

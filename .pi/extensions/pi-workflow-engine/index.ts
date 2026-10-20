@@ -466,9 +466,9 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   });
   backgroundWorkflows.onRunSettled((ctx, runId) => workflowRuns.runSettled(ctx, runId));
   const workflowCatalog = new WorkflowCatalogPrompt({
-    async discover() {
+    async discover(ctx) {
       const { discoverWorkflows } = await loadDiscovery();
-      return [...(await discoverWorkflows(EXTENSION_DIR)).values()].map((workflow) => workflow.meta);
+      return [...(await discoverWorkflows(EXTENSION_DIR, { projectDir: projectWorkflowDir(ctx) })).values()].map((workflow) => workflow.meta);
     },
     size: (ctx) => resolveWorkflowSize(workflowSettingsPaths(ctx.cwd)).size,
   });
