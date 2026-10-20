@@ -144,6 +144,9 @@ export function createProgress(): AgentProgress & { readonly events: string[] } 
     agentFailed(id, error) {
       events.push(`failed:${labels.get(id)}:${String(error)}`);
     },
+    agentSkipped(id) {
+      events.push(`skipped:${labels.get(id)}`);
+    },
     event(event) {
       events.push(`event:${event.type}`);
     },

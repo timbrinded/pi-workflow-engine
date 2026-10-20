@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rm, stat, appendFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, appendFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AgentOptions } from "./types.ts";
 import type { WorktreeBaseline } from "./worktree.ts";
 import { canonicalizeIdentity } from "./identity-canonicalization.ts";
+import { isExistingPathError } from "./filesystem-error.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
   isAgentResumeContext,
@@ -14,6 +15,9 @@ import {
 
 export const WORKFLOW_RUNS_DIR = join(".pi", ".workflow-runs");
 export const WORKFLOW_JOURNAL_KEEP = 50;
+
+/** Ignores everything in the runs directory, including this file, so user projects never commit run data. */
+const WORKFLOW_RUNS_GITIGNORE = "*\n";
 
 export interface JournalEntryV2 {
   readonly version: 2;
@@ -54,6 +58,20 @@ export interface WorkflowJournal {
 
 export class WorkflowJournalLoadError extends Error {
   override readonly name = "WorkflowJournalLoadError";
+}
+
+/**
+ * Create the directory that holds run files, with a `.gitignore` that ignores all of them: records,
+ * journals, and scripts can carry prompts and results, and user projects do not list this directory in
+ * their own ignore files. An existing `.gitignore` is never overwritten.
+ */
+export async function ensureWorkflowRunsDir(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  try {
+    await writeFile(join(dir, ".gitignore"), WORKFLOW_RUNS_GITIGNORE, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if (!isExistingPathError(error)) throw error;
+  }
 }
 
 export function createWorkflowRunId(): string {
@@ -161,7 +179,7 @@ export async function createWorkflowJournal(options: {
   readonly writePath: string;
 }): Promise<WorkflowJournal> {
   const priorEntries = options.resumePath ? await loadJournalEntries(options.resumePath, { required: true }) : [];
-  await mkdir(dirname(options.writePath), { recursive: true });
+  await ensureWorkflowRunsDir(dirname(options.writePath));
   await appendFile(options.writePath, "", "utf8");
   return createMemoryBackedJournal(priorEntries, options.writePath);
 }
@@ -201,10 +219,10 @@ export function createMemoryBackedJournal(priorEntries: readonly JournalEntry[] 
       const entry: JournalEntryV2 = { version: 2, key, result, identity };
       if (writePath) {
         try {
-          await mkdir(dirname(writePath), { recursive: true });
+          await ensureWorkflowRunsDir(dirname(writePath));
           await appendFile(writePath, `${JSON.stringify(entry)}\n`, "utf8");
         } catch (error) {
-      return { ok: false, error: unknownErrorMessage(error) };
+          return { ok: false, error: unknownErrorMessage(error) };
         }
       }
       return { ok: true };

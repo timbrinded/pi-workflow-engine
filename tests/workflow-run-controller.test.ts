@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -27,7 +27,14 @@ import {
   transitionWorkflowRun,
   type WorkflowRunRecord,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-record.ts";
-import { ProjectWorkflowRunStore, type WorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import {
+  ProjectWorkflowRunStore,
+  workflowRunScriptPath,
+  type WorkflowRunStore,
+} from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { sealWorkflowRunScript } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-seal.ts";
+import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
+import { discoverWorkflows } from "../.pi/extensions/pi-workflow-engine/src/discovery.ts";
 import { WorkflowRunsBrowser } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-runs-browser.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-viewer-layout.ts";
 import { WORKFLOW_INSPECTOR_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
@@ -293,7 +300,7 @@ test("workflow run history uses Pi's native RPC selectors instead of a custom na
     assert.equal(customCalls, 0);
     assert.deepEqual(selections.map((selection) => selection.title), [
       "Workflow Runs",
-      "history-headless · rpc-selector-run",
+      "history-headless (inline) · rpc-selector-run",
       "Workflow Runs",
     ]);
     assert.match(notifications.at(-1)?.message ?? "", /Workflow run rpc-selector-run/);
@@ -429,6 +436,208 @@ test("workflow runs command resumes paused runs and restarts terminal runs with 
   }
 });
 
+test("inline runs restart and resume from their sealed script, only while it is retained and unchanged", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-inline-"));
+  const notifications: Notification[] = [];
+  const branch: unknown[] = [];
+  const ctx = context(cwd, notifications, "rpc", branch);
+  const background = new BackgroundWorkflowCoordinator({
+    sendMessage(message) {
+      branch.push({ type: "message", message: { role: "custom", ...message } });
+    },
+  } as Pick<ExtensionAPI, "sendMessage">);
+  const relaunched: LoadedWorkflow[] = [];
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => undefined,
+    execute: async (backgroundCtx, _name, workflowToRun, options) => {
+      relaunched.push(workflowToRun);
+      await runResolvedWorkflow(backgroundCtx, workflowToRun, "", options);
+    },
+  });
+  const store = new ProjectWorkflowRunStore(cwd);
+  const inline = compileInlineWorkflow('export const meta = { name: "inline-lifecycle", description: "" };\nexport default async function run() { return { summary: "inline lifecycle result" }; }\n');
+  try {
+    await runWorkflow(ctx as ExtensionContext, inline, "", { runId: "inline-restart-source", background: backgroundOrigin(ctx, 1) });
+    const pausedSignal = new AbortController();
+    pausedSignal.abort(new WorkflowPauseError("paused for inline lifecycle test"));
+    await assert.rejects(runWorkflow(ctx as ExtensionContext, inline, "", {
+      runId: "inline-resume-source",
+      background: backgroundOrigin(ctx, 2),
+      signal: pausedSignal.signal,
+    }));
+
+    await controller.handleCommand("restart inline-restart-source", ctx);
+    assert.match(notifications.at(-1)?.message ?? "", /Background workflow "inline-lifecycle" started[\s\S]*\nScript: /);
+    await controller.handleCommand("resume inline-resume-source", ctx);
+    await waitFor(async () => (await store.list()).filter((record) => record.state === "completed").length === 3);
+    assert.equal(relaunched.length, 2);
+    assert.ok(relaunched.every((workflowToRun) => workflowToRun.inlineScript === inline.inlineScript));
+
+    // An in-place edit leaves the seal covering the recorded script only.
+    await assert.rejects(runWorkflow(ctx as ExtensionContext, inline, "", {
+      runId: "inline-edited-source",
+      background: backgroundOrigin(ctx, 3),
+      signal: pausedSignal.signal,
+    }));
+    await writeFile(workflowRunScriptPath(cwd, "inline-restart-source"), `${inline.inlineScript}// edited\n`);
+    await writeFile(workflowRunScriptPath(cwd, "inline-edited-source"), `${inline.inlineScript}// edited\n`);
+    for (const command of ["restart inline-restart-source", "resume inline-edited-source"]) {
+      await controller.handleCommand(command, ctx);
+      assert.equal(notifications.at(-1)?.level, "error");
+      assert.match(
+        notifications.at(-1)?.message ?? "",
+        /was not recorded by this pi install, or its script changed since; rerun it with the workflow tool's scriptPath \(\.pi\/\.workflow-runs\/inline-(restart|edited)-source\.script\.js\)/,
+      );
+    }
+    assert.equal(relaunched.length, 2);
+
+    await rm(workflowRunScriptPath(cwd, "inline-restart-source"));
+    await controller.handleCommand("restart inline-restart-source", ctx);
+    assert.equal(notifications.at(-1)?.level, "error");
+    assert.match(notifications.at(-1)?.message ?? "", /inline workflow script inline-restart-source\.script\.js is unavailable/);
+  } finally {
+    await background.sessionShutdown(ctx);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a repository's own inline run record and script never relaunch, however it is named or sealed", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-forged-"));
+  const notifications: Notification[] = [];
+  const ctx = context(cwd, notifications, "rpc");
+  const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
+  const relaunched: string[] = [];
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => undefined,
+    execute: async (_ctx, name) => {
+      relaunched.push(name);
+    },
+  });
+  const store = new ProjectWorkflowRunStore(cwd);
+  const script = 'export const meta = { name: "code-review", description: "" };\nexport default async function run() { return { summary: "forged" }; }\n';
+  const attackerAgentDir = await mkdtemp(join(tmpdir(), "pi-workflow-runs-attacker-agent-"));
+  try {
+    // This install has a key, and the repository seals with a key of its own.
+    await sealWorkflowRunScript("genuine-run", "genuine-source");
+    const forged = compileInlineWorkflow(script);
+    if (forged.source.kind !== "fingerprint") throw new Error("expected an inline fingerprint");
+    const fingerprint = forged.source.fingerprint;
+    const attackerSeal = (runId: string) => sealWorkflowRunScript(runId, fingerprint, attackerAgentDir);
+    const runs = [
+      { runId: "forged-unsealed", state: "completed" as const, scriptSeal: undefined },
+      { runId: "forged-unsealed-paused", state: "paused" as const, scriptSeal: undefined },
+      { runId: "forged-sealed", state: "completed" as const, scriptSeal: await attackerSeal("forged-sealed") },
+      { runId: "forged-sealed-paused", state: "paused" as const, scriptSeal: await attackerSeal("forged-sealed-paused") },
+    ];
+    for (const run of runs) {
+      await store.save(inlineRunRecord(run.runId, forged, run.state, run.scriptSeal));
+      await writeFile(workflowRunScriptPath(cwd, run.runId), script);
+    }
+
+    await controller.handleCommand("", ctx);
+    const listing = notifications.at(-1)?.message ?? "";
+    assert.match(listing, /COMPLETED code-review \(inline\) · .* · forged-unsealed$/m, "an unsealed record offers no restart");
+    assert.match(listing, /PAUSED code-review \(inline\) · .* · forged-unsealed-paused · actions stop$/m, "or resume");
+
+    await controller.handleCommand("restart forged-unsealed", ctx);
+    assert.equal(notifications.at(-1)?.message, "Action restart is not available for completed run forged-unsealed.");
+    await controller.handleCommand("resume forged-unsealed-paused", ctx);
+    assert.equal(notifications.at(-1)?.message, "Action resume is not available for paused run forged-unsealed-paused.");
+    for (const command of ["restart forged-sealed", "resume forged-sealed-paused"]) {
+      await controller.handleCommand(command, ctx);
+      assert.equal(notifications.at(-1)?.level, "error");
+      assert.match(notifications.at(-1)?.message ?? "", /inline run forged-sealed(-paused)? was not recorded by this pi install/);
+    }
+    assert.deepEqual(relaunched, []);
+  } finally {
+    await background.sessionShutdown(ctx);
+    await rm(attackerAgentDir, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a project's saved script relaunches only from this install's sealed record of the content that ran", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-saved-script-"));
+  const notifications: Notification[] = [];
+  const ctx = context(cwd, notifications, "rpc");
+  const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
+  const scriptPath = join(cwd, ".pi", "workflows", "planted.js");
+  const discover = async () => (await discoverWorkflows(cwd, { userWorkflowDir: join(cwd, "no-user-dir"), projectDir: cwd })).get("planted");
+  const relaunched: string[] = [];
+  const controller = new WorkflowRunController(background, {
+    resolveWorkflow: async () => await discover(),
+    execute: async (_ctx, name) => {
+      relaunched.push(name);
+    },
+  });
+  const store = new ProjectWorkflowRunStore(cwd);
+  try {
+    await mkdir(join(cwd, ".pi", "workflows"), { recursive: true });
+    await writeFile(scriptPath, 'export const meta = { name: "planted", description: "" };\nexport default async function run() { return { summary: "ran" }; }\n');
+    const saved = await discover();
+    if (!saved) throw new Error("expected the saved script to be discovered");
+
+    // A repository ships a completed record for its own script, which this install never sealed.
+    await store.save(inlineRunRecord("planted-forged", saved, "completed", undefined));
+    await controller.handleCommand("restart planted-forged", ctx);
+    assert.equal(notifications.at(-1)?.level, "error");
+    assert.match(notifications.at(-1)?.message ?? "", /run planted-forged was not recorded by this pi install, or its script changed since; run planted again by name/);
+
+    await runWorkflow(ctx as ExtensionContext, saved, "", { runId: "planted-genuine", background: backgroundOrigin(ctx, 1) });
+    await controller.handleCommand("restart planted-genuine", ctx);
+    assert.deepEqual(relaunched, ["planted"]);
+
+    await writeFile(scriptPath, 'export const meta = { name: "planted", description: "" };\nexport default async function run() { return { summary: "edited" }; }\n');
+    await controller.handleCommand("restart planted-genuine", ctx);
+    assert.match(notifications.at(-1)?.message ?? "", /run planted-genuine was not recorded by this pi install, or its script changed since/);
+    assert.deepEqual(relaunched, ["planted"]);
+  } finally {
+    await background.sessionShutdown(ctx);
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+/** An inline run's record as the engine would write it, with whatever seal the caller claims. */
+function inlineRunRecord(
+  runId: string,
+  workflowToRecord: LoadedWorkflow,
+  state: "completed" | "paused",
+  scriptSeal: string | undefined,
+): WorkflowRunRecord {
+  const progress: WorkflowProgressSnapshot = {
+    runId,
+    title: workflowToRecord.meta.name,
+    startedAt: 1,
+    currentPhase: "Workflow",
+    phases: [],
+    counters: [],
+    summary: [],
+    lanes: [],
+    laneOverflow: [],
+    logs: [],
+  };
+  const running = transitionWorkflowRun(
+    createWorkflowRunRecord({
+      runId,
+      workflow: workflowToRecord,
+      options: resolveWorkflowRunOptions({}, {}),
+      progress,
+      scriptPersisted: true,
+      scriptSeal,
+    }),
+    { state: "running", progress, at: 2 },
+  );
+  return state === "paused"
+    ? transitionWorkflowRun(running, { state: "paused", progress, message: "paused", at: 3 })
+    : transitionWorkflowRun(running, {
+      state: "completed",
+      progress,
+      usage: { agents: [], totals: emptyWorkflowUsageTotals(), assistantMessages: 0 },
+      result: { summary: "done" },
+      at: 3,
+    });
+}
+
 test("provider-limit timers resume from the journal and manual stop cancels pending work", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-provider-limit-"));
   const notifications: Notification[] = [];
@@ -464,7 +673,8 @@ test("provider-limit timers resume from the journal and manual stop cancels pend
   try {
     await assert.rejects(runWorkflow(ctx as ExtensionContext, limited, "", {
       runId: "auto-resume-source",
-      background: backgroundOrigin(ctx, 1),
+      // Started under Dynamax: its successor must wake the agent too.
+      background: backgroundOrigin(ctx, 1, true),
       autoResumeOnUsageLimit: true,
       usageLimitMaxAttempts: 3,
     }), WorkflowProviderUsageLimitError);
@@ -479,6 +689,12 @@ test("provider-limit timers resume from the journal and manual stop cancels pend
       && record.options.usageLimitAttempt === 1
       && record.state === "completed"
     ));
+    const successor = (await store.list()).find((record) => record.options.resumeFromRunId === "auto-resume-source");
+    assert.equal(successor?.background?.origin.wakeOnComplete, true);
+    // The agent woken by the successor sees which of its runs this continues.
+    const deliveredContent = () => branch.map((entry) => JSON.stringify(entry)).find((text) => text.includes(`Run ID: ${successor?.runId}`));
+    await waitFor(() => deliveredContent() !== undefined);
+    assert.match(deliveredContent() ?? "", /\(resumed from auto-resume-source\)/);
     // The source stays paused after its resume; re-entering the session must not resume it again.
     const scheduledBeforeReentry = clock.delays.length;
     controller.sessionShutdown(ctx);

@@ -11,7 +11,9 @@ import {
 import { raceWithAbort } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
-import { resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
+import { resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
+import { createProviderUsageLimitPauseRecord, WorkflowProviderUsageLimitError } from "../.pi/extensions/pi-workflow-engine/src/provider-usage-limit.ts";
+import { emptyWorkflowUsageTotals } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import {
@@ -158,6 +160,152 @@ test("background start returns after durable metadata and delivers success once 
     assert.ok(isRecord(details));
     assert.deepEqual(details.result, { summary: "Background success.", areas: ["engine"] });
     assert.equal(record?.background?.delivery.state, "delivered");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+function recordingPi(harness: SessionHarness, deliveries: Array<{ runId: unknown; triggerTurn: boolean | undefined }>): Pick<ExtensionAPI, "sendMessage"> {
+  const sent: SentMessage[] = [];
+  const pi = fakePi(harness, sent);
+  return {
+    sendMessage(message, options) {
+      pi.sendMessage(message, options);
+      deliveries.push({ runId: isRecord(message.details) ? message.details.runId : undefined, triggerTurn: options?.triggerTurn });
+    },
+  };
+}
+
+test("a run started under Dynamax wakes the agent unless the user stopped it or its resume is already scheduled", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-wake-"));
+  const harness: SessionHarness = { branch: [], idle: true };
+  const ctx = context(cwd, "session-wake", harness);
+  const store = new ProjectWorkflowRunStore(cwd);
+  const usage = { agents: [], totals: emptyWorkflowUsageTotals(), assistantMessages: 0 };
+  const limit = new WorkflowProviderUsageLimitError({ stopReason: "error", providerMessage: "HTTP 429", provider: "openai" });
+  const finished: Array<[string, boolean, (running: WorkflowRunRecord, options: ResolvedWorkflowRunOptions) => WorkflowRunRecord]> = [
+    ["woken-completed", true, (running) => transitionWorkflowRun(running, { state: "completed", progress: progress(running.runId), usage, result: { summary: "done" }, at: 3 })],
+    ["silent-completed", false, (running) => transitionWorkflowRun(running, { state: "completed", progress: progress(running.runId), usage, result: { summary: "done" }, at: 3 })],
+    ["woken-stopped", true, (running) => transitionWorkflowRun(running, { state: "stopped", progress: progress(running.runId), usage, error: new Error("stopped"), at: 3 })],
+    ["woken-paused-resuming", true, (running, options) =>
+      transitionWorkflowRun(running, { state: "paused", progress: progress(running.runId), ...createProviderUsageLimitPauseRecord(limit, options, true), at: 3 })],
+  ];
+  const deliveries: Array<{ runId: unknown; triggerTurn: boolean | undefined }> = [];
+  try {
+    for (const [runId, wakeOnComplete, finish] of finished) {
+      const options = resolveWorkflowRunOptions({ background: backgroundOrigin(ctx, 1, wakeOnComplete), autoResumeOnUsageLimit: true });
+      const queued = createWorkflowRunRecord({ runId, workflow: workflow(runId, async () => undefined), options, progress: progress(runId) });
+      await store.save(finish(transitionWorkflowRun(queued, { state: "running", progress: progress(runId), at: 2 }), options));
+    }
+    await new BackgroundWorkflowCoordinator(recordingPi(harness, deliveries)).sessionStarted(ctx);
+
+    assert.deepEqual(
+      [...deliveries].sort((left, right) => String(left.runId).localeCompare(String(right.runId))),
+      [
+        { runId: "silent-completed", triggerTurn: false },
+        { runId: "woken-completed", triggerTurn: true },
+        // The scheduled resume's own completion wakes the agent instead.
+        { runId: "woken-paused-resuming", triggerTurn: false },
+        { runId: "woken-stopped", triggerTurn: false },
+      ],
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+/** The run file lines a delivery names, relative to the workflow cwd. */
+function runFileLines(runId: string): string[] {
+  const dir = join(".pi", ".workflow-runs");
+  return [
+    `Record: ${join(dir, `${runId}.run.json`)}`,
+    `Script: ${join(dir, `${runId}.script.js`)}`,
+    `Journal: ${join(dir, `${runId}.jsonl`)}`,
+    "If the result is empty or unexpected, read the journal before diagnosing.",
+  ];
+}
+
+function inlineWorkflow(name: string, run: LoadedWorkflow["default"]): LoadedWorkflow {
+  return { ...workflow(name, run), inlineScript: `export const meta = { name: "${name}", description: "inline" };` };
+}
+
+test("a woken delivery carries the full result and run files, while a silent one keeps the summary", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-content-"));
+  const harness: SessionHarness = { branch: [], idle: true };
+  const ctx = context(cwd, "session-content", harness);
+  const result = { summary: "Review done.", findings: [{ id: "F1", detail: "off-by-one in the pager" }] };
+  try {
+    for (const [runId, wakeOnComplete] of [["background-woken-content", true], ["background-silent-content", false]] as const) {
+      await runWorkflow(ctx, inlineWorkflow(runId, async () => result), "", {
+        runId,
+        background: backgroundOrigin(ctx, 1, wakeOnComplete),
+      });
+    }
+    const sent: SentMessage[] = [];
+    await new BackgroundWorkflowCoordinator(fakePi(harness, sent)).sessionStarted(ctx);
+    const content = (runId: string) =>
+      sent.find((message) => isRecord(message.details) && message.details.runId === runId)?.content ?? "";
+
+    // pi hands the model only a custom message's content, so a woken agent needs the result there.
+    const woken = content("background-woken-content");
+    assert.match(woken, /"detail": "off-by-one in the pager"/);
+    for (const line of runFileLines("background-woken-content")) assert.ok(woken.includes(line), line);
+
+    const silent = content("background-silent-content");
+    assert.match(silent, /Review done\./);
+    assert.doesNotMatch(silent, /off-by-one/);
+    for (const line of runFileLines("background-silent-content")) assert.ok(silent.includes(line), line);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a woken delivery of a failed inline run carries its whole error and run files", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-failed-inline-"));
+  const harness: SessionHarness = { branch: [], idle: true };
+  const ctx = context(cwd, "session-failed-inline", harness);
+  const runId = "background-failed-inline";
+  // Longer than the silent summary's bound, so the woken agent must not get a truncated error.
+  const error = `inline script broke: ${"step failed; ".repeat(60)}end of error`;
+  try {
+    await assert.rejects(
+      runWorkflow(ctx, inlineWorkflow(runId, async () => {
+        throw new Error(error);
+      }), "", { runId, background: backgroundOrigin(ctx, 1, true) }),
+      /inline script broke/,
+    );
+    const sent: SentMessage[] = [];
+    await new BackgroundWorkflowCoordinator(fakePi(harness, sent)).sessionStarted(ctx);
+
+    assert.equal(sent.length, 1);
+    const content = sent[0]?.content ?? "";
+    assert.match(content, /State: failed/);
+    assert.ok(content.includes(`Workflow failed: ${error}`));
+    for (const line of runFileLines(runId)) assert.ok(content.includes(line), line);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the wake request survives a restart, so recovery delivery still starts a turn", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-wake-restart-"));
+  const harness: SessionHarness = { branch: [], idle: true };
+  const ctx = context(cwd, "session-wake-restart", harness);
+  const store = new ProjectWorkflowRunStore(cwd);
+  const runId = "background-wake-restart-run";
+  const queued = createWorkflowRunRecord({
+    runId,
+    workflow: workflow("background-wake-restart", async () => undefined),
+    options: resolveWorkflowRunOptions({ background: backgroundOrigin(ctx, 1, true) }),
+    progress: progress(runId),
+  });
+  await store.save(transitionWorkflowRun(queued, { state: "running", progress: progress(runId), at: 2 }));
+  const deliveries: Array<{ runId: unknown; triggerTurn: boolean | undefined }> = [];
+  try {
+    await new BackgroundWorkflowCoordinator(recordingPi(harness, deliveries)).sessionStarted(ctx);
+
+    assert.equal((await store.load(runId))?.state, "paused");
+    assert.deepEqual(deliveries, [{ runId, triggerTurn: true }]);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

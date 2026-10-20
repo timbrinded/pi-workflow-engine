@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { validateWorkflowRunId, WORKFLOW_RUNS_DIR } from "./journal.ts";
+import { ensureWorkflowRunsDir, validateWorkflowRunId, WORKFLOW_RUNS_DIR } from "./journal.ts";
 import type { WorkflowProgressSnapshot } from "./progress-types.ts";
 import {
   isWorkflowRunRecord,
   transitionWorkflowRun,
   updateWorkflowRunProgress,
+  WORKFLOW_RUN_SCRIPT_SUFFIX,
+  workflowRunScriptFile,
   type WorkflowRunRecord,
   type WorkflowRunState,
   type WorkflowRunTransition,
@@ -34,7 +36,7 @@ export class ProjectWorkflowRunStore implements WorkflowRunStore {
     if (Buffer.byteLength(content) > MAX_RECORD_BYTES) {
       throw new Error(`Workflow run record exceeded ${MAX_RECORD_BYTES} bytes.`);
     }
-    await mkdir(dirname(path), { recursive: true });
+    await ensureWorkflowRunsDir(dirname(path));
     try {
       await writeFile(temporaryPath, content, { encoding: "utf8", mode: 0o600 });
       await rename(temporaryPath, path);
@@ -70,7 +72,12 @@ export class ProjectWorkflowRunStore implements WorkflowRunStore {
       .filter((entry): entry is { readonly path: string; readonly mtimeMs: number } => entry !== undefined)
       .sort((left, right) => right.mtimeMs - left.mtimeMs)
       .slice(Math.max(0, keep));
-    await Promise.all(stale.map((entry) => rm(entry.path, { force: true }).catch(() => undefined)));
+    // A pruned record takes its persisted script with it: scripts are only ever reached through their record.
+    const paths = stale.flatMap((entry) => [
+      entry.path,
+      `${entry.path.slice(0, -WORKFLOW_RUN_RECORD_SUFFIX.length)}${WORKFLOW_RUN_SCRIPT_SUFFIX}`,
+    ]);
+    await Promise.all(paths.map((path) => rm(path, { force: true }).catch(() => undefined)));
   }
 
   /** Record file paths in the runs directory; empty when the directory cannot be read. */
@@ -151,6 +158,25 @@ export class DurableWorkflowRun {
 
 export function workflowRunRecordPath(cwd: string, runId: string): string {
   return join(cwd, WORKFLOW_RUNS_DIR, `${validateWorkflowRunId(runId)}${WORKFLOW_RUN_RECORD_SUFFIX}`);
+}
+
+export function workflowRunScriptPath(cwd: string, runId: string): string {
+  return join(cwd, WORKFLOW_RUNS_DIR, workflowRunScriptFile(validateWorkflowRunId(runId)));
+}
+
+/**
+ * Persist an inline run's script beside its record, which redacts prompts and so cannot hold it. This
+ * adds no new exposure: pi's session transcript already holds the script as the tool call's arguments.
+ */
+export async function persistWorkflowRunScript(cwd: string, runId: string, source: string): Promise<string> {
+  const path = workflowRunScriptPath(cwd, runId);
+  await ensureWorkflowRunsDir(dirname(path));
+  await writeFile(path, source, { encoding: "utf8", mode: 0o600 });
+  return path;
+}
+
+export async function readWorkflowRunScript(cwd: string, runId: string): Promise<string> {
+  return await readFile(workflowRunScriptPath(cwd, runId), "utf8");
 }
 
 async function loadWorkflowRunRecord(path: string): Promise<WorkflowRunRecord | undefined> {

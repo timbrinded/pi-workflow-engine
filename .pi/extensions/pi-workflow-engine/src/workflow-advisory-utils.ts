@@ -20,7 +20,9 @@ export type AdvisoryVerified = IdentifiedAdvisoryCandidate & {
 
 export interface LensVerificationPipelineResult {
   verified: AdvisoryVerified[];
+  /** Every candidate the finders returned, including those over the per-lens cap. */
   rawCandidates: number;
+  /** Candidates never verified: over the per-lens cap, duplicates, or out of scope. */
   dropped: number;
   coverage: AdvisoryStageCoverage[];
 }
@@ -73,6 +75,7 @@ export async function runLensVerificationPipeline(
   const { api, lenses, perLens, finderPhase = "Find", finderPrompt, verifierPrompt, boundCandidate } = options;
   const coverage: AdvisoryStageCoverage[] = [];
   let rawCandidates = 0;
+  let overCap = 0;
   api.phase(finderPhase);
   const found = await collectAdvisoryStage(api, "Find", lenses.map((lens) => ({ id: lens.label, run: async () => {
     const result = await api.agent(finderPrompt(lens), {
@@ -80,9 +83,16 @@ export async function runLensVerificationPipeline(
       tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS,
       profile: "small", schema: AdvisoryCandidatesSchema,
     });
+    rawCandidates += result.candidates.length;
+    api.progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: result.candidates.length });
+    // A finder can return more than the cap its prompt states; keep the first perLens and report the rest.
+    const cut = Math.max(0, result.candidates.length - perLens);
+    if (cut > 0) {
+      overCap += cut;
+      api.progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: cut });
+      api.log(`Dropped ${cut} ${lens.label} candidate(s) over the per-lens cap of ${perLens}`);
+    }
     const raw = identifyCandidates(result.candidates.slice(0, perLens), lens.label);
-    rawCandidates += raw.length;
-    api.progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: raw.length });
     const candidates = boundCandidate ? raw.flatMap((candidate) => {
       const bounded = boundCandidate(candidate, lens);
       return bounded ? [bounded] : [];
@@ -94,11 +104,12 @@ export async function runLensVerificationPipeline(
     return candidates;
   } })), coverage);
   const candidates = await mergeEquivalentCandidates(api, dedupeCandidates(found.flat()));
-  const dropped = rawCandidates - candidates.length;
-  if (dropped > 0) {
-    api.progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: dropped });
-    api.log(`Dropped ${dropped} duplicate or out-of-scope candidate(s)`);
+  const duplicateOrOutOfScope = rawCandidates - overCap - candidates.length;
+  if (duplicateOrOutOfScope > 0) {
+    api.progress({ type: "counter_delta", key: "dropped", label: "dropped", delta: duplicateOrOutOfScope });
+    api.log(`Dropped ${duplicateOrOutOfScope} duplicate or out-of-scope candidate(s)`);
   }
+  const dropped = overCap + duplicateOrOutOfScope;
   api.phase("Verify");
   const verified = await collectAdvisoryStage(api, "Verify", candidates.map((candidate) => ({
     id: candidate.candidateId, candidate, run: async (): Promise<AdvisoryVerified> => {

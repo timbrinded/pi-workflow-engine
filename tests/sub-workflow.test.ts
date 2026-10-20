@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "bun:test";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
@@ -12,7 +15,7 @@ import { WorkflowAgentLimiter } from "../.pi/extensions/pi-workflow-engine/src/a
 import { createWorkflowUsageRecorder, type WorkflowUsageSink } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { AgentProgress, CreateAgentSession } from "../.pi/extensions/pi-workflow-engine/src/agent-runner.ts";
 import type { LoadedWorkflow, WorkflowModule, WorkflowProgressEvent, WorkflowRef } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
-import { resolveWorkflowRef } from "../.pi/extensions/pi-workflow-engine/index.ts";
+import { resolveWorkflowRef, type WorkflowDiscoveryContext } from "../.pi/extensions/pi-workflow-engine/index.ts";
 import { WorktreeRegistry, type WorktreeGitCommandOptions } from "../.pi/extensions/pi-workflow-engine/src/worktree.ts";
 import { assistantTextMessage, createAgentRunnerSession, createRunContext } from "./agent-runner-fixtures.ts";
 
@@ -42,6 +45,7 @@ function createProgress(): CaptureProgress {
     agentTool: () => {},
     agentDone: () => {},
     agentFailed: () => {},
+    agentSkipped: () => {},
     log: (message) => logs.push(message),
     phase: (title) => phases.push(title),
     event: (event) => events.push(event),
@@ -139,6 +143,25 @@ test("api.workflow() passes args through to the child", async () => {
   const result = await runWorkflowWithContext(rc, progress, parent, "", contextOpts(async () => child));
 
   assert.equal(result, "got:payload");
+});
+
+test("api.workflow() hands a JSON value to the child verbatim as input and as JSON text as args", async () => {
+  const progress = createProgress();
+  const rc = createRc(progress, new Semaphore(4));
+  const child = workflowModule("child", async (api) => ({ args: api.args, input: api.input }));
+  const parent = workflowModule("parent", async (api) => ({
+    json: await api.workflow("child", { target: "src", depth: 2 }),
+    text: await api.workflow("child", "HEAD~3"),
+    none: await api.workflow("child"),
+  }));
+
+  const result = await runWorkflowWithContext(rc, progress, parent, "", contextOpts(async () => child));
+
+  assert.deepEqual(result, {
+    json: { args: '{"target":"src","depth":2}', input: { target: "src", depth: 2 } },
+    text: { args: "HEAD~3", input: "HEAD~3" },
+    none: { args: "", input: "" },
+  });
 });
 
 test("api.workflow() nesting rejection is promise-shaped", async () => {
@@ -403,11 +426,38 @@ test("parent and sub-workflow agents share the run's live-agent limit", async ()
   );
 });
 
+function discoveryContext(cwd: string, trusted = true): WorkflowDiscoveryContext {
+  return { cwd, isProjectTrusted: () => trusted };
+}
+
 test("resolveWorkflowRef resolves a registered workflow by name", async () => {
-  const mod = await resolveWorkflowRef("code-review");
+  const mod = await resolveWorkflowRef(discoveryContext(process.cwd()), "code-review");
   assert.equal(mod.meta.name, "code-review");
 });
 
 test("resolveWorkflowRef rejects an unknown name", async () => {
-  await assert.rejects(() => resolveWorkflowRef("does-not-exist"), /Unknown workflow/);
+  await assert.rejects(() => resolveWorkflowRef(discoveryContext(process.cwd()), "does-not-exist"), /Unknown workflow/);
+});
+
+test("resolveWorkflowRef compiles a scriptPath relative to the cwd and rejects a missing one", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-sub-workflow-script-"));
+  const project = discoveryContext(join(root, "project"));
+  try {
+    await mkdir(join(project.cwd, "scripts"), { recursive: true });
+    const script = 'export const meta = { name: "child-script", description: "" };\nexport default async function run({ args }) { return `child:${args}`; }\n';
+    await writeFile(join(project.cwd, "scripts", "child.js"), script);
+
+    const child = await resolveWorkflowRef(project,{ scriptPath: "scripts/child.js" });
+    assert.equal(child.meta.name, "child-script");
+    assert.equal(child.source.kind, "fingerprint");
+
+    const progress = createProgress();
+    const parent = workflowModule("parent", async (api) => api.workflow({ scriptPath: "scripts/child.js" }, "payload"));
+    const result = await runWorkflowWithContext(createRc(progress, new Semaphore(1)), progress, parent, "", contextOpts((ref) => resolveWorkflowRef(project,ref)));
+    assert.equal(result, "child:payload");
+
+    await assert.rejects(() => resolveWorkflowRef(project,{ scriptPath: "scripts/missing.js" }), /could not be read/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -6,7 +6,7 @@ import type {
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { BackgroundWorkflowCoordinator } from "./background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./background-workflow-tool.ts";
-import { validateWorkflowRunId } from "./journal.ts";
+import { validateWorkflowRunId, WORKFLOW_RUNS_DIR } from "./journal.ts";
 import { resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "./options.ts";
 import type { LoadedWorkflow } from "./types.ts";
 import {
@@ -17,15 +17,19 @@ import {
   formatWorkflowRunSummary,
   isWorkflowRunLifecycleAction,
   parseWorkflowRunsCommand,
+  isInlineWorkflowRun,
   retainedWorkflowRunOutcome,
   supersedingRuns,
   WORKFLOW_RUN_ACTIONS,
   WORKFLOW_RUN_HISTORY_LIMIT,
+  workflowRunDisplayName,
   type WorkflowRunActionContext,
   type WorkflowRunLifecycleAction,
 } from "./workflow-run-history.ts";
-import { stopWorkflowRunRecord, type WorkflowRunRecord } from "./workflow-run-record.ts";
-import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
+import { stopWorkflowRunRecord, workflowRunScriptFile, type WorkflowRunRecord } from "./workflow-run-record.ts";
+import { verifyWorkflowRunScriptSeal } from "./workflow-run-seal.ts";
+import { ProjectWorkflowRunStore, readWorkflowRunScript, type WorkflowRunStore } from "./workflow-run-store.ts";
+import { compileInlineWorkflow, inlineScriptFingerprint } from "./inline-workflow.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
   WorkflowUsageLimitScheduler,
@@ -39,7 +43,8 @@ import { completeCurrentArgument, splitArgumentPrefix } from "./command-completi
 type WorkflowRunCompletionContext = Pick<ExtensionContext, "cwd" | "sessionManager">;
 
 interface WorkflowRunControllerDependencies {
-  readonly resolveWorkflow: (name: string) => Promise<LoadedWorkflow | undefined>;
+  /** The registered workflow a relaunch runs; `ctx` decides which project's saved workflows are visible. */
+  readonly resolveWorkflow: (name: string, ctx: ExtensionContext) => Promise<LoadedWorkflow | undefined>;
   readonly execute: (
     ctx: ExtensionContext,
     name: string,
@@ -160,7 +165,7 @@ export class WorkflowRunController {
       }
       const actions = availableWorkflowRunActions(record, runs);
       const selectedAction = await ctx.ui.select(
-        `${record.workflow.name} · ${record.runId}`,
+        `${workflowRunDisplayName(record)} · ${record.runId}`,
         [...actions],
       );
       const action = actions.find((candidate) => candidate === selectedAction);
@@ -232,14 +237,10 @@ export class WorkflowRunController {
   ): Promise<string> {
     const unavailable = backgroundUnavailableResult(ctx.mode);
     if (unavailable) throw new Error(unavailable.content[0].text);
-    const workflow = await this.dependencies.resolveWorkflow(record.workflow.name);
-    if (!workflow) throw new Error(`registered workflow ${record.workflow.name} is unavailable`);
-    if (workflow.source.kind !== "file") {
-      throw new Error(`registered workflow ${record.workflow.name} no longer has verifiable file provenance`);
-    }
+    const { workflow, fingerprint } = await this.relaunchWorkflow(ctx, record);
     if (
       action === "resume"
-      && workflow.source.fingerprint !== record.workflow.sourceFingerprint
+      && fingerprint !== record.workflow.sourceFingerprint
     ) {
       throw new Error("workflow source changed, so journal replay cannot resume safely");
     }
@@ -264,12 +265,43 @@ export class WorkflowRunController {
       ctx,
       name: workflow.meta.name,
       options,
+      // A relaunch continues the original run, so it delivers the way that run would have.
+      wakeOnComplete: record.background?.origin.wakeOnComplete === true,
       execute: (backgroundCtx, backgroundOptions) =>
         this.dependencies.execute(backgroundCtx, workflow.meta.name, workflow, backgroundOptions),
     });
     const message = result.content[0].text;
     if (typeof result.details.error === "string") throw new Error(message);
     return message;
+  }
+
+  /** The module a relaunch runs: an inline run's persisted script, else the registered workflow of the same name. */
+  private async relaunchWorkflow(
+    ctx: ExtensionContext,
+    record: WorkflowRunRecord,
+  ): Promise<{ readonly workflow: LoadedWorkflow; readonly fingerprint: string }> {
+    if (record.workflow.sourceKind === "fingerprint") {
+      if (record.scriptFile === undefined) throw new Error(`inline workflow ${record.workflow.name} did not retain its script`);
+      const fingerprint = await sealedFingerprint(record);
+      let source: string;
+      try {
+        source = await readWorkflowRunScript(ctx.cwd, record.runId);
+      } catch (error) {
+        throw new Error(`inline workflow script ${record.scriptFile} is unavailable: ${unknownErrorMessage(error)}`);
+      }
+      if (inlineScriptFingerprint(source) !== fingerprint) throw new Error(unsealedRunMessage(record));
+      return { workflow: compileInlineWorkflow(source), fingerprint };
+    }
+    const workflow = await this.dependencies.resolveWorkflow(record.workflow.name, ctx);
+    if (!workflow) throw new Error(`registered workflow ${record.workflow.name} is unavailable`);
+    if (workflow.source.kind !== "file") {
+      throw new Error(`registered workflow ${record.workflow.name} no longer has verifiable file provenance`);
+    }
+    // A repository can also ship a saved script under the name a forged record claims.
+    if (workflow.source.selfContained === true && (await sealedFingerprint(record)) !== workflow.source.fingerprint) {
+      throw new Error(unsealedRunMessage(record));
+    }
+    return { workflow, fingerprint: workflow.source.fingerprint };
   }
 
   private async autoResume(ctx: ExtensionContext, runId: string, attempt: number): Promise<void> {
@@ -326,7 +358,7 @@ export class WorkflowRunController {
         .filter((record) => availableWorkflowRunActions(record, runs).includes(action))
         .map((record) => ({
           value: record.runId,
-          description: `${record.state} · ${record.workflow.name}`,
+          description: `${record.state} · ${workflowRunDisplayName(record)}`,
         })),
     );
   }
@@ -340,10 +372,34 @@ export class WorkflowRunController {
       { value: "last", description: "Inspect the current or most recent in-session workflow" },
       ...records.map((record) => ({
         value: record.runId,
-        description: `${record.state} · ${record.workflow.name}`,
+        description: `${record.state} · ${workflowRunDisplayName(record)}`,
       })),
     ]);
   }
+}
+
+/**
+ * The fingerprint a script-sourced record's seal covers. A repository can ship a record of its own, so
+ * the seal is checked before any script is read; it is this install's, over the script as recorded.
+ */
+async function sealedFingerprint(record: WorkflowRunRecord): Promise<string> {
+  const fingerprint = record.workflow.sourceFingerprint;
+  if (
+    fingerprint === undefined
+    || record.scriptSeal === undefined
+    || !(await verifyWorkflowRunScriptSeal(record.runId, fingerprint, record.scriptSeal))
+  ) {
+    throw new Error(unsealedRunMessage(record));
+  }
+  return fingerprint;
+}
+
+/** Why a script-sourced record will not run, and how to run the script anyway. */
+function unsealedRunMessage(record: WorkflowRunRecord): string {
+  const rerun = isInlineWorkflowRun(record)
+    ? `rerun it with the workflow tool's scriptPath (${WORKFLOW_RUNS_DIR}/${workflowRunScriptFile(record.runId)})`
+    : `run ${record.workflow.name} again by name`;
+  return `${isInlineWorkflowRun(record) ? "inline run" : "run"} ${record.runId} was not recorded by this pi install, or its script changed since; ${rerun}`;
 }
 
 /**

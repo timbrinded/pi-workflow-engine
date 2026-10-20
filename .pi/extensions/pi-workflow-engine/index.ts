@@ -4,11 +4,19 @@ import { getSelectListTheme, keyText, VERSION, type ExtensionAPI, type Extension
 import type { AutocompleteItem, SelectItem } from "@earendil-works/pi-tui";
 import type { WorkflowProgressSnapshot } from "./src/progress-types.ts";
 import type { WorkflowRunState } from "./src/workflow-run-record.ts";
-import { WORKFLOW_TOOL_NAME, type LoadedWorkflow, type WorkflowModule, type WorkflowProgressSource, type WorkflowRef } from "./src/types.ts";
+import {
+  WORKFLOW_TOOL_NAME,
+  type LoadedWorkflow,
+  type WorkflowModule,
+  type WorkflowProgressSource,
+  type WorkflowRef,
+  type WorkflowRunMetadata,
+} from "./src/types.ts";
 import { showWorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import { WorkflowPicker } from "./src/ui/workflow-picker.ts";
 import type { PerfSink } from "./src/perf.ts";
-import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
+import type { DiscoverWorkflowsOptions } from "./src/discovery.ts";
+import { registerDynamax, resolveTurnBudget, type DynamaxHandle } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
 import { ReviewSessionCoordinator } from "./src/review/review-session-coordinator.ts";
@@ -32,7 +40,7 @@ import {
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
 } from "./src/options.ts";
 import { executeWorkflowInvocation, type WorkflowResultEnvelope } from "./src/workflow-execution.ts";
-import { formatWorkflowResultForContext } from "./src/workflow-result-context.ts";
+import { formatWorkflowResultForContext, formatWorkflowRunFileLines, formatWorkflowRunLine } from "./src/workflow-result-context.ts";
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
 import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
@@ -43,13 +51,22 @@ import { formatWorkflowInspection, workflowInspectionSnapshot } from "./src/ui/w
 import { workflowUsageForPi, type WorkflowUsageSnapshot } from "./src/usage.ts";
 import { unknownErrorMessage } from "./src/unknown-error.ts";
 import { createHostToolBridge } from "./src/host-tools.ts";
+import { appendSectionToForcedPrompt } from "./src/prompt-sections.ts";
+import { WORKFLOWS_SECTION, WorkflowCatalogPrompt } from "./src/workflow-catalog.ts";
+import { registerWorkflowSizeCommand, resolveWorkflowSize, workflowSettingsPaths } from "./src/workflow-settings.ts";
+import { isRecord } from "./src/guards.ts";
+import { INVALID_WORKFLOW_INVOCATION_MESSAGE, normalizeWorkflowToolRequest, workflowToolReach } from "./src/workflow-tool-request.ts";
+import { workflowArgsText } from "./src/workflow-input.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
+/** The package's authoring skill, named by path so the guideline still resolves when skills are filtered out. */
+const WORKFLOW_AUTHORING_SKILL_PATH = fileURLToPath(new URL("../../../skills/workflow-authoring/SKILL.md", import.meta.url));
 
 type DiscoveryModule = typeof import("./src/discovery.ts");
 type EngineModule = typeof import("./src/engine.ts");
 type InlineWorkflowModule = typeof import("./src/inline-workflow.ts");
+type WorkflowScriptFileModule = typeof import("./src/workflow-script-file.ts");
 
 async function loadDiscovery(): Promise<DiscoveryModule> {
   return await import("./src/discovery.ts");
@@ -63,18 +80,47 @@ async function loadInlineWorkflow(): Promise<InlineWorkflowModule> {
   return await import("./src/inline-workflow.ts");
 }
 
+async function loadWorkflowScriptFile(): Promise<WorkflowScriptFileModule> {
+  return await import("./src/workflow-script-file.ts");
+}
+
 async function createInvocationPerf(options: ResolvedWorkflowRunOptions): Promise<PerfSink | undefined> {
   if (!options.perf) return undefined;
   const { createPerfRecorder } = await import("./src/perf.ts");
   return createPerfRecorder(true);
 }
 
-/**
- * Resolve an `api.workflow()` reference to a registered workflow module. Throws on an unknown name.
- */
-export async function resolveWorkflowRef(ref: WorkflowRef, perf?: PerfSink): Promise<LoadedWorkflow> {
+/** What workflow discovery reads from a session: its cwd, and whether its project's saved scripts may load. */
+export type WorkflowDiscoveryContext = Pick<ExtensionContext, "cwd" | "isProjectTrusted">;
+
+/** Project `.pi/workflows` scripts load only in a project pi trusts, like pi's own project resources. */
+function projectWorkflowDir(ctx: WorkflowDiscoveryContext): string | undefined {
+  return ctx.isProjectTrusted() ? ctx.cwd : undefined;
+}
+
+/** Every workflow a session can run, with the project-trust gate applied in this one place. */
+async function discoverForSession(
+  ctx: WorkflowDiscoveryContext,
+  options: Omit<DiscoverWorkflowsOptions, "projectDir"> = {},
+): Promise<Map<string, LoadedWorkflow>> {
   const { discoverWorkflows } = await loadDiscovery();
-  const workflows = await discoverWorkflows(EXTENSION_DIR, { perf });
+  return await discoverWorkflows(EXTENSION_DIR, { ...options, projectDir: projectWorkflowDir(ctx) });
+}
+
+/**
+ * Resolve an `api.workflow()` reference: a registered workflow by name, or an inline-format script file
+ * via `{ scriptPath }` relative to the cwd. Throws on an unknown name, an unreadable scriptPath, or a
+ * compile error.
+ */
+export async function resolveWorkflowRef(ctx: WorkflowDiscoveryContext, ref: WorkflowRef, perf?: PerfSink): Promise<LoadedWorkflow> {
+  if (typeof ref !== "string") {
+    // Inline scripts are untyped, so check the shape the type promises.
+    const scriptPath: unknown = isRecord(ref) ? ref.scriptPath : undefined;
+    if (typeof scriptPath !== "string") throw new Error("workflow() expects a workflow name or { scriptPath }");
+    const { compileWorkflowScriptFile } = await loadWorkflowScriptFile();
+    return await compileWorkflowScriptFile(ctx.cwd, scriptPath);
+  }
+  const workflows = await discoverForSession(ctx, { perf });
   const mod = workflows.get(ref);
   if (!mod) {
     const available = [...workflows.keys()].join(", ") || "(none)";
@@ -89,7 +135,7 @@ const AUTHOR_TEMP_WORKFLOW_DESCRIPTION = "Ask the host agent to author and run a
 
 const WORKFLOW_OPTION_COMPLETIONS = [
   { value: "--inspect", description: "Open the live workflow inspector" },
-  { value: "--refresh", description: "Refresh dynamic workflow discovery" },
+  { value: "--refresh", description: "Reload .ts drop-in workflows" },
   { value: "--perf", description: "Collect workflow performance metrics" },
   { value: "--result-viewer", description: "Open supported result viewers" },
   { value: "--no-result-viewer", description: "Skip supported result viewers" },
@@ -103,11 +149,12 @@ const WORKFLOW_OPTION_COMPLETIONS = [
   { value: "--resume=", description: "Resume from a retained workflow run ID" },
 ] as const;
 
-async function workflowArgumentCompletions(argumentPrefix: string): Promise<AutocompleteItem[] | null> {
+/** Completions get no context, so the project's scripts come from the active session's tracked dir. */
+async function workflowArgumentCompletions(argumentPrefix: string, projectDir: string | undefined): Promise<AutocompleteItem[] | null> {
   const parts = splitArgumentPrefix(argumentPrefix);
   if (parts.completed.length === 0) {
     const { discoverWorkflows } = await loadDiscovery();
-    const workflows = await discoverWorkflows(EXTENSION_DIR);
+    const workflows = await discoverWorkflows(EXTENSION_DIR, { projectDir });
     return completeCurrentArgument(
       argumentPrefix,
       [...workflows.values()].map((workflow) => ({
@@ -117,6 +164,21 @@ async function workflowArgumentCompletions(argumentPrefix: string): Promise<Auto
     );
   }
   return completeCurrentArgument(argumentPrefix, WORKFLOW_OPTION_COMPLETIONS);
+}
+
+/**
+ * The active session's trusted project dir, kept for surfaces pi calls without a context. Session
+ * replacement invalidates a context, so only this value is kept.
+ */
+function trackProjectWorkflowDir(pi: ExtensionAPI): () => string | undefined {
+  let projectDir: string | undefined;
+  pi.on("session_start", (_event, ctx) => {
+    projectDir = projectWorkflowDir(ctx);
+  });
+  pi.on("session_shutdown", () => {
+    projectDir = undefined;
+  });
+  return () => projectDir;
 }
 
 /** Registered workflows in discovery order (built-ins first), then the author option. */
@@ -152,6 +214,7 @@ export interface ActiveWorkflowInspection {
   readonly startedAt: number;
   readonly snapshot: () => WorkflowProgressSnapshot;
   readonly state?: () => WorkflowRunState;
+  readonly skipAgent?: (agentId: number) => boolean;
 }
 
 interface SessionWorkflowInspections {
@@ -166,7 +229,9 @@ export async function openWorkflowInspector(ctx: ExtensionContext, inspection: L
     ctx.ui.notify(formatWorkflowInspection(inspection), "info");
     return;
   }
-  await showWorkflowInspector(ctx.ui, () => workflowInspectionSnapshot(inspection), () => ({ state: inspection.state?.() }));
+  // Only a live inspection can skip agents; a finished one is a snapshot.
+  const controls = "skipAgent" in inspection ? { skipAgent: inspection.skipAgent } : undefined;
+  await showWorkflowInspector(ctx.ui, () => workflowInspectionSnapshot(inspection), () => ({ state: inspection.state?.() }), controls);
 }
 
 function workflowInspectionState(pi: ExtensionAPI, ctx: ExtensionContext): SessionWorkflowInspections {
@@ -189,7 +254,7 @@ async function openAvailableWorkflowInspector(pi: ExtensionAPI, ctx: ExtensionCo
 }
 
 function bindActiveWorkflowInspection(name: string, args: string, source: WorkflowProgressSource): ActiveWorkflowInspection {
-  return { name, args, startedAt: Date.now(), snapshot: () => source.snapshot(), state: source.state };
+  return { name, args, startedAt: Date.now(), snapshot: () => source.snapshot(), state: source.state, skipAgent: source.skipAgent };
 }
 
 export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {
@@ -198,21 +263,9 @@ export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {
 User brief:
 ${brief.trim()}
 
-Use the workflow tool with a script argument, not a saved workflow name, and follow its guidelines for inline scripts.
+Use the workflow tool with a script argument, not a saved workflow name, and read the workflow-authoring skill before writing the script.
 Do not edit files unless the user explicitly requested edits.`;
 }
-
-export interface WorkflowToolRequestParams {
-  readonly name?: string;
-  readonly script?: string;
-  readonly resumeFromRunId?: string;
-  readonly background?: boolean;
-}
-
-export type WorkflowToolRequest =
-  | { readonly kind: "named"; readonly name: string }
-  | { readonly kind: "inline"; readonly script: string }
-  | { readonly kind: "error"; readonly error: "invalid_workflow_invocation"; readonly message: string };
 
 export interface WorkflowToolErrorResult<TDetails = WorkflowToolErrorDetails> {
   readonly content: Array<{ readonly type: "text"; readonly text: string }>;
@@ -221,21 +274,13 @@ export interface WorkflowToolErrorResult<TDetails = WorkflowToolErrorDetails> {
   readonly isError: true;
 }
 
-type WorkflowToolErrorDetails = { readonly error: "invalid_workflow_invocation" } | { readonly error: "inline_compile_error"; readonly message: string };
+type WorkflowToolErrorDetails =
+  | { readonly error: "invalid_workflow_invocation" }
+  | { readonly error: "inline_compile_error"; readonly message: string }
+  | { readonly error: "invalid_script_path"; readonly message: string };
 
 function workflowToolError<TDetails>(text: string, details: TDetails): WorkflowToolErrorResult<TDetails> {
   return { content: [{ type: "text", text }], details, isError: true };
-}
-
-const INVALID_WORKFLOW_INVOCATION_MESSAGE = "Provide exactly one workflow name or inline workflow script.";
-
-export function normalizeWorkflowToolRequest(params: WorkflowToolRequestParams): WorkflowToolRequest {
-  const name = params.name?.trim() ?? "";
-  const script = params.script?.trim() ?? "";
-  const hasName = name.length > 0;
-  const hasScript = script.length > 0;
-  if (hasName === hasScript) return { kind: "error", error: "invalid_workflow_invocation", message: INVALID_WORKFLOW_INVOCATION_MESSAGE };
-  return hasName ? { kind: "named", name } : { kind: "inline", script };
 }
 
 export function invalidWorkflowInvocationResult(): WorkflowToolErrorResult {
@@ -244,6 +289,27 @@ export function invalidWorkflowInvocationResult(): WorkflowToolErrorResult {
 
 export function inlineCompileErrorResult(message: string): WorkflowToolErrorResult {
   return workflowToolError(`Inline workflow did not compile: ${message}`, { error: "inline_compile_error", message });
+}
+
+function invalidScriptPathResult(message: string): WorkflowToolErrorResult {
+  return workflowToolError(message, { error: "invalid_script_path", message });
+}
+
+/** Compile the tool's inline `script` or `scriptPath` file, shaping contract failures as tool errors. */
+async function compileInlineToolWorkflow(
+  cwd: string,
+  request: { readonly kind: "inline"; readonly script: string } | { readonly kind: "script-path"; readonly scriptPath: string },
+): Promise<LoadedWorkflow | WorkflowToolErrorResult> {
+  const [inline, scriptFile] = await Promise.all([loadInlineWorkflow(), loadWorkflowScriptFile()]);
+  try {
+    return request.kind === "inline"
+      ? inline.compileInlineWorkflow(request.script)
+      : await scriptFile.compileWorkflowScriptFile(cwd, request.scriptPath);
+  } catch (error) {
+    if (error instanceof scriptFile.WorkflowScriptPathError) return invalidScriptPathResult(error.message);
+    if (error instanceof inline.InlineWorkflowCompileError) return inlineCompileErrorResult(error.message);
+    throw error;
+  }
 }
 
 export type WorkflowPickerSelection =
@@ -288,27 +354,29 @@ export async function sendWorkflowResult(
   await reviewSessions.present(ctx, retained, options);
 }
 
+/** `input` is a slash command's argument string, or a tool call's string or JSON value. */
 async function executeResolvedWorkflow(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   name: string,
   mod: LoadedWorkflow,
-  args: string,
+  input: unknown,
   options: ResolvedWorkflowRunOptions,
   perfRecorder?: PerfSink,
 ): Promise<WorkflowResultEnvelope> {
   const { runResolvedWorkflow } = await loadEngine();
   let liveInspection: ActiveWorkflowInspection | undefined;
   const inspections = workflowInspectionState(pi, ctx);
+  const args = workflowArgsText(input);
   return await executeWorkflowInvocation({
     ctx,
     name,
     mod,
-    args,
+    args: input,
     options,
     perfRecorder,
     runResolvedWorkflow,
-    resolveWorkflow: (ref) => resolveWorkflowRef(ref, perfRecorder),
+    resolveWorkflow: (ref) => resolveWorkflowRef(ctx, ref, perfRecorder),
     onProgressSource(source) {
       if (source) {
         liveInspection = bindActiveWorkflowInspection(name, args, source);
@@ -351,10 +419,10 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   assertSupportedPiVersion(VERSION);
   const reviewSessions = createReviewSessionCoordinator(pi);
   const backgroundWorkflows = new BackgroundWorkflowCoordinator(pi);
+  const sessionProjectDir = trackProjectWorkflowDir(pi);
   const workflowRuns = new WorkflowRunController(backgroundWorkflows, {
-    async resolveWorkflow(name) {
-      const { discoverWorkflows } = await loadDiscovery();
-      return (await discoverWorkflows(EXTENSION_DIR)).get(name);
+    async resolveWorkflow(name, ctx) {
+      return (await discoverForSession(ctx)).get(name);
     },
     async execute(ctx, name, workflow, options) {
       const perfRecorder = await createInvocationPerf(options);
@@ -363,6 +431,15 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
   backgroundWorkflows.onRunSettled((ctx, runId) => workflowRuns.runSettled(ctx, runId));
+  const workflowCatalog = new WorkflowCatalogPrompt({
+    async discover(ctx) {
+      return [...(await discoverForSession(ctx)).values()].map((workflow) => workflow.meta);
+    },
+    size: (ctx) => resolveWorkflowSize(workflowSettingsPaths(ctx.cwd)).size,
+  });
+  // Before Dynamax, so the stable catalog section precedes the per-turn opt-in section.
+  registerWorkflowCatalog(pi, workflowCatalog);
+  registerWorkflowSizeCommand(pi, (ctx) => workflowCatalog.forget(ctx));
   const dynamax = registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
   registerWorkflowModelProfileCommand(pi);
   registerWorkflowRunCommand(pi, workflowRuns);
@@ -423,7 +500,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
   // /workflow <name> [args] — user-invoked.
   pi.registerCommand("workflow", {
     description: "Run a multi-agent workflow: /workflow <name> [args]",
-    getArgumentCompletions: workflowArgumentCompletions,
+    getArgumentCompletions: (argumentPrefix) => workflowArgumentCompletions(argumentPrefix, sessionProjectDir()),
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const invocation = parseWorkflowInvocation(args);
       if (invocation.optionErrors.length > 0) {
@@ -432,8 +509,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
       }
       const options = resolveWorkflowRunOptions(invocation.options);
       const perfRecorder = await createInvocationPerf(options);
-      const { discoverWorkflows } = await loadDiscovery();
-      const workflows = await discoverWorkflows(EXTENSION_DIR, { refresh: invocation.refreshDiscovery, perf: perfRecorder });
+      const workflows = await discoverForSession(ctx, { refresh: invocation.refreshDiscovery, perf: perfRecorder });
       const available = [...workflows.keys()].join(", ") || "(none)";
       if (!invocation.name && !ctx.hasUI) {
         ctx.ui.notify(`Usage: /workflow <name> [args]. Available: ${available}`, "warning");
@@ -463,7 +539,22 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
 
-  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts);
+  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts, dynamax);
+}
+
+/** Add the `<workflows>` catalog to every run that can call the workflow tool. */
+function registerWorkflowCatalog(pi: ExtensionAPI, catalog: WorkflowCatalogPrompt): void {
+  pi.on("session_start", (_event, ctx) => catalog.forget(ctx));
+  pi.on("session_shutdown", (_event, ctx) => catalog.forget(ctx));
+  pi.on("before_agent_start", async (event, ctx) => {
+    const options = event.systemPromptOptions;
+    // Subagent sessions withhold the workflow tool, so they skip the catalog as well.
+    if (!options.selectedTools.includes(WORKFLOW_TOOL_NAME)) return undefined;
+    const text = await catalog.section(ctx);
+    if (text === undefined) return undefined;
+    options.sections[WORKFLOWS_SECTION] = text;
+    return appendSectionToForcedPrompt(options, WORKFLOWS_SECTION);
+  });
 }
 
 /** Result footers advertise the configured triage and inspector shortcuts and pi's current expand key, read at render time. */
@@ -481,6 +572,7 @@ function registerWorkflowTool(
   reviewSessions: ReviewSessionCoordinator,
   backgroundWorkflows: BackgroundWorkflowCoordinator,
   shortcuts: DynamaxShortcuts,
+  dynamax: DynamaxHandle,
 ): void {
   pi.registerTool({
     name: WORKFLOW_TOOL_NAME,
@@ -492,31 +584,34 @@ function registerWorkflowTool(
     // run would lose its tool row, hit the script's output cap, and parallel runs would each get their own
     // concurrency cap. It also stays declared under `codemode.mode: "only"`, which hides direct tools.
     exposure: "model-only",
+    reachesTools: workflowToolReach,
     promptGuidelines: [
-      "Use workflow only when the user opted into workflow orchestration via `dynamax`, `/workflow:dynamax on`, an explicit request to run/author a workflow, or a command/skill instruction.",
-      "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, or perf-review.",
-      "Use workflow with `script` for a new one-off inline workflow; the script must start with `export const meta = { ... }` and default-export an async workflow function.",
-      "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
-      "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
-      "Subagents receive no skills by default. In inline workflows, pass `skills: [\"skill-name\"]` per `agent()` call when the user asks for a skill or a stage should use one; grant only the needed skills.",
+      "Use workflow only when the user opted into workflow orchestration via `dynamax`, sticky `/workflow:dynamax`, an explicit request to run/author a workflow, or a command/skill instruction.",
+      `Before writing or editing an inline workflow script, read the workflow-authoring skill (${WORKFLOW_AUTHORING_SKILL_PATH}); it is the script API and pattern reference.`,
+      "Every workflow tool call must provide exactly one of `name`, `script`, or `scriptPath`.",
+      "Inline workflow scripts must use the injected `Type` global for schemas and must not contain imports or dynamic import().",
       "Set `profile: \"small\"`, `\"medium\"`, or `\"big\"` on every `api.agent()` call so the user's central model routes apply; use `model`/`thinkingLevel` only for an intentional override.",
-      "Always pass a plain string as the first `api.agent()` argument; build prompts with template strings before calling agent().",
       "When using `isolation: \"worktree\"`, `api.agent()` returns `{ result, patch, changed }`; use `.result` for the answer and `.patch` for the isolated diff.",
-      "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
-      "Add \"codemode\" to an inline agent's `tools` when it should batch or filter many tool calls in one script; its scripts can call only that agent's other allowed tools.",
-      "`api.classify({ state, questions }, { label })` answers typed choice/score/bool questions with a classifier model and no chat session; use it for cheap gates such as dedup or triage, and handle its rejection when no classifier is configured.",
-      "Host MCP tools reach subagents only in synchronous workflow tool runs: name them in `tools` (e.g. `mcp__server__tool`), or use `toolHints: [\"external-search\"]` to pick up MCP web research tools.",
-      "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
-      ADAPTIVE_WORKFLOW_GUIDANCE,
+      "Host MCP tools reach subagents only in synchronous workflow tool runs, never in background runs.",
       "Set background: true only when the user explicitly wants the workflow to continue after this tool call; the tool returns a durable run ID and completion is delivered later.",
       "Set autoResumeOnUsageLimit: true only for an explicitly backgrounded workflow when the user wants bounded automatic continuation after a recognized provider usage window.",
       "Set resumeEditedWorkflow: true only with resumeFromRunId when the user explicitly accepts reusing behaviorally identical calls after workflow source edits.",
-      "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
     ],
     parameters: Type.Object({
-      name: Type.Optional(Type.String({ description: "Workflow name, e.g. code-review. Provide exactly one of name or script." })),
-      script: Type.Optional(Type.String({ description: "Inline workflow script. Provide exactly one of script or name." })),
-      args: Type.Optional(Type.String({ description: "Arguments for the workflow (e.g. target or focus)" })),
+      name: Type.Optional(Type.String({ description: "Workflow name, e.g. code-review. Provide exactly one of name, script, or scriptPath." })),
+      script: Type.Optional(Type.String({ description: "Inline workflow script. Provide exactly one of name, script, or scriptPath." })),
+      scriptPath: Type.Optional(
+        Type.String({
+          description:
+            "Path, relative to the working directory, of a file holding an inline workflow script. To iterate, edit in place the persisted .pi/.workflow-runs/<runId>.script.js a result names and rerun it here with resumeFromRunId, which accepts the edits as with resumeEditedWorkflow; editing any other copy in the repository, or a .pi/workflows script, changes repository state, so shared read-only agents rerun live. Provide exactly one of name, script, or scriptPath.",
+        }),
+      ),
+      args: Type.Optional(
+        Type.Unknown({
+          description:
+            "Arguments for the workflow: a string (e.g. target or focus) or any JSON value. The workflow reads the value as `api.input` and its text (JSON for non-strings) as `api.args`.",
+        }),
+      ),
       concurrency: Type.Optional(Type.Number({ description: "Optional per-run agent concurrency cap" })),
       parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
       maxAgents: Type.Optional(
@@ -585,6 +680,14 @@ function registerWorkflowTool(
         const unavailable = backgroundUnavailableResult(ctx.mode);
         if (unavailable) return unavailable;
       }
+      const turnBudget = dynamax.turnBudget(ctx);
+      const budget = resolveTurnBudget(params.budget, turnBudget, { min: WORKFLOW_BUDGET_MIN, max: WORKFLOW_BUDGET_MAX });
+      if (budget.kind === "spent") {
+        return workflowToolError(
+          `The user's +${budget.total} output-token budget for this turn is spent by its earlier workflow runs. Do not start another workflow this turn unless the user raises the budget.`,
+          { error: "turn_budget_spent", total: budget.total },
+        );
+      }
 
       const runOptions = resolveWorkflowRunOptions({
         concurrency: params.concurrency,
@@ -595,10 +698,11 @@ function registerWorkflowTool(
         autoResumeOnUsageLimit: params.autoResumeOnUsageLimit,
         usageLimitMaxAttempts: params.usageLimitMaxAttempts,
         usageLimitMaxDelayMs: params.usageLimitMaxDelayMs,
-        budget: params.budget,
+        budget: budget.budget,
         perf: params.perf,
         resumeFromRunId,
-        resumeEditedWorkflow: params.resumeEditedWorkflow,
+        // Rerunning an edited script file is the point of scriptPath; each call's own replay identity still guards reuse.
+        resumeEditedWorkflow: params.resumeEditedWorkflow === true || request.kind === "script-path",
         signal,
       });
       const perfRecorder = await createInvocationPerf(runOptions);
@@ -606,8 +710,7 @@ function registerWorkflowTool(
       let resultName: string;
 
       if (request.kind === "named") {
-        const { discoverWorkflows } = await loadDiscovery();
-        const workflows = await discoverWorkflows(EXTENSION_DIR, { perf: perfRecorder });
+        const workflows = await discoverForSession(ctx, { perf: perfRecorder });
         const named = workflows.get(request.name);
         if (!named) {
           const available = [...workflows.keys()].join(", ") || "(none)";
@@ -616,23 +719,22 @@ function registerWorkflowTool(
         mod = named;
         resultName = request.name;
       } else {
-        const inline = await loadInlineWorkflow();
-        try {
-          mod = inline.compileInlineWorkflow(request.script);
-        } catch (error) {
-          if (error instanceof inline.InlineWorkflowCompileError) return inlineCompileErrorResult(error.message);
-          throw error;
-        }
+        const compiled = await compileInlineToolWorkflow(ctx.cwd, request);
+        if ("isError" in compiled) return compiled;
+        mod = compiled;
         resultName = mod.meta.name;
       }
 
-      const resultArgs = params.args ?? "";
+      // Omitted args match a slash command without arguments; any other value, null included, is kept verbatim.
+      const resultArgs: unknown = params.args === undefined ? "" : params.args;
       if (params.background) {
         return await startBackgroundWorkflowTool({
           coordinator: backgroundWorkflows,
           ctx,
           name: resultName,
           options: runOptions,
+          // Under Dynamax the agent is orchestrating, so its completion starts a turn to act on the result.
+          wakeOnComplete: dynamax.isActive(ctx),
           async execute(backgroundCtx, backgroundOptions) {
             const envelope = await executeResolvedWorkflow(
               pi,
@@ -657,15 +759,34 @@ function registerWorkflowTool(
         spent = snapshot;
         return runOptions.onUsageSnapshot?.(snapshot);
       };
+      // A failed run still names its run, script and journal, so the host can fix the script and resume.
+      let run: WorkflowRunMetadata | undefined;
+      const onRunMetadata = (metadata: WorkflowRunMetadata) => {
+        run = metadata;
+        return runOptions.onRunMetadata?.(metadata);
+      };
       let envelope: WorkflowResultEnvelope;
       try {
-        envelope = await executeResolvedWorkflow(pi, ctx, resultName, mod, resultArgs, { ...runOptions, hostTools, onUsageSnapshot }, perfRecorder);
+        envelope = await executeResolvedWorkflow(
+          pi,
+          ctx,
+          resultName,
+          mod,
+          resultArgs,
+          { ...runOptions, hostTools, onUsageSnapshot, onRunMetadata },
+          perfRecorder,
+        );
       } catch (error) {
         const message = unknownErrorMessage(error);
+        const lines = [`Workflow ${resultName} failed: ${message}`];
+        if (run) lines.push("", formatWorkflowRunLine(run), ...formatWorkflowRunFileLines(run.runId, run.scriptPath !== undefined));
         return {
-          ...workflowToolError(`Workflow ${resultName} failed: ${message}`, { error: "workflow_failed", name: resultName, message }),
+          ...workflowToolError(lines.join("\n"), { error: "workflow_failed", name: resultName, message }),
           usage: workflowUsageForPi(spent),
         };
+      } finally {
+        // Only synchronous runs draw the turn pool down; a background run's spend lands after the turn.
+        turnBudget?.spend(spent?.totals.output ?? 0);
       }
       reviewSessions.remember(ctx, envelope, runOptions);
       return {

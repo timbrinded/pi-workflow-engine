@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
+import { Agent } from "@earendil-works/pi-agent-core";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
   ModelRegistry,
@@ -87,7 +88,7 @@ test("provider synchronization mirrors providers registered as objects on pi 1.x
   assert.deepEqual(mirrored, [native]);
 });
 
-test("production session services load skills, tools, and host runtime providers, and inherit user retry settings without writing them", async () => {
+test("production session services load skills, tools, host runtime providers, and the user's prompt addendum, and inherit user retry settings without writing them", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-workflow-session-services-"));
   const cwd = join(root, "project");
   const agentDir = join(root, "agent");
@@ -138,6 +139,7 @@ test("production session services load skills, tools, and host runtime providers
     await mkdir(extensionDir, { recursive: true });
     await mkdir(agentDir, { recursive: true });
     await writeFile(userSettingsPath, JSON.stringify({ retry: userRetry }), "utf8");
+    await writeFile(join(agentDir, "APPEND_SYSTEM.md"), "User addendum fixture.\n", "utf8");
     await writeFile(
       skillPath,
       "---\nname: runtime-fixture\ndescription: Verifies production session service wiring.\n---\n\n# Runtime fixture\n",
@@ -228,6 +230,8 @@ test("production session services load skills, tools, and host runtime providers
     assert.deepEqual(handle.selectedSkills.map((skill) => skill.name), ["runtime-fixture"]);
     assert.equal(handle.selectedSkills[0]?.filePath, skillPath);
     assert.match(session.systemPrompt, /runtime-fixture/);
+    // The return-value framing follows the user's APPEND_SYSTEM.md instead of replacing its discovery.
+    assert.match(session.systemPrompt, /User addendum fixture\.\s+Your final_answer arguments are returned to the workflow program/);
     assert.equal(session.model, model);
     assert.ok(session.getActiveToolNames().includes("read"));
     assert.ok(session.getActiveToolNames().includes(FINAL_TOOL));
@@ -247,6 +251,16 @@ test("production session services load skills, tools, and host runtime providers
     assert.deepEqual([...scripted.session.getActiveToolNames()].sort(), [CODEMODE_TOOL, FINAL_TOOL, "read"]);
     // The agent answers itself; a script cannot call final_answer on its behalf.
     assert.equal(scripted.session.getAllTools().find((tool) => tool.name === FINAL_TOOL)?.exposure, "model-only");
+    // Its codemode calls take slots in tool_call, so it runs tool calls one at a time; other agents keep pi's default.
+    assert.ok("agent" in scripted.session);
+    assert.ok(scripted.session.agent instanceof Agent);
+    assert.equal(scripted.session.agent.toolExecution, "sequential");
+    assert.ok("agent" in session);
+    assert.ok(session.agent instanceof Agent);
+    assert.equal(session.agent.toolExecution, "parallel");
+    const text = await openAgentSession({ rc, prompt: "Summarise.", opts: { label: "text-session", tools: ["read"] }, cwd, model, label: "text-session" });
+    sessions.push(text.session);
+    assert.match(text.session.systemPrompt, /User addendum fixture\.\s+Your final message is returned verbatim to the workflow program/);
     assert.ok("modelRuntime" in session);
     assert.ok(session.modelRuntime instanceof ModelRuntime);
     const childProvider = session.modelRuntime.getRegisteredProviderConfig("runtime-only");

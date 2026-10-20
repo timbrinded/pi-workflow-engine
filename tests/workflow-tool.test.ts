@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -8,16 +9,16 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
   buildTemporaryWorkflowAuthorPrompt,
   inlineCompileErrorResult,
-  normalizeWorkflowToolRequest,
   openWorkflowInspector,
 } from "../.pi/extensions/pi-workflow-engine/index.ts";
-import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
+import { normalizeWorkflowToolRequest } from "../.pi/extensions/pi-workflow-engine/src/workflow-tool-request.ts";
 import { DEFAULT_REVIEW_RESULTS_SHORTCUT } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { MAX_WORKFLOW_SCRIPT_FILE_BYTES } from "../.pi/extensions/pi-workflow-engine/src/workflow-script-file.ts";
 import { WORKFLOW_INSPECTOR_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import { captureWorkflowExtension, captureWorkflowTool } from "./workflow-extension-fixtures.ts";
 import { createTestTheme } from "./fixtures/theme.ts";
@@ -27,6 +28,7 @@ process.on("exit", () => rmSync(WORKFLOW_TOOL_TEST_CWD, { recursive: true, force
 
 const HEADLESS_CTX = {
   cwd: WORKFLOW_TOOL_TEST_CWD,
+  isProjectTrusted: () => true,
   model: undefined,
   modelRegistry: { find: () => undefined },
   sessionManager: createSessionManager("test-session"),
@@ -56,6 +58,7 @@ function createTuiContext(customResult?: unknown, sessionId = "test-session"): {
   } as Pick<TUI, "terminal" | "requestRender">;
   const ctx = {
     cwd: WORKFLOW_TOOL_TEST_CWD,
+    isProjectTrusted: () => true,
     model: undefined,
     modelRegistry: { find: () => undefined },
     sessionManager: createSessionManager(sessionId),
@@ -160,6 +163,7 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}): WorkflowApi {
     log() {},
     progress() {},
     args: "",
+    input: "",
     cwd: process.cwd(),
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
     signal: undefined,
@@ -194,6 +198,7 @@ test("RPC command and inspector surfaces use native selection and text instead o
   let customCalls = 0;
   const ctx = {
     cwd: WORKFLOW_TOOL_TEST_CWD,
+    isProjectTrusted: () => true,
     mode: "rpc",
     hasUI: true,
     model: undefined,
@@ -242,21 +247,37 @@ test("RPC command and inspector surfaces use native selection and text instead o
   assert.match(notifications.at(-1) ?? "", /Workflow inspector: rpc-inspection/);
 });
 
-test("tool and documentation guidance teach adaptive follow-up; the authoring prompt defers to them", () => {
+function authoringSkillPath(): string {
+  const toolGuidance = captureWorkflowTool().promptGuidelines?.join("\n") ?? "";
+  const path = /read the workflow-authoring skill \(([^)]+)\)/.exec(toolGuidance)?.[1];
+  assert.ok(path, "expected the workflow tool guidelines to name the workflow-authoring skill path");
+  return path;
+}
+
+test("the authoring skill and usage guide teach adaptive follow-up; the tool and authoring prompt point to the skill", () => {
   const temporaryPrompt = buildTemporaryWorkflowAuthorPrompt("investigate the parser");
-  const toolGuidance = captureWorkflowTool().promptGuidelines?.join("\n");
-  assert.ok(toolGuidance, "expected the registered workflow tool to provide prompt guidelines");
+  const skill = readFileSync(authoringSkillPath(), "utf8");
   const usage = readFileSync(new URL("../USAGE.md", import.meta.url), "utf8");
 
-  // The authoring prompt defers to the tool's guidelines instead of repeating them.
-  assert.ok(!temporaryPrompt.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
-  assert.ok(toolGuidance.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
-  for (const text of [toolGuidance, usage]) {
+  assert.match(temporaryPrompt, /read the workflow-authoring skill/);
+  for (const text of [skill, usage]) {
     assert.match(text, /first.pass/i);
     assert.match(text, /structured gap.analysis/i);
     assert.match(text, /follow.up/i);
-    assert.match(text, /TypeScript/);
     assert.match(text, /sufficient/);
+  }
+});
+
+test("every authoring-skill example compiles as inline workflow code", () => {
+  const skill = readFileSync(authoringSkillPath(), "utf8");
+  const examples = [...skill.matchAll(/```js\n([\s\S]*?)\n```/g)].map((match) => match[1] ?? "");
+  assert.ok(examples.length >= 4, `expected several skill examples, found ${examples.length}`);
+  for (const example of examples) {
+    // Full scripts compile as they are; fragments compile as the body of a default export.
+    const script = example.startsWith("export const meta")
+      ? example
+      : `export const meta = { name: "skill-example" };\nexport default async function run(api) {\n${example}\n}`;
+    assert.doesNotThrow(() => compileInlineWorkflow(script), `skill example did not compile:\n${example}`);
   }
 });
 
@@ -310,10 +331,101 @@ test("normalizeWorkflowToolRequest accepts inline workflow requests", () => {
   assert.deepEqual(normalizeWorkflowToolRequest({ script }), { kind: "inline", script });
 });
 
-test("normalizeWorkflowToolRequest rejects both or neither workflow target", () => {
+test("normalizeWorkflowToolRequest accepts a script file path", () => {
+  assert.deepEqual(normalizeWorkflowToolRequest({ scriptPath: " scripts/run.js " }), { kind: "script-path", scriptPath: "scripts/run.js" });
+});
+
+test("normalizeWorkflowToolRequest rejects more or fewer than one workflow target", () => {
   assert.equal(normalizeWorkflowToolRequest({ name: "code-review", script: "export const meta = {};" }).kind, "error");
+  assert.equal(normalizeWorkflowToolRequest({ script: "export const meta = {};", scriptPath: "run.js" }).kind, "error");
+  assert.equal(normalizeWorkflowToolRequest({ name: "code-review", scriptPath: "run.js" }).kind, "error");
   assert.equal(normalizeWorkflowToolRequest({}).kind, "error");
-  assert.equal(normalizeWorkflowToolRequest({ name: "   ", script: "   " }).kind, "error");
+  assert.equal(normalizeWorkflowToolRequest({ name: "   ", script: "   ", scriptPath: " " }).kind, "error");
+});
+
+test("an inline run names its persisted script and journal, and reruns from the edited script by scriptPath", async () => {
+  const tool = captureWorkflowTool();
+  const script = (value: string) => `export const meta = { name: "iterate-probe", description: "Iterate probe" };
+export default async function run() { return { summary: "${value}" }; }`;
+
+  const first = await tool.execute("call-iterate-first", { script: script("first pass") }, undefined, () => {}, HEADLESS_CTX);
+  assert.ok(isRecord(first) && isRecord(first.details));
+  const runId = first.details.runId;
+  if (typeof runId !== "string") throw new Error("expected a run id");
+  const scriptPath = `.pi/.workflow-runs/${runId}.script.js`;
+  const text = toolResultText(first);
+  assert.match(text, new RegExp(`Script: ${scriptPath.replaceAll(".", "\\.")}`));
+  assert.match(text, new RegExp(`Journal: \\.pi/\\.workflow-runs/${runId}\\.jsonl`));
+  assert.match(text, /If the result is empty or unexpected, read the journal before diagnosing\./);
+  assert.equal(readFileSync(join(WORKFLOW_TOOL_TEST_CWD, scriptPath), "utf8"), script("first pass"));
+  assert.equal(readFileSync(join(WORKFLOW_TOOL_TEST_CWD, ".pi/.workflow-runs/.gitignore"), "utf8"), "*\n");
+
+  writeFileSync(join(WORKFLOW_TOOL_TEST_CWD, scriptPath), script("edited pass"));
+  const rerun = await tool.execute("call-iterate-rerun", { scriptPath, resumeFromRunId: runId }, undefined, () => {}, HEADLESS_CTX);
+  assert.ok(isRecord(rerun) && isRecord(rerun.details));
+  assert.match(toolResultText(rerun), /edited pass/);
+  assert.equal(rerun.details.resumedFromRunId, runId);
+  const rerunId = rerun.details.runId;
+  if (typeof rerunId !== "string") throw new Error("expected a rerun id");
+  const record = await new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD).load(rerunId);
+  assert.equal(record?.options.resumeEditedWorkflow, true, "scriptPath with resumeFromRunId implies edited-workflow resume");
+  assert.equal(record?.scriptFile, `${rerunId}.script.js`);
+});
+
+test("JSON tool args reach the workflow verbatim and as text, and count as redacted arguments", async () => {
+  const tool = captureWorkflowTool();
+  const script = `export const meta = { name: "json-args-probe", description: "JSON args probe" };
+export default async function run({ args, input }) { return { summary: args, kind: Array.isArray(input) ? "array" : typeof input }; }`;
+  const store = new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD);
+  const run = async (args: unknown) => {
+    const result = await tool.execute("call-json-args", args === undefined ? { script } : { script, args }, undefined, () => {}, HEADLESS_CTX);
+    assert.ok(isRecord(result) && isRecord(result.details) && typeof result.details.runId === "string");
+    return { details: result.details, record: await store.load(result.details.runId) };
+  };
+
+  const json = await run({ files: ["a.ts"], strict: true });
+  assert.deepEqual(json.details.result, { summary: '{"files":["a.ts"],"strict":true}', kind: "object" });
+  assert.equal(json.record?.options.argumentsPresent, true);
+
+  assert.deepEqual((await run(["x"])).details.result, { summary: '["x"]', kind: "array" });
+  assert.deepEqual((await run("plain text")).details.result, { summary: "plain text", kind: "string" });
+  const omitted = await run(undefined);
+  assert.deepEqual(omitted.details.result, { summary: "", kind: "string" });
+  assert.equal(omitted.record?.options.argumentsPresent, false);
+});
+
+test("a scriptPath must name a bounded regular file, so a FIFO or a huge file is a rejected call", async () => {
+  const dir = join(WORKFLOW_TOOL_TEST_CWD, "script-file-kinds");
+  mkdirSync(dir, { recursive: true });
+  const tool = captureWorkflowTool();
+  const run = async (scriptPath: string) => {
+    const result = await tool.execute("call-script-file-kind", { scriptPath }, undefined, () => {}, HEADLESS_CTX);
+    assert.ok(isRecord(result) && isRecord(result.details));
+    assert.equal(result.isError, true);
+    assert.equal(result.details.error, "invalid_script_path");
+    return toolResultText(result);
+  };
+  try {
+    const valid = 'export const meta = { name: "huge-probe", description: "" };\nexport default async function run() { return 1; }\n';
+    writeFileSync(join(dir, "huge.js"), `${valid}//${"x".repeat(MAX_WORKFLOW_SCRIPT_FILE_BYTES)}\n`);
+    assert.match(await run("script-file-kinds/huge.js"), /over the 1048576-byte limit/);
+
+    // With no writer, reading a FIFO would never return.
+    if (spawnSync("mkfifo", [join(dir, "pipe.js")]).status === 0) {
+      assert.match(await run("script-file-kinds/pipe.js"), /is not a regular file/);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed inline run names its script and journal for the next attempt", async () => {
+  const script = `export const meta = { name: "failing-iterate", description: "Failing iterate probe" };
+export default async function run() { throw new Error("broken step"); }`;
+  const failed = await captureWorkflowTool().execute("call-failing-iterate", { script }, undefined, () => {}, HEADLESS_CTX);
+
+  const text = toolResultText(failed);
+  assert.match(text, /Workflow failing-iterate failed: broken step\n\nRun: \S+\nScript: \.pi\/\.workflow-runs\/\S+\.script\.js\nJournal: /);
 });
 
 test("inline workflow request compiles and runs without LLM calls", async () => {
@@ -404,6 +516,33 @@ test("the workflow tool is a model-only orchestrator that codemode scripts canno
   assert.equal(captureWorkflowTool().exposure, "model-only");
 });
 
+test("a +N prompt directive defaults the run budget to the turn pool until the run settles", async () => {
+  const extension = captureWorkflowExtension();
+  const input = extension.handlers.get("input")?.[0];
+  if (!input) throw new Error("expected an input handler");
+  const ctx = { ...HEADLESS_CTX, sessionManager: createSessionManager("turn-budget-tool") } as ExtensionContext;
+  const emit = async (event: string, payload: unknown) => {
+    for (const handler of extension.handlers.get(event) ?? []) await handler(payload, ctx);
+  };
+  const script = `
+export const meta = { name: "turn-budget-probe", description: "Reports its budget" };
+export default async function run({ budget }) {
+  return { summary: \`budget \${budget.total}\` };
+}
+`;
+  const budgetOf = async (params: { budget?: number } = {}) =>
+    toolResultText(await extension.tool.execute("call-turn-budget", { script, ...params }, undefined, () => {}, ctx));
+
+  await input({ source: "interactive", text: "+5k run the probe" }, ctx);
+  assert.match(await budgetOf(), /budget 5000/);
+  assert.match(await budgetOf({ budget: 1234 }), /budget 1234/);
+  // A provider retry or overflow compaction ends a loop with agent_end and continues the same run.
+  await emit("agent_end", { type: "agent_end", messages: [] });
+  assert.match(await budgetOf(), /budget 5000/);
+  await emit("agent_settled", { type: "agent_settled", aborted: false });
+  assert.match(await budgetOf(), /budget null/);
+});
+
 test("workflow tool marks an unknown workflow as a failed call", async () => {
   const result = await captureWorkflowTool().execute("call-unknown", { name: "does-not-exist" }, undefined, () => {}, HEADLESS_CTX);
 
@@ -411,6 +550,27 @@ test("workflow tool marks an unknown workflow as a failed call", async () => {
   assert.equal(result.isError, true);
   assert.ok(isRecord(result.details));
   assert.equal(result.details.error, "unknown_workflow");
+});
+
+test("a project's saved script runs by name only while pi trusts the project", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-workflow-tool-project-"));
+  try {
+    mkdirSync(join(cwd, ".pi", "workflows"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "workflows", "project-probe.js"),
+      'export const meta = { name: "project-probe", description: "Project probe" };\nexport default async function run() { return { summary: "project script ran" }; }\n',
+    );
+    const tool = captureWorkflowTool();
+
+    const untrusted = await tool.execute("call-project-untrusted", { name: "project-probe" }, undefined, () => {}, { ...HEADLESS_CTX, cwd, isProjectTrusted: () => false });
+    assert.ok(isRecord(untrusted) && isRecord(untrusted.details));
+    assert.equal(untrusted.details.error, "unknown_workflow");
+
+    const trusted = await tool.execute("call-project-trusted", { name: "project-probe" }, undefined, () => {}, { ...HEADLESS_CTX, cwd });
+    assert.match(toolResultText(trusted), /project script ran/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("workflow tool rejects blank resumeFromRunId", async () => {
@@ -501,6 +661,7 @@ export default async function run() {
   const runId = result.details.runId;
   assert.equal(typeof runId, "string");
   if (typeof runId !== "string") throw new Error("expected background run id");
+  assert.match(toolResultText(result), new RegExp(`\\nScript: \\.pi/\\.workflow-runs/${runId}\\.script\\.js$`));
 
   const store = new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD);
   await waitUntil(
@@ -511,6 +672,47 @@ export default async function run() {
   assert.equal(record?.state, "completed");
   assert.equal(record?.background?.delivery.state, "delivered");
   assert.match(JSON.stringify(extension.sentMessages[0]), /Detached background completed/);
+});
+
+test("a background run started while Dynamax is active wakes the agent when it completes", async () => {
+  const extension = captureWorkflowExtension();
+  const input = extension.handlers.get("input")?.[0];
+  if (!input) throw new Error("expected the Dynamax input handler");
+  const branch: unknown[] = [];
+  const ctx = {
+    ...HEADLESS_CTX,
+    mode: "rpc",
+    isIdle: () => true,
+    sessionManager: {
+      ...createSessionManager("background-wake-tool-session"),
+      getBranch: () => branch,
+      getEntries: () => branch,
+    },
+  } as unknown as ExtensionContext;
+  const script = `
+export const meta = { name: "background-wake-tool", description: "Background wake probe" };
+export default async function run() {
+  return { summary: "Woke the agent." };
+}
+`;
+  const store = new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD);
+  const startRun = async (): Promise<string> => {
+    const result = await extension.tool.execute("call-background-wake", { script, background: true }, undefined, () => {}, ctx);
+    const runId = isRecord(result) && isRecord(result.details) ? result.details.runId : undefined;
+    if (typeof runId !== "string") throw new Error("expected background run id");
+    await waitUntil(async () => (await store.load(runId))?.background?.delivery.state === "delivered", "background delivery");
+    return runId;
+  };
+  const deliveryOptions = (runId: string): unknown =>
+    extension.sentMessageOptions[extension.sentMessages.findIndex((message) => JSON.stringify(message).includes(runId))];
+
+  const silent = await startRun();
+  assert.deepEqual(deliveryOptions(silent), { triggerTurn: false });
+
+  await input({ source: "interactive", text: "dynamax run it in the background" }, ctx);
+  const woken = await startRun();
+  assert.equal((await store.load(woken))?.background?.origin.wakeOnComplete, true);
+  assert.deepEqual(deliveryOptions(woken), { triggerTurn: true });
 });
 
 test("a failed tool-invoked workflow stays available to /workflow:inspector", async () => {

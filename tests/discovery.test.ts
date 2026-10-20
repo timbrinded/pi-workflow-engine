@@ -1,12 +1,16 @@
+import { spawnSync } from "node:child_process";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { discoverWorkflows } from "../.pi/extensions/pi-workflow-engine/src/discovery.ts";
+import { inlineScriptFingerprint } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
+import { captureWorkflowResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import type { WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { BUILTIN_WORKFLOW_DEFINITIONS } from "../.pi/extensions/pi-workflow-engine/src/workflows.ts";
+import { MAX_WORKFLOW_SCRIPT_FILE_BYTES } from "../.pi/extensions/pi-workflow-engine/src/workflow-script-file.ts";
 
 const extensionDir = fileURLToPath(new URL("../.pi/extensions/pi-workflow-engine/", import.meta.url));
 
@@ -150,6 +154,118 @@ test("user drop-in workflows still load from an injected test directory", async 
   } finally {
     await rm(tempUserRoot, { recursive: true, force: true });
     await rm(tempRepo, { recursive: true, force: true });
+  }
+});
+
+test("saved scripts load from the project then the user dir, after built-ins, with resumable content provenance", async () => {
+  const tempRepo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-scripts-"));
+  const project = await mkdtemp(join(tmpdir(), "workflow-engine-project-"));
+  const userWorkflowDir = join(await mkdtemp(join(tmpdir(), "workflow-engine-user-scripts-")), "workflows");
+  const script = (name: string, value: string) =>
+    `export const meta = { name: "${name}", description: "${value}" };\nexport default async function run() { return "${value}"; }\n`;
+  try {
+    const projectWorkflowDir = join(project, ".pi", "workflows");
+    await mkdir(projectWorkflowDir, { recursive: true });
+    await mkdir(userWorkflowDir, { recursive: true });
+    await writeFile(join(projectWorkflowDir, "shared.js"), script("shared", "project"));
+    await writeFile(join(projectWorkflowDir, "code-review.js"), script("code-review", "shadow"));
+    await writeFile(join(projectWorkflowDir, "broken.js"), "export default async function run() {}\n");
+    await writeFile(join(userWorkflowDir, "shared.js"), script("shared", "user"));
+    await writeFile(join(userWorkflowDir, "user-only.js"), script("user-only", "user"));
+
+    const workflows = await discoverWorkflows(tempRepo, { refresh: true, userWorkflowDir, projectDir: project });
+    const shared = workflows.get("shared");
+    assert.equal(shared?.meta.description, "project");
+    assert.equal(await shared?.default({} as WorkflowApi), "project");
+    assert.deepEqual(shared?.source, {
+      kind: "file",
+      path: join(projectWorkflowDir, "shared.js"),
+      root: projectWorkflowDir,
+      fingerprint: inlineScriptFingerprint(script("shared", "project")),
+      selfContained: true,
+    });
+    assert.equal(shared?.inlineScript, undefined, "a saved script resolves by name, so its runs persist no script copy");
+    assert.notEqual(workflows.get("code-review")?.meta.description, "shadow");
+    assert.equal(workflows.get("user-only")?.meta.description, "user");
+    assert.equal(workflows.has("broken"), false);
+    if (!shared) throw new Error("expected the project script");
+    assert.deepEqual(await captureWorkflowResumeContext(shared), {
+      kind: "verified",
+      name: "shared",
+      sourceFingerprint: inlineScriptFingerprint(script("shared", "project")),
+    });
+
+    const withoutProject = await discoverWorkflows(tempRepo, { userWorkflowDir });
+    assert.equal(withoutProject.get("shared")?.meta.description, "user", "omitting projectDir skips the project's scripts");
+  } finally {
+    await rm(tempRepo, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
+    await rm(dirname(userWorkflowDir), { recursive: true, force: true });
+  }
+});
+
+test("saved scripts written or edited after discovery resolve by name without a refresh, and a broken one is reported once", async () => {
+  const tempRepo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-live-scripts-"));
+  const project = await mkdtemp(join(tmpdir(), "workflow-engine-live-project-"));
+  const userWorkflowDir = join(await mkdtemp(join(tmpdir(), "workflow-engine-live-user-")), "workflows");
+  const projectWorkflowDir = join(project, ".pi", "workflows");
+  const script = (value: string) =>
+    `export const meta = { name: "late", description: "${value}" };\nexport default async function run() { return "${value}"; }\n`;
+  const discover = () => discoverWorkflows(tempRepo, { userWorkflowDir, projectDir: project });
+  const notes: string[] = [];
+  const consoleError = console.error;
+  console.error = (...values: unknown[]) => void notes.push(values.join(" "));
+  try {
+    await mkdir(projectWorkflowDir, { recursive: true });
+    await mkdir(userWorkflowDir, { recursive: true });
+    await writeFile(join(projectWorkflowDir, "broken.js"), "export default async function run() {}\n");
+    assert.equal((await discoverWorkflows(tempRepo, { refresh: true, userWorkflowDir, projectDir: project })).has("late"), false);
+
+    await writeFile(join(userWorkflowDir, "late.js"), script("user"));
+    assert.equal(await (await discover()).get("late")?.default({} as WorkflowApi), "user");
+
+    await writeFile(join(projectWorkflowDir, "late.js"), script("project one"));
+    assert.equal(await (await discover()).get("late")?.default({} as WorkflowApi), "project one", "a project script still shadows the user's");
+
+    await writeFile(join(projectWorkflowDir, "late.js"), script("project two"));
+    const edited = (await discover()).get("late");
+    assert.equal(await edited?.default({} as WorkflowApi), "project two");
+    assert.equal(edited?.source.kind === "file" ? edited.source.fingerprint : undefined, inlineScriptFingerprint(script("project two")));
+
+    assert.equal(notes.filter((note) => note.includes("broken.js")).length, 1);
+  } finally {
+    console.error = consoleError;
+    await rm(tempRepo, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
+    await rm(dirname(userWorkflowDir), { recursive: true, force: true });
+  }
+});
+
+test("discovery skips a saved script that is a FIFO or over the size limit instead of stalling", async () => {
+  const tempRepo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-bounded-"));
+  const project = await mkdtemp(join(tmpdir(), "workflow-engine-bounded-project-"));
+  const projectWorkflowDir = join(project, ".pi", "workflows");
+  const script = (name: string) => `export const meta = { name: "${name}", description: "" };\nexport default async function run() { return 1; }\n`;
+  const notes: string[] = [];
+  const consoleError = console.error;
+  console.error = (...values: unknown[]) => void notes.push(values.join(" "));
+  try {
+    await mkdir(projectWorkflowDir, { recursive: true });
+    await writeFile(join(projectWorkflowDir, "fine.js"), script("fine"));
+    await writeFile(join(projectWorkflowDir, "huge.js"), `${script("huge")}//${"x".repeat(MAX_WORKFLOW_SCRIPT_FILE_BYTES)}\n`);
+    // With no writer, reading a FIFO would never return, and discovery runs on every lookup.
+    const fifo = spawnSync("mkfifo", [join(projectWorkflowDir, "pipe.js")]).status === 0;
+
+    const workflows = await discoverWorkflows(tempRepo, { refresh: true, userWorkflowDir: join(tempRepo, "no-user-dir"), projectDir: project });
+
+    assert.ok(workflows.has("fine"));
+    assert.equal(workflows.has("huge"), false);
+    assert.ok(notes.some((note) => note.includes("huge.js") && note.includes("byte limit")));
+    if (fifo) assert.ok(notes.some((note) => note.includes("pipe.js") && note.includes("not a regular file")));
+  } finally {
+    console.error = consoleError;
+    await rm(tempRepo, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
   }
 });
 

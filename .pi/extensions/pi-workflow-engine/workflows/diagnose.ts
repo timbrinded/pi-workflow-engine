@@ -16,6 +16,7 @@ import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 export const meta: WorkflowMeta = {
   name: "diagnose",
   description: "Advisory-only bug diagnosis: scope symptoms → competing hypotheses → independent verify → synthesize likely root causes.",
+  whenToUse: "Use when a bug, failing command, flaky test, or regression has an unclear cause and competing hypotheses should be checked independently before anyone edits code; args describe the symptom.",
   phases: [{ title: "Scope" }, { title: "Hypothesize" }, { title: "Verify" }, { title: "Challenge" }, { title: "Synthesize" }],
 };
 

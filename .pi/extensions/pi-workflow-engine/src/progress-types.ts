@@ -1,6 +1,6 @@
 import type { WorkflowUsageSnapshot } from "./usage.ts";
 
-export type AgentRowStatus = "queued" | "running" | "done" | "failed";
+export type AgentRowStatus = "queued" | "running" | "done" | "failed" | "skipped";
 export type WorkflowLaneItemStatus = "pending" | "running" | "success" | "warning" | "error";
 
 export interface AgentRowSnapshot {

@@ -25,6 +25,7 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}, onAgent?: (opts: Ag
     log() {},
     progress() {},
     args: "",
+    input: "",
     cwd: process.cwd(),
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
     signal: undefined,
@@ -122,6 +123,28 @@ for (const { name, source } of acceptedDefaultExports) {
     assert.equal(await mod.default(createFakeApi({ args: "ok" })), "ok");
   });
 }
+
+test("inline meta keeps whenToUse and phase details, and rejects malformed ones", () => {
+  const mod = compileInlineWorkflow(`
+export const meta = {
+  name: "rich-meta",
+  description: "Rich meta",
+  whenToUse: "Use when the meta matters.",
+  phases: [{ title: "Find", detail: "Look around", profile: "small", colour: "blue" }, { title: "Judge" }],
+};
+export default async function run() { return "ok"; }
+`);
+
+  assert.deepEqual(mod.meta, {
+    name: "rich-meta",
+    description: "Rich meta",
+    whenToUse: "Use when the meta matters.",
+    phases: [{ title: "Find", profile: "small" }, { title: "Judge" }],
+  });
+  const run = "\nexport default async function run() { return 1; }";
+  assert.throws(() => compileInlineWorkflow(`export const meta = { name: "x", phases: [{ title: "Find", profile: "huge" }] };${run}`), /meta\.phases must be/);
+  assert.throws(() => compileInlineWorkflow(`export const meta = { name: "x", whenToUse: ["often"] };${run}`), /meta\.whenToUse must be a string/);
+});
 
 test("compileInlineWorkflow rejects non-literal metadata", () => {
   assert.throws(

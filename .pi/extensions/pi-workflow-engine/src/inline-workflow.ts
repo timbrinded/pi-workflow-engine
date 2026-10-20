@@ -36,8 +36,14 @@ export function compileInlineWorkflow(source: string): LoadedWorkflow {
   return {
     meta: parsedMeta.meta,
     default: (api) => executor(api, Type),
-    source: { kind: "fingerprint", fingerprint: createHash("sha256").update(source).digest("hex") },
+    source: { kind: "fingerprint", fingerprint: inlineScriptFingerprint(source) },
+    inlineScript: source,
   };
+}
+
+/** A compiled script can import nothing, so the hash of its source is its whole identity. */
+export function inlineScriptFingerprint(source: string): string {
+  return createHash("sha256").update(source).digest("hex");
 }
 
 /** The script's pure-literal meta, read without compiling or running anything; undefined when it does not parse. */

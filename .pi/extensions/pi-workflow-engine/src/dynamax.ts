@@ -1,8 +1,10 @@
-import { CustomEditor, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, type BeforeAgentStartEvent, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import type { EditorComponent } from "@earendil-works/pi-tui";
 import { completeCurrentArgument } from "./command-completions.ts";
 import type { DynamaxShortcuts } from "./dynamax-shortcuts.ts";
+import { appendSectionToForcedPrompt } from "./prompt-sections.ts";
 import { sessionKey } from "./session-identity.ts";
+import { WORKFLOW_TOOL_NAME } from "./types.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { dot, GLYPH } from "./ui/kit.ts";
 import { setWorkflowInspectorShortcut } from "./ui/workflow-widget.ts";
@@ -20,8 +22,19 @@ export interface DynamaxState {
   turnActive: boolean;
 }
 
+/** The output-token pool a `+500k`-style directive in the user's prompt sets for that turn's workflow runs. */
+export interface DynamaxTurnBudget {
+  readonly total: number;
+  /** Tokens not yet spent by this turn's synchronous runs; never negative. */
+  remaining(): number;
+  /** Count a finished synchronous run's output tokens against the pool. */
+  spend(outputTokens: number): void;
+}
+
 export interface DynamaxRuntime {
   state: DynamaxState;
+  /** Set by a budget directive in a user prompt, cleared when that run settles. */
+  turnBudget?: DynamaxTurnBudget;
 }
 
 export type DynamaxRuntimeStore = Map<string, DynamaxRuntime>;
@@ -35,9 +48,18 @@ export interface DynamaxRegistrationOptions {
 export interface DynamaxHandle {
   /** Opt the next agent run in. The `input` hook ignores prompts this extension sends (pi tags them `source: "extension"`). */
   markOneShot(ctx: ExtensionContext): void;
+  /** The current turn's output-token pool, when the user's prompt set one. */
+  turnBudget(ctx: ExtensionContext): DynamaxTurnBudget | undefined;
+  /** Whether Dynamax covers this session now: sticky, a pending one-shot, or a one-shot turn in progress. */
+  isActive(ctx: ExtensionContext): boolean;
 }
 
 export const DYNAMAX_TOKEN_PATTERN = /(^|[^A-Za-z0-9_])dynamax([^A-Za-z0-9_]|$)/i;
+/** `+500k`, `+1.5m`, `+2M`, `+250000`: after the start or whitespace, before the end, whitespace, or punctuation. */
+export const BUDGET_DIRECTIVE_PATTERN = /(?:^|\s)\+(\d+(?:\.\d+)?)([km]?)(?=$|\s|[.,;:!?)\]}"'])/i;
+/** Smaller values are ignored, so a `+1` or `+2` in ordinary prose never caps a run at a few tokens. */
+export const BUDGET_DIRECTIVE_MIN_TOKENS = 1_000;
+const BUDGET_DIRECTIVE_MULTIPLIERS: Readonly<Record<string, number>> = { "": 1, k: 1_000, m: 1_000_000 };
 export const DYNAMAX_STATUS_KEY = "dynamax";
 
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
@@ -53,28 +75,30 @@ function disposeDynamaxDecorations(decorations: Set<DynamaxEditorDecoration>): v
   decorations.clear();
 }
 
+/** With no argument the command toggles sticky mode, so these name only the explicit forms. */
 const DYNAMAX_ACTION_COMPLETIONS = [
-  { value: "on", description: "Keep Dynamax enabled for this session" },
+  { value: "on", description: "Make workflow orchestration the default for this session" },
   { value: "off", description: "Disable sticky and pending Dynamax modes" },
   { value: "status", description: "Show the current Dynamax state" },
 ] as const;
 
-export const ADAPTIVE_WORKFLOW_GUIDANCE = `
-Adaptive multi-pass workflows are optional. Use a simple single-pass fan-out when it is sufficient. When the first pass may expose gaps, conflicts, weak claims, or missing evidence:
-- run the bounded first-pass agents;
-- give their surviving results to a structured gap-analysis agent so the LLM decides what needs follow-up;
-- put a hard maxItems bound on LLM-authored task arrays and defensively slice them before fan-out;
-- use ordinary TypeScript conditionals or bounded loops to launch follow-up agents only when gaps exist;
-- synthesize the first-pass and follow-up results together.
-Do not generate a second pass when the first pass is sufficient, and do not invent iteration, quorum, graph, reduction, or retry primitives for this pattern.`;
-
 /** System prompt section pi wraps as `<dynamax>`; adding or dropping it appends a section patch instead of rewriting the prompt. */
 export const DYNAMAX_SECTION = "dynamax";
 
-/** Only the opt-in itself: the authoring rules already reach the model as the workflow tool's guidelines. */
+/**
+ * Only the opt-in itself: the workflow tool's guidelines send the model to the workflow-authoring
+ * skill, which carries the authoring rules and patterns.
+ */
 export const DYNAMAX_REMINDER =
   "The user opted into dynamax multi-agent orchestration for this request, so the workflow tool is permitted. " +
   "Run a registered workflow by name, or author an inline workflow script when none fits, following the workflow tool's guidelines.";
+
+/** Sticky mode is a standing default for the session, not a one-request permission. */
+export const DYNAMAX_STICKY_REMINDER =
+  "Dynamax is on for this session. Orchestrate every substantive task with the workflow tool by default: " +
+  "scout inline first to find the work list, then run one single-phase workflow per phase (understand, design, implement, review) " +
+  "and read each result before choosing the next. Lean toward adversarial verification of findings. " +
+  "Work without a workflow only for conversational turns and trivial or already-verified edits.";
 
 export function createDynamaxState(): DynamaxState {
   return { sticky: false, oneShotPending: false, turnActive: false };
@@ -95,6 +119,48 @@ export function getDynamaxRuntime(store: DynamaxRuntimeStore, ctx: Pick<Extensio
 
 export function hasDynamaxToken(text: string): boolean {
   return DYNAMAX_TOKEN_PATTERN.test(text);
+}
+
+/** The output tokens the first budget directive in `text` asks for, if any. */
+export function parseBudgetDirective(text: string): number | undefined {
+  const match = BUDGET_DIRECTIVE_PATTERN.exec(text);
+  if (!match) return undefined;
+  const multiplier = BUDGET_DIRECTIVE_MULTIPLIERS[(match[2] ?? "").toLowerCase()] ?? 1;
+  // Round, not floor: 2.3 * 1000 is 2299.999... in floating point.
+  const tokens = Math.round(Number(match[1]) * multiplier);
+  return Number.isSafeInteger(tokens) && tokens >= BUDGET_DIRECTIVE_MIN_TOKENS ? tokens : undefined;
+}
+
+export function createDynamaxTurnBudget(total: number): DynamaxTurnBudget {
+  let spent = 0;
+  return {
+    total,
+    remaining: () => Math.max(0, total - spent),
+    spend(outputTokens) {
+      if (Number.isFinite(outputTokens) && outputTokens > 0) spent += outputTokens;
+    },
+  };
+}
+
+export type DynamaxTurnBudgetResolution =
+  | { readonly kind: "budget"; readonly budget: number | undefined }
+  | { readonly kind: "spent"; readonly total: number };
+
+/**
+ * A run's budget. Without a turn pool it is the explicit one, if any. The user's pool caps every run in
+ * its turn: the remainder, clamped to the run budget range, is the budget, and an explicit one can only
+ * lower it. A pool with less than `min` left is spent.
+ */
+export function resolveTurnBudget(
+  explicit: number | undefined,
+  pool: DynamaxTurnBudget | undefined,
+  range: { readonly min: number; readonly max: number },
+): DynamaxTurnBudgetResolution {
+  if (pool === undefined) return { kind: "budget", budget: explicit };
+  const remaining = pool.remaining();
+  if (remaining < range.min) return { kind: "spent", total: pool.total };
+  const cap = Math.min(range.max, Math.floor(remaining));
+  return { kind: "budget", budget: explicit === undefined ? cap : Math.min(explicit, cap) };
 }
 
 export function markDynamaxOneShot(state: DynamaxState): void {
@@ -136,12 +202,21 @@ export function dynamaxStatusText(state: DynamaxState, theme: Theme): string {
 /**
  * Add the opt-in section for this run and consume a pending one-shot. pi rebuilds `sections` for every
  * run, so an inactive run simply leaves it out and pi records the removal as a patch.
+ *
+ * Sticky mode covers every run, including one a custom message started (`sendMessage` with
+ * `triggerTurn`, such as a background completion). Only a user prompt consumes the one-shot: the
+ * opt-in belongs to the request the user typed it in.
  */
-export function applyDynamaxPromptSection(sections: Record<string, string>, state: DynamaxState): boolean {
-  if (!state.sticky && !state.oneShotPending) return false;
-  state.oneShotPending = false;
+export function applyDynamaxPromptSection(
+  sections: Record<string, string>,
+  state: DynamaxState,
+  messageType: BeforeAgentStartEvent["messageType"] = "user",
+): boolean {
+  const oneShot = messageType === "user" && state.oneShotPending;
+  if (!state.sticky && !oneShot) return false;
+  if (oneShot) state.oneShotPending = false;
   state.turnActive = true;
-  sections[DYNAMAX_SECTION] = DYNAMAX_REMINDER;
+  sections[DYNAMAX_SECTION] = state.sticky ? DYNAMAX_STICKY_REMINDER : DYNAMAX_REMINDER;
   return true;
 }
 
@@ -230,23 +305,30 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
   });
 
   pi.on("input", (event, ctx) => {
-    if (event.source !== "extension" && hasDynamaxToken(event.text)) markOneShot(ctx);
+    if (event.source === "extension") return { action: "continue" };
+    if (hasDynamaxToken(event.text)) markOneShot(ctx);
+    const budget = parseBudgetDirective(event.text);
+    if (budget !== undefined) getDynamaxRuntime(runtimes, ctx).turnBudget = createDynamaxTurnBudget(budget);
     return { action: "continue" };
   });
 
   pi.on("before_agent_start", (event, ctx) => {
-    const runtime = getDynamaxRuntime(runtimes, ctx);
     const options = event.systemPromptOptions;
-    if (!applyDynamaxPromptSection(options.sections, runtime.state)) return undefined;
+    // Subagent sessions load this extension but withhold the workflow tool, so a `dynamax` in a
+    // subagent prompt must neither permit that tool nor consume the one-shot.
+    if (!options.selectedTools.includes(WORKFLOW_TOOL_NAME)) return undefined;
+    const runtime = getDynamaxRuntime(runtimes, ctx);
+    if (!applyDynamaxPromptSection(options.sections, runtime.state, event.messageType)) return undefined;
     updateDynamaxSurfaces(ctx, runtime);
-    // An earlier extension forced the whole prompt, and pi renders no sections then; append to its text instead.
-    if (options.forceSystemPrompt === undefined) return undefined;
-    return { systemPrompt: `${options.forceSystemPrompt}\n\n<${DYNAMAX_SECTION}>\n${DYNAMAX_REMINDER}\n</${DYNAMAX_SECTION}>` };
+    return appendSectionToForcedPrompt(options, DYNAMAX_SECTION);
   });
 
-  pi.on("agent_end", (_event, ctx) => {
+  // Not agent_end: pi emits that per agent loop, and one run continues in fresh loops after a
+  // provider retry, overflow compaction, or queued follow-up. agent_settled fires once per run.
+  pi.on("agent_settled", (_event, ctx) => {
     const runtime = getDynamaxRuntime(runtimes, ctx);
     if (!runtime.state.sticky) runtime.state.turnActive = false;
+    runtime.turnBudget = undefined;
     updateDynamaxSurfaces(ctx, runtime);
   });
 
@@ -260,15 +342,12 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
   }
 
   pi.registerCommand("workflow:dynamax", {
-    description: "Toggle Dynamax workflow orchestration: /workflow:dynamax [on|off|status]",
+    description: "Toggle sticky Dynamax orchestration for this session: /workflow:dynamax [on|off|status]",
     getArgumentCompletions: (argumentPrefix) => completeCurrentArgument(argumentPrefix, DYNAMAX_ACTION_COMPLETIONS),
     handler: async (args, ctx) => {
       const runtime = getDynamaxRuntime(runtimes, ctx);
-      const action = args.trim().toLowerCase();
-      if (action === "") {
-        ctx.ui.notify(`Dynamax ${describeDynamaxState(runtime.state)}. Usage: /workflow:dynamax [on|off|status]`, "info");
-        return;
-      }
+      const typed = args.trim().toLowerCase();
+      const action = typed === "" ? (runtime.state.sticky ? "off" : "on") : typed;
       if (action === "on") {
         enableDynamaxSticky(runtime.state);
         updateDynamaxSurfaces(ctx, runtime);
@@ -285,11 +364,15 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
         ctx.ui.notify(`Dynamax ${describeDynamaxState(runtime.state)}`, "info");
         return;
       }
-      ctx.ui.notify("Usage: /workflow:dynamax [on|off|status]", "warning");
+      ctx.ui.notify("Usage: /workflow:dynamax [on|off|status] (no argument toggles sticky mode)", "warning");
     },
   });
 
-  return { markOneShot };
+  return {
+    markOneShot,
+    turnBudget: (ctx) => getDynamaxRuntime(runtimes, ctx).turnBudget,
+    isActive: (ctx) => isDynamaxActive(getDynamaxRuntime(runtimes, ctx).state),
+  };
 }
 
 export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">, runtime: DynamaxRuntime): void {

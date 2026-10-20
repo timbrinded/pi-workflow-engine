@@ -23,13 +23,17 @@ import {
   resolveDynamaxShortcuts,
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import {
-  ADAPTIVE_WORKFLOW_GUIDANCE,
   applyDynamaxPromptSection,
+  createDynamaxTurnBudget,
+  parseBudgetDirective,
+  resolveTurnBudget,
+  type DynamaxHandle,
   clearDynamax,
   createDynamaxRuntime,
   createDynamaxState,
   DYNAMAX_REMINDER,
   DYNAMAX_SECTION,
+  DYNAMAX_STICKY_REMINDER,
   DYNAMAX_STATUS_KEY,
   type DynamaxRegistrationOptions,
   type DynamaxRuntimeStore,
@@ -118,6 +122,7 @@ interface CapturePiResult {
   commands: Map<string, CapturedCommand>;
   shortcuts: Map<KeyId, CapturedShortcut>;
   handlers: Map<string, CapturedHandler[]>;
+  handle: DynamaxHandle;
 }
 
 interface FakeUiState {
@@ -176,8 +181,13 @@ function captureDynamax(
     events: { on: () => {}, emit: async () => {} },
   } as unknown as ExtensionAPI;
 
-  registerDynamax(fakePi, { inspector: shortcut, results: null }, { effect: "shine", ...registrationOptions, openInspector: openInspector ?? (() => {}) });
-  return { commands, shortcuts, handlers };
+  const handle = registerDynamax(fakePi, { inspector: shortcut, results: null }, { effect: "shine", ...registrationOptions, openInspector: openInspector ?? (() => {}) });
+  return { commands, shortcuts, handlers, handle };
+}
+
+/** Run every handler registered for `event`, as pi does; an event with none is a no-op. */
+async function emit(captured: CapturePiResult, event: string, payload: unknown, ctx: ExtensionContext): Promise<void> {
+  for (const handler of captured.handlers.get(event) ?? []) await handler(payload, ctx);
 }
 
 function createFakeContext(
@@ -541,15 +551,10 @@ test("dynamax one-shot state is consumed by the prompt section", () => {
   assert.deepEqual(nextRun, {});
 });
 
-test("dynamax reminder teaches optional adaptive multi-pass workflows", () => {
-  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /simple single-pass fan-out/);
-  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /structured gap-analysis agent/);
-  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /ordinary TypeScript conditionals or bounded loops/);
-  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /only when gaps exist/);
-  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /Do not generate a second pass when the first pass is sufficient/);
-  // The reminder carries only the opt-in; the workflow tool's guidelines carry the authoring rules.
-  assert.ok(!DYNAMAX_REMINDER.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
+test("the dynamax reminder carries only the opt-in, not the authoring rules", () => {
+  // The authoring rules live in the workflow-authoring skill that the tool's guidelines point to.
   assert.match(DYNAMAX_REMINDER, /workflow tool is permitted/);
+  assert.doesNotMatch(DYNAMAX_REMINDER, /maxItems|gap-analysis|profile/);
 });
 
 test("dynamax sticky mode remains active until cleared", () => {
@@ -559,12 +564,149 @@ test("dynamax sticky mode remains active until cleared", () => {
   assert.equal(isDynamaxActive(state), true);
   const sections: Record<string, string> = {};
   applyDynamaxPromptSection(sections, state);
-  assert.match(sections[DYNAMAX_SECTION] ?? "", /workflow tool is permitted/);
+  assert.equal(sections[DYNAMAX_SECTION], DYNAMAX_STICKY_REMINDER);
   assert.equal(state.sticky, true);
   assert.equal(isDynamaxActive(state), true);
 
   clearDynamax(state);
   assert.equal(isDynamaxActive(state), false);
+});
+
+test("sticky Dynamax is a standing default, distinct from the one-request opt-in", () => {
+  assert.match(DYNAMAX_STICKY_REMINDER, /on for this session/);
+  assert.match(DYNAMAX_STICKY_REMINDER, /by default/);
+  assert.match(DYNAMAX_STICKY_REMINDER, /one single-phase workflow per phase/);
+  assert.notEqual(DYNAMAX_STICKY_REMINDER, DYNAMAX_REMINDER);
+
+  // A typed `dynamax` while sticky is covered by the standing default.
+  const state = createDynamaxState();
+  enableDynamaxSticky(state);
+  markDynamaxOneShot(state);
+  const sections: Record<string, string> = {};
+  applyDynamaxPromptSection(sections, state, "user");
+  assert.equal(sections[DYNAMAX_SECTION], DYNAMAX_STICKY_REMINDER);
+  assert.equal(state.oneShotPending, false);
+});
+
+test("a run a custom message starts keeps sticky Dynamax but never consumes the one-shot", () => {
+  const sticky = createDynamaxState();
+  enableDynamaxSticky(sticky);
+  const custom: Record<string, string> = {};
+  assert.equal(applyDynamaxPromptSection(custom, sticky, "custom"), true);
+  assert.equal(custom[DYNAMAX_SECTION], DYNAMAX_STICKY_REMINDER);
+
+  const armed = createDynamaxState();
+  markDynamaxOneShot(armed);
+  const triggered: Record<string, string> = {};
+  assert.equal(applyDynamaxPromptSection(triggered, armed, "custom"), false);
+  assert.deepEqual(triggered, {});
+  assert.equal(armed.oneShotPending, true, "the one-shot waits for the user's prompt");
+  const prompted: Record<string, string> = {};
+  assert.equal(applyDynamaxPromptSection(prompted, armed, "user"), true);
+  assert.equal(prompted[DYNAMAX_SECTION], DYNAMAX_REMINDER);
+});
+
+test("the before_agent_start hook passes the run's message type through", async () => {
+  const captured = captureDynamax("ctrl+shift+x");
+  const input = captured.handlers.get("input")?.[0];
+  const beforeAgentStart = captured.handlers.get("before_agent_start")?.[0];
+  if (!input || !beforeAgentStart) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx } = createFakeContext("message-type");
+
+  await input({ source: "interactive", text: "dynamax look into it" }, ctx);
+  const custom: Record<string, string> = {};
+  await beforeAgentStart({ messageType: "custom", systemPrompt: "base", systemPromptOptions: { selectedTools: ["workflow"], sections: custom } }, ctx);
+  assert.equal(custom[DYNAMAX_SECTION], undefined);
+  const user: Record<string, string> = {};
+  await beforeAgentStart({ messageType: "user", systemPrompt: "base", systemPromptOptions: { selectedTools: ["workflow"], sections: user } }, ctx);
+  assert.equal(user[DYNAMAX_SECTION], DYNAMAX_REMINDER);
+});
+
+test("a run without the workflow tool gets no Dynamax section and leaves the one-shot armed", async () => {
+  const captured = captureDynamax("ctrl+shift+x");
+  const input = captured.handlers.get("input")?.[0];
+  const beforeAgentStart = captured.handlers.get("before_agent_start")?.[0];
+  if (!input || !beforeAgentStart) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx } = createFakeContext("subagent");
+
+  // A subagent's prompt arrives as an interactive input, and its session withholds the workflow tool.
+  await input({ source: "interactive", text: "review src/dynamax.ts for regressions" }, ctx);
+  const subagent: Record<string, string> = {};
+  const result = await beforeAgentStart({ messageType: "user", systemPrompt: "base", systemPromptOptions: { selectedTools: ["read"], sections: subagent } }, ctx);
+  assert.equal(result, undefined);
+  assert.deepEqual(subagent, {});
+  assert.equal(captured.handle.isActive(ctx), true, "the one-shot still waits for a run that can use it");
+
+  const host: Record<string, string> = {};
+  await beforeAgentStart({ messageType: "user", systemPrompt: "base", systemPromptOptions: { selectedTools: ["read", "workflow"], sections: host } }, ctx);
+  assert.equal(host[DYNAMAX_SECTION], DYNAMAX_REMINDER);
+});
+
+test("/workflow:dynamax with no argument toggles sticky mode", async () => {
+  const command = captureDynamax().commands.get("workflow:dynamax");
+  if (!command) throw new Error("expected /workflow:dynamax command");
+  const { ctx, ui } = createFakeContext("toggle");
+
+  await command.handler("", ctx);
+  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax");
+  assert.match(ui.notifications.at(-1)?.message ?? "", /on for this session/);
+
+  await command.handler("", ctx);
+  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), undefined);
+  assert.match(ui.notifications.at(-1)?.message ?? "", /is off/);
+
+  await command.handler("sideways", ctx);
+  assert.match(ui.notifications.at(-1)?.message ?? "", /no argument toggles sticky mode/);
+});
+
+test("a standalone +N directive sets a turn budget; other plus signs do not", () => {
+  assert.equal(parseBudgetDirective("+500k review this"), 500_000);
+  assert.equal(parseBudgetDirective("dynamax +1.5m"), 1_500_000);
+  assert.equal(parseBudgetDirective("go +2M."), 2_000_000);
+  assert.equal(parseBudgetDirective("spend\t+250000, then stop"), 250_000);
+  assert.equal(parseBudgetDirective("+2.3k"), 2_300);
+  for (const text of ["a+500k", "+500kb", "+500 k", "(+500k)", "C++ 20", "+1 to that", "+0.5k", "nothing here"]) {
+    assert.equal(parseBudgetDirective(text), undefined, text);
+  }
+});
+
+test("a turn budget pool caps every run until it is spent; an explicit budget can only lower the cap", () => {
+  const range = { min: 1, max: 1_000_000 };
+  const pool = createDynamaxTurnBudget(50_000);
+  assert.deepEqual(resolveTurnBudget(undefined, undefined, range), { kind: "budget", budget: undefined });
+  assert.deepEqual(resolveTurnBudget(undefined, pool, range), { kind: "budget", budget: 50_000 });
+  pool.spend(30_000);
+  pool.spend(Number.NaN);
+  assert.deepEqual(resolveTurnBudget(undefined, pool, range), { kind: "budget", budget: 20_000 });
+  assert.deepEqual(resolveTurnBudget(7_000, pool, range), { kind: "budget", budget: 7_000 });
+  assert.deepEqual(resolveTurnBudget(30_000, pool, range), { kind: "budget", budget: 20_000 });
+  assert.deepEqual(resolveTurnBudget(undefined, createDynamaxTurnBudget(5_000_000), range), { kind: "budget", budget: 1_000_000 });
+  pool.spend(25_000);
+  assert.equal(pool.remaining(), 0);
+  assert.deepEqual(resolveTurnBudget(undefined, pool, range), { kind: "spent", total: 50_000 });
+  assert.deepEqual(resolveTurnBudget(7_000, pool, range), { kind: "spent", total: 50_000 });
+});
+
+test("the input hook sets the turn pool from user prompts only, and the run's settling clears it", async () => {
+  const captured = captureDynamax();
+  const input = captured.handlers.get("input")?.[0];
+  if (!input) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx } = createFakeContext("turn-budget");
+
+  await input({ source: "extension", text: "+500k from an extension" }, ctx);
+  assert.equal(captured.handle.turnBudget(ctx), undefined);
+  await input({ source: "interactive", text: "dynamax +500k audit the parser" }, ctx);
+  await emit(captured, "before_agent_start", { messageType: "user", systemPrompt: "base", systemPromptOptions: { selectedTools: ["workflow"], sections: {} } }, ctx);
+  assert.equal(captured.handle.turnBudget(ctx)?.total, 500_000);
+
+  // pi ends a loop with agent_end and continues the same run after a provider retry or overflow compaction.
+  await emit(captured, "agent_end", { type: "agent_end", messages: [] }, ctx);
+  assert.equal(captured.handle.turnBudget(ctx)?.total, 500_000);
+  assert.equal(captured.handle.isActive(ctx), true);
+
+  await emit(captured, "agent_settled", { type: "agent_settled", aborted: false }, ctx);
+  assert.equal(captured.handle.turnBudget(ctx), undefined);
+  assert.equal(captured.handle.isActive(ctx), false);
 });
 
 test("resolveDynamaxShortcuts reads configurable workflow UI shortcuts", () => {
@@ -624,9 +766,9 @@ test("registerDynamax registers a first-class shortcut that opens the workflow i
   await shortcut?.handler(ctx);
   assert.equal(inspectorOpened, 1);
 
-  await command.handler("", ctx);
+  await command.handler("status", ctx);
   assert.equal(ui.customComponent, undefined);
-  assert.match(ui.notifications.at(-1)?.message ?? "", /Usage: \/workflow:dynamax/);
+  assert.match(ui.notifications.at(-1)?.message ?? "", /Dynamax sticky off/);
 });
 
 test("dynamax command state stays isolated per session", async () => {
@@ -664,21 +806,22 @@ test("one-shot Dynamax status remains visible for the active turn", async () => 
   const captured = captureDynamax("ctrl+shift+x");
   const input = captured.handlers.get("input")?.[0];
   const beforeAgentStart = captured.handlers.get("before_agent_start")?.[0];
-  const agentEnd = captured.handlers.get("agent_end")?.[0];
-  if (!input || !beforeAgentStart || !agentEnd) throw new Error("expected Dynamax lifecycle handlers");
+  if (!input || !beforeAgentStart) throw new Error("expected Dynamax lifecycle handlers");
   const { ctx, ui } = createFakeContext("session-a");
 
   await input({ source: "interactive", text: "dynamax inspect this branch" }, ctx);
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax · next prompt");
 
   const sections: Record<string, string> = {};
-  const result = await beforeAgentStart({ systemPrompt: "base", systemPromptOptions: { sections } }, ctx);
+  const result = await beforeAgentStart({ systemPrompt: "base", systemPromptOptions: { selectedTools: ["workflow"], sections } }, ctx);
   // A section patch keeps pi's cached prompt head; returning systemPrompt would force a full replacement.
   assert.equal(result, undefined);
   assert.equal(sections[DYNAMAX_SECTION], DYNAMAX_REMINDER);
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax · this turn");
 
-  await agentEnd({ messages: [] }, ctx);
+  await emit(captured, "agent_end", { type: "agent_end", messages: [] }, ctx);
+  assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax · this turn", "a loop ending is not the run settling");
+  await emit(captured, "agent_settled", { type: "agent_settled", aborted: false }, ctx);
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), undefined);
 });
 
@@ -690,7 +833,7 @@ test("Dynamax appends to a prompt an earlier extension forced, since pi renders 
   const { ctx } = createFakeContext("forced-prompt");
 
   await input({ source: "interactive", text: "dynamax review this" }, ctx);
-  const result = await beforeAgentStart({ systemPrompt: "Forced.", systemPromptOptions: { sections: {}, forceSystemPrompt: "Forced." } }, ctx);
+  const result = await beforeAgentStart({ systemPrompt: "Forced.", systemPromptOptions: { selectedTools: ["workflow"], sections: {}, forceSystemPrompt: "Forced." } }, ctx);
 
   assert.deepEqual(result, { systemPrompt: `Forced.\n\n<${DYNAMAX_SECTION}>\n${DYNAMAX_REMINDER}\n</${DYNAMAX_SECTION}>` });
 });

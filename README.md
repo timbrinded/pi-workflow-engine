@@ -72,14 +72,20 @@ dynamax investigate this flaky test using separate timing, fixture, diff, and ex
 dynamax argue both implementation options, then have another agent challenge the recommendation
 ```
 
-The token enables Dynamax for one turn. Sticky mode remains active for the pi
-session:
+The token enables Dynamax for that one request. Sticky mode instead makes
+workflow orchestration the default for every substantive task in the pi session;
+`/workflow:dynamax` with no argument toggles it:
 
 ```text
+/workflow:dynamax
 /workflow:dynamax on
 /workflow:dynamax off
 /workflow:dynamax status
 ```
+
+`/workflow:size small|medium|large|off` sets how many agents pi aims to keep
+each authored workflow under (5, 10 by default, or 25); see the
+[size guideline](USAGE.md#workflow-size-guideline).
 
 In the TUI, a standalone `dynamax` token receives a short moving-shine sweep and
 then stays highlighted. Use `PI_DYNAMAX_EFFECT=static` or
@@ -108,7 +114,9 @@ covers review actions and recent run history.
 ## Create your own workflows
 
 Saved workflows are TypeScript modules for repeatable orchestration; inline
-workflows are useful for one-off Dynamax tasks. The
+workflows are useful for one-off Dynamax tasks. An inline script that proves
+useful can be saved as a `.js` file in a project's `.pi/workflows/` or in
+`~/.pi/agent/workflows/` and run by name. The
 [workflow authoring guide](USAGE.md#author-a-saved-workflow) covers the API,
 typed handoffs, model profiles, tool access, composition, and registration.
 

@@ -11,6 +11,7 @@ const repoDir = fileURLToPath(new URL("..", import.meta.url));
 const extensionDir = ".pi/extensions/pi-workflow-engine";
 const extensionEntry = `${extensionDir}/index.ts`;
 const skillPath = "skills/workflow-code-review-actions/SKILL.md";
+const authoringSkillPath = "skills/workflow-authoring/SKILL.md";
 const bundledRuntimePeers = [
   "@earendil-works/pi-agent-core",
   "@earendil-works/pi-ai",
@@ -55,8 +56,7 @@ test("package skills parse cleanly with pi's strict skill loader", async () => {
   const result = loadSkillsFromDir({ dir: join(repoDir, "skills"), source: "path" });
 
   assert.deepEqual(result.diagnostics, []);
-  assert.equal(result.skills.length, 1);
-  assert.equal(result.skills[0]?.name, "workflow-code-review-actions");
+  assert.deepEqual(result.skills.map((skill) => skill.name).sort(), ["workflow-authoring", "workflow-code-review-actions"]);
 
   const skill = await readFile(join(repoDir, skillPath), "utf8");
   assert.match(skill, /selected code-review findings/);
@@ -114,6 +114,6 @@ test("npm package contains the extension tree, manifest resources, and linked do
     .filter((path) => path.endsWith(".ts"))
     .map((path) => `${extensionDir}/${path}`);
   // README.md links USAGE.md and renders assets/preview.png on the npm page.
-  const required = [...stringArrayField(pi, "extensions"), ...extensionFiles, skillPath, "README.md", "USAGE.md", "LICENSE", "assets/preview.png"];
+  const required = [...stringArrayField(pi, "extensions"), ...extensionFiles, skillPath, authoringSkillPath, "README.md", "USAGE.md", "LICENSE", "assets/preview.png"];
   assert.deepEqual(required.filter((path) => !paths.has(path)), []);
 });

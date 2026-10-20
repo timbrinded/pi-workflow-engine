@@ -1,5 +1,6 @@
 import {
   MAX_RESEARCH_LANES,
+  MAX_VERIFICATION_CLAIMS,
   ResearchLaneResultSchema,
   ResearchPlanSchema,
   ResearchReportSchema,
@@ -23,6 +24,7 @@ import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 export const meta: WorkflowMeta = {
   name: "research",
   description: "Source-grounded external research: decompose → gather direct-page evidence → independently verify claims → cited synthesis.",
+  whenToUse: "Use for questions that need current external sources and cited, independently verified claims; needs an installed web search or browsing tool; args are the question and any scope constraints.",
   phases: [{ title: "Plan" }, { title: "Gather" }, { title: "Verify" }, { title: "Synthesize" }],
 };
 
@@ -105,10 +107,11 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
   const gathered = gatherResults.flatMap((result) => (result.ok ? [result.value] : []));
   const failedLanes = lanes.filter((_, index) => !gatherResults[index]!.ok);
 
-  const candidates = buildClaimCandidates(gathered);
+  const { candidates, overCap } = buildClaimCandidates(gathered);
   if (candidates.length === 0) return unavailableResearchReport(failedLanes.length > 0 ? "lanes-failed" : "no-evidence");
   progress({ type: "counter", key: "research.claims", label: "claims to verify", value: candidates.length });
   log(`${candidates.length} bounded claim(s) selected for independent verification`);
+  if (overCap > 0) log(`Dropped ${overCap} lower-priority claim(s) over the verification cap of ${MAX_VERIFICATION_CLAIMS}`);
 
   phase("Verify");
   const verificationResults = await parallel(
@@ -162,9 +165,14 @@ export default async function run(api: WorkflowApi): Promise<ResearchReport> {
   }
 
   const report = sanitizeResearchReport(synthesis, synthesisInputs);
-  if (failedLanes.length === 0) return report;
-  const laneGap = `${failedLanes.length} of ${lanes.length} research lane(s) failed (${failedLanes.map((lane) => lane.title).join(", ")}); coverage is incomplete.`;
-  return { ...report, limitations: [...report.limitations, laneGap] };
+  const gaps: string[] = [];
+  if (failedLanes.length > 0) {
+    gaps.push(`${failedLanes.length} of ${lanes.length} research lane(s) failed (${failedLanes.map((lane) => lane.title).join(", ")}); coverage is incomplete.`);
+  }
+  if (overCap > 0) {
+    gaps.push(`${overCap} lower-priority claim(s) were not independently verified; verification is capped at ${MAX_VERIFICATION_CLAIMS} claims.`);
+  }
+  return gaps.length === 0 ? report : { ...report, limitations: [...report.limitations, ...gaps] };
 }
 
 function verificationPrompt(question: string, candidate: ResearchClaimCandidate): string {

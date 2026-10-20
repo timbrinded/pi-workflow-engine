@@ -15,11 +15,12 @@ import {
   resolveWorkflowRunOptions,
   type ResolvedWorkflowRunOptions,
 } from "./options.ts";
-import type { AgentOptions, IsolatedAgentResult, LoadedWorkflow, WorkflowApi, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
+import type { AgentOptions, IsolatedAgentResult, LoadedWorkflow, WorkflowApi, WorkflowMeta, WorkflowProgressEvent, WorkflowRef, WorkflowRunOptions } from "./types.ts";
 import { showWorkflowInspector } from "./ui/workflow-inspector.ts";
 import { createWorkflowJournal, createWorkflowRunId, pruneWorkflowJournals, workflowJournalPath } from "./journal.ts";
 import { WorktreeRegistry } from "./worktree.ts";
 import { runFinalizers } from "./finalizers.ts";
+import { workflowArgsText, workflowInputPresent } from "./workflow-input.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import {
   captureWorkflowResumeContext,
@@ -27,11 +28,14 @@ import {
 } from "./resume-context.ts";
 import {
   DurableWorkflowRun,
+  persistWorkflowRunScript,
   ProjectWorkflowRunStore,
   workflowRunRecordPath,
   type WorkflowRunStore,
 } from "./workflow-run-store.ts";
 import { createWorkflowRunRecord } from "./workflow-run-record.ts";
+import { canRelaunchWorkflowRun } from "./workflow-run-history.ts";
+import { sealWorkflowRunScript } from "./workflow-run-seal.ts";
 import {
   createProviderUsageLimitPauseRecord,
   WorkflowProviderUsageLimitError,
@@ -76,22 +80,23 @@ export interface WorkflowEngineDependencies {
 /**
  * Run a workflow module: build the per-run primitives (binding agent/parallel/pipeline
  * to a shared semaphore + progress tracker), invoke the workflow, return its result.
+ * `input` is a slash command's argument string or a tool call's JSON value.
  */
 export async function runWorkflow(
   ctx: ExtensionContext,
   mod: LoadedWorkflow,
-  args: string,
+  input: unknown,
   options: WorkflowRunOptions = {},
   dependencies: WorkflowEngineDependencies = {},
 ): Promise<unknown> {
-  return await runResolvedWorkflow(ctx, mod, args, resolveWorkflowRunOptions(options), dependencies);
+  return await runResolvedWorkflow(ctx, mod, input, resolveWorkflowRunOptions(options), dependencies);
 }
 
 /** Execute an options-normalized workflow without re-reading environment defaults. */
 export async function runResolvedWorkflow(
   ctx: ExtensionContext,
   mod: LoadedWorkflow,
-  args: string,
+  input: unknown,
   resolvedOptions: ResolvedWorkflowRunOptions,
   dependencies: WorkflowEngineDependencies = {},
 ): Promise<unknown> {
@@ -107,16 +112,20 @@ export async function runResolvedWorkflow(
   const journalPath = workflowJournalPath(ctx.cwd, runId);
   const resumePath = resolvedOptions.resumeFromRunId ? workflowJournalPath(ctx.cwd, resolvedOptions.resumeFromRunId) : undefined;
   const runStore = new ProjectWorkflowRunStore(ctx.cwd);
+  const script = await sealRunScript(ctx.cwd, runId, mod);
   let persistenceFailureReported = false;
+  const initialRecord = createWorkflowRunRecord({
+    runId,
+    workflow: mod,
+    options: resolvedOptions,
+    progress: progress.snapshot(),
+    argumentsPresent: workflowInputPresent(input),
+    scriptPersisted: script.path !== undefined,
+    scriptSeal: script.seal,
+  });
   const durableRun = new DurableWorkflowRun(
     runStore,
-    createWorkflowRunRecord({
-      runId,
-      workflow: mod,
-      options: resolvedOptions,
-      progress: progress.snapshot(),
-      argumentsPresent: args.length > 0,
-    }),
+    initialRecord,
     (error) => {
       if (persistenceFailureReported) return;
       persistenceFailureReported = true;
@@ -124,7 +133,11 @@ export async function runResolvedWorkflow(
     },
   );
   durableProgress = durableRun;
-  const progressSource = { snapshot: () => progress.snapshot(), state: () => durableRun.state };
+  const progressSource = {
+    snapshot: () => progress.snapshot(),
+    state: () => durableRun.state,
+    skipAgent: (agentId: number) => progress.skipAgent(agentId),
+  };
   const worktrees = dependencies.worktrees ?? new WorktreeRegistry(ctx.cwd);
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
@@ -132,7 +145,7 @@ export async function runResolvedWorkflow(
   const workflowOutcome = await captureOutcome(async () => {
     await notifyLifecycleObserver(progress, "progress source callback", () => resolvedOptions.onProgressSource?.(progressSource));
     if (resolvedOptions.inspect && ctx.hasUI && ctx.mode === "tui") {
-      void showWorkflowInspector(ctx.ui, progressSource.snapshot, () => ({ state: progressSource.state() }))
+      void showWorkflowInspector(ctx.ui, progressSource.snapshot, () => ({ state: progressSource.state() }), progressSource)
         .catch((error: unknown) => {
           try {
             progress.log(`inspector failed: ${unknownErrorMessage(error)}`);
@@ -151,6 +164,7 @@ export async function runResolvedWorkflow(
         resumedFromRunId: resolvedOptions.resumeFromRunId,
         journalPath,
         recordPath: workflowRunRecordPath(ctx.cwd, runId),
+        ...(script.path === undefined ? {} : { scriptPath: script.path }),
       }),
     );
     progress.log(resolvedOptions.resumeFromRunId ? `run id: ${runId} (resuming from ${resolvedOptions.resumeFromRunId})` : `run id: ${runId}`);
@@ -184,7 +198,7 @@ export async function runResolvedWorkflow(
 
     // perf.total_ms wraps the whole tree: sub-workflows run inside this span via api.workflow().
     return perf.time("workflow.total_ms", () =>
-      runWorkflowWithContext(rc, progress, mod, args, {
+      runWorkflowWithContext(rc, progress, mod, input, {
         abortController: runAbortController,
         submissionLimit: resolvedOptions.parallelSubmissionLimit ?? resolvedOptions.concurrency * 2,
         resolveWorkflow: resolvedOptions.resolveWorkflow,
@@ -225,7 +239,7 @@ export async function runResolvedWorkflow(
     durableRun.transition({
       state: "paused",
       progress: progress.snapshot(),
-      ...createProviderUsageLimitPauseRecord(pauseError, resolvedOptions, mod.source.kind === "file" && args.length === 0),
+      ...createProviderUsageLimitPauseRecord(pauseError, resolvedOptions, canRelaunchWorkflowRun(initialRecord)),
     });
   } else if (pauseError) {
     durableRun.transition({
@@ -245,6 +259,33 @@ export async function runResolvedWorkflow(
 
   if (outcome.ok) return outcome.value;
   throw outcome.error;
+}
+
+/**
+ * Seal a run whose code came from a script for this install, so a repository cannot ship a run record
+ * whose relaunch runs its own code. An inline run's script is also written beside its record; a saved
+ * script resolves again by name, and the seal pins the content that ran. A failed write or seal only
+ * costs the run its relaunch from `/workflow:runs`.
+ */
+async function sealRunScript(cwd: string, runId: string, mod: LoadedWorkflow): Promise<{ readonly path?: string; readonly seal?: string }> {
+  const { source } = mod;
+  const savedScript = source.kind === "file" && source.selfContained === true;
+  if (!savedScript && (source.kind !== "fingerprint" || mod.inlineScript === undefined)) return {};
+  let path: string | undefined;
+  if (mod.inlineScript !== undefined && source.kind === "fingerprint") {
+    try {
+      path = await persistWorkflowRunScript(cwd, runId, mod.inlineScript);
+    } catch (error) {
+      process.stderr.write(`[${mod.meta.name}] script persistence failed: ${unknownErrorMessage(error)}\n`);
+      return {};
+    }
+  }
+  try {
+    return { path, seal: await sealWorkflowRunScript(runId, source.fingerprint) };
+  } catch (error) {
+    process.stderr.write(`[${mod.meta.name}] script seal failed, so /workflow:runs cannot relaunch this run: ${unknownErrorMessage(error)}\n`);
+    return { path };
+  }
 }
 
 function backgroundPauseError(error: unknown, ...signals: Array<AbortSignal | undefined>): unknown {
@@ -345,7 +386,7 @@ function createWorkflowAgent(
   function agent<S extends TSchema>(prompt: string, opts: AgentOptions<S> & { schema: S }): Promise<Static<S>>;
   function agent(prompt: string, opts?: AgentOptions): Promise<string>;
   function agent(prompt: string, agentOpts?: AgentOptions): Promise<unknown> {
-    const scopedOptions = scope.agentOptions(agentOpts);
+    const scopedOptions = scope.agentOptions(withPhaseProfile(mod.meta, agentOpts));
     const executionOptions: AgentExecutionOptions =
       scopedOptions.isolation === "worktree" && mod.isolatedWorktreeBaseline !== undefined
         ? { ...scopedOptions, worktreeBaseline: mod.isolatedWorktreeBaseline }
@@ -353,6 +394,17 @@ function createWorkflowAgent(
     return runAgent(rc, prompt, executionOptions, resumeContext);
   }
   return agent;
+}
+
+/**
+ * Routing order is the agent's `model`, then its `profile`, then its declared phase's `profile`, then
+ * the host. Only an explicit `opts.phase` selects a phase profile: the global `phase()` is shared
+ * state that concurrent `parallel`/`pipeline` branches race on.
+ */
+function withPhaseProfile(meta: WorkflowMeta, opts: AgentOptions | undefined): AgentOptions | undefined {
+  if (opts?.phase === undefined || opts.model !== undefined || opts.profile !== undefined) return opts;
+  const profile = meta.phases?.find((phase) => phase.title === opts.phase)?.profile;
+  return profile === undefined ? opts : { ...opts, profile };
 }
 
 /**
@@ -364,10 +416,12 @@ export async function runWorkflowWithContext(
   rc: WorkflowRunContext,
   progress: WorkflowProgress,
   mod: LoadedWorkflow,
-  args: string,
+  input: unknown,
   opts: WorkflowContextOptions,
 ): Promise<unknown> {
   const depth = opts.depth ?? 0;
+  // Converted before any agent runs, so an argument with no JSON form rejects the call up front.
+  const args = workflowArgsText(input);
   const scope = createWorkflowScope(progress, opts.progressPrefix ?? "", opts.progressNamespace);
   const resumeContext: AgentResumeBaseContext = {
     workflow: await captureWorkflowResumeContext(mod, rc.signal),
@@ -388,7 +442,8 @@ export async function runWorkflowWithContext(
           const childController = new AbortController();
           const unlink = linkAbortSignal(rc.signal, childController);
           try {
-            return await runWorkflowWithContext({ ...rc, signal: childController.signal }, progress, childMod, childArgs ?? "", {
+            const childInput = childArgs === undefined ? "" : childArgs;
+            return await runWorkflowWithContext({ ...rc, signal: childController.signal }, progress, childMod, childInput, {
               abortController: childController,
               submissionLimit: opts.submissionLimit,
               resolveWorkflow: opts.resolveWorkflow,
@@ -416,6 +471,7 @@ export async function runWorkflowWithContext(
     log: scope.log,
     progress: scope.event,
     args,
+    input,
     cwd: rc.cwd,
     budget: rc.budget,
     signal: rc.signal,

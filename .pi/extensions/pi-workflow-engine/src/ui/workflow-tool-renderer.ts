@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { isRecord } from "../guards.ts";
 import { readInlineWorkflowMeta } from "../inline-workflow.ts";
+import { workflowArgsText } from "../workflow-input.ts";
 import { GLYPH, hangingWrap, keyHints, spread } from "./kit.ts";
 import { LinesComponent, shortRunId, type WorkflowResultHints } from "./result-layout.ts";
 import { isWorkflowResult, workflowResultComponent } from "./workflow-result-renderer.ts";
@@ -10,7 +11,9 @@ import { isWorkflowResult, workflowResultComponent } from "./workflow-result-ren
 export interface WorkflowToolCallArgs {
   readonly name?: string;
   readonly script?: string;
-  readonly args?: string;
+  readonly scriptPath?: string;
+  /** A string or any JSON value. */
+  readonly args?: unknown;
   readonly background?: boolean;
   readonly resumeFromRunId?: string;
 }
@@ -22,11 +25,13 @@ export interface WorkflowToolResultView {
 
 /** A named workflow, or an inline one identified by its literal meta (`inline` until that parses). */
 export function workflowToolTitle(args: WorkflowToolCallArgs): { readonly name: string; readonly detail?: string } {
-  const detail = collapseWhitespace(args.args ?? "");
+  const detail = collapseWhitespace(workflowArgsText(args.args));
   const named = args.name?.trim();
   if (named) return { name: named, detail: detail || undefined };
   const meta = args.script ? readInlineWorkflowMeta(args.script) : undefined;
-  return { name: meta?.name ?? "inline", detail: detail || collapseWhitespace(meta?.description ?? "") || undefined };
+  // The row renders synchronously, so a script file is named by its path rather than read for its meta.
+  const fallback = meta?.description ?? args.scriptPath ?? "";
+  return { name: meta?.name ?? "inline", detail: detail || collapseWhitespace(fallback) || undefined };
 }
 
 /** `▸ workflow code-review · HEAD~3 (background)`: the detail is shortened before the tags are. */

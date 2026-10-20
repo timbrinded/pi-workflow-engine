@@ -51,14 +51,14 @@ test("ProgressTracker tracks rows by id and keeps status counts correct", () => 
   const tracker = new ProgressTracker(headlessContext(), "progress-test", "progress-test-run");
   const ids = Array.from({ length: 1_000 }, (_value, index) => tracker.agentQueued("Bulk", `agent:${index}`));
 
-  assert.deepEqual(tracker.statusCounts(), { queued: 1_000, running: 0, done: 0, failed: 0, total: 1_000 });
+  assert.deepEqual(tracker.statusCounts(), { queued: 1_000, running: 0, done: 0, failed: 0, skipped: 0, total: 1_000 });
 
   tracker.agentStart(ids[999]);
   tracker.agentDone(ids[999]);
   tracker.agentStart(ids[998]);
   tracker.agentFailed(ids[998], new Error("boom"));
 
-  assert.deepEqual(tracker.statusCounts(), { queued: 998, running: 0, done: 1, failed: 1, total: 1_000 });
+  assert.deepEqual(tracker.statusCounts(), { queued: 998, running: 0, done: 1, failed: 1, skipped: 0, total: 1_000 });
   const lastRows = tracker.snapshot().phases.flatMap((phase) => phase.agents).slice(-2);
   assert.equal(lastRows[0]?.status, "failed");
   assert.equal(lastRows[1]?.status, "done");

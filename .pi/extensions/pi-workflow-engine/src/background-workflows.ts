@@ -1,6 +1,8 @@
+import { join } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { WorkflowAbortError, WorkflowPauseError } from "./cancellation.ts";
 import { isRecord } from "./guards.ts";
+import { WORKFLOW_RUNS_DIR } from "./journal.ts";
 import type { WorkflowBackgroundOrigin } from "./types.ts";
 import {
   stopWorkflowRunRecord,
@@ -9,9 +11,11 @@ import {
   type WorkflowRunState,
 } from "./workflow-run-record.ts";
 import { updateWorkflowRunDelivery, type WorkflowRunDelivery } from "./workflow-run-background.ts";
-import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
+import { ProjectWorkflowRunStore, WORKFLOW_RUN_RECORD_SUFFIX, type WorkflowRunStore } from "./workflow-run-store.ts";
 import { truncateText } from "./text.ts";
+import { formatWorkflowUsageLine } from "./usage.ts";
 import { workflowResultSummary } from "./workflow-execution.ts";
+import { formatResultForContext, formatWorkflowRunFileLines } from "./workflow-result-context.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 const BACKGROUND_DELIVERY_CUSTOM_TYPE = "workflow-result";
@@ -294,11 +298,12 @@ export class BackgroundWorkflowCoordinator {
       this.pi.sendMessage(
         {
           customType: BACKGROUND_DELIVERY_CUSTOM_TYPE,
-          content: formatBackgroundDelivery(details),
+          content: formatBackgroundDelivery(record, details),
           display: true,
           details,
         },
-        { triggerTurn: false },
+        // Delivery waits for an idle session, and pi steers a message sent while a run starts into that run.
+        { triggerTurn: wakesAgent(record) },
       );
     }
     await markDelivery(store, runId, { state: "delivered", deliveredAt: Date.now() });
@@ -306,8 +311,13 @@ export class BackgroundWorkflowCoordinator {
   }
 }
 
-export function backgroundOrigin(ctx: Pick<ExtensionContext, "sessionManager">, requestedAt = Date.now()): WorkflowBackgroundOrigin {
-  return { sessionId: ctx.sessionManager.getSessionId(), requestedAt };
+export function backgroundOrigin(
+  ctx: Pick<ExtensionContext, "sessionManager">,
+  requestedAt = Date.now(),
+  wakeOnComplete = false,
+): WorkflowBackgroundOrigin {
+  const origin = { sessionId: ctx.sessionManager.getSessionId(), requestedAt };
+  return wakeOnComplete ? { ...origin, wakeOnComplete } : origin;
 }
 
 export function backgroundResultDetails(record: WorkflowRunRecord): BackgroundWorkflowResultDetails {
@@ -336,15 +346,39 @@ function backgroundSummary(record: WorkflowRunRecord): string {
   return summary === undefined ? "Workflow completed. Open run history for the retained result." : truncateText(summary, SUMMARY_LIMIT);
 }
 
-function formatBackgroundDelivery(details: BackgroundWorkflowResultDetails): string {
+/**
+ * The host model only sees this text, never `details`. A woken agent acts on it at once, so it gets the
+ * result as the synchronous tool path renders it; a silent delivery keeps the summary. Both name the run's
+ * files so a later turn can read the retained result.
+ */
+function formatBackgroundDelivery(record: WorkflowRunRecord, details: BackgroundWorkflowResultDetails): string {
+  const woken = record.background?.origin.wakeOnComplete === true;
+  const usage = woken && record.state === "completed" ? formatWorkflowUsageLine(record.usage) : undefined;
   return [
     `## Background workflow: ${details.name}`,
     "",
-    `Run ID: ${details.runId}`,
+    // A resume, including an automatic one, has a new run id; name the run the agent started.
+    details.resumedFromRunId ? `Run ID: ${details.runId} (resumed from ${details.resumedFromRunId})` : `Run ID: ${details.runId}`,
     `State: ${details.status}`,
     "",
-    details.summary,
+    woken ? wokenDeliveryBody(record, details.summary) : details.summary,
+    "",
+    ...backgroundRunFileLines(record),
+    ...(usage === undefined ? [] : [usage]),
   ].join("\n");
+}
+
+function wokenDeliveryBody(record: WorkflowRunRecord, summary: string): string {
+  if (record.state !== "completed") return `Workflow ${record.state}: ${record.message}`;
+  return record.result.kind === "value" ? formatResultForContext(record.result.value) : summary;
+}
+
+/** The retained record, script and journal, relative to the workflow cwd like the synchronous result's lines. */
+function backgroundRunFileLines(record: WorkflowRunRecord): string[] {
+  return [
+    `Record: ${join(WORKFLOW_RUNS_DIR, `${record.runId}${WORKFLOW_RUN_RECORD_SUFFIX}`)}`,
+    ...formatWorkflowRunFileLines(record.runId, record.scriptFile !== undefined),
+  ];
 }
 
 function sessionHasBackgroundDelivery(ctx: ExtensionContext, runId: string): boolean {
@@ -359,6 +393,15 @@ function sessionHasBackgroundDelivery(ctx: ExtensionContext, runId: string): boo
 
 function isPendingBackgroundOutcome(record: WorkflowRunRecord): record is WorkflowRunRecord & { readonly background: NonNullable<WorkflowRunRecord["background"]> } {
   return record.background?.delivery.state === "pending" && isDeliverableState(record.state);
+}
+
+/**
+ * A run started under Dynamax wakes the agent to act on its result; others arrive silently. So does a run
+ * the user stopped, or one paused with a resume already scheduled, whose successor wakes it instead.
+ */
+function wakesAgent(record: WorkflowRunRecord): boolean {
+  if (record.background?.origin.wakeOnComplete !== true || record.state === "stopped") return false;
+  return !(record.state === "paused" && record.pause?.autoResume === true);
 }
 
 function isDeliverableState(state: WorkflowRunState): state is "completed" | "failed" | "stopped" | "paused" {

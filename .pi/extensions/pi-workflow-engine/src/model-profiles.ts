@@ -1,12 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { getAgentDir, type ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { isMissingPathError } from "./filesystem-error.ts";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { configFilePaths, readJsonConfigFile, writeJsonConfigFile, type ConfigFilePaths } from "./config-file.ts";
 import { isRecord } from "./guards.ts";
-import { unknownErrorMessage } from "./unknown-error.ts";
 
 export const WORKFLOW_MODEL_PROFILE_NAMES = ["small", "medium", "big"] as const;
 export type WorkflowModelProfileName = (typeof WORKFLOW_MODEL_PROFILE_NAMES)[number];
@@ -20,10 +16,7 @@ export interface WorkflowModelProfileFile {
   readonly profiles: Partial<Record<WorkflowModelProfileName, WorkflowModelProfileConfig>>;
 }
 
-export interface WorkflowModelProfilePaths {
-  readonly user: string;
-  readonly project: string;
-}
+export type WorkflowModelProfilePaths = ConfigFilePaths;
 
 interface ResolvedWorkflowModelProfileBase {
   readonly name: WorkflowModelProfileName;
@@ -52,15 +45,10 @@ const HOST_FALLBACK_THINKING: Record<WorkflowModelProfileName, ThinkingLevel> = 
   big: "high",
 };
 const CONFIG_FILE_NAME = "workflow-models.json";
+const CONFIG_LABEL = "workflow model profiles";
 
-export function workflowModelProfilePaths(
-  cwd: string,
-  agentDir: string = getAgentDir(),
-): WorkflowModelProfilePaths {
-  return {
-    user: join(agentDir, CONFIG_FILE_NAME),
-    project: join(cwd, ".pi", CONFIG_FILE_NAME),
-  };
+export function workflowModelProfilePaths(cwd: string, agentDir?: string): WorkflowModelProfilePaths {
+  return configFilePaths(CONFIG_FILE_NAME, cwd, agentDir);
 }
 
 export function resolveWorkflowModelProfiles(input: {
@@ -123,22 +111,8 @@ export function resolveAgentModelProfile(
 }
 
 export function readWorkflowModelProfileFile(configPath: string): WorkflowModelProfileFile {
-  let contents: string;
-  try {
-    contents = readFileSync(configPath, "utf8");
-  } catch (error) {
-    if (isMissingPathError(error)) return { profiles: {} };
-    throw new Error(
-      `Could not read workflow model profiles at ${configPath}: ${unknownErrorMessage(error)}. Fix the file permissions or remove the file.`,
-    );
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(contents);
-  } catch (error) {
-    throw new Error(`Invalid JSON in workflow model profiles at ${configPath}: ${unknownErrorMessage(error)}. Fix or remove the file.`);
-  }
-  return parseWorkflowModelProfileFile(parsed, configPath);
+  const parsed = readJsonConfigFile(configPath, CONFIG_LABEL);
+  return parsed === undefined ? { profiles: {} } : parseWorkflowModelProfileFile(parsed, configPath);
 }
 
 export function setWorkflowModelProfile(input: {
@@ -239,19 +213,7 @@ function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string
 }
 
 function writeWorkflowModelProfileFile(configPath: string, config: WorkflowModelProfileFile): void {
-  const temporaryPath = `${configPath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-    renameSync(temporaryPath, configPath);
-  } catch (error) {
-    try {
-      unlinkSync(temporaryPath);
-    } catch {
-      // Best effort: preserve the original write error.
-    }
-    throw new Error(`Could not write workflow model profiles at ${configPath}: ${unknownErrorMessage(error)}.`);
-  }
+  writeJsonConfigFile(configPath, config, CONFIG_LABEL);
 }
 
 function invalidConfig(configPath: string, reason: string): Error {

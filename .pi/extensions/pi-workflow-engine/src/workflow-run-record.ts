@@ -17,8 +17,10 @@ import {
   isPersistedWorkflowBackground,
   type PersistedWorkflowBackground,
 } from "./workflow-run-background.ts";
+import { isWorkflowRunScriptSeal } from "./workflow-run-seal.ts";
 
 export const WORKFLOW_RUN_RECORD_VERSION = 1;
+export const WORKFLOW_RUN_SCRIPT_SUFFIX = ".script.js";
 
 const MAX_RESULT_BYTES = 1 << 20;
 const MAX_RESULT_DEPTH = 64;
@@ -97,6 +99,14 @@ interface WorkflowRunRecordBase {
   readonly runId: string;
   readonly workflow: PersistedWorkflowIdentity;
   readonly journalFile: string;
+  /** An inline run's script, persisted beside the record; prompts in it never enter the record itself. */
+  readonly scriptFile?: string;
+  /**
+   * This install's HMAC over the run id and source fingerprint, proving the engine recorded the script
+   * rather than a repository shipping it. A run of an inline or saved script relaunches from
+   * `/workflow:runs` only with one.
+   */
+  readonly scriptSeal?: string;
   readonly options: PersistedWorkflowRunOptions;
   readonly createdAt: number;
   readonly updatedAt: number;
@@ -125,6 +135,10 @@ export function createWorkflowRunRecord(input: {
   readonly options: ResolvedWorkflowRunOptions;
   readonly progress: WorkflowProgressSnapshot;
   readonly argumentsPresent?: boolean;
+  /** Whether the run's inline script was persisted beside the record. */
+  readonly scriptPersisted?: boolean;
+  /** The run's script seal; see {@link WorkflowRunRecordBase.scriptSeal}. */
+  readonly scriptSeal?: string;
 }): WorkflowRunRecord {
   const runId = validateWorkflowRunId(input.runId);
   assertMatchingRun(runId, input.progress.runId);
@@ -134,12 +148,19 @@ export function createWorkflowRunRecord(input: {
     state: "queued",
     workflow: persistedWorkflowIdentity(input.workflow),
     journalFile: `${runId}.jsonl`,
+    scriptFile: input.scriptPersisted ? workflowRunScriptFile(runId) : undefined,
+    scriptSeal: input.scriptSeal,
     options: persistedWorkflowRunOptions(input.options, input.argumentsPresent ?? false),
     createdAt: input.progress.startedAt,
     updatedAt: input.progress.startedAt,
     progress: compactWorkflowProgress(input.progress),
     background: createPersistedWorkflowBackground(input.options.background),
   };
+}
+
+/** The persisted script's file name in the runs directory. */
+export function workflowRunScriptFile(runId: string): string {
+  return `${runId}${WORKFLOW_RUN_SCRIPT_SUFFIX}`;
 }
 
 export function updateWorkflowRunProgress(
@@ -169,6 +190,8 @@ export function transitionWorkflowRun(record: WorkflowRunRecord, transition: Wor
     runId: record.runId,
     workflow: record.workflow,
     journalFile: record.journalFile,
+    scriptFile: record.scriptFile,
+    scriptSeal: record.scriptSeal,
     options: record.options,
     createdAt: record.createdAt,
     updatedAt: at,
@@ -475,6 +498,9 @@ export function isWorkflowRunRecord(value: unknown): value is WorkflowRunRecord 
   if (!isValidRunId(value.runId) || !isWorkflowRunState(value.state)) return false;
   if (!isPersistedWorkflowIdentity(value.workflow) || !isPersistedWorkflowRunOptions(value.options)) return false;
   if (value.journalFile !== `${value.runId}.jsonl`) return false;
+  if (value.scriptFile !== undefined && value.scriptFile !== workflowRunScriptFile(value.runId)) return false;
+  // A seal covers an inline run's persisted script or a saved script, which resolves again by name.
+  if (value.scriptSeal !== undefined && (!isWorkflowRunScriptSeal(value.scriptSeal) || (value.scriptFile === undefined && value.workflow.sourceKind !== "file"))) return false;
   if (!isFiniteNumber(value.createdAt) || !isFiniteNumber(value.updatedAt)) return false;
   if (value.startedAt !== undefined && !isFiniteNumber(value.startedAt)) return false;
   if (value.endedAt !== undefined && !isFiniteNumber(value.endedAt)) return false;
@@ -568,7 +594,7 @@ function isPhaseSnapshot(value: unknown): boolean {
 
 function isAgentSnapshot(value: unknown): boolean {
   if (!isRecord(value) || !isFiniteNumber(value.id) || typeof value.label !== "string") return false;
-  if (value.status !== "queued" && value.status !== "running" && value.status !== "done" && value.status !== "failed") return false;
+  if (value.status !== "queued" && value.status !== "running" && value.status !== "done" && value.status !== "failed" && value.status !== "skipped") return false;
   if (!isFiniteNumber(value.toolUses)) return false;
   if (value.startedAt !== undefined && !isFiniteNumber(value.startedAt)) return false;
   if (value.doneAt !== undefined && !isFiniteNumber(value.doneAt)) return false;

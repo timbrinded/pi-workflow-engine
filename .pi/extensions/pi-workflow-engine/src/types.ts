@@ -16,14 +16,23 @@ import type { WorkflowRunState } from "./workflow-run-record.ts";
 
 export type { WorkflowLaneItemStatus } from "./progress-types.ts";
 
-/** A reference to a registered workflow by name. */
-export type WorkflowRef = string;
+/** A registered workflow by name, or an inline-format script file under the workflow cwd. */
+export type WorkflowRef = string | { readonly scriptPath: string };
+
+/** One declared phase of a workflow. */
+export interface WorkflowPhaseMeta {
+  title: string;
+  /** Profile for agents that pass this title as `phase` and set neither `model` nor `profile`. */
+  profile?: WorkflowModelProfileName;
+}
 
 /** Metadata every workflow module must export. */
 export interface WorkflowMeta {
   name: string;
   description: string;
-  phases?: Array<{ title: string }>;
+  /** When a host model should choose this workflow; listed in the system prompt's workflow catalog. */
+  whenToUse?: string;
+  phases?: WorkflowPhaseMeta[];
 }
 
 export interface WorkflowRunStats {
@@ -39,12 +48,16 @@ export interface WorkflowRunMetadata {
   readonly resumedFromRunId?: string;
   readonly journalPath: string;
   readonly recordPath: string;
+  /** The inline run's persisted script; absent for registered workflows or when the write failed. */
+  readonly scriptPath?: string;
 }
 
 export interface WorkflowBackgroundOrigin {
   /** Stable pi session id used to route and deduplicate completion delivery. */
   readonly sessionId: string;
   readonly requestedAt: number;
+  /** Deliver the completion with a new agent turn, because Dynamax was active when the run started. */
+  readonly wakeOnComplete?: boolean;
 }
 
 export interface WorkflowRunOptions {
@@ -101,6 +114,8 @@ export interface WorkflowProgressSource {
   snapshot(): WorkflowProgressSnapshot;
   /** Durable lifecycle state of the run, so a finished snapshot can tell completed from failed. */
   readonly state?: () => WorkflowRunState;
+  /** Skip one running agent by its progress row id; false when it is no longer running. */
+  readonly skipAgent?: (agentId: number) => boolean;
 }
 
 /** Options for a single `agent()` call. */
@@ -226,12 +241,14 @@ export interface WorkflowApi {
    */
   classify(context: ClassifierContext, opts?: ClassifyOptions): Promise<Record<string, ClassifierAnswer>>;
   /**
-   * Run another registered workflow inline as a sub-step and return its result. The child shares
+   * Run another workflow inline as a sub-step and return its result: a registered workflow by name, or
+   * an inline-format script file via `{ scriptPath }` relative to the workflow cwd. The child shares
    * this run's concurrency cap, abort signal, and perf sink. Nests one level only: calling
-   * `workflow()` from within a sub-workflow rejects. Rejects on unknown name — catch it to handle
-   * a missing sub-workflow gracefully.
+   * `workflow()` from within a sub-workflow rejects. Rejects on an unknown name, an unreadable
+   * scriptPath, or a script compile error — catch it to handle a missing sub-workflow gracefully.
+   * `args` is the child's input: a string or any JSON value, read there as `api.input` and `api.args`.
    */
-  workflow(ref: WorkflowRef, args?: string): Promise<unknown>;
+  workflow(ref: WorkflowRef, args?: unknown): Promise<unknown>;
   /**
    * Run every thunk concurrently and wait for all (a barrier). Recoverable thunk
    * failures become null slots by default; settled mode retains serialisable errors.
@@ -248,8 +265,13 @@ export interface WorkflowApi {
   log(message: string): void;
   /** Emit a structured progress event for native workflow UI surfaces. */
   progress(event: WorkflowProgressEvent): void;
-  /** Raw argument string passed after the workflow name. */
+  /**
+   * The invocation's arguments as text: the string passed after the workflow name, a non-string tool or
+   * `workflow()` argument as JSON text, or "" when none was given.
+   */
   args: string;
+  /** The invocation's arguments verbatim: the slash command's string, or the tool or `workflow()` JSON value. */
+  input: unknown;
   /** Working directory of the host session (typically the repo root). */
   cwd: string;
   /**
@@ -264,8 +286,19 @@ export interface WorkflowApi {
 
 export type WorkflowRun = (api: WorkflowApi) => Promise<unknown>;
 
+/**
+ * `file` workflows resolve by name from `path` under `root`. Their `fingerprint` hashes the `root` tree,
+ * revalidated on resume because imports may load lazily, unless `selfContained` marks a compiled saved
+ * script: it can import nothing, so the hash of its own content is its whole identity.
+ */
 export type WorkflowSourceIdentity =
-  | { readonly kind: "file"; readonly path: string; readonly root: string; readonly fingerprint: string }
+  | {
+      readonly kind: "file";
+      readonly path: string;
+      readonly root: string;
+      readonly fingerprint: string;
+      readonly selfContained?: true;
+    }
   | { readonly kind: "fingerprint"; readonly fingerprint: string }
   | { readonly kind: "unverifiable"; readonly reason: string };
 
@@ -279,4 +312,6 @@ export interface WorkflowModule {
 export interface LoadedWorkflow extends WorkflowModule {
   readonly source: WorkflowSourceIdentity;
   readonly isolatedWorktreeBaseline?: WorktreeBaseline;
+  /** An inline run's script source, persisted beside its run record so the run can be read and relaunched. */
+  readonly inlineScript?: string;
 }

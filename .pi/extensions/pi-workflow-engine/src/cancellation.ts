@@ -13,6 +13,20 @@ export class WorkflowPauseError extends WorkflowAbortError {
   }
 }
 
+/**
+ * Abort reason for one agent the user skipped from the inspector. It deliberately does not extend
+ * WorkflowAbortError: the run carries on, so `parallel()`/`pipeline()` turn the skipped branch into a
+ * `null` slot while a direct `await agent()` sees this error.
+ */
+export class WorkflowAgentSkippedError extends Error {
+  override readonly name = "WorkflowAgentSkippedError";
+  readonly code = "WORKFLOW_AGENT_SKIPPED";
+
+  constructor(readonly label: string) {
+    super(`Workflow agent "${label}" was skipped by the user.`);
+  }
+}
+
 export function abortReason(signal: AbortSignal | undefined): Error {
   const reason = signal?.reason;
   if (safeInstanceOf(reason, Error)) return reason;

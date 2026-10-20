@@ -19,8 +19,10 @@ import {
   DurableWorkflowRun,
   ProjectWorkflowRunStore,
   workflowRunRecordPath,
+  workflowRunScriptPath,
   type WorkflowRunStore,
 } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { compileInlineWorkflow } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
 import { WorkflowProviderUsageLimitError } from "../.pi/extensions/pi-workflow-engine/src/provider-usage-limit.ts";
 
 const USAGE: WorkflowUsageSnapshot = {
@@ -62,11 +64,11 @@ function queuedRecord(runId: string): WorkflowRunRecord {
   });
 }
 
-function completedRecord(runId: string, at = 3): WorkflowRunRecord {
+function completedRecord(runId: string, at = 3, finalProgress: Partial<WorkflowProgressSnapshot> = {}): WorkflowRunRecord {
   const running = transitionWorkflowRun(queuedRecord(runId), { state: "running", progress: progress(runId), at: 2 });
   return transitionWorkflowRun(running, {
     state: "completed",
-    progress: progress(runId, { doneAt: at }),
+    progress: progress(runId, { doneAt: at, ...finalProgress }),
     usage: USAGE,
     result: { summary: "done" },
     at,
@@ -237,10 +239,15 @@ test("project run store atomically reloads records and isolates corrupt or futur
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-run-store-"));
   try {
     const store = new ProjectWorkflowRunStore(cwd);
-    await store.save(completedRecord("kept"));
+    const agents = [
+      { id: 1, label: "finder", status: "done" as const, toolUses: 1, startedAt: 2, doneAt: 3 },
+      { id: 2, label: "slow", status: "skipped" as const, toolUses: 0, startedAt: 2, doneAt: 3 },
+    ];
+    await store.save(completedRecord("kept", 3, { phases: [{ title: "Find", agents }] }));
     const reloaded = await new ProjectWorkflowRunStore(cwd).load("kept");
     assert.equal(reloaded?.state, "completed");
     assert.equal(reloaded?.runId, "kept");
+    assert.deepEqual(reloaded?.progress.phases[0]?.agents.map((agent) => agent.status), ["done", "skipped"]);
     assert.equal((await stat(workflowRunRecordPath(cwd, "kept"))).mode & 0o777, 0o600);
 
     const futureFields = { ...completedRecord("future-fields"), futureField: { nested: true } };
@@ -478,6 +485,47 @@ test("run record retention keeps only the newest configured records", async () =
 
     await store.prune(1);
     assert.deepEqual((await store.list()).map((record) => record.runId), ["new"]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the runs directory ignores its own files without replacing an existing ignore file", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-run-gitignore-"));
+  try {
+    await new ProjectWorkflowRunStore(cwd).save(completedRecord("ignored-run"));
+    const ignorePath = join(cwd, ".pi", ".workflow-runs", ".gitignore");
+    assert.equal(await readFile(ignorePath, "utf8"), "*\n");
+
+    await writeFile(ignorePath, "# kept by the user\n*\n");
+    await new ProjectWorkflowRunStore(cwd).save(completedRecord("second-run"));
+    assert.equal(await readFile(ignorePath, "utf8"), "# kept by the user\n*\n");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("an inline run persists its script beside the record, and pruning the record removes it", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-run-script-"));
+  try {
+    const source = 'export const meta = { name: "persisted-inline", description: "" };\nexport default async function run() { return "ok"; }\n';
+    let metadata: WorkflowRunMetadata | undefined;
+    await runWorkflow(fakeContext(cwd), compileInlineWorkflow(source), "", {
+      runId: "inline-script-run",
+      onRunMetadata(value) {
+        metadata = value;
+      },
+    });
+    await runWorkflow(fakeContext(cwd), workflow("registered-shape"), "", { runId: "no-script-run" });
+    const store = new ProjectWorkflowRunStore(cwd);
+
+    assert.equal((await store.load("inline-script-run"))?.scriptFile, "inline-script-run.script.js");
+    assert.equal(metadata?.scriptPath, workflowRunScriptPath(cwd, "inline-script-run"));
+    assert.equal(await readFile(workflowRunScriptPath(cwd, "inline-script-run"), "utf8"), source);
+    assert.equal((await store.load("no-script-run"))?.scriptFile, undefined);
+
+    await store.prune(0);
+    await assert.rejects(() => stat(workflowRunScriptPath(cwd, "inline-script-run")));
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

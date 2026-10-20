@@ -86,9 +86,28 @@ export function availableWorkflowRunActions(
 }
 
 export function canRelaunchWorkflowRun(record: WorkflowRunRecord): boolean {
+  return hasRelaunchableWorkflowSource(record) && record.options.argumentsPresent === false;
+}
+
+/**
+ * A registered workflow resolves again by name; an inline one relaunches from the script persisted beside
+ * its record, and only when the record carries a seal. This check is only the seal's presence: relaunch
+ * verifies it, and the script's fingerprint, before running anything.
+ */
+export function hasRelaunchableWorkflowSource(record: WorkflowRunRecord): boolean {
+  if (typeof record.workflow.sourceFingerprint !== "string") return false;
   return record.workflow.sourceKind === "file"
-    && typeof record.workflow.sourceFingerprint === "string"
-    && record.options.argumentsPresent === false;
+    || (isInlineWorkflowRun(record) && record.scriptFile !== undefined && record.scriptSeal !== undefined);
+}
+
+/** A run of an inline script (a tool `script` or `scriptPath`), not of a registered workflow. */
+export function isInlineWorkflowRun(record: WorkflowRunRecord): boolean {
+  return record.workflow.sourceKind === "fingerprint";
+}
+
+/** The run's workflow name, marked when it ran an inline script, so such a record cannot pose as a registered workflow's run. */
+export function workflowRunDisplayName(record: WorkflowRunRecord): string {
+  return isInlineWorkflowRun(record) ? `${record.workflow.name} (inline)` : record.workflow.name;
 }
 
 export function formatWorkflowRunHistory(
@@ -112,7 +131,7 @@ export function formatWorkflowRunSummary(
   const usage = formatWorkflowUsageLine(record.usage);
   const resumedAs = runs.resumedAs.get(record.runId);
   const actions = availableWorkflowRunActions(record, runs).filter((action) => action !== "inspect");
-  return `${record.state.toUpperCase()} ${record.workflow.name} · age ${formatDuration(Math.max(0, now - record.createdAt))} · duration ${formatWorkflowRunDuration(record, now)}${usage ? ` · ${usage}` : ""} · ${record.runId}${resumedAs ? ` · resumed as ${resumedAs}` : ""}${actions.length > 0 ? ` · actions ${actions.join(", ")}` : ""}`;
+  return `${record.state.toUpperCase()} ${workflowRunDisplayName(record)} · age ${formatDuration(Math.max(0, now - record.createdAt))} · duration ${formatWorkflowRunDuration(record, now)}${usage ? ` · ${usage}` : ""} · ${record.runId}${resumedAs ? ` · resumed as ${resumedAs}` : ""}${actions.length > 0 ? ` · actions ${actions.join(", ")}` : ""}`;
 }
 
 export function formatWorkflowRunDetails(
@@ -127,7 +146,7 @@ export function formatWorkflowRunDetails(
   const usage = formatWorkflowUsageLine(record.usage);
   const lines = [
     `Workflow run ${record.runId}`,
-    `Workflow: ${record.workflow.name}`,
+    `Workflow: ${workflowRunDisplayName(record)}`,
     `State: ${record.state.toUpperCase()}`,
     `Age: ${formatDuration(Math.max(0, now - record.createdAt))}`,
     `Duration: ${formatWorkflowRunDuration(record, now)}`,

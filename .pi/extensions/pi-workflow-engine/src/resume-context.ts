@@ -438,7 +438,7 @@ export async function captureWorkflowResumeContext(
   if (mod.source.kind === "unverifiable") {
     return unverifiableWorkflowResumeContext(mod.meta.name, mod.source.reason);
   }
-  if (mod.source.kind === "fingerprint") {
+  if (mod.source.kind === "fingerprint" || mod.source.selfContained) {
     return mod.source.fingerprint.length > 0
       ? { kind: "verified", name: mod.meta.name, sourceFingerprint: mod.source.fingerprint }
       : unverifiableWorkflowResumeContext(mod.meta.name, "workflow source fingerprint is empty");

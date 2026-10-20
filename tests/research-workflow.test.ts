@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "bun:test";
 import research from "../.pi/extensions/pi-workflow-engine/workflows/research.ts";
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
+import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import {
   dedupeSources,
   sanitizeResearchReport,
   sanitizeVerification,
 } from "../.pi/extensions/pi-workflow-engine/src/research-evidence.ts";
-import type {
-  ResearchClaimCandidate,
-  ResearchVerification,
+import {
+  MAX_VERIFICATION_CLAIMS,
+  type ResearchClaimCandidate,
+  type ResearchVerification,
 } from "../.pi/extensions/pi-workflow-engine/src/research-contract.ts";
 import { WorkflowToolHintUnavailableError } from "../.pi/extensions/pi-workflow-engine/src/tool-capabilities.ts";
 import type { AgentOptions, WorkflowApi, WorkflowProgressEvent } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
@@ -23,6 +25,7 @@ interface ScriptedApi extends WorkflowApi {
   readonly calls: AgentCall[];
   readonly phases: string[];
   readonly events: WorkflowProgressEvent[];
+  readonly logs: string[];
 }
 
 function scriptedApi(responses: readonly unknown[], args: string): ScriptedApi {
@@ -30,6 +33,7 @@ function scriptedApi(responses: readonly unknown[], args: string): ScriptedApi {
   const calls: AgentCall[] = [];
   const phases: string[] = [];
   const events: WorkflowProgressEvent[] = [];
+  const logs: string[] = [];
   const agent = (async (prompt: string, options?: AgentOptions) => {
     calls.push({ prompt, options });
     if (queue.length === 0) throw new Error(`No scripted response for ${options?.label ?? "agent"}`);
@@ -41,6 +45,7 @@ function scriptedApi(responses: readonly unknown[], args: string): ScriptedApi {
     calls,
     phases,
     events,
+    logs,
     agent,
     classify: async () => {
       throw new Error("no classifier is configured in this test");
@@ -51,9 +56,10 @@ function scriptedApi(responses: readonly unknown[], args: string): ScriptedApi {
     parallel,
     pipeline,
     phase: (title) => phases.push(title),
-    log: () => {},
+    log: (message) => logs.push(message),
     progress: (event) => events.push(event),
     args,
+    input: args,
     cwd: process.cwd(),
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
     signal: undefined,
@@ -245,4 +251,31 @@ test("research keeps verified claims when synthesis fails and lists failed lanes
   assert.deepEqual(result.supportedClaims, [{ claim: "The specification changed.", explanation: "The official changelog confirms it.", citations: [source] }]);
   assert.ok(result.limitations.some((limitation) => /synthesis stage failed/.test(limitation)), JSON.stringify(result.limitations));
   assert.ok(result.limitations.some((limitation) => limitation.includes("1 of 2 research lane(s) failed (News coverage)")), JSON.stringify(result.limitations));
+});
+
+test("research reports how many claims the verification cap left unverified", async () => {
+  const source = { title: "Official specification", url: "https://example.com/spec" };
+  const evidence = (claim: string, importance: "high" | "low") => ({ claim, importance, stance: "supports", evidence: `The page states: ${claim}`, source });
+  // Fifteen distinct claims across three lanes; the three low-importance ones fall past the cap of twelve.
+  const laneResult = (id: string) => ({
+    evidence: [evidence(`Minor claim ${id}`, "low"), ...[1, 2, 3, 4].map((n) => evidence(`Key claim ${id}${n}`, "high"))],
+    gaps: [],
+  });
+  const lanes = ["a", "b", "c"];
+  const api = scriptedApi([
+    { scopeConstraints: [], lanes: lanes.map((id) => ({ id, title: `Lane ${id}`, objective: `Cover ${id}.`, queries: [`${id} query`] })) },
+    ...lanes.map(laneResult),
+    ...Array.from({ length: MAX_VERIFICATION_CLAIMS }, () => ({ claim: "echo", verdict: "SUPPORTED", explanation: "Confirmed.", sources: [source] })),
+    new Error("synthesis provider unavailable"),
+  ], "What changed?");
+
+  const report = await research(api);
+
+  const verifierPrompts = api.calls.filter((call) => call.options?.phase === "Verify").map((call) => call.prompt);
+  assert.equal(verifierPrompts.length, MAX_VERIFICATION_CLAIMS);
+  assert.ok(verifierPrompts.every((prompt) => prompt.includes("Importance: high")));
+  assert.ok(api.logs.includes(`Dropped 3 lower-priority claim(s) over the verification cap of ${MAX_VERIFICATION_CLAIMS}`), JSON.stringify(api.logs));
+  // The cut is in the report too, so a reader who never sees the run log still knows coverage is partial.
+  assert.ok(isRecord(report) && Array.isArray(report.limitations));
+  assert.ok(report.limitations.includes(`3 lower-priority claim(s) were not independently verified; verification is capped at ${MAX_VERIFICATION_CLAIMS} claims.`), JSON.stringify(report.limitations));
 });

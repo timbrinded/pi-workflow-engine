@@ -1,5 +1,8 @@
+import { join } from "node:path";
 import { formatAdvisoryLocation, isAdvisoryReport, type AdvisoryFinding, type AdvisoryReport } from "./advisory-schema.ts";
 import { isRecord } from "./guards.ts";
+import { WORKFLOW_RUNS_DIR } from "./journal.ts";
+import { workflowRunScriptFile } from "./workflow-run-record.ts";
 import { toReviewIssues } from "./review/review-issues.ts";
 import { formatPerfSummary } from "./perf.ts";
 import { prettyJson } from "./text.ts";
@@ -15,19 +18,36 @@ export function formatWorkflowResultForContext(envelope: WorkflowResultEnvelope)
   return `## Workflow: ${envelope.name}\n\n${formatResultForContext(envelope.result)}${details.length > 0 ? `\n\n${details.join("\n")}` : ""}`;
 }
 
-/** Run id, usage and perf lines appended for the host model. */
+/** Run id, run files, usage and perf lines appended for the host model. */
 function formatWorkflowDetailLines(envelope: WorkflowResultEnvelope): string[] {
-  const run = envelope.runId
-    ? envelope.resumedFromRunId ? `Run: ${envelope.runId} (resumed from ${envelope.resumedFromRunId})` : `Run: ${envelope.runId}`
-    : undefined;
   return [
-    run,
+    ...(envelope.runId
+      ? [formatWorkflowRunLine({ runId: envelope.runId, resumedFromRunId: envelope.resumedFromRunId }), ...formatWorkflowRunFileLines(envelope.runId, envelope.scriptPersisted === true)]
+      : []),
     formatWorkflowUsageLine(envelope.usage),
     envelope.perf ? formatPerfSummary(envelope.perf.aggregates) : undefined,
   ].filter((line): line is string => line !== undefined);
 }
 
-function formatResultForContext(result: unknown): string {
+/** The run id, naming the run a resume continues. */
+export function formatWorkflowRunLine(run: { readonly runId: string; readonly resumedFromRunId?: string }): string {
+  return run.resumedFromRunId ? `Run: ${run.runId} (resumed from ${run.resumedFromRunId})` : `Run: ${run.runId}`;
+}
+
+/**
+ * Where the host model can read what the run did, relative to the workflow cwd: the persisted script it
+ * can edit and rerun with `scriptPath`, and the replay journal of completed agent results.
+ */
+export function formatWorkflowRunFileLines(runId: string, scriptPersisted: boolean): string[] {
+  return [
+    ...(scriptPersisted ? [`Script: ${join(WORKFLOW_RUNS_DIR, workflowRunScriptFile(runId))}`] : []),
+    `Journal: ${join(WORKFLOW_RUNS_DIR, `${runId}.jsonl`)}`,
+    "If the result is empty or unexpected, read the journal before diagnosing.",
+  ];
+}
+
+/** A workflow result as the host model reads it: advisory reports as findings, other values as bounded JSON. */
+export function formatResultForContext(result: unknown): string {
   if (typeof result === "string") return result;
   if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(result);
   const summary = workflowResultSummary(result);

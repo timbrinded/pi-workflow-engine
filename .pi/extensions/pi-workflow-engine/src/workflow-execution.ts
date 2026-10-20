@@ -25,6 +25,8 @@ export interface WorkflowResultEnvelope {
   readonly perf?: WorkflowPerfDetails;
   readonly runId?: string;
   readonly resumedFromRunId?: string;
+  /** Whether an inline run's script was persisted beside its journal. */
+  readonly scriptPersisted?: boolean;
 }
 
 /** A workflow result's own summary: the result itself when it is a string, else its string `summary` field. */
@@ -36,7 +38,7 @@ export function workflowResultSummary(result: unknown): string | undefined {
 export type ResolvedWorkflowRunner = (
   ctx: ExtensionContext,
   mod: LoadedWorkflow,
-  args: string,
+  args: unknown,
   options: ResolvedWorkflowRunOptions,
 ) => Promise<unknown>;
 
@@ -44,7 +46,8 @@ export interface WorkflowExecutionInput {
   readonly ctx: ExtensionContext;
   readonly name: string;
   readonly mod: LoadedWorkflow;
-  readonly args: string;
+  /** A slash command's argument string, or a tool call's string or JSON value. */
+  readonly args: unknown;
   readonly options: ResolvedWorkflowRunOptions;
   readonly perfRecorder?: PerfSink;
   readonly runResolvedWorkflow: ResolvedWorkflowRunner;
@@ -99,6 +102,7 @@ export async function executeWorkflowInvocation(input: WorkflowExecutionInput): 
     perf: perfSnapshot?.enabled ? { aggregates: perfSnapshot.aggregates } : undefined,
     runId: runMetadata?.runId,
     resumedFromRunId: runMetadata?.resumedFromRunId,
+    scriptPersisted: runMetadata?.scriptPath !== undefined,
   };
 }
 

@@ -12,6 +12,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { prepareAgentSkillResources } from "./agent-skills.ts";
+import { createCodemodeSlotExtension, runToolCallsSequentially } from "./codemode-slots.ts";
 import type {
   AgentExecutionOptions,
   AgentProgress,
@@ -35,6 +36,16 @@ export const FINAL_TOOL = "final_answer";
 /** pi's codemode tool; SDK sessions only have it when their resource loader registers the extension. */
 export const CODEMODE_TOOL = "codemode";
 
+/** pi's stock prompt frames a chat with a person; a subagent's last message is program data instead. */
+const RETURN_VALUE_FRAMING =
+  "Your final message is returned verbatim to the workflow program that started you, as data. " +
+  "It is not shown to a person as a chat reply. Make it exactly the output your task asks for, in the format it asks for, " +
+  "with no greeting, preamble, narration of your process, or offer of further help.";
+/** A schema agent returns its final_answer arguments, not its last message. */
+const STRUCTURED_RETURN_VALUE_FRAMING =
+  `Your ${FINAL_TOOL} arguments are returned to the workflow program that started you, as data. ` +
+  "They are not shown to a person as a chat reply. Fill each field with exactly the content it asks for, " +
+  "with no greeting, preamble, narration of your process, or offer of further help.";
 const SCHEMA_REPROMPT =
   `You ended your turn without calling the ${FINAL_TOOL} tool, so no result was recorded. ` +
   `Call ${FINAL_TOOL} now with your final answer as its arguments. Do not reply with plain text.`;
@@ -234,6 +245,7 @@ async function prepareAgentSessionResources(input: {
     sessionManager: SessionManager.inMemory(cwd),
   });
   const createSession = rc.createSession;
+  // Injected test sessions build no resource loader, so they get neither skills nor the return-value framing.
   if (createSession) {
     return {
       selectedSkills: [],
@@ -251,9 +263,15 @@ async function prepareAgentSessionResources(input: {
     log: (message: string) => rc.progress.log(`${label}: ${message}`),
   };
   const preparedSkills = prepareAgentSkillResources(skillOptions);
+  const codemode = opts.tools?.includes(CODEMODE_TOOL) ?? false;
   const services = await createAgentSessionServices({
     cwd,
-    resourceLoaderOptions: { ...preparedSkills.resourceLoaderOptions, ...codemodeExtension(opts) },
+    resourceLoaderOptions: {
+      ...preparedSkills.resourceLoaderOptions,
+      ...(codemode ? codemodeExtensions() : {}),
+      // An override, not `appendSystemPrompt`: passing that replaces pi's discovery of the user's APPEND_SYSTEM.md.
+      appendSystemPromptOverride: (base) => [...base, opts.schema ? STRUCTURED_RETURN_VALUE_FRAMING : RETURN_VALUE_FRAMING],
+    },
   });
   await synchronizeWorkflowModelRuntime({
     host: rc.modelRegistry,
@@ -272,11 +290,14 @@ async function prepareAgentSessionResources(input: {
   const selectedSkills = preparedSkills.resolve(services.resourceLoader);
   return {
     selectedSkills,
-    createSession: (sessionOptions) =>
-      createAgentSessionFromServices({
+    createSession: async (sessionOptions) => {
+      const created = await createAgentSessionFromServices({
         services,
         ...commonSessionOptions(sessionOptions),
-      }),
+      });
+      if (codemode) runToolCallsSequentially(created.session);
+      return created;
+    },
   };
 }
 
@@ -284,10 +305,16 @@ async function prepareAgentSessionResources(input: {
  * SDK sessions load none of pi's built-in extensions, so codemode is registered only for agents whose
  * allowlist names it. Scripts can call just the agent's other allowed tools. Mode "on" keeps those
  * tools declared whatever the user's `codemode.mode`, so the author's allowlist stays what the model sees.
+ * Its calls queue for the process-wide codemode slots instead of failing at pi's worker limit, so the
+ * session runs its tool calls one at a time.
  */
-function codemodeExtension(opts: AgentExecutionOptions): Pick<SessionResourceLoaderOptions, "extensionFactories"> {
-  if (!opts.tools?.includes(CODEMODE_TOOL)) return {};
-  return { extensionFactories: [{ name: CODEMODE_TOOL, factory: createCodemodeExtension({ mode: "on" }), replaceable: true }] };
+function codemodeExtensions(): Pick<SessionResourceLoaderOptions, "extensionFactories"> {
+  return {
+    extensionFactories: [
+      { name: CODEMODE_TOOL, factory: createCodemodeExtension({ mode: "on" }), replaceable: true },
+      { name: "workflow-codemode-slots", factory: createCodemodeSlotExtension(CODEMODE_TOOL), hidden: true },
+    ],
+  };
 }
 
 type SessionResourceLoaderOptions = NonNullable<CreateAgentSessionServicesOptions["resourceLoaderOptions"]>;

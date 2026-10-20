@@ -69,7 +69,9 @@ export class ProgressTracker {
   private readonly lanes = new Map<string, WorkflowLaneItem[]>();
   private readonly laneOverflow = new Map<string, number>();
   private readonly rowsById = new Map<number, AgentRow>();
-  private readonly agentCounts: Record<AgentRowStatus, number> = { queued: 0, running: 0, done: 0, failed: 0 };
+  /** How to abort each running row's agent; never part of a snapshot, so it is never persisted. */
+  private readonly skipHandlers = new Map<number, () => void>();
+  private readonly agentCounts: Record<AgentRowStatus, number> = { queued: 0, running: 0, done: 0, failed: 0, skipped: 0 };
   private readonly startedAt = Date.now();
   private readonly laneItemLimit = laneItemLimitFromEnv();
   private doneAt: number | undefined;
@@ -168,12 +170,13 @@ export class ProgressTracker {
     return id;
   }
 
-  agentStart(id: number): void {
+  agentStart(id: number, skip?: () => void): void {
     const row = this.rowsById.get(id);
     if (row) {
       this.transitionAgentStatus(row, "running");
       row.startedAt = Date.now();
       row.error = undefined;
+      if (skip) this.skipHandlers.set(id, skip);
     }
     this.publish();
   }
@@ -188,8 +191,9 @@ export class ProgressTracker {
   }
 
   agentDone(id: number): void {
+    this.skipHandlers.delete(id);
     const row = this.rowsById.get(id);
-    if (row && row.status !== "failed") {
+    if (row && row.status !== "failed" && row.status !== "skipped") {
       this.transitionAgentStatus(row, "done");
       row.doneAt = Date.now();
     }
@@ -197,6 +201,7 @@ export class ProgressTracker {
   }
 
   agentFailed(id: number, error: unknown): void {
+    this.skipHandlers.delete(id);
     const row = this.rowsById.get(id);
     if (row) {
       this.transitionAgentStatus(row, "failed");
@@ -204,6 +209,28 @@ export class ProgressTracker {
       row.error = unknownErrorMessage(error);
     }
     this.publish();
+  }
+
+  agentSkipped(id: number): void {
+    this.skipHandlers.delete(id);
+    const row = this.rowsById.get(id);
+    if (row) {
+      this.transitionAgentStatus(row, "skipped");
+      row.doneAt = Date.now();
+    }
+    this.publish();
+  }
+
+  /**
+   * Abort one running agent at the user's request (the inspector's skip key); false when the row is
+   * no longer running. The row turns `skipped` once the agent's session has wound down.
+   */
+  skipAgent(id: number): boolean {
+    const skip = this.skipHandlers.get(id);
+    if (!skip || this.rowsById.get(id)?.status !== "running") return false;
+    this.skipHandlers.delete(id);
+    skip();
+    return true;
   }
 
   updateUsage(snapshot: WorkflowUsageSnapshot): void {
@@ -238,7 +265,8 @@ export class ProgressTracker {
       running: this.agentCounts.running,
       done: this.agentCounts.done,
       failed: this.agentCounts.failed,
-      total: this.agentCounts.queued + this.agentCounts.running + this.agentCounts.done + this.agentCounts.failed,
+      skipped: this.agentCounts.skipped,
+      total: this.agentCounts.queued + this.agentCounts.running + this.agentCounts.done + this.agentCounts.failed + this.agentCounts.skipped,
     };
   }
 

@@ -40,10 +40,11 @@ Useful flags:
 /workflow code-review --budget=50000     # output-token ceiling for subagents
 /workflow code-review --resume <run-id>  # replay matching completed agent calls
 /workflow code-review --resume <run-id> --resume-edited # reuse unchanged calls after a workflow edit
-/workflow code-review --refresh          # rediscover newly added workflow files
+/workflow code-review --refresh          # reload .ts drop-ins (saved .js scripts are always reread)
 /workflow:runs                           # browse recent durable project runs
 /workflow:inspector <run-id>             # inspect one retained run directly
 /workflow:models                         # inspect small/medium/big model routes
+/workflow:size                           # show or set the workflow size guideline
 ```
 
 ## Workflow model profiles
@@ -83,7 +84,11 @@ secrets stay in pi's provider configuration. The engine never ranks models by
 price, model-name substrings, or assumed capability.
 
 Routing is resolved per field: an agent's explicit `model` or `thinkingLevel`
-wins, then its requested profile, then host inheritance. A configured profile
+wins, then its requested profile, then the profile of its declared phase, then
+host inheritance. A phase profile comes from `meta.phases` (`{ title, profile }`)
+and applies only to an agent that passes that title as its `phase` option and
+sets neither `model` nor `profile`; the global `phase()` call never selects one,
+because concurrent branches share it. A configured profile
 without `thinkingLevel` inherits the host effort. An entirely unconfigured tier
 uses the host model and the built-in bounded effort for that tier (`low`,
 `medium`, or `high` respectively); `/workflow:models` labels that route as a host
@@ -115,12 +120,14 @@ because only those runs can reach the host's MCP tools.
 
 The workflow bounds decomposition to four lanes and verification to twelve
 claims, while the engine's concurrency, total-agent, timeout, cancellation, and
-token-budget limits still apply. Gatherers retain direct page titles and URLs;
-search-results URLs are rejected, sources are canonicalized and deduplicated,
-and separate verifier agents classify claims as supported, conflicting,
-uncertain, inferred, or rejected before synthesis. External research calls use
-`resume: "off"` because live web evidence, time, and service state are outside
-the journal's deterministic replay surface.
+token-budget limits still apply. When gatherers find more than twelve distinct
+claims, the most important are verified, and both the run log and the report's
+limitations say how many lower-priority claims the cap left unverified. Gatherers retain direct page
+titles and URLs; search-results URLs are rejected, sources are canonicalized and
+deduplicated, and separate verifier agents classify claims as supported,
+conflicting, uncertain, inferred, or rejected before synthesis. External
+research calls use `resume: "off"` because live web evidence, time, and service
+state are outside the journal's deterministic replay surface.
 
 ## Use Dynamax for custom workflows
 
@@ -141,6 +148,7 @@ dynamax use parallel agents to review this design and report the risks
 Sticky mode and inspector shortcut:
 
 ```text
+/workflow:dynamax          # toggle sticky mode
 /workflow:dynamax on
 /workflow:dynamax off
 /workflow:dynamax status
@@ -148,7 +156,7 @@ Sticky mode and inspector shortcut:
 
 The workflow inspector and code-review results viewer are also registered as first-class shortcuts shown by `/hotkeys`. The defaults are `ctrl+shift+m` for the inspector and `ctrl+shift+r` for the latest review results. `ctrl+o` is intentionally not used because pi already uses it for tool-output expansion and tree filtering.
 
-When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives a `<dynamax>` system prompt section that permits the workflow tool (pi appends it as a section patch, so the cached prompt head is kept), stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off`. The footer status states the mode compactly: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its prompt, and `◆ dynamax · this turn` while that run is active; off mode clears it. A running workflow names itself in its own status next to it.
+When only the literal `dynamax` token is used, the opt-in is one-shot: the next agent run receives a `<dynamax>` system prompt section that permits the workflow tool (pi appends it as a section patch, so the cached prompt head is kept), stays visibly active for that run, then clears after the run ends. When `/workflow:dynamax on` (or `/workflow:dynamax` while sticky mode is off) is used, the opt-in is sticky for the current pi session until `/workflow:dynamax off` (or `/workflow:dynamax` again). Sticky mode is a standing default rather than a one-request permission: its `<dynamax>` section tells the host agent to orchestrate every substantive task with the workflow tool, scouting inline first and then running one single-phase workflow per phase (understand, design, implement, review), reading each result before choosing the next, and to work without a workflow only for conversational turns and trivial or already-verified edits. It applies to every run in the session, including runs that a custom message starts, such as a background workflow waking the agent; a one-shot is consumed only by the user prompt that carried it. The footer status states the mode compactly: `◆ dynamax` while sticky, `◆ dynamax · next prompt` while a one-shot waits for its prompt, and `◆ dynamax · this turn` while that run is active; off mode clears it. A running workflow names itself in its own status next to it.
 
 ### Prompt editor cue
 
@@ -190,6 +198,24 @@ Configure either shortcut by creating `~/.pi/agent/extensions/pi-workflow-engine
 Set either shortcut to `null` to disable it while keeping `/workflow:inspector` and `/workflow:results` available.
 
 With Dynamax enabled, the host agent usually calls the `workflow` tool with `script`: a one-off inline workflow tailored to your prompt. It can still call a saved workflow by `name` when one already fits.
+
+Every run that can call the `workflow` tool also carries a `<workflows>` system prompt section: the catalog of registered workflows, one line each with its name, `description`, and `whenToUse`, sorted by name. It is built once per pi session from workflow discovery and reused, so its text is identical on every turn and keeps the provider's prompt cache; start a new session or `/reload` to list workflows added since.
+
+### Workflow size guideline
+
+The catalog ends with one line telling the host agent how large to make each workflow it authors:
+
+```text
+/workflow:size                    # show the current guideline and where it comes from
+/workflow:size small              # keep each workflow under 5 agents
+/workflow:size medium             # under 10 agents (the default)
+/workflow:size large --project    # under 25 agents, for this project only
+/workflow:size off                # leave the line out
+```
+
+The line reads, for example, `Workflow size guideline: medium — keep each workflow under 10 agents unless the user asks for more; the user changes this with /workflow:size.` The setting is stored like the model profiles: `~/.pi/agent/workflow-settings.json` for the user, overridden by `<project>/.pi/workflow-settings.json`; setting a size writes the user file unless `--project` is given. A minimal file is `{ "size": "small" }`. Changing it rebuilds the current session's catalog once.
+
+The guideline only shapes what the host agent writes. The `maxAgents` run limit (default `64`, see [Runtime knobs](#runtime-knobs)) stays the separate hard cap: once a run has started that many live agents, further `agent()` calls fail with `WorkflowAgentLimitError`, whatever the guideline says.
 
 ### Adaptive multi-pass authoring
 
@@ -249,6 +275,8 @@ During a run, a widget above the editor shows the workflow's progress bar, finis
 
 The inspector has Overview, Agents, Findings, and Logs sections, plus Result for a retained run opened from `/workflow:runs`. Switch sections with `tab`/`shift+tab`, `←`/`→`, or `1`–`5`; move with `↑`/`↓` or `j`/`k`, jump with `g`/`G`, expand an agent or finding with `enter`, and close with `q` or `esc`. Expanded agents show the full error, last tool, model, and token usage.
 
+While a run is live, `s` on the Agents tab skips the selected running agent: press it twice on the same agent (like stopping a run in the runs browser); the key is listed in the footer only while the selection can take it. Skipping aborts only that agent's session; the run and its sibling agents carry on. The skipped `agent()` call rejects with a recoverable `WorkflowAgentSkippedError` (code `WORKFLOW_AGENT_SKIPPED`), so `parallel()` and `pipeline()` turn it into a `null` slot while a direct `await` sees the error. A skipped agent is never restarted by `agentRetries` and never written to the replay journal, so a resumed run asks it again; the tokens it already spent still count toward usage and the budget. The widget, inspector and run record show the agent as `skipped`. Skipping works for a background run too when you open its live inspector with `/workflow:inspector` or the shortcut; a retained run opened from `/workflow:runs` is read-only.
+
 ### Durable run records
 
 Every workflow run writes a versioned project-local record to `.pi/.workflow-runs/<run-id>.run.json`; its agent replay journal remains `.pi/.workflow-runs/<run-id>.jsonl`. The same run ID appears in execution metadata, progress snapshots, result details, and both filenames. Records distinguish `queued`, `running`, `completed`, `failed`, `stopped`, and `paused` lifecycle states and retain resolved scalar options, timestamps, compact progress, summary usage, and the final result or error.
@@ -257,11 +285,17 @@ Record replacement is atomic, corrupt or unsupported-version files are ignored i
 
 Persistence is intentionally bounded and private by default. Raw workflow args, prompts, subagent transcripts, progress logs, lane details, agent errors, environment data, credentials, and tool-output-shaped fields are not stored. Final results are limited to bounded plain JSON; credential- and transcript-shaped fields are redacted, and unsupported or cyclic results are marked unavailable instead of executing accessors or breaking the workflow. Loading history only parses these data files and never imports or executes workflow code.
 
+An inline run (a tool `script` or `scriptPath`) also saves its script to `.pi/.workflow-runs/<run-id>.script.js`, a separate file the record only references, because the record never holds prompts. The script holds nothing new: pi's session transcript already contains it as the tool call's arguments. A pruned record takes its script with it. Whenever the engine creates `.pi/.workflow-runs/`, it adds a `.gitignore` containing `*` so run files stay out of the project's git history; an existing `.gitignore` there is never replaced.
+
+The result handed to the host agent names the run's files after the run ID: `Script:` for an inline run, and `Journal:` with a reminder to read the journal before diagnosing an empty or unexpected result. A failed inline run lists the same lines after its error, a background start names the script too, and a background delivery names the record, script, and journal (see [Background workflows](#background-workflows)). To iterate, edit the script and rerun it with `scriptPath` (see [Author an inline workflow](#author-an-inline-workflow)).
+
 ### Background workflows
 
 The host-facing `workflow` tool accepts `background: true`. It returns as soon as the run ID and origin metadata are durably recorded, while the normal workflow engine continues in-process with the same concurrency, budget, worktree, progress, usage, and resume rules. Synchronous execution remains the default, and the `/workflow` slash command remains synchronous.
 
-Background runs are detached from the initiating tool-call signal, so the host agent can finish that turn and continue the conversation. While one runs, it shows a single line above the editor (`◆ background · code-review 56b57550 · Find 6/10 · 12s`) instead of the full live widget. When the run completes or fails, the extension waits for the originating session to become idle and inserts one concise `workflow-result` message containing the run ID, terminal state, and summary. Delivery state is stored with the run record; on reload, the extension checks both that state and the session message history before retrying, which suppresses duplicates even if persistence failed immediately after message insertion.
+Background runs are detached from the initiating tool-call signal, so the host agent can finish that turn and continue the conversation. While one runs, it shows a single line above the editor (`◆ background · code-review 56b57550 · Find 6/10 · 12s`) instead of the full live widget. When the run completes or fails, the extension waits for the originating session to become idle and inserts one concise `workflow-result` message containing the run ID, terminal state, and summary, followed by the run's files: `Record:`, `Script:` for an inline run, and `Journal:` with the reminder to read it before diagnosing an empty or unexpected result, so a later turn knows where the retained result lives. Delivery state is stored with the run record; on reload, the extension checks both that state and the session message history before retrying, which suppresses duplicates even if persistence failed immediately after message insertion.
+
+If Dynamax was active when the host agent started the run (sticky mode, or the turn a `dynamax` one-shot covered), the delivery also starts a new agent turn, so the agent wakes to read the result and choose its next step without waiting for you; with sticky mode on, that turn carries the sticky `<dynamax>` section. pi gives the model only a message's text, so a waking delivery carries the full result in place of the summary, rendered and bounded exactly as a synchronous `workflow` call returns it (a review's findings, every other result field, and the usage line), or the full retained message of a failed, stopped, or paused run, before the same file lines. The run record keeps this as `background.origin.wakeOnComplete`, so a delivery after a restart, including the notice for a run paused by shutdown, still wakes the agent, and a resume, restart, or provider-limit auto-resume of that run wakes it too. A run you stopped does not wake the agent, nor does a provider-limit pause whose automatic resume is scheduled: that resume's own delivery wakes it. Other background runs keep the silent delivery above. There is no separate flag: Dynamax being active is the signal that the agent is orchestrating.
 
 Provider usage-window continuation is a separate, explicit background option:
 
@@ -275,7 +309,7 @@ Provider usage-window continuation is a separate, explicit background option:
 }
 ```
 
-It is off by default and schedules only registered file workflows whose invocation had no arguments; inline scripts and argument-bearing runs still pause safely but require an explicit manual decision because their executable input is not persisted. A recognized provider usage or quota failure aborts the current fan-out before queued agents can open new sessions, preserves the replay journal, and records a sanitized provider message, provider identity, reset hint, total attempt number, and next eligible time. Transport failures and ordinary provider errors keep the existing per-agent `agentRetries` behavior and do not create a provider-limit pause.
+It is off by default and schedules only registered file workflows and inline runs whose script was persisted, and only when the invocation had no arguments; argument-bearing runs still pause safely but require an explicit manual decision because their arguments are not persisted. A recognized provider usage or quota failure aborts the current fan-out before queued agents can open new sessions, preserves the replay journal, and records a sanitized provider message, provider identity, reset hint, total attempt number, and next eligible time. Transport failures and ordinary provider errors keep the existing per-agent `agentRetries` behavior and do not create a provider-limit pause.
 
 Reset parsing accepts provider duration hints such as `retry-after: 60` and `x-ratelimit-reset-tokens: 6m0s`, plus future RFC3339 timestamps. Missing, past, or malformed hints use a 60-second fallback; delays are clamped to at least 5 seconds and at most `usageLimitMaxDelayMs`. The default maximum is three total run attempts, including the initial run. When the eligible time arrives, the extension starts a new background run with `resumeFromRunId`; after a process restart, it re-arms only the remaining delay. `/workflow:runs resume` and `/workflow:runs stop` cancel any pending timer, and the attempt cap prevents an infinite resume loop.
 
@@ -285,7 +319,7 @@ A graceful pi session shutdown aborts active background work and records it as `
 
 ### Recent runs and lifecycle actions
 
-`/workflow:runs` opens a runs browser in the TUI: one aligned row per recent project run (state glyph and word, workflow, duration, age, cost when known, short run ID) above a details pane for the selected run with its wall-clock times, phases, agent and token counts, resume lineage, pause details, outcome, and why a relaunch is unavailable when it is. Keys act on the selected run: `enter` or `i` inspect, `r` resume, `s` stop (press twice), `R` restart; only the actions currently valid for that run are listed in the footer, and the others explain why they are unavailable. The browser refreshes while a run is active and reopens on the same run after an action. RPC sessions keep pi's native two-step selection (run, then action). The background activity line is present only while this session owns active background work.
+`/workflow:runs` opens a runs browser in the TUI: one aligned row per recent project run (state glyph and word, workflow, tagged `inline` when the run was an inline script, duration, age, cost when known, short run ID) above a details pane for the selected run with its wall-clock times, phases, agent and token counts, resume lineage, pause details, outcome, and why a relaunch is unavailable when it is. Keys act on the selected run: `enter` or `i` inspect, `r` resume, `s` stop (press twice), `R` restart; only the actions currently valid for that run are listed in the footer, and the others explain why they are unavailable. The browser refreshes while a run is active and reopens on the same run after an action. RPC sessions keep pi's native two-step selection (run, then action). The background activity line is present only while this session owns active background work.
 
 The same operations are available without the selection UI:
 
@@ -297,7 +331,7 @@ The same operations are available without the selection UI:
 /workflow:inspector <run-id>
 ```
 
-Inspect is always safe. Stop is available for a background run active in the current session and for a retained paused run with a pending resume timer. Resume is limited to paused registered workflows whose source fingerprint is unchanged and whose invocation had no redacted arguments; it starts a new background run ID with `resumeFromRunId` journal replay. A paused run already resumed by a queued, running, paused, or completed run is listed as `resumed as <run-id>` and offers no second resume; once every resume of it has failed or been stopped, manual resume is offered again, while automatic provider-limit resume never fires twice for the same paused run. Restart is limited to completed, failed, or stopped registered workflows that had no arguments and also creates a new background run ID. Inline workflows and argument-bearing invocations are intentionally not relaunched because their executable input was not persisted. In `print` and `json` modes, list and inspect return formatted text without opening TUI components, while resume/restart report that background execution requires TUI or RPC mode.
+Inspect is always safe. Stop is available for a background run active in the current session and for a retained paused run with a pending resume timer. Resume is limited to paused runs whose source fingerprint is unchanged and whose invocation had no redacted arguments; it starts a new background run ID with `resumeFromRunId` journal replay. A paused run already resumed by a queued, running, paused, or completed run is listed as `resumed as <run-id>` and offers no second resume; once every resume of it has failed or been stopped, manual resume is offered again, while automatic provider-limit resume never fires twice for the same paused run. Restart is limited to completed, failed, or stopped runs that had no arguments and also creates a new background run ID. A registered workflow relaunches by name; an inline run relaunches from its persisted `<run-id>.script.js`, so it is relaunchable only while that script is retained, and fails with a clear message if the file was deleted. Because `.pi/.workflow-runs/` sits in the project, a cloned repository could ship a record and script of its own (the `*` ignore file does not untrack committed files), so the engine seals each inline run: its record holds an HMAC of the run ID and script fingerprint under a key that pi creates once per install at `~/.pi/agent/workflow-run-seal.key` (inside `PI_CODING_AGENT_DIR` when set). Before reading the script, a resume or restart checks the seal against this install's key, then requires the script's fingerprint to match the record; a record from elsewhere, or a script edited in place since the run, is refused with a hint to rerun it with the `workflow` tool's `scriptPath`. A run of a saved `.pi/workflows` or user script is sealed the same way, without a copy: it relaunches by name only while the script still matches the content that ran, since a repository could also ship a record naming a script of its own; otherwise run it again by name. A record without a seal, including every inline record written before sealing existed, offers neither action. Inline runs are listed as `<name> (inline)` and tagged `inline` in the browser, so such a record cannot pass for a registered workflow's run. Argument-bearing invocations are intentionally not relaunched because their arguments were not persisted. In `print` and `json` modes, list and inspect return formatted text without opening TUI components, while resume/restart report that background execution requires TUI or RPC mode.
 
 Code-review findings are rendered as a formatted result message by default. pi no longer asks whether to open the findings viewer. Use `--result-viewer` or `--review-viewer` when you want to inspect findings interactively. The viewer lists findings most severe first with the selected finding's full detail beside the list (below it in narrow terminals); `space` or `enter` selects a finding, `a` toggles all, `f` generates patch previews and `c` posts PR comments for the selection, and `pgup`/`pgdn` scroll a long detail. The viewer is sized to its content and shows scroll hints only when something is clipped. `/workflow:results` or `ctrl+shift+r` reopens the most recent validated code-review report in the current pi session without rerunning the workflow; selections reset when it reopens.
 
@@ -320,6 +354,8 @@ With edited-workflow resume enabled, unchanged calls are reused while changed or
 
 This option can return a result produced before an orchestration edit when that call's explicit identity did not change. Use it only when the unchanged call is still semantically valid in the edited workflow, and prefer stable `cacheKey` values for repeated logical calls. Omit `--resume-edited` or `resumeEditedWorkflow` for the fail-closed default.
 
+A tool call with `scriptPath` and `resumeFromRunId` implies `resumeEditedWorkflow: true`, because rerunning an edited script file is what `scriptPath` is for. Only the whole-script fingerprint check is relaxed; each call's own replay identity still decides whether its cached result is reused.
+
 Replay is explicit for agents that share the workflow directory and automatic for isolated patch-producing agents:
 
 | Agent call | Default during resume | Override |
@@ -333,9 +369,9 @@ Journals use replay contract v2. A hit requires the same prompt/options and exec
 
 Cached values are revalidated before use: text must still be text, structured output must satisfy the current typebox schema, and an isolated patch must have consistent metadata and pass `git apply --check --binary` against its fresh baseline worktree. A malformed or stale value runs live.
 
-Invalidations appear in progress output with a concise reason. Legacy v1 journals and early v2 entries without effective-session identity are parsed for compatibility but always miss. Git repositories with no commits and non-Git directories remain supported. Git control data and engine-owned workflow journals cannot be declared as inputs; if a Git-visible or explicit surface exceeds safety bounds, that call runs live.
+Invalidations appear in progress output with a concise reason. Legacy v1 journals and early v2 entries without effective-session identity are parsed for compatibility but always miss. Journals written by pi-workflow-engine 1.1.0 or earlier miss once with `effective system prompt changed`, because later versions append the return-value instruction to every subagent's system prompt; the resumed run records fresh entries. Git repositories with no commits and non-Git directories remain supported. Git control data and engine-owned workflow journals cannot be declared as inputs; if a Git-visible or explicit surface exceeds safety bounds, that call runs live.
 
-Statically loaded built-ins fingerprint and revalidate their bounded extension source tree so imported helper changes invalidate replay, while inline workflows use the compiler-provided script fingerprint. Dynamically discovered and programmatic modules are intentionally non-replayable because their transitive runtime imports or captured closures cannot be bound to an immutable source snapshot.
+Statically loaded built-ins fingerprint and revalidate their bounded extension source tree so imported helper changes invalidate replay, while inline workflows and saved `.js` scripts use the compiler-provided script fingerprint. Dynamically discovered `.ts` and programmatic modules are intentionally non-replayable because their transitive runtime imports or captured closures cannot be bound to an immutable source snapshot.
 
 Resume only caches completed `agent()` calls. It does not snapshot arbitrary workflow local variables, in-flight tool work, environment or clock state, external services, or generated inputs outside the captured repository/workflow/skill/tool surfaces. Use `resume: "off"` for calls that depend on those values, and keep prompts and options deterministic when you want cache hits.
 
@@ -351,6 +387,11 @@ import type { WorkflowApi, WorkflowMeta } from "../src/types.ts";
 export const meta: WorkflowMeta = {
   name: "my-workflow",
   description: "Find and summarize something important.",
+  whenToUse: "Use when the user wants the important thing found and summarized; args name the target.",
+  phases: [
+    { title: "Find", profile: "small" },
+    { title: "Synthesize", profile: "medium" },
+  ],
 };
 
 const Finding = Type.Object({
@@ -389,6 +430,8 @@ export default async function run({ agent, parallel, phase, args }: WorkflowApi)
 }
 ```
 
+`meta.name` is required. `description` and `whenToUse` describe the workflow in the picker and in the host's workflow catalog, so write `whenToUse` as the situation that should make a model choose it and what `args` it expects. `phases` declares the progress phases up front; each may add a default `profile` for agents that pass that phase title as their `phase` option.
+
 Core primitives:
 
 | Primitive | What it does |
@@ -400,6 +443,10 @@ Core primitives:
 | `phase(title)` / `log(message)` | Updates workflow progress UI. |
 | `progress(event)` | Emits counters, summaries, and lane items. |
 | `workflow(ref, args?)` | Runs another workflow inline as a sub-step and returns its result. |
+
+Every subagent's system prompt states that its return value goes to the workflow program as data, not to a person: a text agent's final message is returned verbatim, so it replies with only the output its task asks for (no greeting, preamble, narration, or offer of further help), and a schema agent is told the same about its `final_answer` arguments. The instruction is appended after any `APPEND_SYSTEM.md` pi discovers, which subagents keep loading.
+
+`args` holds the invocation's arguments as text and `input` holds them verbatim. A slash command passes a string, so both are that string. The `workflow` tool's `args` field and `workflow(ref, args)` also accept any JSON value: `input` is the value and `args` its JSON text, so workflows written for string arguments keep working. Omitted arguments are `""` in both. Like string arguments, JSON arguments are never written to the run record, so a run that had any cannot be resumed or restarted from `/workflow:runs`.
 
 Schema agents accept structured output only through the validated, terminating `final_answer` tool. If the first response omits it, the engine makes at most **two repair attempts** (three prompt attempts total). Repair prompts expose only `final_answer` when the active pi session supports tool restriction. Clean exhaustion throws `WorkflowStructuredOutputError` with code `WORKFLOW_STRUCTURED_OUTPUT_NONCOMPLIANCE`; provider failures and host cancellation still propagate unchanged.
 
@@ -427,8 +474,8 @@ overrides its profile.
 
 Subagents are SDK sessions, so pi's built-in codemode and MCP extensions do not load in them. Two opt-ins cover that:
 
-- **Codemode.** Add `"codemode"` to an agent's `tools` to let it batch or filter many tool calls in one script, for example `tools: ["read", "grep", "codemode"]`. Scripts can call only that agent's other allowed tools, and never `final_answer`. Classifier calls a script makes count toward the run's usage and budget.
-- **Host MCP tools.** In runs started by the `workflow` tool, subagents reach the host's MCP tools over its existing connections and through its permission handlers. Name a tool in `tools` (for example `"mcp__linear__create_issue"`), or use `toolHints: ["external-search"]` to pick up MCP web research tools; servers that declare a tool not read-only or closed-world are excluded from that hint. Bridged tools act in the host session, so the local `search` hint never bridges them, and an isolated worktree agent that names a local MCP tool sees the main checkout through it, not its worktree. `/workflow` commands and background runs outlive the host tool call that makes this possible: an agent there that names an MCP tool fails before prompting rather than running without it.
+- **Codemode.** Add `"codemode"` to an agent's `tools` to let it batch or filter many tool calls in one script, for example `tools: ["read", "grep", "codemode"]`. Scripts can call only that agent's other allowed tools, and never `final_answer`. Classifier calls a script makes count toward the run's usage and budget. pi runs at most two codemode scripts per process, shared with the host, and fails a third instead of waiting; subagents' codemode calls therefore queue for one of those two slots, so a wide fan-out of codemode agents runs their scripts two at a time. A codemode agent runs its tool calls one at a time, and so do its scripts' own calls: by default pi checks every call in a message before it starts any, and a codemode call takes its slot in that check, so three codemode calls in one message would hold both slots with calls that cannot start while the third waits for one. To batch calls, put them in one script, which still makes them all in a single model turn. pi frees a slot only once the script's worker has exited, which can lag its result, so an agent can occasionally still get pi's "Codemode worker limit reached" error and retry. The host's own codemode calls do not queue.
+- **Host MCP tools.** In runs started by the `workflow` tool, subagents reach the host's MCP tools over its existing connections and through its permission handlers. Name a tool in `tools` (for example `"mcp__linear__create_issue"`), or use `toolHints: ["external-search"]` to pick up MCP web research tools; servers that declare a tool not read-only or closed-world are excluded from that hint. Bridged tools act in the host session, so the local `search` hint never bridges them, and an isolated worktree agent that names a local MCP tool sees the main checkout through it, not its worktree. `/workflow` commands and background runs outlive the host tool call that makes this possible: an agent there that names an MCP tool fails before prompting rather than running without it. So that a run started early in a session does not race servers that are still connecting, the `workflow` tool tells pi (1.2 or newer) which servers a call may reach, and pi waits for them before the run starts: the servers of the `mcp__…` tools an inline script names, or every server for a named workflow, a script that uses `external-search` hints or `workflow()`, or any `scriptPath`. pi asks before the call runs and on its main thread, so a `scriptPath` file is not read then; the call itself reads it only if it is a regular file of at most 1 MiB. A background call waits for none. Each server becomes ready once, so the wait costs at most one pause at session start.
 
 Subagents receive no skills by default. Opt in per agent with `skills: ["skill-name"]`; if `tools` is also restricted, the engine automatically keeps `read` available so the subagent can load the selected `SKILL.md`. When `skills` is omitted, clear prompt text such as `/skill:name`, `include skill name`, or `use the name skill` is also treated as an opt-in. Pass `skills: []` to suppress that inference.
 
@@ -457,16 +504,17 @@ Cleanup is a required finalizer. The engine attempts every registered worktree r
 
 ### Compose workflows
 
-`workflow(ref, args?)` runs a registered workflow by name as a sub-step, returning its result. The child shares the parent run's concurrency cap, total-agent limit, per-agent timeout, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
+`workflow(ref, args?)` runs a registered workflow by name, or an inline-format script file via `{ scriptPath }`, as a sub-step, returning its result. `args` is a string or any JSON value, which the child reads as `input` and, as text, `args`. The child shares the parent run's concurrency cap, total-agent limit, per-agent timeout, abort signal, and perf timing, and its phases nest under `<name> ▸ <phase>` in the live UI.
 
 ```ts
 export default async function run({ workflow }: WorkflowApi) {
   const review = await workflow("code-review", "HEAD~3");
-  return { review };
+  const audit = await workflow({ scriptPath: "scripts/audit.js" }, { paths: ["src/"], strict: true });
+  return { review, audit };
 }
 ```
 
-Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name. Inside `parallel()` or `pipeline()`, recoverable branch errors become `null` results, so filter nulls before synthesis; a genuine run abort still rejects.
+A `scriptPath` is resolved against the workflow cwd and must name a regular file of at most 1 MiB; the file follows the [inline workflow rules](#author-an-inline-workflow) and is fingerprinted by content like an inline script. Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name, an unreadable `scriptPath`, or a script that does not compile. Inside `parallel()` or `pipeline()`, recoverable branch errors become `null` results, so filter nulls before synthesis; a genuine run abort still rejects.
 
 ### Classify between stages
 
@@ -495,12 +543,19 @@ Guaranteed built-ins are statically registered:
 2. Import it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`.
 3. Add a `defineBuiltinWorkflow(mod, "<name>.ts")` entry to `BUILTIN_WORKFLOW_DEFINITIONS`.
 
+Saved scripts are workflows in the [inline script format](#author-an-inline-workflow) kept as `*.js` files:
+
+- `<project>/.pi/workflows/*.js`: project workflows, shared through the repository.
+- `~/.pi/agent/workflows/*.js` (pi's configured agent directory): user workflows, next to the `.ts` drop-ins.
+
+They compile like an inline `script`, with the injected `Type` and no imports, so they share pi's typebox, unlike `.ts` drop-ins, and they are fingerprinted by content, so `--resume` and `/workflow:runs` resume and restart them like built-ins. Project scripts load only when pi reports the project as trusted (`ctx.isProjectTrusted()`). pi itself does not ask for trust because of `.pi/workflows` alone, so a folder with no other protected project resources counts as trusted; review a repository's `.pi/workflows` before running them. Files starting with `_` or `.` and scripts that do not compile are skipped with a stderr note.
+
 Drop-in workflows are also discovered best-effort from:
 
 - `~/.pi/agent/workflows/*.ts`: the user-level drop-in directory, which survives `pi update`.
 - The extension's own `workflows/*.ts` directory: `.pi/extensions/pi-workflow-engine/workflows/` in a working copy or a project-vendored copy. Files added to an installed package are replaced by `pi update`.
 
-Use `/workflow <name> --refresh` after adding a drop-in file.
+When two sources define the same name, the first wins: built-ins, project scripts, the extension's `.ts` drop-ins, user scripts, then user `.ts` drop-ins. Saved scripts are read again on every lookup, so a script added or edited mid-session runs by name (tool `name`, `/workflow <name>`, `workflow("<name>")`, `/workflow:runs`) with its current content at once. The `<workflows>` catalog stays as it was built for the session, to keep the provider's prompt cache, so a new script joins it from the next session. `.ts` drop-ins are loaded once per process: use `/workflow <name> --refresh` after adding or editing one.
 
 ## Author an inline workflow
 
@@ -527,6 +582,7 @@ Inline rules:
 
 - start with `export const meta = { ... }`;
 - default-export an async workflow function;
+- write plain JavaScript: the script compiles in-process, so TypeScript annotations do not parse;
 - no imports or dynamic `import()`;
 - use the injected `Type` object for schemas;
 - request `profile: "small"`, `"medium"`, or `"big"` instead of hard-coding provider models when the stage is portable;
@@ -534,6 +590,10 @@ Inline rules:
 - no extra exports or code after the default export.
 
 Inline workflows run in-process with extension permissions, so treat them as trusted task automation.
+
+The host agent's reference for writing these scripts is the bundled `workflow-authoring` skill (`skills/workflow-authoring/SKILL.md`). The `workflow` tool's guidelines stay short (the opt-in rule, the target and `Type` rules, profiles, the worktree return shape, host MCP reach, and the run-mode flags) and tell the model to read the skill before it writes or edits a script. The skill covers the full API, why fan-out uses `api.parallel` rather than `Promise.all` and defaults to `api.pipeline`, verification and completeness patterns, budget loops, worktree edits, resume, and saving a reusable workflow.
+
+The tool also takes `scriptPath` in place of `script`: a regular file of at most 1 MiB holding an inline script, relative to the working directory. Each tool call gives exactly one of `name`, `script`, or `scriptPath`. Every inline run saves its script as `.pi/.workflow-runs/<run-id>.script.js` and names it in the result, so iterating does not need the script pasted again: edit that file in place, then call the tool with `scriptPath` set to it and `resumeFromRunId` set to the previous run. Replayable agent calls (see [Resume a run](#resume-a-run)) that the edit left unchanged are reused; edited and new calls run live. Edit the persisted file rather than a copy: `.pi/.workflow-runs/` is excluded from the repository state that shared `resume: "read-only"` calls are bound to, while editing any other copy inside the repository, or a saved `.pi/workflows/*.js` script, changes that state, so every shared read-only call misses and runs live.
 
 ## Runtime knobs
 
@@ -543,7 +603,7 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 | --- | --- |
 | `--concurrency=N` / `PI_WORKFLOW_CONCURRENCY=N` | Cap concurrent subagents. Default is `min(8, max(2, CPU count))`. |
 | `--parallel-limit=N` / `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` | Limit eager `parallel()` submission. |
-| `--max-agents=N` / `PI_WORKFLOW_MAX_AGENTS=N` | Cap live model calls across the complete run, including sub-workflows. Default `64`; values are clamped to `1`–`10000`. Replay hits do not consume the cap. The `workflow` tool field is `maxAgents`. |
+| `--max-agents=N` / `PI_WORKFLOW_MAX_AGENTS=N` | Cap live model calls across the complete run, including sub-workflows. Default `64`; values are clamped to `1`–`10000`. Replay hits do not consume the cap. The `workflow` tool field is `maxAgents`. This is independent of the `/workflow:size` prompt guideline. |
 | `--agent-timeout-ms=N` / `PI_WORKFLOW_AGENT_TIMEOUT_MS=N` | Abort one live agent after this duration. Default `1800000` (30 minutes); values are clamped to `1000`–`86400000`. The session is aborted and its isolated worktree is cleaned up. The `workflow` tool field is `agentTimeoutMs`. |
 | `--agent-retries=N` / `PI_WORKFLOW_AGENT_RETRIES=N` | Restart the whole agent after a transient provider or transport failure that pi's in-session turn retry could not recover. Default `0`; values are clamped to `0`–`10`. Backoff starts at one second, doubles, and caps at 30 seconds. The `workflow` tool field is `agentRetries`. |
 | `--budget=N` / `PI_WORKFLOW_BUDGET=N` | Set an output-token ceiling across recorded subagent attempts, including failed provider attempts. `agent()` throws `WorkflowBudgetExceededError` before starting another model request once the ceiling is reached; agents already running may overshoot because the engine does not reserve per-agent estimates. |
@@ -558,6 +618,38 @@ another live-agent admission and remains inside the original timeout, budget,
 and abort scope. Usage from failed attempts is retained, so it can exhaust the
 budget before the next retry begins. Host cancellation takes precedence over
 limit and timeout failures.
+
+### Turn budget directive
+
+Put a standalone `+N` token in a prompt to give that turn's workflow runs one
+shared output-token pool:
+
+```text
+dynamax +500k review this branch and verify every finding
++1.5m map every caller of the old API, then propose the migration
+```
+
+The token takes `k` or `m` suffixes in either case (`+500k`, `+1.5m`, `+2M`) or
+a plain count (`+250000`). It must follow the start of the prompt or whitespace
+and end at whitespace, punctuation, or the end, so `C++`, `a+500k`, or `+500kb`
+do not count, and values under 1,000 tokens are ignored so a `+1` in ordinary
+prose never caps a run. The first such token in a typed prompt wins; prompts
+that extensions send are not read.
+
+While the pool is active, a `workflow` tool call without its own `budget` runs
+with the pool's remainder as its budget (clamped to the tool's budget range),
+and each synchronous run's output tokens are subtracted once it finishes,
+failed or not. When less than one token remains, the tool refuses the call and
+tells the agent the turn's budget is spent. An explicit `budget` on the call
+can only lower that ceiling, is refused the same way once the pool is spent, and
+its spend is subtracted too. The pool clears when the run that
+received the prompt settles, so it still covers the run after pi retries a
+provider error or compacts an overflowing context within that run.
+
+Background runs receive the current remainder as their budget but do not draw
+the pool down, because their usage lands after the turn. Parallel `workflow`
+calls in one assistant message each see the same remainder before any of them
+finishes. Per-run budget accounting is unchanged either way.
 
 Transient provider failures are retried in two layers. First, each subagent
 inherits pi's session-level automatic retry from your pi `retry` settings
@@ -600,6 +692,13 @@ disproof. A failed finder or verifier prevents a clean conclusion. If synthesis
 fails, the result retains verified records and reports incomplete coverage.
 Synthesis selects or merges IDs; the workflow reconstructs evidence-bearing
 fields from those records.
+
+Each lens verifies at most the per-lens candidate count its finder prompt
+states (six per `code-review` angle, four or five for the other workflows).
+When a finder returns more, the workflow logs how many it cut from that lens.
+`stats.candidates` counts everything the finders returned, and `stats.dropped`
+counts the candidates never verified: those over a lens cap, duplicates, and
+out-of-scope candidates.
 
 ### Duplicate candidates
 

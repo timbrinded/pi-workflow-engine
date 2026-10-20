@@ -23,6 +23,7 @@ export function createPersistedWorkflowBackground(
     origin: {
       sessionId: truncateText(origin.sessionId, MAX_BACKGROUND_TEXT),
       requestedAt: origin.requestedAt,
+      ...(origin.wakeOnComplete ? { wakeOnComplete: true } : {}),
     },
     delivery: { state: "pending" },
   };
@@ -49,6 +50,7 @@ export function updateWorkflowRunDelivery(
 export function isPersistedWorkflowBackground(value: unknown): value is PersistedWorkflowBackground {
   if (!isRecord(value) || !isRecord(value.origin) || !isRecord(value.delivery)) return false;
   if (typeof value.origin.sessionId !== "string" || !isFiniteNumber(value.origin.requestedAt)) return false;
+  if (value.origin.wakeOnComplete !== undefined && typeof value.origin.wakeOnComplete !== "boolean") return false;
   switch (value.delivery.state) {
     case "pending":
       return true;
