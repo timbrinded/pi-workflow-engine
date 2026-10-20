@@ -601,6 +601,13 @@ fails, the result retains verified records and reports incomplete coverage.
 Synthesis selects or merges IDs; the workflow reconstructs evidence-bearing
 fields from those records.
 
+Each lens verifies at most the per-lens candidate count its finder prompt
+states (six per `code-review` angle, four or five for the other workflows).
+When a finder returns more, the workflow logs how many it cut from that lens.
+`stats.candidates` counts everything the finders returned, and `stats.dropped`
+counts the candidates never verified: those over a lens cap, duplicates, and
+out-of-scope candidates.
+
 ### Duplicate candidates
 
 Lenses often report the same defect in different words. When a TypeSafe Jev
