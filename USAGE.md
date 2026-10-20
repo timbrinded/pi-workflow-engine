@@ -444,7 +444,7 @@ Core primitives:
 | `progress(event)` | Emits counters, summaries, and lane items. |
 | `workflow(ref, args?)` | Runs another workflow inline as a sub-step and returns its result. |
 
-Every subagent's system prompt states that its final message is returned verbatim to the workflow program as data, not shown to a person, so a text agent replies with only the output its task asks for: no greeting, preamble, narration, or offer of further help. The instruction is appended after any `APPEND_SYSTEM.md` pi discovers, which subagents keep loading.
+Every subagent's system prompt states that its return value goes to the workflow program as data, not to a person: a text agent's final message is returned verbatim, so it replies with only the output its task asks for (no greeting, preamble, narration, or offer of further help), and a schema agent is told the same about its `final_answer` arguments. The instruction is appended after any `APPEND_SYSTEM.md` pi discovers, which subagents keep loading.
 
 `args` holds the invocation's arguments as text and `input` holds them verbatim. A slash command passes a string, so both are that string. The `workflow` tool's `args` field and `workflow(ref, args)` also accept any JSON value: `input` is the value and `args` its JSON text, so workflows written for string arguments keep working. Omitted arguments are `""` in both. Like string arguments, JSON arguments are never written to the run record, so a run that had any cannot be resumed or restarted from `/workflow:runs`.
 

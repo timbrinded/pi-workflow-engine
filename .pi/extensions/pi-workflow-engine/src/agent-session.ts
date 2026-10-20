@@ -41,6 +41,11 @@ const RETURN_VALUE_FRAMING =
   "Your final message is returned verbatim to the workflow program that started you, as data. " +
   "It is not shown to a person as a chat reply. Make it exactly the output your task asks for, in the format it asks for, " +
   "with no greeting, preamble, narration of your process, or offer of further help.";
+/** A schema agent returns its final_answer arguments, not its last message. */
+const STRUCTURED_RETURN_VALUE_FRAMING =
+  `Your ${FINAL_TOOL} arguments are returned to the workflow program that started you, as data. ` +
+  "They are not shown to a person as a chat reply. Fill each field with exactly the content it asks for, " +
+  "with no greeting, preamble, narration of your process, or offer of further help.";
 const SCHEMA_REPROMPT =
   `You ended your turn without calling the ${FINAL_TOOL} tool, so no result was recorded. ` +
   `Call ${FINAL_TOOL} now with your final answer as its arguments. Do not reply with plain text.`;
@@ -264,7 +269,7 @@ async function prepareAgentSessionResources(input: {
       ...preparedSkills.resourceLoaderOptions,
       ...codemodeExtension(opts),
       // An override, not `appendSystemPrompt`: passing that replaces pi's discovery of the user's APPEND_SYSTEM.md.
-      appendSystemPromptOverride: (base) => [...base, RETURN_VALUE_FRAMING],
+      appendSystemPromptOverride: (base) => [...base, opts.schema ? STRUCTURED_RETURN_VALUE_FRAMING : RETURN_VALUE_FRAMING],
     },
   });
   await synchronizeWorkflowModelRuntime({

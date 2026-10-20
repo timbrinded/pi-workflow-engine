@@ -230,7 +230,7 @@ test("production session services load skills, tools, host runtime providers, an
     assert.equal(handle.selectedSkills[0]?.filePath, skillPath);
     assert.match(session.systemPrompt, /runtime-fixture/);
     // The return-value framing follows the user's APPEND_SYSTEM.md instead of replacing its discovery.
-    assert.match(session.systemPrompt, /User addendum fixture\.\s+Your final message is returned verbatim to the workflow program/);
+    assert.match(session.systemPrompt, /User addendum fixture\.\s+Your final_answer arguments are returned to the workflow program/);
     assert.equal(session.model, model);
     assert.ok(session.getActiveToolNames().includes("read"));
     assert.ok(session.getActiveToolNames().includes(FINAL_TOOL));
@@ -250,6 +250,9 @@ test("production session services load skills, tools, host runtime providers, an
     assert.deepEqual([...scripted.session.getActiveToolNames()].sort(), [CODEMODE_TOOL, FINAL_TOOL, "read"]);
     // The agent answers itself; a script cannot call final_answer on its behalf.
     assert.equal(scripted.session.getAllTools().find((tool) => tool.name === FINAL_TOOL)?.exposure, "model-only");
+    const text = await openAgentSession({ rc, prompt: "Summarise.", opts: { label: "text-session", tools: ["read"] }, cwd, model, label: "text-session" });
+    sessions.push(text.session);
+    assert.match(text.session.systemPrompt, /User addendum fixture\.\s+Your final message is returned verbatim to the workflow program/);
     assert.ok("modelRuntime" in session);
     assert.ok(session.modelRuntime instanceof ModelRuntime);
     const childProvider = session.modelRuntime.getRegisteredProviderConfig("runtime-only");
