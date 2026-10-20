@@ -246,8 +246,8 @@ export interface WorkflowApi {
    * Run another workflow inline as a sub-step and return its result: a registered workflow by name, or
    * an inline-format script file via `{ scriptPath }` relative to the workflow cwd. The child shares
    * this run's concurrency cap, abort signal, and perf sink. Nests one level only: calling
-   * `workflow()` from within a sub-workflow rejects. Rejects on an unknown name, a scriptPath outside
-   * the cwd or unreadable, or a script compile error — catch it to handle a missing sub-workflow gracefully.
+   * `workflow()` from within a sub-workflow rejects. Rejects on an unknown name, an unreadable
+   * scriptPath, or a script compile error — catch it to handle a missing sub-workflow gracefully.
    * `args` is the child's input: a string or any JSON value, read there as `api.input` and `api.args`.
    */
   workflow(ref: WorkflowRef, args?: unknown): Promise<unknown>;

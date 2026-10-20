@@ -394,14 +394,6 @@ export default async function run({ args, input }) { return { summary: args, kin
   assert.equal(omitted.record?.options.argumentsPresent, false);
 });
 
-test("a scriptPath outside the working directory is a rejected call", async () => {
-  const result = await captureWorkflowTool().execute("call-escape", { scriptPath: "../escape.js" }, undefined, () => {}, HEADLESS_CTX);
-
-  assert.ok(isRecord(result) && isRecord(result.details));
-  assert.equal(result.isError, true);
-  assert.equal(result.details.error, "invalid_script_path");
-});
-
 test("a scriptPath must name a bounded regular file, so a FIFO or a huge file is a rejected call", async () => {
   const dir = join(WORKFLOW_TOOL_TEST_CWD, "script-file-kinds");
   mkdirSync(dir, { recursive: true });

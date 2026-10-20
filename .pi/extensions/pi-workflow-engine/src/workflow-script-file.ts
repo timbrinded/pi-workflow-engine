@@ -1,35 +1,24 @@
 import type { Stats } from "node:fs";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { compileInlineWorkflow } from "./inline-workflow.ts";
-import { isPathWithin } from "./tree-fingerprint.ts";
 import type { LoadedWorkflow } from "./types.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 
 /** The largest script file a `scriptPath` may name; real workflow scripts are a few kilobytes. */
 export const MAX_WORKFLOW_SCRIPT_FILE_BYTES = 1 << 20;
 
-/** A `scriptPath` that resolves outside the workflow cwd or cannot be read. */
+/** A `scriptPath` that cannot be read. */
 export class WorkflowScriptPathError extends Error {
   override readonly name = "WorkflowScriptPathError";
 }
 
 /**
- * Read an inline-format script named relative to `cwd`. Both paths are resolved through symlinks first,
- * so a link inside the cwd cannot reach a file outside it. Only a bounded regular file is read: a FIFO
- * or device would block the read or never end.
+ * Read an inline-format script named relative to `cwd`. No containment: the script runs with the
+ * extension's access either way, as an inline `script` does.
  */
 export async function readWorkflowScriptFile(cwd: string, scriptPath: string): Promise<string> {
-  let root: string;
-  let file: string;
-  try {
-    root = await realpath(cwd);
-    file = await realpath(resolve(cwd, scriptPath));
-  } catch (error) {
-    throw new WorkflowScriptPathError(`scriptPath ${scriptPath} could not be resolved: ${unknownErrorMessage(error)}`);
-  }
-  if (!isPathWithin(root, file)) throw new WorkflowScriptPathError(`scriptPath ${scriptPath} resolves outside the working directory`);
-  return await readBoundedScriptFile(file, `scriptPath ${scriptPath}`);
+  return await readBoundedScriptFile(resolve(cwd, scriptPath), `scriptPath ${scriptPath}`);
 }
 
 /**

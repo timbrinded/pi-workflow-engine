@@ -109,8 +109,8 @@ async function discoverForSession(
 
 /**
  * Resolve an `api.workflow()` reference: a registered workflow by name, or an inline-format script file
- * via `{ scriptPath }` under the cwd. Throws on an unknown name, a scriptPath outside the cwd or
- * unreadable, or a compile error.
+ * via `{ scriptPath }` relative to the cwd. Throws on an unknown name, an unreadable scriptPath, or a
+ * compile error.
  */
 export async function resolveWorkflowRef(ctx: WorkflowDiscoveryContext, ref: WorkflowRef, perf?: PerfSink): Promise<LoadedWorkflow> {
   if (typeof ref !== "string") {

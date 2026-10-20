@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -439,15 +439,13 @@ test("resolveWorkflowRef rejects an unknown name", async () => {
   await assert.rejects(() => resolveWorkflowRef(discoveryContext(process.cwd()), "does-not-exist"), /Unknown workflow/);
 });
 
-test("resolveWorkflowRef compiles a scriptPath under the cwd and rejects one that escapes it", async () => {
+test("resolveWorkflowRef compiles a scriptPath relative to the cwd and rejects a missing one", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-sub-workflow-script-"));
   const project = discoveryContext(join(root, "project"));
   try {
     await mkdir(join(project.cwd, "scripts"), { recursive: true });
     const script = 'export const meta = { name: "child-script", description: "" };\nexport default async function run({ args }) { return `child:${args}`; }\n';
     await writeFile(join(project.cwd, "scripts", "child.js"), script);
-    await writeFile(join(root, "outside.js"), script);
-    await symlink(join(root, "outside.js"), join(project.cwd, "scripts", "linked.js"));
 
     const child = await resolveWorkflowRef(project,{ scriptPath: "scripts/child.js" });
     assert.equal(child.meta.name, "child-script");
@@ -458,9 +456,7 @@ test("resolveWorkflowRef compiles a scriptPath under the cwd and rejects one tha
     const result = await runWorkflowWithContext(createRc(progress, new Semaphore(1)), progress, parent, "", contextOpts((ref) => resolveWorkflowRef(project,ref)));
     assert.equal(result, "child:payload");
 
-    await assert.rejects(() => resolveWorkflowRef(project,{ scriptPath: "../outside.js" }), /outside the working directory/);
-    await assert.rejects(() => resolveWorkflowRef(project,{ scriptPath: "scripts/linked.js" }), /outside the working directory/);
-    await assert.rejects(() => resolveWorkflowRef(project,{ scriptPath: "scripts/missing.js" }), /could not be resolved/);
+    await assert.rejects(() => resolveWorkflowRef(project,{ scriptPath: "scripts/missing.js" }), /could not be read/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
