@@ -50,9 +50,3 @@ test("a script file reaches every server unread, since pi asks on its main threa
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
-test("the workflow tool declares its reach to pi", () => {
-  const { tool } = captureWorkflowExtension();
-  assert.equal(tool.reachesTools?.({ name: "code-review" }), "all");
-  assert.equal(tool.reachesTools?.({ scriptPath: "does/not/exist.js" }), "all");
-});

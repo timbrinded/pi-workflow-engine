@@ -438,7 +438,6 @@ test("workflow runs command resumes paused runs and restarts terminal runs with 
 
 test("inline runs restart and resume from their sealed script, only while it is retained and unchanged", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-inline-"));
-  const restoreAgentDir = await useTemporaryAgentDir();
   const notifications: Notification[] = [];
   const branch: unknown[] = [];
   const ctx = context(cwd, notifications, "rpc", branch);
@@ -498,14 +497,12 @@ test("inline runs restart and resume from their sealed script, only while it is 
     assert.match(notifications.at(-1)?.message ?? "", /inline workflow script inline-restart-source\.script\.js is unavailable/);
   } finally {
     await background.sessionShutdown(ctx);
-    await restoreAgentDir();
     await rm(cwd, { recursive: true, force: true });
   }
 });
 
 test("a repository's own inline run record and script never relaunch, however it is named or sealed", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-runs-forged-"));
-  const restoreAgentDir = await useTemporaryAgentDir();
   const notifications: Notification[] = [];
   const ctx = context(cwd, notifications, "rpc");
   const background = new BackgroundWorkflowCoordinator({ sendMessage() {} } as Pick<ExtensionAPI, "sendMessage">);
@@ -554,7 +551,6 @@ test("a repository's own inline run record and script never relaunch, however it
     assert.deepEqual(relaunched, []);
   } finally {
     await background.sessionShutdown(ctx);
-    await restoreAgentDir();
     await rm(attackerAgentDir, { recursive: true, force: true });
     await rm(cwd, { recursive: true, force: true });
   }
@@ -640,18 +636,6 @@ function inlineRunRecord(
       result: { summary: "done" },
       at: 3,
     });
-}
-
-/** Point pi's agent directory, and so the run seal key, at a fresh directory until the returned restore runs. */
-async function useTemporaryAgentDir(): Promise<() => Promise<void>> {
-  const agentDir = await mkdtemp(join(tmpdir(), "pi-workflow-runs-agent-"));
-  const previous = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-  return async () => {
-    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previous;
-    await rm(agentDir, { recursive: true, force: true });
-  };
 }
 
 test("provider-limit timers resume from the journal and manual stop cancels pending work", async () => {
