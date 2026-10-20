@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
-import { workflowToolReach } from "../.pi/extensions/pi-workflow-engine/src/workflow-tool-reach.ts";
+import { workflowToolReach } from "../.pi/extensions/pi-workflow-engine/src/workflow-tool-request.ts";
 import { captureWorkflowExtension } from "./workflow-extension-fixtures.ts";
 
 const MCP_SCRIPT = `export const meta = { name: "mcp-probe", description: "" };

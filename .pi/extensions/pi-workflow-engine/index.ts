@@ -56,7 +56,7 @@ import { appendSectionToForcedPrompt } from "./src/prompt-sections.ts";
 import { WORKFLOWS_SECTION, WorkflowCatalogPrompt } from "./src/workflow-catalog.ts";
 import { registerWorkflowSizeCommand, resolveWorkflowSize, workflowSettingsPaths } from "./src/workflow-settings.ts";
 import { isRecord } from "./src/guards.ts";
-import { workflowToolReach } from "./src/workflow-tool-reach.ts";
+import { INVALID_WORKFLOW_INVOCATION_MESSAGE, normalizeWorkflowToolRequest, workflowToolReach } from "./src/workflow-tool-request.ts";
 import { workflowArgsText } from "./src/workflow-input.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
@@ -268,20 +268,6 @@ Use the workflow tool with a script argument, not a saved workflow name, and rea
 Do not edit files unless the user explicitly requested edits.`;
 }
 
-export interface WorkflowToolRequestParams {
-  readonly name?: string;
-  readonly script?: string;
-  readonly scriptPath?: string;
-  readonly resumeFromRunId?: string;
-  readonly background?: boolean;
-}
-
-export type WorkflowToolRequest =
-  | { readonly kind: "named"; readonly name: string }
-  | { readonly kind: "inline"; readonly script: string }
-  | { readonly kind: "script-path"; readonly scriptPath: string }
-  | { readonly kind: "error"; readonly error: "invalid_workflow_invocation"; readonly message: string };
-
 export interface WorkflowToolErrorResult<TDetails = WorkflowToolErrorDetails> {
   readonly content: Array<{ readonly type: "text"; readonly text: string }>;
   readonly details: TDetails;
@@ -296,18 +282,6 @@ type WorkflowToolErrorDetails =
 
 function workflowToolError<TDetails>(text: string, details: TDetails): WorkflowToolErrorResult<TDetails> {
   return { content: [{ type: "text", text }], details, isError: true };
-}
-
-const INVALID_WORKFLOW_INVOCATION_MESSAGE = "Provide exactly one of a workflow name, an inline workflow script, or a scriptPath.";
-
-export function normalizeWorkflowToolRequest(params: WorkflowToolRequestParams): WorkflowToolRequest {
-  const name = params.name?.trim() ?? "";
-  const script = params.script?.trim() ?? "";
-  const scriptPath = params.scriptPath?.trim() ?? "";
-  const provided = [name, script, scriptPath].filter((value) => value.length > 0).length;
-  if (provided !== 1) return { kind: "error", error: "invalid_workflow_invocation", message: INVALID_WORKFLOW_INVOCATION_MESSAGE };
-  if (name) return { kind: "named", name };
-  return script ? { kind: "inline", script } : { kind: "script-path", scriptPath };
 }
 
 export function invalidWorkflowInvocationResult(): WorkflowToolErrorResult {

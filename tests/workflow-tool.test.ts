@@ -9,9 +9,9 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
   buildTemporaryWorkflowAuthorPrompt,
   inlineCompileErrorResult,
-  normalizeWorkflowToolRequest,
   openWorkflowInspector,
 } from "../.pi/extensions/pi-workflow-engine/index.ts";
+import { normalizeWorkflowToolRequest } from "../.pi/extensions/pi-workflow-engine/src/workflow-tool-request.ts";
 import { DEFAULT_REVIEW_RESULTS_SHORTCUT } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
