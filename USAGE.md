@@ -40,7 +40,7 @@ Useful flags:
 /workflow code-review --budget=50000     # output-token ceiling for subagents
 /workflow code-review --resume <run-id>  # replay matching completed agent calls
 /workflow code-review --resume <run-id> --resume-edited # reuse unchanged calls after a workflow edit
-/workflow code-review --refresh          # rediscover newly added workflow files
+/workflow code-review --refresh          # reload .ts drop-ins (saved .js scripts are always reread)
 /workflow:runs                           # browse recent durable project runs
 /workflow:inspector <run-id>             # inspect one retained run directly
 /workflow:models                         # inspect small/medium/big model routes
@@ -287,7 +287,7 @@ Persistence is intentionally bounded and private by default. Raw workflow args, 
 
 An inline run (a tool `script` or `scriptPath`) also saves its script to `.pi/.workflow-runs/<run-id>.script.js`, a separate file the record only references, because the record never holds prompts. The script holds nothing new: pi's session transcript already contains it as the tool call's arguments. A pruned record takes its script with it. Whenever the engine creates `.pi/.workflow-runs/`, it adds a `.gitignore` containing `*` so run files stay out of the project's git history; an existing `.gitignore` there is never replaced.
 
-The result handed to the host agent names the run's files after the run ID: `Script:` for an inline run, and `Journal:` with a reminder to read the journal before diagnosing an empty or unexpected result. A failed inline run lists the same lines after its error, and a background start names the script too. To iterate, edit the script and rerun it with `scriptPath` (see [Author an inline workflow](#author-an-inline-workflow)).
+The result handed to the host agent names the run's files after the run ID: `Script:` for an inline run, and `Journal:` with a reminder to read the journal before diagnosing an empty or unexpected result. A failed inline run lists the same lines after its error, a background start names the script too, and a background delivery names the record, script, and journal (see [Background workflows](#background-workflows)). To iterate, edit the script and rerun it with `scriptPath` (see [Author an inline workflow](#author-an-inline-workflow)).
 
 ### Background workflows
 
@@ -514,7 +514,7 @@ export default async function run({ workflow }: WorkflowApi) {
 }
 ```
 
-A `scriptPath` is resolved against the workflow cwd and must stay inside it after symlinks are resolved; the file follows the [inline workflow rules](#author-an-inline-workflow) and is fingerprinted by content like an inline script. Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name, a `scriptPath` outside the cwd or unreadable, or a script that does not compile. Inside `parallel()` or `pipeline()`, recoverable branch errors become `null` results, so filter nulls before synthesis; a genuine run abort still rejects.
+A `scriptPath` is resolved against the workflow cwd and must stay inside it after symlinks are resolved, and name a regular file of at most 1 MiB; the file follows the [inline workflow rules](#author-an-inline-workflow) and is fingerprinted by content like an inline script. Nesting is one level only: calling `workflow()` from inside a sub-workflow rejects. Resolution throws on an unknown name, a `scriptPath` outside the cwd or unreadable, or a script that does not compile. Inside `parallel()` or `pipeline()`, recoverable branch errors become `null` results, so filter nulls before synthesis; a genuine run abort still rejects.
 
 ### Classify between stages
 
@@ -593,7 +593,7 @@ Inline workflows run in-process with extension permissions, so treat them as tru
 
 The host agent's reference for writing these scripts is the bundled `workflow-authoring` skill (`skills/workflow-authoring/SKILL.md`). The `workflow` tool's guidelines stay short (the opt-in rule, the target and `Type` rules, profiles, the worktree return shape, host MCP reach, and the run-mode flags) and tell the model to read the skill before it writes or edits a script. The skill covers the full API, why fan-out uses `api.parallel` rather than `Promise.all` and defaults to `api.pipeline`, verification and completeness patterns, budget loops, worktree edits, resume, and saving a reusable workflow.
 
-The tool also takes `scriptPath` in place of `script`: a file holding an inline script, relative to the working directory and inside it after symlinks are resolved. Each tool call gives exactly one of `name`, `script`, or `scriptPath`. Every inline run saves its script as `.pi/.workflow-runs/<run-id>.script.js` and names it in the result, so iterating does not need the script pasted again: edit that file in place, then call the tool with `scriptPath` set to it and `resumeFromRunId` set to the previous run. Replayable agent calls (see [Resume a run](#resume-a-run)) that the edit left unchanged are reused; edited and new calls run live. Edit the persisted file rather than a copy: `.pi/.workflow-runs/` is excluded from the repository state that shared `resume: "read-only"` calls are bound to, while editing any other copy inside the repository, or a saved `.pi/workflows/*.js` script, changes that state, so every shared read-only call misses and runs live.
+The tool also takes `scriptPath` in place of `script`: a regular file of at most 1 MiB holding an inline script, relative to the working directory and inside it after symlinks are resolved. Each tool call gives exactly one of `name`, `script`, or `scriptPath`. Every inline run saves its script as `.pi/.workflow-runs/<run-id>.script.js` and names it in the result, so iterating does not need the script pasted again: edit that file in place, then call the tool with `scriptPath` set to it and `resumeFromRunId` set to the previous run. Replayable agent calls (see [Resume a run](#resume-a-run)) that the edit left unchanged are reused; edited and new calls run live. Edit the persisted file rather than a copy: `.pi/.workflow-runs/` is excluded from the repository state that shared `resume: "read-only"` calls are bound to, while editing any other copy inside the repository, or a saved `.pi/workflows/*.js` script, changes that state, so every shared read-only call misses and runs live.
 
 ## Runtime knobs
 

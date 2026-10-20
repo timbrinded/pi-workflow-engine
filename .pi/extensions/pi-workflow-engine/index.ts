@@ -127,7 +127,7 @@ const AUTHOR_TEMP_WORKFLOW_DESCRIPTION = "Ask the host agent to author and run a
 
 const WORKFLOW_OPTION_COMPLETIONS = [
   { value: "--inspect", description: "Open the live workflow inspector" },
-  { value: "--refresh", description: "Refresh dynamic workflow discovery" },
+  { value: "--refresh", description: "Reload .ts drop-in workflows" },
   { value: "--perf", description: "Collect workflow performance metrics" },
   { value: "--result-viewer", description: "Open supported result viewers" },
   { value: "--no-result-viewer", description: "Skip supported result viewers" },
