@@ -4,6 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { formatWorkflowCatalog, WORKFLOWS_SECTION, WorkflowCatalogPrompt } from "../.pi/extensions/pi-workflow-engine/src/workflow-catalog.ts";
 import { BUILTIN_WORKFLOW_DEFINITIONS } from "../.pi/extensions/pi-workflow-engine/src/workflows.ts";
 import type { WorkflowMeta } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
+import type { WorkflowSizeGuideline } from "../.pi/extensions/pi-workflow-engine/src/workflow-settings.ts";
 import { captureWorkflowExtension } from "./workflow-extension-fixtures.ts";
 
 function sessionContext(sessionId: string): ExtensionContext {
@@ -36,9 +37,12 @@ test("every built-in workflow says when to use it", () => {
 test("the catalog is built once per session and rebuilt only after the session is forgotten", async () => {
   let discoveries = 0;
   const workflows: WorkflowMeta[] = [{ name: "one", description: "First." }];
-  const catalog = new WorkflowCatalogPrompt(async () => {
-    discoveries++;
-    return workflows;
+  const catalog = new WorkflowCatalogPrompt({
+    async discover() {
+      discoveries++;
+      return workflows;
+    },
+    size: () => "off",
   });
   const ctx = sessionContext("catalog-cache");
 
@@ -54,12 +58,32 @@ test("the catalog is built once per session and rebuilt only after the session i
 
 test("a discovery failure leaves the catalog out instead of failing the prompt", async () => {
   const logs: string[] = [];
-  const catalog = new WorkflowCatalogPrompt(async () => {
-    throw new Error("disk on fire");
-  }, (message) => logs.push(message));
+  const catalog = new WorkflowCatalogPrompt({
+    async discover() {
+      throw new Error("disk on fire");
+    },
+    size: () => "off",
+    log: (message) => logs.push(message),
+  });
 
   assert.equal(await catalog.section(sessionContext("catalog-failure")), undefined);
   assert.match(logs[0] ?? "", /workflow catalog unavailable: disk on fire/);
+});
+
+test("the size guideline closes the catalog, falls back to the default, and is left out when off", async () => {
+  const logs: string[] = [];
+  const workflows: WorkflowMeta[] = [{ name: "one", description: "First." }];
+  const render = (size: () => WorkflowSizeGuideline) =>
+    new WorkflowCatalogPrompt({ discover: async () => workflows, size, log: (message) => logs.push(message) }).section(sessionContext("catalog-size"));
+
+  const large = (await render(() => "large")) ?? "";
+  assert.match(large, /- one: First\.\n\nWorkflow size guideline: large — keep each workflow under 25 agents unless the user asks for more; the user changes this with \/workflow:size\.$/);
+  assert.doesNotMatch((await render(() => "off")) ?? "", /size guideline/);
+  const fallback = await render(() => {
+    throw new Error("bad settings");
+  });
+  assert.match(fallback ?? "", /Workflow size guideline: medium — keep each workflow under 10 agents/);
+  assert.match(logs.at(-1) ?? "", /using medium: bad settings/);
 });
 
 test("runs that can call the workflow tool get the same catalog section every turn", async () => {

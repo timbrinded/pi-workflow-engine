@@ -45,6 +45,7 @@ import { unknownErrorMessage } from "./src/unknown-error.ts";
 import { createHostToolBridge } from "./src/host-tools.ts";
 import { appendSectionToForcedPrompt } from "./src/prompt-sections.ts";
 import { WORKFLOWS_SECTION, WorkflowCatalogPrompt } from "./src/workflow-catalog.ts";
+import { registerWorkflowSizeCommand, resolveWorkflowSize, workflowSettingsPaths } from "./src/workflow-settings.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -370,11 +371,16 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
   backgroundWorkflows.onRunSettled((ctx, runId) => workflowRuns.runSettled(ctx, runId));
+  const workflowCatalog = new WorkflowCatalogPrompt({
+    async discover() {
+      const { discoverWorkflows } = await loadDiscovery();
+      return [...(await discoverWorkflows(EXTENSION_DIR)).values()].map((workflow) => workflow.meta);
+    },
+    size: (ctx) => resolveWorkflowSize(workflowSettingsPaths(ctx.cwd)).size,
+  });
   // Before Dynamax, so the stable catalog section precedes the per-turn opt-in section.
-  registerWorkflowCatalog(pi, new WorkflowCatalogPrompt(async () => {
-    const { discoverWorkflows } = await loadDiscovery();
-    return [...(await discoverWorkflows(EXTENSION_DIR)).values()].map((workflow) => workflow.meta);
-  }));
+  registerWorkflowCatalog(pi, workflowCatalog);
+  registerWorkflowSizeCommand(pi, (ctx) => workflowCatalog.forget(ctx));
   const dynamax = registerDynamax(pi, shortcuts, { openInspector: (ctx) => openAvailableWorkflowInspector(pi, ctx) });
   registerWorkflowModelProfileCommand(pi);
   registerWorkflowRunCommand(pi, workflowRuns);

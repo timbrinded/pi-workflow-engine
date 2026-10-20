@@ -44,6 +44,7 @@ Useful flags:
 /workflow:runs                           # browse recent durable project runs
 /workflow:inspector <run-id>             # inspect one retained run directly
 /workflow:models                         # inspect small/medium/big model routes
+/workflow:size                           # show or set the workflow size guideline
 ```
 
 ## Workflow model profiles
@@ -199,6 +200,22 @@ Set either shortcut to `null` to disable it while keeping `/workflow:inspector` 
 With Dynamax enabled, the host agent usually calls the `workflow` tool with `script`: a one-off inline workflow tailored to your prompt. It can still call a saved workflow by `name` when one already fits.
 
 Every run that can call the `workflow` tool also carries a `<workflows>` system prompt section: the catalog of registered workflows, one line each with its name, `description`, and `whenToUse`, sorted by name. It is built once per pi session from workflow discovery and reused, so its text is identical on every turn and keeps the provider's prompt cache; start a new session or `/reload` to list workflows added since.
+
+### Workflow size guideline
+
+The catalog ends with one line telling the host agent how large to make each workflow it authors:
+
+```text
+/workflow:size                    # show the current guideline and where it comes from
+/workflow:size small              # keep each workflow under 5 agents
+/workflow:size medium             # under 10 agents (the default)
+/workflow:size large --project    # under 25 agents, for this project only
+/workflow:size off                # leave the line out
+```
+
+The line reads, for example, `Workflow size guideline: medium — keep each workflow under 10 agents unless the user asks for more; the user changes this with /workflow:size.` The setting is stored like the model profiles: `~/.pi/agent/workflow-settings.json` for the user, overridden by `<project>/.pi/workflow-settings.json`; setting a size writes the user file unless `--project` is given. A minimal file is `{ "size": "small" }`. Changing it rebuilds the current session's catalog once.
+
+The guideline only shapes what the host agent writes. The `maxAgents` run limit (default `64`, see [Runtime knobs](#runtime-knobs)) stays the separate hard cap: once a run has started that many live agents, further `agent()` calls fail with `WorkflowAgentLimitError`, whatever the guideline says.
 
 ### Adaptive multi-pass authoring
 
@@ -566,7 +583,7 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 | --- | --- |
 | `--concurrency=N` / `PI_WORKFLOW_CONCURRENCY=N` | Cap concurrent subagents. Default is `min(8, max(2, CPU count))`. |
 | `--parallel-limit=N` / `PI_WORKFLOW_PARALLEL_SUBMISSION_LIMIT=N` | Limit eager `parallel()` submission. |
-| `--max-agents=N` / `PI_WORKFLOW_MAX_AGENTS=N` | Cap live model calls across the complete run, including sub-workflows. Default `64`; values are clamped to `1`–`10000`. Replay hits do not consume the cap. The `workflow` tool field is `maxAgents`. |
+| `--max-agents=N` / `PI_WORKFLOW_MAX_AGENTS=N` | Cap live model calls across the complete run, including sub-workflows. Default `64`; values are clamped to `1`–`10000`. Replay hits do not consume the cap. The `workflow` tool field is `maxAgents`. This is independent of the `/workflow:size` prompt guideline. |
 | `--agent-timeout-ms=N` / `PI_WORKFLOW_AGENT_TIMEOUT_MS=N` | Abort one live agent after this duration. Default `1800000` (30 minutes); values are clamped to `1000`–`86400000`. The session is aborted and its isolated worktree is cleaned up. The `workflow` tool field is `agentTimeoutMs`. |
 | `--agent-retries=N` / `PI_WORKFLOW_AGENT_RETRIES=N` | Restart the whole agent after a transient provider or transport failure that pi's in-session turn retry could not recover. Default `0`; values are clamped to `0`–`10`. Backoff starts at one second, doubles, and caps at 30 seconds. The `workflow` tool field is `agentRetries`. |
 | `--budget=N` / `PI_WORKFLOW_BUDGET=N` | Set an output-token ceiling across recorded subagent attempts, including failed provider attempts. `agent()` throws `WorkflowBudgetExceededError` before starting another model request once the ceiling is reached; agents already running may overshoot because the engine does not reserve per-agent estimates. |

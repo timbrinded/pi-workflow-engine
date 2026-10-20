@@ -23,6 +23,7 @@ A **pi extension** with canonical entrypoint `.pi/extensions/pi-workflow-engine/
 - `/workflow:results` — reopens the most recent code-review findings without rerunning the workflow.
 - `/workflow:runs` — browses recent durable project runs and their lifecycle actions (inspect, stop, resume, restart).
 - `/workflow:models` — inspects and sets the `small`/`medium`/`big` model routes.
+- `/workflow:size [small|medium|large|off]` — the workflow size guideline line in the `<workflows>` prompt section (a prompt hint only; `maxAgents` stays the hard cap).
 - `/workflow:dynamax on|off|status` plus the literal `dynamax` token — opt-in signals for host-agent workflow orchestration.
 - configurable inspector and results shortcuts (defaults `ctrl+shift+m` / `ctrl+shift+r`).
 - a `workflow` tool — lets the host agent run a saved workflow by `name` or a one-off inline workflow by `script` mid-conversation.

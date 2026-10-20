@@ -115,7 +115,7 @@ Host-written scripts in practice reached for `Promise.all` and never for `pipeli
 
 - **Scout inline first, then orchestrate.** Use your own tools to find the work list (the files, failing tests, or findings) before writing the script, then fan out over that concrete list. Embed the list in the script or pass it through `args` (`JSON.stringify` it and `JSON.parse(api.args)` inside).
 - **One single-phase workflow per turn.** For multi-phase work (understand, design, implement, review), run one workflow per phase and read each result before choosing the next, rather than one script that guesses every phase in advance.
-- **Scale to the request.** A focused question needs a few agents, a broad sweep more. The run's `maxAgents` limit (default 64) is a hard backstop, not a target.
+- **Scale to the request and the size guideline.** A focused question needs a few agents, a broad sweep more. The `<workflows>` section's size guideline line (set by the user with `/workflow:size`) bounds each workflow unless the user asks for more. The run's `maxAgents` limit (default 64) is a separate hard backstop, not a target.
 - **Use `classify()` as a cheap gate** between stages: dedupe, triage, or route items without a full agent. It rejects when no classifier model is configured, so call it inside `api.parallel` or a `try`/`catch` and fall back to an agent or to keeping the item. Results are not journaled, so a resumed run classifies again.
 
 ```js

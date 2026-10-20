@@ -83,6 +83,10 @@ workflow orchestration the default for every substantive task in the pi session;
 /workflow:dynamax status
 ```
 
+`/workflow:size small|medium|large|off` sets how many agents pi aims to keep
+each authored workflow under (5, 10 by default, or 25); see the
+[size guideline](USAGE.md#workflow-size-guideline).
+
 In the TUI, a standalone `dynamax` token receives a short moving-shine sweep and
 then stays highlighted. Use `PI_DYNAMAX_EFFECT=static` or
 `PI_DYNAMAX_EFFECT=off` to reduce or disable the cue; the
