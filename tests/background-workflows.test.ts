@@ -11,7 +11,9 @@ import {
 import { raceWithAbort } from "../.pi/extensions/pi-workflow-engine/src/cancellation.ts";
 import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { runWorkflow } from "../.pi/extensions/pi-workflow-engine/src/engine.ts";
-import { resolveWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
+import { resolveWorkflowRunOptions, type ResolvedWorkflowRunOptions } from "../.pi/extensions/pi-workflow-engine/src/options.ts";
+import { createProviderUsageLimitPauseRecord, WorkflowProviderUsageLimitError } from "../.pi/extensions/pi-workflow-engine/src/provider-usage-limit.ts";
+import { emptyWorkflowUsageTotals } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 import type { WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
 import type { LoadedWorkflow } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import {
@@ -174,43 +176,39 @@ function recordingPi(harness: SessionHarness, deliveries: Array<{ runId: unknown
   };
 }
 
-test("a run started under Dynamax wakes the agent on delivery while other runs arrive silently", async () => {
+test("a run started under Dynamax wakes the agent unless the user stopped it or its resume is already scheduled", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-wake-"));
   const harness: SessionHarness = { branch: [], idle: true };
-  const deliveries: Array<{ runId: unknown; triggerTurn: boolean | undefined }> = [];
   const ctx = context(cwd, "session-wake", harness);
-  const coordinator = new BackgroundWorkflowCoordinator(recordingPi(harness, deliveries));
+  const store = new ProjectWorkflowRunStore(cwd);
+  const usage = { agents: [], totals: emptyWorkflowUsageTotals(), assistantMessages: 0 };
+  const limit = new WorkflowProviderUsageLimitError({ stopReason: "error", providerMessage: "HTTP 429", provider: "openai" });
+  const finished: Array<[string, boolean, (running: WorkflowRunRecord, options: ResolvedWorkflowRunOptions) => WorkflowRunRecord]> = [
+    ["woken-completed", true, (running) => transitionWorkflowRun(running, { state: "completed", progress: progress(running.runId), usage, result: { summary: "done" }, at: 3 })],
+    ["silent-completed", false, (running) => transitionWorkflowRun(running, { state: "completed", progress: progress(running.runId), usage, result: { summary: "done" }, at: 3 })],
+    ["woken-stopped", true, (running) => transitionWorkflowRun(running, { state: "stopped", progress: progress(running.runId), usage, error: new Error("stopped"), at: 3 })],
+    ["woken-paused-resuming", true, (running, options) =>
+      transitionWorkflowRun(running, { state: "paused", progress: progress(running.runId), ...createProviderUsageLimitPauseRecord(limit, options, true), at: 3 })],
+  ];
+  const deliveries: Array<{ runId: unknown; triggerTurn: boolean | undefined }> = [];
   try {
-    for (const [runId, wakeOnComplete] of [["background-wake-run", true], ["background-silent-run", false]] as const) {
-      await coordinator.start({
-        ctx,
-        runId,
-        name: runId,
-        async run(signal, onStarted) {
-          await runWorkflow({ ...ctx, signal }, workflow(runId, async () => ({ summary: "done" })), "", {
-            runId,
-            signal,
-            background: backgroundOrigin(ctx, 1, wakeOnComplete),
-            onRunMetadata: () => onStarted(),
-          });
-        },
-      });
+    for (const [runId, wakeOnComplete, finish] of finished) {
+      const options = resolveWorkflowRunOptions({ background: backgroundOrigin(ctx, 1, wakeOnComplete), autoResumeOnUsageLimit: true });
+      const queued = createWorkflowRunRecord({ runId, workflow: workflow(runId, async () => undefined), options, progress: progress(runId) });
+      await store.save(finish(transitionWorkflowRun(queued, { state: "running", progress: progress(runId), at: 2 }), options));
     }
-    await waitFor(async () => {
-      await coordinator.agentSettled(ctx);
-      return deliveries.length === 2;
-    });
+    await new BackgroundWorkflowCoordinator(recordingPi(harness, deliveries)).sessionStarted(ctx);
 
     assert.deepEqual(
       [...deliveries].sort((left, right) => String(left.runId).localeCompare(String(right.runId))),
       [
-        { runId: "background-silent-run", triggerTurn: false },
-        { runId: "background-wake-run", triggerTurn: true },
+        { runId: "silent-completed", triggerTurn: false },
+        { runId: "woken-completed", triggerTurn: true },
+        // The scheduled resume's own completion wakes the agent instead.
+        { runId: "woken-paused-resuming", triggerTurn: false },
+        { runId: "woken-stopped", triggerTurn: false },
       ],
     );
-    const store = new ProjectWorkflowRunStore(cwd);
-    assert.equal((await store.load("background-wake-run"))?.background?.origin.wakeOnComplete, true);
-    assert.equal((await store.load("background-silent-run"))?.background?.origin.wakeOnComplete, undefined);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

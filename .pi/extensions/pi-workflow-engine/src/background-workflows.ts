@@ -302,9 +302,8 @@ export class BackgroundWorkflowCoordinator {
           display: true,
           details,
         },
-        // A run started under Dynamax wakes the agent to act on its result; others arrive silently.
         // Delivery waits for an idle session, and pi steers a message sent while a run starts into that run.
-        { triggerTurn: record.background.origin.wakeOnComplete === true },
+        { triggerTurn: wakesAgent(record) },
       );
     }
     await markDelivery(store, runId, { state: "delivered", deliveredAt: Date.now() });
@@ -394,6 +393,15 @@ function sessionHasBackgroundDelivery(ctx: ExtensionContext, runId: string): boo
 
 function isPendingBackgroundOutcome(record: WorkflowRunRecord): record is WorkflowRunRecord & { readonly background: NonNullable<WorkflowRunRecord["background"]> } {
   return record.background?.delivery.state === "pending" && isDeliverableState(record.state);
+}
+
+/**
+ * A run started under Dynamax wakes the agent to act on its result; others arrive silently. So does a run
+ * the user stopped, or one paused with a resume already scheduled, whose successor wakes it instead.
+ */
+function wakesAgent(record: WorkflowRunRecord): boolean {
+  if (record.background?.origin.wakeOnComplete !== true || record.state === "stopped") return false;
+  return !(record.state === "paused" && record.pause?.autoResume === true);
 }
 
 function isDeliverableState(state: WorkflowRunState): state is "completed" | "failed" | "stopped" | "paused" {
