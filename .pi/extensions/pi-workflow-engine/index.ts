@@ -1,5 +1,4 @@
-import { readFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { getSelectListTheme, keyText, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -164,14 +163,13 @@ async function workflowArgumentCompletions(argumentPrefix: string, session: Work
  * replacement invalidates a context, so only these values are kept.
  */
 interface WorkflowSessionDirs {
-  readonly cwd: string;
   readonly projectDir?: string;
 }
 
 function trackWorkflowSessionDirs(pi: ExtensionAPI): () => WorkflowSessionDirs | undefined {
   let current: WorkflowSessionDirs | undefined;
   pi.on("session_start", (_event, ctx) => {
-    current = { cwd: ctx.cwd, projectDir: projectWorkflowDir(ctx) };
+    current = { projectDir: projectWorkflowDir(ctx) };
   });
   pi.on("session_shutdown", () => {
     current = undefined;
@@ -579,7 +577,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
 
-  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts, dynamax, sessionDirs);
+  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts, dynamax);
 }
 
 /** Add the `<workflows>` catalog to every run that can call the workflow tool. */
@@ -613,7 +611,6 @@ function registerWorkflowTool(
   backgroundWorkflows: BackgroundWorkflowCoordinator,
   shortcuts: DynamaxShortcuts,
   dynamax: DynamaxHandle,
-  sessionDirs: () => WorkflowSessionDirs | undefined,
 ): void {
   pi.registerTool({
     name: WORKFLOW_TOOL_NAME,
@@ -625,9 +622,7 @@ function registerWorkflowTool(
     // run would lose its tool row, hit the script's output cap, and parallel runs would each get their own
     // concurrency cap. It also stays declared under `codemode.mode: "only"`, which hides direct tools.
     exposure: "model-only",
-    // pi passes no context here; a relative scriptPath resolves against the active session's cwd.
-    reachesTools: (input) =>
-      workflowToolReach(input, (scriptPath) => readFileSync(resolve(sessionDirs()?.cwd ?? process.cwd(), scriptPath), "utf8")),
+    reachesTools: workflowToolReach,
     promptGuidelines: [
       "Use workflow only when the user opted into workflow orchestration via `dynamax`, sticky `/workflow:dynamax`, an explicit request to run/author a workflow, or a command/skill instruction.",
       `Before writing or editing an inline workflow script, read the workflow-authoring skill (${WORKFLOW_AUTHORING_SKILL_PATH}); it is the script API and pattern reference.`,

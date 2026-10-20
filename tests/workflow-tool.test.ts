@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +18,7 @@ import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extens
 import { parallel, pipeline } from "../.pi/extensions/pi-workflow-engine/src/concurrency.ts";
 import type { AgentOptions, WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { ProjectWorkflowRunStore } from "../.pi/extensions/pi-workflow-engine/src/workflow-run-store.ts";
+import { MAX_WORKFLOW_SCRIPT_FILE_BYTES } from "../.pi/extensions/pi-workflow-engine/src/workflow-script-file.ts";
 import { WORKFLOW_INSPECTOR_OVERLAY_OPTIONS } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import { captureWorkflowExtension, captureWorkflowTool } from "./workflow-extension-fixtures.ts";
 import { createTestTheme } from "./fixtures/theme.ts";
@@ -398,6 +400,31 @@ test("a scriptPath outside the working directory is a rejected call", async () =
   assert.ok(isRecord(result) && isRecord(result.details));
   assert.equal(result.isError, true);
   assert.equal(result.details.error, "invalid_script_path");
+});
+
+test("a scriptPath must name a bounded regular file, so a FIFO or a huge file is a rejected call", async () => {
+  const dir = join(WORKFLOW_TOOL_TEST_CWD, "script-file-kinds");
+  mkdirSync(dir, { recursive: true });
+  const tool = captureWorkflowTool();
+  const run = async (scriptPath: string) => {
+    const result = await tool.execute("call-script-file-kind", { scriptPath }, undefined, () => {}, HEADLESS_CTX);
+    assert.ok(isRecord(result) && isRecord(result.details));
+    assert.equal(result.isError, true);
+    assert.equal(result.details.error, "invalid_script_path");
+    return toolResultText(result);
+  };
+  try {
+    const valid = 'export const meta = { name: "huge-probe", description: "" };\nexport default async function run() { return 1; }\n';
+    writeFileSync(join(dir, "huge.js"), `${valid}//${"x".repeat(MAX_WORKFLOW_SCRIPT_FILE_BYTES)}\n`);
+    assert.match(await run("script-file-kinds/huge.js"), /over the 1048576-byte limit/);
+
+    // With no writer, reading a FIFO would never return.
+    if (spawnSync("mkfifo", [join(dir, "pipe.js")]).status === 0) {
+      assert.match(await run("script-file-kinds/pipe.js"), /is not a regular file/);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a failed inline run names its script and journal for the next attempt", async () => {

@@ -14,24 +14,18 @@ const SUB_WORKFLOW_CALL = /\bworkflow\s*\(/;
  *   costs at most one wait at session start.
  * - An inline script reaches the MCP tools it names, or `"all"` when it asks for `external-search`
  *   tools or composes a sub-workflow, which is as opaque as a named one.
- * - A script file follows the same rule, or reaches `"all"` when it cannot be read.
+ * - A script file reaches `"all"` unread. pi asks synchronously on its main thread, where reading a FIFO,
+ *   a terminal or a device named as `scriptPath` would block or never end.
  * - An invalid call fails before running anything, so it reaches nothing.
  */
-export function workflowToolReach(input: Record<string, unknown>, readScript: (path: string) => string): "all" | readonly string[] {
+export function workflowToolReach(input: Record<string, unknown>): "all" | readonly string[] {
   if (input.background === true) return [];
   const name = nonEmptyString(input.name);
   const script = nonEmptyString(input.script);
   const scriptPath = nonEmptyString(input.scriptPath);
   if (name !== undefined) return script === undefined && scriptPath === undefined ? "all" : [];
   if (script !== undefined) return scriptPath === undefined ? scriptReach(script) : [];
-  if (scriptPath === undefined) return [];
-  let source: string;
-  try {
-    source = readScript(scriptPath);
-  } catch {
-    return "all";
-  }
-  return scriptReach(source);
+  return scriptPath === undefined ? [] : "all";
 }
 
 function scriptReach(script: string): "all" | readonly string[] {
