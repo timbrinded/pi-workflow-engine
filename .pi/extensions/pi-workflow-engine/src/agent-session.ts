@@ -12,6 +12,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { prepareAgentSkillResources } from "./agent-skills.ts";
+import { createCodemodeSlotExtension } from "./codemode-slots.ts";
 import type {
   AgentExecutionOptions,
   AgentProgress,
@@ -295,10 +296,16 @@ async function prepareAgentSessionResources(input: {
  * SDK sessions load none of pi's built-in extensions, so codemode is registered only for agents whose
  * allowlist names it. Scripts can call just the agent's other allowed tools. Mode "on" keeps those
  * tools declared whatever the user's `codemode.mode`, so the author's allowlist stays what the model sees.
+ * Its calls queue for the process-wide codemode slots instead of failing at pi's worker limit.
  */
 function codemodeExtension(opts: AgentExecutionOptions): Pick<SessionResourceLoaderOptions, "extensionFactories"> {
   if (!opts.tools?.includes(CODEMODE_TOOL)) return {};
-  return { extensionFactories: [{ name: CODEMODE_TOOL, factory: createCodemodeExtension({ mode: "on" }), replaceable: true }] };
+  return {
+    extensionFactories: [
+      { name: CODEMODE_TOOL, factory: createCodemodeExtension({ mode: "on" }), replaceable: true },
+      { name: "workflow-codemode-slots", factory: createCodemodeSlotExtension(CODEMODE_TOOL), hidden: true },
+    ],
+  };
 }
 
 type SessionResourceLoaderOptions = NonNullable<CreateAgentSessionServicesOptions["resourceLoaderOptions"]>;
