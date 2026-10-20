@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
+import { Agent } from "@earendil-works/pi-agent-core";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
   ModelRegistry,
@@ -250,6 +251,13 @@ test("production session services load skills, tools, host runtime providers, an
     assert.deepEqual([...scripted.session.getActiveToolNames()].sort(), [CODEMODE_TOOL, FINAL_TOOL, "read"]);
     // The agent answers itself; a script cannot call final_answer on its behalf.
     assert.equal(scripted.session.getAllTools().find((tool) => tool.name === FINAL_TOOL)?.exposure, "model-only");
+    // Its codemode calls take slots in tool_call, so it runs tool calls one at a time; other agents keep pi's default.
+    assert.ok("agent" in scripted.session);
+    assert.ok(scripted.session.agent instanceof Agent);
+    assert.equal(scripted.session.agent.toolExecution, "sequential");
+    assert.ok("agent" in session);
+    assert.ok(session.agent instanceof Agent);
+    assert.equal(session.agent.toolExecution, "parallel");
     const text = await openAgentSession({ rc, prompt: "Summarise.", opts: { label: "text-session", tools: ["read"] }, cwd, model, label: "text-session" });
     sessions.push(text.session);
     assert.match(text.session.systemPrompt, /User addendum fixture\.\s+Your final message is returned verbatim to the workflow program/);
