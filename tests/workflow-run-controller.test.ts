@@ -665,6 +665,10 @@ test("provider-limit timers resume from the journal and manual stop cancels pend
     ));
     const successor = (await store.list()).find((record) => record.options.resumeFromRunId === "auto-resume-source");
     assert.equal(successor?.background?.origin.wakeOnComplete, true);
+    // The agent woken by the successor sees which of its runs this continues.
+    const deliveredContent = () => branch.map((entry) => JSON.stringify(entry)).find((text) => text.includes(`Run ID: ${successor?.runId}`));
+    await waitFor(() => deliveredContent() !== undefined);
+    assert.match(deliveredContent() ?? "", /\(resumed from auto-resume-source\)/);
     // The source stays paused after its resume; re-entering the session must not resume it again.
     const scheduledBeforeReentry = clock.delays.length;
     controller.sessionShutdown(ctx);

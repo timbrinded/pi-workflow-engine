@@ -358,7 +358,8 @@ function formatBackgroundDelivery(record: WorkflowRunRecord, details: Background
   return [
     `## Background workflow: ${details.name}`,
     "",
-    `Run ID: ${details.runId}`,
+    // A resume, including an automatic one, has a new run id; name the run the agent started.
+    details.resumedFromRunId ? `Run ID: ${details.runId} (resumed from ${details.resumedFromRunId})` : `Run ID: ${details.runId}`,
     `State: ${details.status}`,
     "",
     woken ? wokenDeliveryBody(record, details.summary) : details.summary,
