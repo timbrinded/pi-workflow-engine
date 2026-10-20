@@ -282,8 +282,19 @@ export interface WorkflowApi {
 
 export type WorkflowRun = (api: WorkflowApi) => Promise<unknown>;
 
+/**
+ * `file` workflows resolve by name from `path` under `root`. Their `fingerprint` hashes the `root` tree,
+ * revalidated on resume because imports may load lazily, unless `selfContained` marks a compiled saved
+ * script: it can import nothing, so the hash of its own content is its whole identity.
+ */
 export type WorkflowSourceIdentity =
-  | { readonly kind: "file"; readonly path: string; readonly root: string; readonly fingerprint: string }
+  | {
+      readonly kind: "file";
+      readonly path: string;
+      readonly root: string;
+      readonly fingerprint: string;
+      readonly selfContained?: true;
+    }
   | { readonly kind: "fingerprint"; readonly fingerprint: string }
   | { readonly kind: "unverifiable"; readonly reason: string };
 

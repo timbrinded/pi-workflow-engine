@@ -40,7 +40,8 @@ import { completeCurrentArgument, splitArgumentPrefix } from "./command-completi
 type WorkflowRunCompletionContext = Pick<ExtensionContext, "cwd" | "sessionManager">;
 
 interface WorkflowRunControllerDependencies {
-  readonly resolveWorkflow: (name: string) => Promise<LoadedWorkflow | undefined>;
+  /** The registered workflow a relaunch runs; `ctx` decides which project's saved workflows are visible. */
+  readonly resolveWorkflow: (name: string, ctx: ExtensionContext) => Promise<LoadedWorkflow | undefined>;
   readonly execute: (
     ctx: ExtensionContext,
     name: string,
@@ -286,7 +287,7 @@ export class WorkflowRunController {
       if (workflow.source.kind !== "fingerprint") throw new Error(`inline workflow ${record.workflow.name} has no script fingerprint`);
       return { workflow, fingerprint: workflow.source.fingerprint };
     }
-    const workflow = await this.dependencies.resolveWorkflow(record.workflow.name);
+    const workflow = await this.dependencies.resolveWorkflow(record.workflow.name, ctx);
     if (!workflow) throw new Error(`registered workflow ${record.workflow.name} is unavailable`);
     if (workflow.source.kind !== "file") {
       throw new Error(`registered workflow ${record.workflow.name} no longer has verifiable file provenance`);

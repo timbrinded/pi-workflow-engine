@@ -94,6 +94,7 @@ test("dismissing the /workflow picker cancels silently; usage is printed only wi
   let pickerOpened = 0;
   const tui = {
     cwd: process.cwd(),
+    isProjectTrusted: () => true,
     hasUI: true,
     mode: "tui",
     ui: {

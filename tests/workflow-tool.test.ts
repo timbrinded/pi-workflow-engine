@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "bun:test";
@@ -26,6 +26,7 @@ process.on("exit", () => rmSync(WORKFLOW_TOOL_TEST_CWD, { recursive: true, force
 
 const HEADLESS_CTX = {
   cwd: WORKFLOW_TOOL_TEST_CWD,
+  isProjectTrusted: () => true,
   model: undefined,
   modelRegistry: { find: () => undefined },
   sessionManager: createSessionManager("test-session"),
@@ -55,6 +56,7 @@ function createTuiContext(customResult?: unknown, sessionId = "test-session"): {
   } as Pick<TUI, "terminal" | "requestRender">;
   const ctx = {
     cwd: WORKFLOW_TOOL_TEST_CWD,
+    isProjectTrusted: () => true,
     model: undefined,
     modelRegistry: { find: () => undefined },
     sessionManager: createSessionManager(sessionId),
@@ -193,6 +195,7 @@ test("RPC command and inspector surfaces use native selection and text instead o
   let customCalls = 0;
   const ctx = {
     cwd: WORKFLOW_TOOL_TEST_CWD,
+    isProjectTrusted: () => true,
     mode: "rpc",
     hasUI: true,
     model: undefined,
@@ -500,6 +503,27 @@ test("workflow tool marks an unknown workflow as a failed call", async () => {
   assert.equal(result.isError, true);
   assert.ok(isRecord(result.details));
   assert.equal(result.details.error, "unknown_workflow");
+});
+
+test("a project's saved script runs by name only while pi trusts the project", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-workflow-tool-project-"));
+  try {
+    mkdirSync(join(cwd, ".pi", "workflows"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "workflows", "project-probe.js"),
+      'export const meta = { name: "project-probe", description: "Project probe" };\nexport default async function run() { return { summary: "project script ran" }; }\n',
+    );
+    const tool = captureWorkflowTool();
+
+    const untrusted = await tool.execute("call-project-untrusted", { name: "project-probe" }, undefined, () => {}, { ...HEADLESS_CTX, cwd, isProjectTrusted: () => false });
+    assert.ok(isRecord(untrusted) && isRecord(untrusted.details));
+    assert.equal(untrusted.details.error, "unknown_workflow");
+
+    const trusted = await tool.execute("call-project-trusted", { name: "project-probe" }, undefined, () => {}, { ...HEADLESS_CTX, cwd });
+    assert.match(toolResultText(trusted), /project script ran/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("workflow tool rejects blank resumeFromRunId", async () => {

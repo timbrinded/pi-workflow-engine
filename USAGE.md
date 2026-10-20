@@ -371,7 +371,7 @@ Cached values are revalidated before use: text must still be text, structured ou
 
 Invalidations appear in progress output with a concise reason. Legacy v1 journals and early v2 entries without effective-session identity are parsed for compatibility but always miss. Journals written by pi-workflow-engine 1.1.0 or earlier miss once with `effective system prompt changed`, because later versions append the return-value instruction to every subagent's system prompt; the resumed run records fresh entries. Git repositories with no commits and non-Git directories remain supported. Git control data and engine-owned workflow journals cannot be declared as inputs; if a Git-visible or explicit surface exceeds safety bounds, that call runs live.
 
-Statically loaded built-ins fingerprint and revalidate their bounded extension source tree so imported helper changes invalidate replay, while inline workflows use the compiler-provided script fingerprint. Dynamically discovered and programmatic modules are intentionally non-replayable because their transitive runtime imports or captured closures cannot be bound to an immutable source snapshot.
+Statically loaded built-ins fingerprint and revalidate their bounded extension source tree so imported helper changes invalidate replay, while inline workflows and saved `.js` scripts use the compiler-provided script fingerprint. Dynamically discovered `.ts` and programmatic modules are intentionally non-replayable because their transitive runtime imports or captured closures cannot be bound to an immutable source snapshot.
 
 Resume only caches completed `agent()` calls. It does not snapshot arbitrary workflow local variables, in-flight tool work, environment or clock state, external services, or generated inputs outside the captured repository/workflow/skill/tool surfaces. Use `resume: "off"` for calls that depend on those values, and keep prompts and options deterministic when you want cache hits.
 
@@ -541,12 +541,19 @@ Guaranteed built-ins are statically registered:
 2. Import it in `.pi/extensions/pi-workflow-engine/src/workflows.ts`.
 3. Add a `defineBuiltinWorkflow(mod, "<name>.ts")` entry to `BUILTIN_WORKFLOW_DEFINITIONS`.
 
+Saved scripts are workflows in the [inline script format](#author-an-inline-workflow) kept as `*.js` files:
+
+- `<project>/.pi/workflows/*.js`: project workflows, shared through the repository.
+- `~/.pi/agent/workflows/*.js` (pi's configured agent directory): user workflows, next to the `.ts` drop-ins.
+
+They compile like an inline `script`, with the injected `Type` and no imports, so they share pi's typebox, unlike `.ts` drop-ins, and they are fingerprinted by content, so `--resume` and `/workflow:runs` resume and restart them like built-ins. Project scripts load only when pi reports the project as trusted (`ctx.isProjectTrusted()`). pi itself does not ask for trust because of `.pi/workflows` alone, so a folder with no other protected project resources counts as trusted; review a repository's `.pi/workflows` before running them. Files starting with `_` or `.` and scripts that do not compile are skipped with a stderr note.
+
 Drop-in workflows are also discovered best-effort from:
 
 - `~/.pi/agent/workflows/*.ts`: the user-level drop-in directory, which survives `pi update`.
 - The extension's own `workflows/*.ts` directory: `.pi/extensions/pi-workflow-engine/workflows/` in a working copy or a project-vendored copy. Files added to an installed package are replaced by `pi update`.
 
-Use `/workflow <name> --refresh` after adding a drop-in file.
+When two sources define the same name, the first wins: built-ins, project scripts, the extension's `.ts` drop-ins, user scripts, then user `.ts` drop-ins. Use `/workflow <name> --refresh` after adding or editing a saved script or drop-in file.
 
 ## Author an inline workflow
 

@@ -1,9 +1,10 @@
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { LoadedWorkflow, WorkflowSourceIdentity } from "./types.ts";
 import type { PerfSink } from "./perf.ts";
+import { compileInlineWorkflow, inlineScriptFingerprint } from "./inline-workflow.ts";
 import { loadWorkflow, parseWorkflowModule } from "./workflow-module.ts";
 import { BUILTIN_SOURCE_ROOT, BUILTIN_WORKFLOW_DEFINITIONS, BUILTIN_WORKFLOW_FILES } from "./workflows.ts";
 import { captureSourceTreeFingerprint, type FingerprintCapture } from "./tree-fingerprint.ts";
@@ -13,9 +14,45 @@ export interface DiscoverWorkflowsOptions {
   readonly refresh?: boolean;
   readonly perf?: PerfSink;
   readonly userWorkflowDir?: string;
+  /**
+   * Project root whose `.pi/workflows/*.js` saved scripts load right after the built-ins. Callers omit
+   * it for an untrusted project, which then contributes no workflows.
+   */
+  readonly projectDir?: string;
 }
 
 const discoveryCache = new Map<string, Map<string, LoadedWorkflow>>();
+
+function isWorkflowFileCandidate(name: string, extension: string): boolean {
+  return name.endsWith(extension) && !name.startsWith("_") && !name.startsWith(".");
+}
+
+/**
+ * Load every `*.js` saved workflow in the inline script format from a directory. Unlike `.ts` drop-ins
+ * they are compiled with the injected `Type`, so they share pi's typebox, and a content fingerprint is
+ * their whole identity, so they replay on resume.
+ */
+async function loadScriptDir(dir: string): Promise<LoadedWorkflow[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const workflows: LoadedWorkflow[] = [];
+  for (const name of entries.filter((entry) => isWorkflowFileCandidate(entry, ".js")).sort()) {
+    const path = join(dir, name);
+    try {
+      const source = await readFile(path, "utf8");
+      const compiled = compileInlineWorkflow(source);
+      workflows.push(loadWorkflow(compiled, { kind: "file", path, root: dir, fingerprint: inlineScriptFingerprint(source), selfContained: true }));
+    } catch (error) {
+      console.error(`[workflow-engine] skipped ${name}: ${unknownErrorMessage(error)}`);
+    }
+  }
+  return workflows;
+}
+
 /** Best-effort dynamic load of every `*.ts` workflow in a directory. */
 async function loadDir(
   dir: string,
@@ -29,9 +66,7 @@ async function loadDir(
   } catch {
     return [];
   }
-  const candidates = entries.filter(
-    (name) => !excludeFiles.has(name) && name.endsWith(".ts") && !name.startsWith("_") && !name.startsWith("."),
-  );
+  const candidates = entries.filter((name) => !excludeFiles.has(name) && isWorkflowFileCandidate(name, ".ts"));
   // The shipped workflows/ dir holds only excluded built-ins; skip the tree hash when nothing will be imported.
   if (candidates.length === 0) return [];
 
@@ -56,12 +91,15 @@ async function loadDir(
 }
 
 /**
- * All available workflows by name. Static registry wins on name collisions, so the
- * bundled example is always the verified one even if a same-named file is dropped in.
+ * All available workflows by name. The first source to define a name wins: the static registry, so
+ * the bundled example is always the verified one even if a same-named file is dropped in, then the
+ * project's saved scripts, the extension's `.ts` drop-ins, the user's saved scripts, and the user's
+ * `.ts` drop-ins.
  */
 export async function discoverWorkflows(repoDir: string, options: DiscoverWorkflowsOptions = {}): Promise<Map<string, LoadedWorkflow>> {
   const userWorkflowDir = options.userWorkflowDir ?? join(getAgentDir(), "workflows");
-  const cacheKey = `${repoDir}\0${userWorkflowDir}`;
+  const projectWorkflowDir = options.projectDir === undefined ? undefined : join(options.projectDir, ".pi", "workflows");
+  const cacheKey = `${repoDir}\0${userWorkflowDir}\0${projectWorkflowDir ?? ""}`;
   const cached = discoveryCache.get(cacheKey);
   if (cached && !options.refresh) {
     options.perf?.counter("discovery.cache_hit");
@@ -91,7 +129,10 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
     // The shipped extension dir is both the built-in root and the drop-in root; hash that tree once.
     const repoProvenance =
       resolve(repoDir) === resolve(BUILTIN_SOURCE_ROOT) ? async () => builtinSource : () => captureSourceTreeFingerprint(repoDir);
-    const [repoDynamic, userDynamic] = await Promise.all([
+    const [projectScripts, repoDynamic, userScripts, userDynamic] = await Promise.all([
+      projectWorkflowDir === undefined
+        ? []
+        : timed(options.perf, "discovery.project_scripts_ms", () => loadScriptDir(projectWorkflowDir)),
       timed(options.perf, "discovery.repo_dir_ms", () =>
         loadDir(
           repoWorkflowDir,
@@ -103,6 +144,7 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
           repoProvenance,
         ),
       ),
+      timed(options.perf, "discovery.user_scripts_ms", () => loadScriptDir(userWorkflowDir)),
       timed(options.perf, "discovery.user_dir_ms", () =>
         loadDir(userWorkflowDir, () => ({
           kind: "unverifiable",
@@ -111,10 +153,7 @@ export async function discoverWorkflows(repoDir: string, options: DiscoverWorkfl
       ),
     ]);
 
-    for (const mod of repoDynamic) {
-      if (!next.has(mod.meta.name)) next.set(mod.meta.name, mod);
-    }
-    for (const mod of userDynamic) {
+    for (const mod of [...projectScripts, ...repoDynamic, ...userScripts, ...userDynamic]) {
       if (!next.has(mod.meta.name)) next.set(mod.meta.name, mod);
     }
     return next;

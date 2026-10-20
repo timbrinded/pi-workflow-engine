@@ -1,10 +1,12 @@
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import { discoverWorkflows } from "../.pi/extensions/pi-workflow-engine/src/discovery.ts";
+import { inlineScriptFingerprint } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
+import { captureWorkflowResumeContext } from "../.pi/extensions/pi-workflow-engine/src/resume-context.ts";
 import type { WorkflowApi } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import { BUILTIN_WORKFLOW_DEFINITIONS } from "../.pi/extensions/pi-workflow-engine/src/workflows.ts";
 
@@ -150,6 +152,53 @@ test("user drop-in workflows still load from an injected test directory", async 
   } finally {
     await rm(tempUserRoot, { recursive: true, force: true });
     await rm(tempRepo, { recursive: true, force: true });
+  }
+});
+
+test("saved scripts load from the project then the user dir, after built-ins, with resumable content provenance", async () => {
+  const tempRepo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-scripts-"));
+  const project = await mkdtemp(join(tmpdir(), "workflow-engine-project-"));
+  const userWorkflowDir = join(await mkdtemp(join(tmpdir(), "workflow-engine-user-scripts-")), "workflows");
+  const script = (name: string, value: string) =>
+    `export const meta = { name: "${name}", description: "${value}" };\nexport default async function run() { return "${value}"; }\n`;
+  try {
+    const projectWorkflowDir = join(project, ".pi", "workflows");
+    await mkdir(projectWorkflowDir, { recursive: true });
+    await mkdir(userWorkflowDir, { recursive: true });
+    await writeFile(join(projectWorkflowDir, "shared.js"), script("shared", "project"));
+    await writeFile(join(projectWorkflowDir, "code-review.js"), script("code-review", "shadow"));
+    await writeFile(join(projectWorkflowDir, "broken.js"), "export default async function run() {}\n");
+    await writeFile(join(userWorkflowDir, "shared.js"), script("shared", "user"));
+    await writeFile(join(userWorkflowDir, "user-only.js"), script("user-only", "user"));
+
+    const workflows = await discoverWorkflows(tempRepo, { refresh: true, userWorkflowDir, projectDir: project });
+    const shared = workflows.get("shared");
+    assert.equal(shared?.meta.description, "project");
+    assert.equal(await shared?.default({} as WorkflowApi), "project");
+    assert.deepEqual(shared?.source, {
+      kind: "file",
+      path: join(projectWorkflowDir, "shared.js"),
+      root: projectWorkflowDir,
+      fingerprint: inlineScriptFingerprint(script("shared", "project")),
+      selfContained: true,
+    });
+    assert.equal(shared?.inlineScript, undefined, "a saved script resolves by name, so its runs persist no script copy");
+    assert.notEqual(workflows.get("code-review")?.meta.description, "shadow");
+    assert.equal(workflows.get("user-only")?.meta.description, "user");
+    assert.equal(workflows.has("broken"), false);
+    if (!shared) throw new Error("expected the project script");
+    assert.deepEqual(await captureWorkflowResumeContext(shared), {
+      kind: "verified",
+      name: "shared",
+      sourceFingerprint: inlineScriptFingerprint(script("shared", "project")),
+    });
+
+    const withoutProject = await discoverWorkflows(tempRepo, { userWorkflowDir });
+    assert.equal(withoutProject.get("shared")?.meta.description, "user", "omitting projectDir skips the project's scripts");
+  } finally {
+    await rm(tempRepo, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
+    await rm(dirname(userWorkflowDir), { recursive: true, force: true });
   }
 });
 

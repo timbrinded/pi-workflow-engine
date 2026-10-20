@@ -114,7 +114,9 @@ covers review actions and recent run history.
 ## Create your own workflows
 
 Saved workflows are TypeScript modules for repeatable orchestration; inline
-workflows are useful for one-off Dynamax tasks. The
+workflows are useful for one-off Dynamax tasks. An inline script that proves
+useful can be saved as a `.js` file in a project's `.pi/workflows/` or in
+`~/.pi/agent/workflows/` and run by name. The
 [workflow authoring guide](USAGE.md#author-a-saved-workflow) covers the API,
 typed handoffs, model profiles, tool access, composition, and registration.
 
