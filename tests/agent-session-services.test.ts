@@ -87,7 +87,7 @@ test("provider synchronization mirrors providers registered as objects on pi 1.x
   assert.deepEqual(mirrored, [native]);
 });
 
-test("production session services load skills, tools, and host runtime providers, and inherit user retry settings without writing them", async () => {
+test("production session services load skills, tools, host runtime providers, and the user's prompt addendum, and inherit user retry settings without writing them", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-workflow-session-services-"));
   const cwd = join(root, "project");
   const agentDir = join(root, "agent");
@@ -138,6 +138,7 @@ test("production session services load skills, tools, and host runtime providers
     await mkdir(extensionDir, { recursive: true });
     await mkdir(agentDir, { recursive: true });
     await writeFile(userSettingsPath, JSON.stringify({ retry: userRetry }), "utf8");
+    await writeFile(join(agentDir, "APPEND_SYSTEM.md"), "User addendum fixture.\n", "utf8");
     await writeFile(
       skillPath,
       "---\nname: runtime-fixture\ndescription: Verifies production session service wiring.\n---\n\n# Runtime fixture\n",
@@ -228,6 +229,8 @@ test("production session services load skills, tools, and host runtime providers
     assert.deepEqual(handle.selectedSkills.map((skill) => skill.name), ["runtime-fixture"]);
     assert.equal(handle.selectedSkills[0]?.filePath, skillPath);
     assert.match(session.systemPrompt, /runtime-fixture/);
+    // The return-value framing follows the user's APPEND_SYSTEM.md instead of replacing its discovery.
+    assert.match(session.systemPrompt, /User addendum fixture\.\s+Your final message is returned verbatim to the workflow program/);
     assert.equal(session.model, model);
     assert.ok(session.getActiveToolNames().includes("read"));
     assert.ok(session.getActiveToolNames().includes(FINAL_TOOL));

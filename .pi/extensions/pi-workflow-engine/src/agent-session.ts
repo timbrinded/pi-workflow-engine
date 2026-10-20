@@ -35,6 +35,11 @@ export const FINAL_TOOL = "final_answer";
 /** pi's codemode tool; SDK sessions only have it when their resource loader registers the extension. */
 export const CODEMODE_TOOL = "codemode";
 
+/** pi's stock prompt frames a chat with a person; a subagent's last message is program data instead. */
+const RETURN_VALUE_FRAMING =
+  "Your final message is returned verbatim to the workflow program that started you, as data. " +
+  "It is not shown to a person as a chat reply. Make it exactly the output your task asks for, in the format it asks for, " +
+  "with no greeting, preamble, narration of your process, or offer of further help.";
 const SCHEMA_REPROMPT =
   `You ended your turn without calling the ${FINAL_TOOL} tool, so no result was recorded. ` +
   `Call ${FINAL_TOOL} now with your final answer as its arguments. Do not reply with plain text.`;
@@ -234,6 +239,7 @@ async function prepareAgentSessionResources(input: {
     sessionManager: SessionManager.inMemory(cwd),
   });
   const createSession = rc.createSession;
+  // Injected test sessions build no resource loader, so they get neither skills nor the return-value framing.
   if (createSession) {
     return {
       selectedSkills: [],
@@ -253,7 +259,12 @@ async function prepareAgentSessionResources(input: {
   const preparedSkills = prepareAgentSkillResources(skillOptions);
   const services = await createAgentSessionServices({
     cwd,
-    resourceLoaderOptions: { ...preparedSkills.resourceLoaderOptions, ...codemodeExtension(opts) },
+    resourceLoaderOptions: {
+      ...preparedSkills.resourceLoaderOptions,
+      ...codemodeExtension(opts),
+      // An override, not `appendSystemPrompt`: passing that replaces pi's discovery of the user's APPEND_SYSTEM.md.
+      appendSystemPromptOverride: (base) => [...base, RETURN_VALUE_FRAMING],
+    },
   });
   await synchronizeWorkflowModelRuntime({
     host: rc.modelRegistry,
