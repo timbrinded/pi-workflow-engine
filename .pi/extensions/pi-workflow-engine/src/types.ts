@@ -22,8 +22,6 @@ export type WorkflowRef = string | { readonly scriptPath: string };
 /** One declared phase of a workflow. */
 export interface WorkflowPhaseMeta {
   title: string;
-  /** One line on what the phase does. */
-  detail?: string;
   /** Profile for agents that pass this title as `phase` and set neither `model` nor `profile`. */
   profile?: WorkflowModelProfileName;
 }

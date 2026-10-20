@@ -389,7 +389,7 @@ export const meta: WorkflowMeta = {
   description: "Find and summarize something important.",
   whenToUse: "Use when the user wants the important thing found and summarized; args name the target.",
   phases: [
-    { title: "Find", detail: "Two independent finders", profile: "small" },
+    { title: "Find", profile: "small" },
     { title: "Synthesize", profile: "medium" },
   ],
 };
@@ -430,7 +430,7 @@ export default async function run({ agent, parallel, phase, args }: WorkflowApi)
 }
 ```
 
-`meta.name` is required. `description` and `whenToUse` describe the workflow in the picker and in the host's workflow catalog, so write `whenToUse` as the situation that should make a model choose it and what `args` it expects. `phases` declares the progress phases up front; each may add a one-line `detail` and a default `profile` for agents that pass that phase title as their `phase` option.
+`meta.name` is required. `description` and `whenToUse` describe the workflow in the picker and in the host's workflow catalog, so write `whenToUse` as the situation that should make a model choose it and what `args` it expects. `phases` declares the progress phases up front; each may add a default `profile` for agents that pass that phase title as their `phase` option.
 
 Core primitives:
 

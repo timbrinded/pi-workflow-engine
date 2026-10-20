@@ -139,11 +139,10 @@ export default async function run() { return "ok"; }
     name: "rich-meta",
     description: "Rich meta",
     whenToUse: "Use when the meta matters.",
-    phases: [{ title: "Find", detail: "Look around", profile: "small" }, { title: "Judge" }],
+    phases: [{ title: "Find", profile: "small" }, { title: "Judge" }],
   });
   const run = "\nexport default async function run() { return 1; }";
   assert.throws(() => compileInlineWorkflow(`export const meta = { name: "x", phases: [{ title: "Find", profile: "huge" }] };${run}`), /meta\.phases must be/);
-  assert.throws(() => compileInlineWorkflow(`export const meta = { name: "x", phases: [{ title: "Find", detail: 2 }] };${run}`), /meta\.phases must be/);
   assert.throws(() => compileInlineWorkflow(`export const meta = { name: "x", whenToUse: ["often"] };${run}`), /meta\.whenToUse must be a string/);
 });
 

@@ -9,7 +9,7 @@ import type { WorktreeBaseline } from "./worktree.ts";
 import { isRecord } from "./guards.ts";
 import { isWorkflowModelProfileName } from "./model-profiles.ts";
 
-const PHASES_SHAPE = 'meta.phases must be an array of { title: string, detail?: string, profile?: "small" | "medium" | "big" }';
+const PHASES_SHAPE = 'meta.phases must be an array of { title: string, profile?: "small" | "medium" | "big" }';
 
 /** Validate and normalize workflow metadata without executing workflow code. */
 export function parseWorkflowMeta(meta: unknown): { meta: WorkflowMeta } | { reason: string } {
@@ -64,14 +64,9 @@ function parseWorkflowPhases(value: unknown): WorkflowPhaseMeta[] | null {
   const phases: WorkflowPhaseMeta[] = [];
   for (const phase of value) {
     if (!isRecord(phase) || typeof phase.title !== "string") return null;
-    const { detail, profile } = phase;
-    if (detail !== undefined && typeof detail !== "string") return null;
+    const { profile } = phase;
     if (profile !== undefined && (typeof profile !== "string" || !isWorkflowModelProfileName(profile))) return null;
-    phases.push({
-      title: phase.title,
-      ...(detail === undefined ? {} : { detail }),
-      ...(profile === undefined ? {} : { profile }),
-    });
+    phases.push({ title: phase.title, ...(profile === undefined ? {} : { profile }) });
   }
   return phases;
 }

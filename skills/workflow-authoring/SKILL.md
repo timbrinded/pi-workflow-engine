@@ -28,7 +28,7 @@ export default async function run(api) {
 ```
 
 - The script is plain JavaScript compiled in-process: no TypeScript annotations, `as` casts, or interfaces.
-- It must start with `export const meta = { ... };`, a pure literal: strings, numbers, booleans, `null`, arrays, and objects only. No variables, calls, template literals, spreads, computed keys, or raw newlines inside strings. `name` is required; `description`, `whenToUse` (the situation that should make a model pick it), and `phases` are optional. Each phase is `{ title, detail?, profile? }`.
+- It must start with `export const meta = { ... };`, a pure literal: strings, numbers, booleans, `null`, arrays, and objects only. No variables, calls, template literals, spreads, computed keys, or raw newlines inside strings. `name` is required; `description`, `whenToUse` (the situation that should make a model pick it), and `phases` are optional. Each phase is `{ title, profile? }`.
 - Exactly one `export default` follows the meta: an `async function` or `async (api) => { ... }` with a block body. Nothing may follow it but `;` and comments. Put helpers and constants inside the function body.
 - No `import` statements, no dynamic `import()`, no other exports.
 - `Type` (TypeBox) is an injected global: write `Type.Object(...)` directly. It is not a property of `api`. Using the injected `Type` keeps schemas on pi's bundled TypeBox, so validation works.
