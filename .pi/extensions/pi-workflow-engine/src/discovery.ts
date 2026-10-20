@@ -21,7 +21,20 @@ export interface DiscoverWorkflowsOptions {
   readonly projectDir?: string;
 }
 
-const discoveryCache = new Map<string, Map<string, LoadedWorkflow>>();
+/**
+ * Built-ins and `.ts` drop-ins hash source trees and import modules, so they load once per directory pair
+ * until a refresh. Saved scripts are not cached: see `discoverWorkflows`.
+ */
+interface CachedModules {
+  readonly builtins: readonly LoadedWorkflow[];
+  readonly repoDynamic: readonly LoadedWorkflow[];
+  readonly userDynamic: readonly LoadedWorkflow[];
+}
+
+const moduleCache = new Map<string, CachedModules>();
+
+/** Saved scripts are re-read on every discovery, so each distinct skip is reported once, not on every lookup. */
+const reportedScriptSkips = new Set<string>();
 
 function isWorkflowFileCandidate(name: string, extension: string): boolean {
   return name.endsWith(extension) && !name.startsWith("_") && !name.startsWith(".");
@@ -47,7 +60,12 @@ async function loadScriptDir(dir: string): Promise<LoadedWorkflow[]> {
       const compiled = compileInlineWorkflow(source);
       workflows.push(loadWorkflow(compiled, { kind: "file", path, root: dir, fingerprint: inlineScriptFingerprint(source), selfContained: true }));
     } catch (error) {
-      console.error(`[workflow-engine] skipped ${name}: ${unknownErrorMessage(error)}`);
+      const note = `[workflow-engine] skipped ${name}: ${unknownErrorMessage(error)}`;
+      const key = `${path}\0${note}`;
+      if (!reportedScriptSkips.has(key)) {
+        reportedScriptSkips.add(key);
+        console.error(note);
+      }
     }
   }
   return workflows;
@@ -95,72 +113,82 @@ async function loadDir(
  * the bundled example is always the verified one even if a same-named file is dropped in, then the
  * project's saved scripts, the extension's `.ts` drop-ins, the user's saved scripts, and the user's
  * `.ts` drop-ins.
+ *
+ * Saved scripts are read and compiled on every call (small files, no import), so one written or edited
+ * mid-session resolves by name with its current content; built-ins and `.ts` drop-ins come from the cache
+ * unless `refresh` is set.
  */
 export async function discoverWorkflows(repoDir: string, options: DiscoverWorkflowsOptions = {}): Promise<Map<string, LoadedWorkflow>> {
   const userWorkflowDir = options.userWorkflowDir ?? join(getAgentDir(), "workflows");
   const projectWorkflowDir = options.projectDir === undefined ? undefined : join(options.projectDir, ".pi", "workflows");
-  const cacheKey = `${repoDir}\0${userWorkflowDir}\0${projectWorkflowDir ?? ""}`;
-  const cached = discoveryCache.get(cacheKey);
-  if (cached && !options.refresh) {
-    options.perf?.counter("discovery.cache_hit");
-    return new Map(cached);
-  }
-
-  const byName = await timed(options.perf, "discovery.total_ms", async () => {
-    const next = new Map<string, LoadedWorkflow>();
-    const builtinSource = await captureSourceTreeFingerprint(BUILTIN_SOURCE_ROOT);
-    for (const definition of BUILTIN_WORKFLOW_DEFINITIONS) {
-      const source: WorkflowSourceIdentity =
-        builtinSource.kind === "verified"
-          ? {
-              kind: "file",
-              path: definition.path,
-              root: BUILTIN_SOURCE_ROOT,
-              fingerprint: builtinSource.fingerprint,
-            }
-          : {
-              kind: "unverifiable",
-              reason: `built-in workflow source capture failed: ${builtinSource.reason}`,
-            };
-      next.set(definition.module.meta.name, loadWorkflow(definition.module, source));
-    }
-
-    const repoWorkflowDir = join(repoDir, "workflows");
-    // The shipped extension dir is both the built-in root and the drop-in root; hash that tree once.
-    const repoProvenance =
-      resolve(repoDir) === resolve(BUILTIN_SOURCE_ROOT) ? async () => builtinSource : () => captureSourceTreeFingerprint(repoDir);
-    const [projectScripts, repoDynamic, userScripts, userDynamic] = await Promise.all([
+  return await timed(options.perf, "discovery.total_ms", async () => {
+    const [modules, projectScripts, userScripts] = await Promise.all([
+      cachedModules(repoDir, userWorkflowDir, options),
       projectWorkflowDir === undefined
         ? []
         : timed(options.perf, "discovery.project_scripts_ms", () => loadScriptDir(projectWorkflowDir)),
-      timed(options.perf, "discovery.repo_dir_ms", () =>
-        loadDir(
-          repoWorkflowDir,
-          () => ({
-            kind: "unverifiable",
-            reason: "dynamic workflow module graphs are not loaded from an immutable source snapshot",
-          }),
-          BUILTIN_WORKFLOW_FILES,
-          repoProvenance,
-        ),
-      ),
       timed(options.perf, "discovery.user_scripts_ms", () => loadScriptDir(userWorkflowDir)),
-      timed(options.perf, "discovery.user_dir_ms", () =>
-        loadDir(userWorkflowDir, () => ({
-          kind: "unverifiable",
-          reason: "dynamic user workflow dependencies do not have a declared trusted source root",
-        })),
-      ),
     ]);
-
-    for (const mod of [...projectScripts, ...repoDynamic, ...userScripts, ...userDynamic]) {
-      if (!next.has(mod.meta.name)) next.set(mod.meta.name, mod);
+    const byName = new Map<string, LoadedWorkflow>();
+    for (const mod of [...modules.builtins, ...projectScripts, ...modules.repoDynamic, ...userScripts, ...modules.userDynamic]) {
+      if (!byName.has(mod.meta.name)) byName.set(mod.meta.name, mod);
     }
-    return next;
+    return byName;
+  });
+}
+
+async function cachedModules(repoDir: string, userWorkflowDir: string, options: DiscoverWorkflowsOptions): Promise<CachedModules> {
+  const cacheKey = `${repoDir}\0${userWorkflowDir}`;
+  const cached = moduleCache.get(cacheKey);
+  if (cached && !options.refresh) {
+    options.perf?.counter("discovery.cache_hit");
+    return cached;
+  }
+
+  const builtinSource = await captureSourceTreeFingerprint(BUILTIN_SOURCE_ROOT);
+  const builtins = BUILTIN_WORKFLOW_DEFINITIONS.map((definition) => {
+    const source: WorkflowSourceIdentity =
+      builtinSource.kind === "verified"
+        ? {
+            kind: "file",
+            path: definition.path,
+            root: BUILTIN_SOURCE_ROOT,
+            fingerprint: builtinSource.fingerprint,
+          }
+        : {
+            kind: "unverifiable",
+            reason: `built-in workflow source capture failed: ${builtinSource.reason}`,
+          };
+    return loadWorkflow(definition.module, source);
   });
 
-  discoveryCache.set(cacheKey, byName);
-  return new Map(byName);
+  const repoWorkflowDir = join(repoDir, "workflows");
+  // The shipped extension dir is both the built-in root and the drop-in root; hash that tree once.
+  const repoProvenance =
+    resolve(repoDir) === resolve(BUILTIN_SOURCE_ROOT) ? async () => builtinSource : () => captureSourceTreeFingerprint(repoDir);
+  const [repoDynamic, userDynamic] = await Promise.all([
+    timed(options.perf, "discovery.repo_dir_ms", () =>
+      loadDir(
+        repoWorkflowDir,
+        () => ({
+          kind: "unverifiable",
+          reason: "dynamic workflow module graphs are not loaded from an immutable source snapshot",
+        }),
+        BUILTIN_WORKFLOW_FILES,
+        repoProvenance,
+      ),
+    ),
+    timed(options.perf, "discovery.user_dir_ms", () =>
+      loadDir(userWorkflowDir, () => ({
+        kind: "unverifiable",
+        reason: "dynamic user workflow dependencies do not have a declared trusted source root",
+      })),
+    ),
+  ]);
+
+  const modules: CachedModules = { builtins, repoDynamic, userDynamic };
+  moduleCache.set(cacheKey, modules);
+  return modules;
 }
 
 async function timed<T>(perf: PerfSink | undefined, name: string, fn: () => Promise<T>): Promise<T> {

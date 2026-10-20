@@ -555,7 +555,7 @@ Drop-in workflows are also discovered best-effort from:
 - `~/.pi/agent/workflows/*.ts`: the user-level drop-in directory, which survives `pi update`.
 - The extension's own `workflows/*.ts` directory: `.pi/extensions/pi-workflow-engine/workflows/` in a working copy or a project-vendored copy. Files added to an installed package are replaced by `pi update`.
 
-When two sources define the same name, the first wins: built-ins, project scripts, the extension's `.ts` drop-ins, user scripts, then user `.ts` drop-ins. Use `/workflow <name> --refresh` after adding or editing a saved script or drop-in file.
+When two sources define the same name, the first wins: built-ins, project scripts, the extension's `.ts` drop-ins, user scripts, then user `.ts` drop-ins. Saved scripts are read again on every lookup, so a script added or edited mid-session runs by name (tool `name`, `/workflow <name>`, `workflow("<name>")`, `/workflow:runs`) with its current content at once. The `<workflows>` catalog stays as it was built for the session, to keep the provider's prompt cache, so a new script joins it from the next session. `.ts` drop-ins are loaded once per process: use `/workflow <name> --refresh` after adding or editing one.
 
 ## Author an inline workflow
 

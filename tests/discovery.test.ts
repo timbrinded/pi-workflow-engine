@@ -202,6 +202,43 @@ test("saved scripts load from the project then the user dir, after built-ins, wi
   }
 });
 
+test("saved scripts written or edited after discovery resolve by name without a refresh, and a broken one is reported once", async () => {
+  const tempRepo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-live-scripts-"));
+  const project = await mkdtemp(join(tmpdir(), "workflow-engine-live-project-"));
+  const userWorkflowDir = join(await mkdtemp(join(tmpdir(), "workflow-engine-live-user-")), "workflows");
+  const projectWorkflowDir = join(project, ".pi", "workflows");
+  const script = (value: string) =>
+    `export const meta = { name: "late", description: "${value}" };\nexport default async function run() { return "${value}"; }\n`;
+  const discover = () => discoverWorkflows(tempRepo, { userWorkflowDir, projectDir: project });
+  const notes: string[] = [];
+  const consoleError = console.error;
+  console.error = (...values: unknown[]) => void notes.push(values.join(" "));
+  try {
+    await mkdir(projectWorkflowDir, { recursive: true });
+    await mkdir(userWorkflowDir, { recursive: true });
+    await writeFile(join(projectWorkflowDir, "broken.js"), "export default async function run() {}\n");
+    assert.equal((await discoverWorkflows(tempRepo, { refresh: true, userWorkflowDir, projectDir: project })).has("late"), false);
+
+    await writeFile(join(userWorkflowDir, "late.js"), script("user"));
+    assert.equal(await (await discover()).get("late")?.default({} as WorkflowApi), "user");
+
+    await writeFile(join(projectWorkflowDir, "late.js"), script("project one"));
+    assert.equal(await (await discover()).get("late")?.default({} as WorkflowApi), "project one", "a project script still shadows the user's");
+
+    await writeFile(join(projectWorkflowDir, "late.js"), script("project two"));
+    const edited = (await discover()).get("late");
+    assert.equal(await edited?.default({} as WorkflowApi), "project two");
+    assert.equal(edited?.source.kind === "file" ? edited.source.fingerprint : undefined, inlineScriptFingerprint(script("project two")));
+
+    assert.equal(notes.filter((note) => note.includes("broken.js")).length, 1);
+  } finally {
+    console.error = consoleError;
+    await rm(tempRepo, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true });
+    await rm(dirname(userWorkflowDir), { recursive: true, force: true });
+  }
+});
+
 test("default user workflow discovery honors Pi's configured agent directory", async () => {
   const tempRepo = await mkdtemp(join(tmpdir(), "workflow-engine-discovery-agent-dir-"));
   const tempAgentDir = await mkdtemp(join(tmpdir(), "workflow-engine-agent-dir-"));

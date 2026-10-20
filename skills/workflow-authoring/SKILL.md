@@ -155,4 +155,4 @@ Give `isolation: "worktree"` only to agents that edit files. The agent runs in a
 
 ## Save a reusable workflow
 
-When a script is worth keeping, write it to `.pi/workflows/<name>.js` with the same contract (pure-literal `meta`, one default export, no imports, injected `Type`). Saved workflows are discovered by name, so later runs can use `name: "<name>"` or `/workflow <name>`; `scriptPath: ".pi/workflows/<name>.js"` runs the file directly.
+When a script is worth keeping, write it to `.pi/workflows/<name>.js` with the same contract (pure-literal `meta`, one default export, no imports, injected `Type`). Saved workflows are discovered by name, so later runs can use `name: "<name>"` or `/workflow <name>`; `scriptPath: ".pi/workflows/<name>.js"` runs the file directly. The file is read again on every run by name, so a script saved or edited this session runs with its current content right away, but it appears in the `<workflows>` catalog only from the next session.
