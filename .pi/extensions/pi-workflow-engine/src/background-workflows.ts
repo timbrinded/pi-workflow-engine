@@ -378,10 +378,7 @@ function wokenDeliveryBody(record: WorkflowRunRecord, summary: string): string {
 function backgroundRunFileLines(record: WorkflowRunRecord): string[] {
   return [
     `Record: ${join(WORKFLOW_RUNS_DIR, `${record.runId}${WORKFLOW_RUN_RECORD_SUFFIX}`)}`,
-    ...formatWorkflowRunFileLines({
-      scriptPath: record.scriptFile && join(WORKFLOW_RUNS_DIR, record.scriptFile),
-      journalPath: join(WORKFLOW_RUNS_DIR, record.journalFile),
-    }),
+    ...formatWorkflowRunFileLines(record.runId, record.scriptFile !== undefined),
   ];
 }
 

@@ -1,9 +1,10 @@
-import { relative } from "node:path";
+import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BackgroundWorkflowCoordinator, backgroundOrigin } from "./background-workflows.ts";
-import { createWorkflowRunId } from "./journal.ts";
+import { createWorkflowRunId, WORKFLOW_RUNS_DIR } from "./journal.ts";
 import type { ResolvedWorkflowRunOptions } from "./options.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
+import { workflowRunScriptFile } from "./workflow-run-record.ts";
 
 export interface BackgroundWorkflowToolResult {
   readonly content: Array<{ readonly type: "text"; readonly text: string }>;
@@ -44,7 +45,7 @@ export async function startBackgroundWorkflowTool(
     runId,
     background: backgroundOrigin(input.ctx, Date.now(), input.wakeOnComplete),
   };
-  let scriptPath: string | undefined;
+  let scriptPersisted = false;
   try {
     await input.coordinator.start({
       ctx: input.ctx,
@@ -57,7 +58,7 @@ export async function startBackgroundWorkflowTool(
             ...backgroundOptions,
             signal,
             onRunMetadata(metadata) {
-              scriptPath = metadata.scriptPath && relative(input.ctx.cwd, metadata.scriptPath);
+              scriptPersisted = metadata.scriptPath !== undefined;
               onStarted();
               return backgroundOptions.onRunMetadata?.(metadata);
             },
@@ -76,7 +77,7 @@ export async function startBackgroundWorkflowTool(
   return {
     content: [{
       type: "text",
-      text: `Background workflow "${input.name}" started.\nRun ID: ${runId}\nDurable record: .pi/.workflow-runs/${runId}.run.json${scriptPath ? `\nScript: ${scriptPath}` : ""}`,
+      text: `Background workflow "${input.name}" started.\nRun ID: ${runId}\nDurable record: .pi/.workflow-runs/${runId}.run.json${scriptPersisted ? `\nScript: ${join(WORKFLOW_RUNS_DIR, workflowRunScriptFile(runId))}` : ""}`,
     }],
     details: { background: true, state: "running", name: input.name, runId },
   };

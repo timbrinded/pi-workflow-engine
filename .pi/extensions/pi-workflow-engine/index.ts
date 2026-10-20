@@ -1,4 +1,3 @@
-import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { getSelectListTheme, keyText, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -41,7 +40,7 @@ import {
   WORKFLOW_USAGE_LIMIT_DELAY_MIN_MS,
 } from "./src/options.ts";
 import { executeWorkflowInvocation, type WorkflowResultEnvelope } from "./src/workflow-execution.ts";
-import { formatWorkflowResultForContext, formatWorkflowRunFileLines } from "./src/workflow-result-context.ts";
+import { formatWorkflowResultForContext, formatWorkflowRunFileLines, formatWorkflowRunLine } from "./src/workflow-result-context.ts";
 import { registerWorkflowModelProfileCommand } from "./src/model-profile-command.ts";
 import { BackgroundWorkflowCoordinator } from "./src/background-workflows.ts";
 import { backgroundUnavailableResult, startBackgroundWorkflowTool } from "./src/background-workflow-tool.ts";
@@ -779,20 +778,10 @@ function registerWorkflowTool(
         );
       } catch (error) {
         const message = unknownErrorMessage(error);
-        const runLines = run
-          ? [
-              `Run: ${run.runId}`,
-              ...formatWorkflowRunFileLines({
-                scriptPath: run.scriptPath && relative(ctx.cwd, run.scriptPath),
-                journalPath: relative(ctx.cwd, run.journalPath),
-              }),
-            ]
-          : [];
+        const lines = [`Workflow ${resultName} failed: ${message}`];
+        if (run) lines.push("", formatWorkflowRunLine(run), ...formatWorkflowRunFileLines(run.runId, run.scriptPath !== undefined));
         return {
-          ...workflowToolError(
-            [`Workflow ${resultName} failed: ${message}`, ...(runLines.length > 0 ? ["", ...runLines] : [])].join("\n"),
-            { error: "workflow_failed", name: resultName, message },
-          ),
+          ...workflowToolError(lines.join("\n"), { error: "workflow_failed", name: resultName, message }),
           usage: workflowUsageForPi(spent),
         };
       } finally {
