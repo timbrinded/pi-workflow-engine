@@ -646,7 +646,7 @@ function registerWorkflowTool(
       scriptPath: Type.Optional(
         Type.String({
           description:
-            "Path, relative to the working directory, of a file holding an inline workflow script, such as the persisted script a result names to edit and rerun. With resumeFromRunId, edits to the script are accepted as with resumeEditedWorkflow. Provide exactly one of name, script, or scriptPath.",
+            "Path, relative to the working directory, of a file holding an inline workflow script. To iterate, edit in place the persisted .pi/.workflow-runs/<runId>.script.js a result names and rerun it here with resumeFromRunId, which accepts the edits as with resumeEditedWorkflow; editing any other copy in the repository, or a .pi/workflows script, changes repository state, so shared read-only agents rerun live. Provide exactly one of name, script, or scriptPath.",
         }),
       ),
       args: Type.Optional(
