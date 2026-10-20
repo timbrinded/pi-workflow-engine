@@ -25,7 +25,7 @@ import {
   truncatePath,
   type ThemeColor,
 } from "./kit.ts";
-import { formatDuration } from "./workflow-format.ts";
+import { countAgents, finishedAgents, formatDuration } from "./workflow-format.ts";
 import { WORKFLOW_VIEWER_OVERLAY_OPTIONS } from "./workflow-viewer-layout.ts";
 
 /** What the inspector knows about a run beyond its progress snapshot. */
@@ -342,18 +342,15 @@ export class WorkflowInspector {
   /** State first; lower-priority parts (run id, then elapsed) drop whole rather than truncating. */
   private headerStatus(snapshot: WorkflowProgressSnapshot, status: RunStatus, room: number): string {
     const th = this.theme;
-    const agents = snapshot.phases.flatMap((phase) => phase.agents);
-    const failed = agents.filter((agent) => agent.status === "failed").length;
-    const skipped = agents.filter((agent) => agent.status === "skipped").length;
+    const counts = countAgents(snapshot.phases);
     // A run that finished around failed or skipped agents is complete but not clean.
-    const degraded = !status.live && failed + skipped > 0 && status.color === "success";
+    const degraded = !status.live && counts.failed + counts.skipped > 0 && status.color === "success";
     const state = degraded ? th.fg("warning", `${GLYPH.warning} ${status.word}`) : th.fg(status.color, `${status.glyph} ${status.word}`);
-    const failures = failed > 0 ? th.fg("error", `${failed} failed`) : undefined;
-    const skips = skipped > 0 ? th.fg("warning", `${skipped} skipped`) : undefined;
+    const failures = counts.failed > 0 ? th.fg("error", `${counts.failed} failed`) : undefined;
+    const skips = counts.skipped > 0 ? th.fg("warning", `${counts.skipped} skipped`) : undefined;
     const runId = th.fg("dim", `run ${snapshot.runId.slice(0, 8)}`);
     if (status.live) {
-      const finished = agents.filter((agent) => agent.status === "done" || agent.status === "failed" || agent.status === "skipped").length;
-      const progress = agents.length > 0 ? `${snapshot.currentPhase} ${finished}/${agents.length}` : snapshot.currentPhase;
+      const progress = counts.total > 0 ? `${snapshot.currentPhase} ${finishedAgents(counts)}/${counts.total}` : snapshot.currentPhase;
       return fitParts([state, th.fg("muted", progress), failures, skips, th.fg("muted", formatDuration(Date.now() - snapshot.startedAt)), runId], room, th);
     }
     const elapsed = snapshot.doneAt !== undefined ? th.fg("muted", formatDuration(snapshot.doneAt - snapshot.startedAt)) : undefined;
