@@ -8,7 +8,7 @@ import { WORKFLOW_TOOL_NAME, type LoadedWorkflow, type WorkflowModule, type Work
 import { showWorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import { WorkflowPicker } from "./src/ui/workflow-picker.ts";
 import type { PerfSink } from "./src/perf.ts";
-import { registerDynamax } from "./src/dynamax.ts";
+import { registerDynamax, resolveTurnBudget, type DynamaxHandle } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
 import { ReviewSessionCoordinator } from "./src/review/review-session-coordinator.ts";
@@ -481,7 +481,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
 
-  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts);
+  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts, dynamax);
 }
 
 /** Add the `<workflows>` catalog to every run that can call the workflow tool. */
@@ -514,6 +514,7 @@ function registerWorkflowTool(
   reviewSessions: ReviewSessionCoordinator,
   backgroundWorkflows: BackgroundWorkflowCoordinator,
   shortcuts: DynamaxShortcuts,
+  dynamax: DynamaxHandle,
 ): void {
   pi.registerTool({
     name: WORKFLOW_TOOL_NAME,
@@ -609,6 +610,14 @@ function registerWorkflowTool(
         const unavailable = backgroundUnavailableResult(ctx.mode);
         if (unavailable) return unavailable;
       }
+      const turnBudget = dynamax.turnBudget(ctx);
+      const budget = resolveTurnBudget(params.budget, turnBudget, { min: WORKFLOW_BUDGET_MIN, max: WORKFLOW_BUDGET_MAX });
+      if (budget.kind === "spent") {
+        return workflowToolError(
+          `The user's +${budget.total} output-token budget for this turn is spent by its earlier workflow runs. Do not start another workflow this turn unless the user raises the budget.`,
+          { error: "turn_budget_spent", total: budget.total },
+        );
+      }
 
       const runOptions = resolveWorkflowRunOptions({
         concurrency: params.concurrency,
@@ -619,7 +628,7 @@ function registerWorkflowTool(
         autoResumeOnUsageLimit: params.autoResumeOnUsageLimit,
         usageLimitMaxAttempts: params.usageLimitMaxAttempts,
         usageLimitMaxDelayMs: params.usageLimitMaxDelayMs,
-        budget: params.budget,
+        budget: budget.budget,
         perf: params.perf,
         resumeFromRunId,
         resumeEditedWorkflow: params.resumeEditedWorkflow,
@@ -690,6 +699,9 @@ function registerWorkflowTool(
           ...workflowToolError(`Workflow ${resultName} failed: ${message}`, { error: "workflow_failed", name: resultName, message }),
           usage: workflowUsageForPi(spent),
         };
+      } finally {
+        // Only synchronous runs draw the turn pool down; a background run's spend lands after the turn.
+        turnBudget?.spend(spent?.totals.output ?? 0);
       }
       reviewSessions.remember(ctx, envelope, runOptions);
       return {

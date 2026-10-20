@@ -21,8 +21,19 @@ export interface DynamaxState {
   turnActive: boolean;
 }
 
+/** The output-token pool a `+500k`-style directive in the user's prompt sets for that turn's workflow runs. */
+export interface DynamaxTurnBudget {
+  readonly total: number;
+  /** Tokens not yet spent by this turn's synchronous runs; never negative. */
+  remaining(): number;
+  /** Count a finished synchronous run's output tokens against the pool. */
+  spend(outputTokens: number): void;
+}
+
 export interface DynamaxRuntime {
   state: DynamaxState;
+  /** Set by a budget directive in a user prompt, cleared when that run ends. */
+  turnBudget?: DynamaxTurnBudget;
 }
 
 export type DynamaxRuntimeStore = Map<string, DynamaxRuntime>;
@@ -36,9 +47,16 @@ export interface DynamaxRegistrationOptions {
 export interface DynamaxHandle {
   /** Opt the next agent run in. The `input` hook ignores prompts this extension sends (pi tags them `source: "extension"`). */
   markOneShot(ctx: ExtensionContext): void;
+  /** The current turn's output-token pool, when the user's prompt set one. */
+  turnBudget(ctx: ExtensionContext): DynamaxTurnBudget | undefined;
 }
 
 export const DYNAMAX_TOKEN_PATTERN = /(^|[^A-Za-z0-9_])dynamax([^A-Za-z0-9_]|$)/i;
+/** `+500k`, `+1.5m`, `+2M`, `+250000`: after the start or whitespace, before the end, whitespace, or punctuation. */
+export const BUDGET_DIRECTIVE_PATTERN = /(?:^|\s)\+(\d+(?:\.\d+)?)([km]?)(?=$|\s|[.,;:!?)\]}"'])/i;
+/** Smaller values are ignored, so a `+1` or `+2` in ordinary prose never caps a run at a few tokens. */
+export const BUDGET_DIRECTIVE_MIN_TOKENS = 1_000;
+const BUDGET_DIRECTIVE_MULTIPLIERS: Readonly<Record<string, number>> = { "": 1, k: 1_000, m: 1_000_000 };
 export const DYNAMAX_STATUS_KEY = "dynamax";
 
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
@@ -98,6 +116,46 @@ export function getDynamaxRuntime(store: DynamaxRuntimeStore, ctx: Pick<Extensio
 
 export function hasDynamaxToken(text: string): boolean {
   return DYNAMAX_TOKEN_PATTERN.test(text);
+}
+
+/** The output tokens the first budget directive in `text` asks for, if any. */
+export function parseBudgetDirective(text: string): number | undefined {
+  const match = BUDGET_DIRECTIVE_PATTERN.exec(text);
+  if (!match) return undefined;
+  const multiplier = BUDGET_DIRECTIVE_MULTIPLIERS[(match[2] ?? "").toLowerCase()] ?? 1;
+  // Round, not floor: 2.3 * 1000 is 2299.999... in floating point.
+  const tokens = Math.round(Number(match[1]) * multiplier);
+  return Number.isSafeInteger(tokens) && tokens >= BUDGET_DIRECTIVE_MIN_TOKENS ? tokens : undefined;
+}
+
+export function createDynamaxTurnBudget(total: number): DynamaxTurnBudget {
+  let spent = 0;
+  return {
+    total,
+    remaining: () => Math.max(0, total - spent),
+    spend(outputTokens) {
+      if (Number.isFinite(outputTokens) && outputTokens > 0) spent += outputTokens;
+    },
+  };
+}
+
+export type DynamaxTurnBudgetResolution =
+  | { readonly kind: "budget"; readonly budget: number | undefined }
+  | { readonly kind: "spent"; readonly total: number };
+
+/**
+ * A run's budget: the explicit one when given, else the turn pool's remainder clamped to the run
+ * budget range, else none. A pool with less than `min` left is spent.
+ */
+export function resolveTurnBudget(
+  explicit: number | undefined,
+  pool: DynamaxTurnBudget | undefined,
+  range: { readonly min: number; readonly max: number },
+): DynamaxTurnBudgetResolution {
+  if (explicit !== undefined || pool === undefined) return { kind: "budget", budget: explicit };
+  const remaining = pool.remaining();
+  if (remaining < range.min) return { kind: "spent", total: pool.total };
+  return { kind: "budget", budget: Math.min(range.max, Math.floor(remaining)) };
 }
 
 export function markDynamaxOneShot(state: DynamaxState): void {
@@ -242,7 +300,10 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
   });
 
   pi.on("input", (event, ctx) => {
-    if (event.source !== "extension" && hasDynamaxToken(event.text)) markOneShot(ctx);
+    if (event.source === "extension") return { action: "continue" };
+    if (hasDynamaxToken(event.text)) markOneShot(ctx);
+    const budget = parseBudgetDirective(event.text);
+    if (budget !== undefined) getDynamaxRuntime(runtimes, ctx).turnBudget = createDynamaxTurnBudget(budget);
     return { action: "continue" };
   });
 
@@ -257,6 +318,7 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
   pi.on("agent_end", (_event, ctx) => {
     const runtime = getDynamaxRuntime(runtimes, ctx);
     if (!runtime.state.sticky) runtime.state.turnActive = false;
+    runtime.turnBudget = undefined;
     updateDynamaxSurfaces(ctx, runtime);
   });
 
@@ -296,7 +358,10 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
     },
   });
 
-  return { markOneShot };
+  return {
+    markOneShot,
+    turnBudget: (ctx) => getDynamaxRuntime(runtimes, ctx).turnBudget,
+  };
 }
 
 export function updateDynamaxSurfaces(ctx: Pick<ExtensionContext, "hasUI" | "ui">, runtime: DynamaxRuntime): void {

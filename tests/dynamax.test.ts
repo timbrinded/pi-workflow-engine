@@ -24,6 +24,10 @@ import {
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import {
   applyDynamaxPromptSection,
+  createDynamaxTurnBudget,
+  parseBudgetDirective,
+  resolveTurnBudget,
+  type DynamaxHandle,
   clearDynamax,
   createDynamaxRuntime,
   createDynamaxState,
@@ -118,6 +122,7 @@ interface CapturePiResult {
   commands: Map<string, CapturedCommand>;
   shortcuts: Map<KeyId, CapturedShortcut>;
   handlers: Map<string, CapturedHandler[]>;
+  handle: DynamaxHandle;
 }
 
 interface FakeUiState {
@@ -176,8 +181,8 @@ function captureDynamax(
     events: { on: () => {}, emit: async () => {} },
   } as unknown as ExtensionAPI;
 
-  registerDynamax(fakePi, { inspector: shortcut, results: null }, { effect: "shine", ...registrationOptions, openInspector: openInspector ?? (() => {}) });
-  return { commands, shortcuts, handlers };
+  const handle = registerDynamax(fakePi, { inspector: shortcut, results: null }, { effect: "shine", ...registrationOptions, openInspector: openInspector ?? (() => {}) });
+  return { commands, shortcuts, handlers, handle };
 }
 
 function createFakeContext(
@@ -627,6 +632,47 @@ test("/workflow:dynamax with no argument toggles sticky mode", async () => {
 
   await command.handler("sideways", ctx);
   assert.match(ui.notifications.at(-1)?.message ?? "", /no argument toggles sticky mode/);
+});
+
+test("a standalone +N directive sets a turn budget; other plus signs do not", () => {
+  assert.equal(parseBudgetDirective("+500k review this"), 500_000);
+  assert.equal(parseBudgetDirective("dynamax +1.5m"), 1_500_000);
+  assert.equal(parseBudgetDirective("go +2M."), 2_000_000);
+  assert.equal(parseBudgetDirective("spend\t+250000, then stop"), 250_000);
+  assert.equal(parseBudgetDirective("+2.3k"), 2_300);
+  for (const text of ["a+500k", "+500kb", "+500 k", "(+500k)", "C++ 20", "+1 to that", "+0.5k", "nothing here"]) {
+    assert.equal(parseBudgetDirective(text), undefined, text);
+  }
+});
+
+test("a turn budget pool supplies the remainder until it is spent; an explicit budget wins", () => {
+  const range = { min: 1, max: 1_000_000 };
+  const pool = createDynamaxTurnBudget(50_000);
+  assert.deepEqual(resolveTurnBudget(undefined, undefined, range), { kind: "budget", budget: undefined });
+  assert.deepEqual(resolveTurnBudget(undefined, pool, range), { kind: "budget", budget: 50_000 });
+  pool.spend(30_000);
+  pool.spend(Number.NaN);
+  assert.deepEqual(resolveTurnBudget(undefined, pool, range), { kind: "budget", budget: 20_000 });
+  assert.deepEqual(resolveTurnBudget(7_000, pool, range), { kind: "budget", budget: 7_000 });
+  assert.deepEqual(resolveTurnBudget(undefined, createDynamaxTurnBudget(5_000_000), range), { kind: "budget", budget: 1_000_000 });
+  pool.spend(25_000);
+  assert.equal(pool.remaining(), 0);
+  assert.deepEqual(resolveTurnBudget(undefined, pool, range), { kind: "spent", total: 50_000 });
+});
+
+test("the input hook sets the turn pool from user prompts only, and the run's end clears it", async () => {
+  const captured = captureDynamax();
+  const input = captured.handlers.get("input")?.[0];
+  const agentEnd = captured.handlers.get("agent_end")?.[0];
+  if (!input || !agentEnd) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx } = createFakeContext("turn-budget");
+
+  await input({ source: "extension", text: "+500k from an extension" }, ctx);
+  assert.equal(captured.handle.turnBudget(ctx), undefined);
+  await input({ source: "interactive", text: "+500k audit the parser" }, ctx);
+  assert.equal(captured.handle.turnBudget(ctx)?.total, 500_000);
+  await agentEnd({ messages: [] }, ctx);
+  assert.equal(captured.handle.turnBudget(ctx), undefined);
 });
 
 test("resolveDynamaxShortcuts reads configurable workflow UI shortcuts", () => {

@@ -599,6 +599,36 @@ and abort scope. Usage from failed attempts is retained, so it can exhaust the
 budget before the next retry begins. Host cancellation takes precedence over
 limit and timeout failures.
 
+### Turn budget directive
+
+Put a standalone `+N` token in a prompt to give that turn's workflow runs one
+shared output-token pool:
+
+```text
+dynamax +500k review this branch and verify every finding
++1.5m map every caller of the old API, then propose the migration
+```
+
+The token takes `k` or `m` suffixes in either case (`+500k`, `+1.5m`, `+2M`) or
+a plain count (`+250000`). It must follow the start of the prompt or whitespace
+and end at whitespace, punctuation, or the end, so `C++`, `a+500k`, or `+500kb`
+do not count, and values under 1,000 tokens are ignored so a `+1` in ordinary
+prose never caps a run. The first such token in a typed prompt wins; prompts
+that extensions send are not read.
+
+While the pool is active, a `workflow` tool call without its own `budget` runs
+with the pool's remainder as its budget (clamped to the tool's budget range),
+and each synchronous run's output tokens are subtracted once it finishes,
+failed or not. When less than one token remains, the tool refuses the call and
+tells the agent the turn's budget is spent. An explicit `budget` on the call
+still wins but its spend is still subtracted. The pool clears when the run that
+received the prompt ends.
+
+Background runs receive the current remainder as their budget but do not draw
+the pool down, because their usage lands after the turn. Parallel `workflow`
+calls in one assistant message each see the same remainder before any of them
+finishes. Per-run budget accounting is unchanged either way.
+
 Transient provider failures are retried in two layers. First, each subagent
 inherits pi's session-level automatic retry from your pi `retry` settings
 (enabled by default: 3 retries with 2s, 4s, 8s backoff). It retries the failed

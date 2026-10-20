@@ -419,6 +419,28 @@ test("the workflow tool is a model-only orchestrator that codemode scripts canno
   assert.equal(captureWorkflowTool().exposure, "model-only");
 });
 
+test("a +N prompt directive defaults the run budget to the turn pool until the turn ends", async () => {
+  const extension = captureWorkflowExtension();
+  const input = extension.handlers.get("input")?.[0];
+  const agentEnd = extension.handlers.get("agent_end")?.[0];
+  if (!input || !agentEnd) throw new Error("expected input and agent_end handlers");
+  const ctx = { ...HEADLESS_CTX, sessionManager: createSessionManager("turn-budget-tool") } as ExtensionContext;
+  const script = `
+export const meta = { name: "turn-budget-probe", description: "Reports its budget" };
+export default async function run({ budget }) {
+  return { summary: \`budget \${budget.total}\` };
+}
+`;
+  const budgetOf = async (params: { budget?: number } = {}) =>
+    toolResultText(await extension.tool.execute("call-turn-budget", { script, ...params }, undefined, () => {}, ctx));
+
+  await input({ source: "interactive", text: "+5k run the probe" }, ctx);
+  assert.match(await budgetOf(), /budget 5000/);
+  assert.match(await budgetOf({ budget: 1234 }), /budget 1234/);
+  await agentEnd({ messages: [] }, ctx);
+  assert.match(await budgetOf(), /budget null/);
+});
+
 test("workflow tool marks an unknown workflow as a failed call", async () => {
   const result = await captureWorkflowTool().execute("call-unknown", { name: "does-not-exist" }, undefined, () => {}, HEADLESS_CTX);
 
