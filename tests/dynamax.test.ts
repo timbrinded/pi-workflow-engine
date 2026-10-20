@@ -23,7 +23,6 @@ import {
   resolveDynamaxShortcuts,
 } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import {
-  ADAPTIVE_WORKFLOW_GUIDANCE,
   applyDynamaxPromptSection,
   clearDynamax,
   createDynamaxRuntime,
@@ -541,15 +540,10 @@ test("dynamax one-shot state is consumed by the prompt section", () => {
   assert.deepEqual(nextRun, {});
 });
 
-test("dynamax reminder teaches optional adaptive multi-pass workflows", () => {
-  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /simple single-pass fan-out/);
-  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /structured gap-analysis agent/);
-  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /ordinary TypeScript conditionals or bounded loops/);
-  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /only when gaps exist/);
-  assert.match(ADAPTIVE_WORKFLOW_GUIDANCE, /Do not generate a second pass when the first pass is sufficient/);
-  // The reminder carries only the opt-in; the workflow tool's guidelines carry the authoring rules.
-  assert.ok(!DYNAMAX_REMINDER.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
+test("the dynamax reminder carries only the opt-in, not the authoring rules", () => {
+  // The authoring rules live in the workflow-authoring skill that the tool's guidelines point to.
   assert.match(DYNAMAX_REMINDER, /workflow tool is permitted/);
+  assert.doesNotMatch(DYNAMAX_REMINDER, /maxItems|gap-analysis|profile/);
 });
 
 test("dynamax sticky mode remains active until cleared", () => {

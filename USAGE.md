@@ -533,6 +533,7 @@ Inline rules:
 
 - start with `export const meta = { ... }`;
 - default-export an async workflow function;
+- write plain JavaScript: the script compiles in-process, so TypeScript annotations do not parse;
 - no imports or dynamic `import()`;
 - use the injected `Type` object for schemas;
 - request `profile: "small"`, `"medium"`, or `"big"` instead of hard-coding provider models when the stage is portable;
@@ -540,6 +541,8 @@ Inline rules:
 - no extra exports or code after the default export.
 
 Inline workflows run in-process with extension permissions, so treat them as trusted task automation.
+
+The host agent's reference for writing these scripts is the bundled `workflow-authoring` skill (`skills/workflow-authoring/SKILL.md`). The `workflow` tool's guidelines stay short (the opt-in rule, the target and `Type` rules, profiles, the worktree return shape, host MCP reach, and the run-mode flags) and tell the model to read the skill before it writes or edits a script. The skill covers the full API, why fan-out uses `api.parallel` rather than `Promise.all` and defaults to `api.pipeline`, verification and completeness patterns, budget loops, worktree edits, resume, and saving a reusable workflow.
 
 ## Runtime knobs
 

@@ -59,19 +59,13 @@ const DYNAMAX_ACTION_COMPLETIONS = [
   { value: "status", description: "Show the current Dynamax state" },
 ] as const;
 
-export const ADAPTIVE_WORKFLOW_GUIDANCE = `
-Adaptive multi-pass workflows are optional. Use a simple single-pass fan-out when it is sufficient. When the first pass may expose gaps, conflicts, weak claims, or missing evidence:
-- run the bounded first-pass agents;
-- give their surviving results to a structured gap-analysis agent so the LLM decides what needs follow-up;
-- put a hard maxItems bound on LLM-authored task arrays and defensively slice them before fan-out;
-- use ordinary TypeScript conditionals or bounded loops to launch follow-up agents only when gaps exist;
-- synthesize the first-pass and follow-up results together.
-Do not generate a second pass when the first pass is sufficient, and do not invent iteration, quorum, graph, reduction, or retry primitives for this pattern.`;
-
 /** System prompt section pi wraps as `<dynamax>`; adding or dropping it appends a section patch instead of rewriting the prompt. */
 export const DYNAMAX_SECTION = "dynamax";
 
-/** Only the opt-in itself: the authoring rules already reach the model as the workflow tool's guidelines. */
+/**
+ * Only the opt-in itself: the workflow tool's guidelines send the model to the workflow-authoring
+ * skill, which carries the authoring rules and patterns.
+ */
 export const DYNAMAX_REMINDER =
   "The user opted into dynamax multi-agent orchestration for this request, so the workflow tool is permitted. " +
   "Run a registered workflow by name, or author an inline workflow script when none fits, following the workflow tool's guidelines.";

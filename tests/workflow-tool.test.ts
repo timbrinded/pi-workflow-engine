@@ -11,7 +11,6 @@ import {
   normalizeWorkflowToolRequest,
   openWorkflowInspector,
 } from "../.pi/extensions/pi-workflow-engine/index.ts";
-import { ADAPTIVE_WORKFLOW_GUIDANCE } from "../.pi/extensions/pi-workflow-engine/src/dynamax.ts";
 import { DEFAULT_REVIEW_RESULTS_SHORTCUT } from "../.pi/extensions/pi-workflow-engine/src/dynamax-shortcuts.ts";
 import { isRecord } from "../.pi/extensions/pi-workflow-engine/src/guards.ts";
 import { compileInlineWorkflow, InlineWorkflowCompileError } from "../.pi/extensions/pi-workflow-engine/src/inline-workflow.ts";
@@ -242,21 +241,37 @@ test("RPC command and inspector surfaces use native selection and text instead o
   assert.match(notifications.at(-1) ?? "", /Workflow inspector: rpc-inspection/);
 });
 
-test("tool and documentation guidance teach adaptive follow-up; the authoring prompt defers to them", () => {
+function authoringSkillPath(): string {
+  const toolGuidance = captureWorkflowTool().promptGuidelines?.join("\n") ?? "";
+  const path = /read the workflow-authoring skill \(([^)]+)\)/.exec(toolGuidance)?.[1];
+  assert.ok(path, "expected the workflow tool guidelines to name the workflow-authoring skill path");
+  return path;
+}
+
+test("the authoring skill and usage guide teach adaptive follow-up; the tool and authoring prompt point to the skill", () => {
   const temporaryPrompt = buildTemporaryWorkflowAuthorPrompt("investigate the parser");
-  const toolGuidance = captureWorkflowTool().promptGuidelines?.join("\n");
-  assert.ok(toolGuidance, "expected the registered workflow tool to provide prompt guidelines");
+  const skill = readFileSync(authoringSkillPath(), "utf8");
   const usage = readFileSync(new URL("../USAGE.md", import.meta.url), "utf8");
 
-  // The authoring prompt defers to the tool's guidelines instead of repeating them.
-  assert.ok(!temporaryPrompt.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
-  assert.ok(toolGuidance.includes(ADAPTIVE_WORKFLOW_GUIDANCE));
-  for (const text of [toolGuidance, usage]) {
+  assert.match(temporaryPrompt, /read the workflow-authoring skill/);
+  for (const text of [skill, usage]) {
     assert.match(text, /first.pass/i);
     assert.match(text, /structured gap.analysis/i);
     assert.match(text, /follow.up/i);
-    assert.match(text, /TypeScript/);
     assert.match(text, /sufficient/);
+  }
+});
+
+test("every authoring-skill example compiles as inline workflow code", () => {
+  const skill = readFileSync(authoringSkillPath(), "utf8");
+  const examples = [...skill.matchAll(/```js\n([\s\S]*?)\n```/g)].map((match) => match[1] ?? "");
+  assert.ok(examples.length >= 4, `expected several skill examples, found ${examples.length}`);
+  for (const example of examples) {
+    // Full scripts compile as they are; fragments compile as the body of a default export.
+    const script = example.startsWith("export const meta")
+      ? example
+      : `export const meta = { name: "skill-example" };\nexport default async function run(api) {\n${example}\n}`;
+    assert.doesNotThrow(() => compileInlineWorkflow(script), `skill example did not compile:\n${example}`);
   }
 });
 

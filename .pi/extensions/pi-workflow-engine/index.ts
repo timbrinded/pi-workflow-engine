@@ -8,7 +8,7 @@ import { WORKFLOW_TOOL_NAME, type LoadedWorkflow, type WorkflowModule, type Work
 import { showWorkflowInspector } from "./src/ui/workflow-inspector.ts";
 import { WorkflowPicker } from "./src/ui/workflow-picker.ts";
 import type { PerfSink } from "./src/perf.ts";
-import { ADAPTIVE_WORKFLOW_GUIDANCE, registerDynamax } from "./src/dynamax.ts";
+import { registerDynamax } from "./src/dynamax.ts";
 import { sessionKey } from "./src/session-identity.ts";
 import { resolveDynamaxShortcuts, type DynamaxShortcuts } from "./src/dynamax-shortcuts.ts";
 import { ReviewSessionCoordinator } from "./src/review/review-session-coordinator.ts";
@@ -46,6 +46,8 @@ import { createHostToolBridge } from "./src/host-tools.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
+/** The package's authoring skill, named by path so the guideline still resolves when skills are filtered out. */
+const WORKFLOW_AUTHORING_SKILL_PATH = fileURLToPath(new URL("../../../skills/workflow-authoring/SKILL.md", import.meta.url));
 
 type DiscoveryModule = typeof import("./src/discovery.ts");
 type EngineModule = typeof import("./src/engine.ts");
@@ -201,7 +203,7 @@ export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {
 User brief:
 ${brief.trim()}
 
-Use the workflow tool with a script argument, not a saved workflow name, and follow its guidelines for inline scripts.
+Use the workflow tool with a script argument, not a saved workflow name, and read the workflow-authoring skill before writing the script.
 Do not edit files unless the user explicitly requested edits.`;
 }
 
@@ -496,25 +498,16 @@ function registerWorkflowTool(
     // concurrency cap. It also stays declared under `codemode.mode: "only"`, which hides direct tools.
     exposure: "model-only",
     promptGuidelines: [
-      "Use workflow only when the user opted into workflow orchestration via `dynamax`, `/workflow:dynamax on`, an explicit request to run/author a workflow, or a command/skill instruction.",
-      "Use workflow with `name` for existing registered workflows such as code-review, diagnose, refactor-scout, or perf-review.",
-      "Use workflow with `script` for a new one-off inline workflow; the script must start with `export const meta = { ... }` and default-export an async workflow function.",
-      "Inline workflow scripts must use the injected `Type` object for schemas and must not contain imports or dynamic import().",
-      "Inline scripts may compose registered workflows in-process via `api.workflow(\"<name>\", args)` (e.g. `await api.workflow(\"code-review\", \"HEAD~3\")`); it returns the sub-workflow's result and nests one level only.",
-      "Subagents receive no skills by default. In inline workflows, pass `skills: [\"skill-name\"]` per `agent()` call when the user asks for a skill or a stage should use one; grant only the needed skills.",
+      "Use workflow only when the user opted into workflow orchestration via `dynamax`, sticky `/workflow:dynamax`, an explicit request to run/author a workflow, or a command/skill instruction.",
+      `Before writing or editing an inline workflow script, read the workflow-authoring skill (${WORKFLOW_AUTHORING_SKILL_PATH}); it is the script API and pattern reference.`,
+      "Every workflow tool call must provide exactly one of `name`, `script`, or `scriptPath`.",
+      "Inline workflow scripts must use the injected `Type` global for schemas and must not contain imports or dynamic import().",
       "Set `profile: \"small\"`, `\"medium\"`, or `\"big\"` on every `api.agent()` call so the user's central model routes apply; use `model`/`thinkingLevel` only for an intentional override.",
-      "Always pass a plain string as the first `api.agent()` argument; build prompts with template strings before calling agent().",
       "When using `isolation: \"worktree\"`, `api.agent()` returns `{ result, patch, changed }`; use `.result` for the answer and `.patch` for the isolated diff.",
-      "If an inline subagent needs grep/find/code-search helpers, use `tools: [\"read\", \"bash\", \"grep\", \"find\", \"ls\"]` plus `toolHints: [\"search\"]` so installed tools such as ast-grep, mgrep, ffgrep, or fffind are discovered dynamically.",
-      "Add \"codemode\" to an inline agent's `tools` when it should batch or filter many tool calls in one script; its scripts can call only that agent's other allowed tools.",
-      "`api.classify({ state, questions }, { label })` answers typed choice/score/bool questions with a classifier model and no chat session; use it for cheap gates such as dedup or triage, and handle its rejection when no classifier is configured.",
-      "Host MCP tools reach subagents only in synchronous workflow tool runs: name them in `tools` (e.g. `mcp__server__tool`), or use `toolHints: [\"external-search\"]` to pick up MCP web research tools.",
-      "`api.budget` exposes `{ total, spent(), remaining() }` (output tokens). When the run is budgeted, scale fleets from `budget.total` and guard loops with `while (budget.total && budget.remaining() > N) { await api.agent(...) }`; `api.agent()` throws once the ceiling is reached.",
-      ADAPTIVE_WORKFLOW_GUIDANCE,
+      "Host MCP tools reach subagents only in synchronous workflow tool runs, never in background runs.",
       "Set background: true only when the user explicitly wants the workflow to continue after this tool call; the tool returns a durable run ID and completion is delivered later.",
       "Set autoResumeOnUsageLimit: true only for an explicitly backgrounded workflow when the user wants bounded automatic continuation after a recognized provider usage window.",
       "Set resumeEditedWorkflow: true only with resumeFromRunId when the user explicitly accepts reusing behaviorally identical calls after workflow source edits.",
-      "Every workflow tool call must provide exactly one of `name` or `script`, never both.",
     ],
     parameters: Type.Object({
       name: Type.Optional(Type.String({ description: "Workflow name, e.g. code-review. Provide exactly one of name or script." })),

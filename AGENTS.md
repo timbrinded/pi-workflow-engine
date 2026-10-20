@@ -47,6 +47,7 @@ Example: `.pi/extensions/pi-workflow-engine/workflows/code-review.ts` — Scope 
 - `.pi/extensions/pi-workflow-engine/src/discovery.ts` + `.pi/extensions/pi-workflow-engine/src/workflows.ts` — static registry (`BUILTIN_WORKFLOW_DEFINITIONS`) plus best-effort dynamic drop-in loading.
 - `.pi/extensions/pi-workflow-engine/src/inline-workflow.ts` — inline workflow compiler (`script` string → `WorkflowModule`) with pure-literal `export const meta` extraction and injected Type schemas.
 - `.pi/extensions/pi-workflow-engine/src/dynamax.ts` — `dynamax` trigger/sticky state and the `<dynamax>` system prompt section.
+- `skills/workflow-authoring/SKILL.md` — the host model's script-authoring reference. The `workflow` tool's `promptGuidelines` name it by path and stay short; put new authoring rules and patterns in the skill (its `js` examples must compile as inline workflows; a test checks).
 - `.pi/extensions/pi-workflow-engine/src/host-tools.ts` — bridge that lets subagents call host MCP tools via `ctx.executeTool`.
 - `.pi/extensions/pi-workflow-engine/src/classify.ts` — `api.classify()` over `ctx.modelRegistry.classify()`.
 - `.pi/extensions/pi-workflow-engine/src/types.ts` — `WorkflowApi` / `WorkflowModule` / `AgentOptions` contracts.
