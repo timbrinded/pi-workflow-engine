@@ -12,6 +12,7 @@ export interface CapturedTool {
   readonly name: string;
   readonly exposure?: string;
   readonly promptGuidelines?: readonly string[];
+  readonly reachesTools?: (input: Record<string, unknown>) => "all" | readonly string[];
   execute(
     toolCallId: string,
     params: {

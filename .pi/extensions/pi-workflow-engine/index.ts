@@ -1,4 +1,5 @@
-import { relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { getSelectListTheme, keyText, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -55,6 +56,7 @@ import { appendSectionToForcedPrompt } from "./src/prompt-sections.ts";
 import { WORKFLOWS_SECTION, WorkflowCatalogPrompt } from "./src/workflow-catalog.ts";
 import { registerWorkflowSizeCommand, resolveWorkflowSize, workflowSettingsPaths } from "./src/workflow-settings.ts";
 import { isRecord } from "./src/guards.ts";
+import { workflowToolReach } from "./src/workflow-tool-reach.ts";
 
 /** Extension root (this file lives in <repo>/.pi/extensions/pi-workflow-engine/index.ts). */
 const EXTENSION_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -574,7 +576,7 @@ export default function workflowEngine(pi: ExtensionAPI, shortcuts: DynamaxShort
     },
   });
 
-  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts, dynamax);
+  registerWorkflowTool(pi, reviewSessions, backgroundWorkflows, shortcuts, dynamax, sessionDirs);
 }
 
 /** Add the `<workflows>` catalog to every run that can call the workflow tool. */
@@ -608,6 +610,7 @@ function registerWorkflowTool(
   backgroundWorkflows: BackgroundWorkflowCoordinator,
   shortcuts: DynamaxShortcuts,
   dynamax: DynamaxHandle,
+  sessionDirs: () => WorkflowSessionDirs | undefined,
 ): void {
   pi.registerTool({
     name: WORKFLOW_TOOL_NAME,
@@ -619,6 +622,9 @@ function registerWorkflowTool(
     // run would lose its tool row, hit the script's output cap, and parallel runs would each get their own
     // concurrency cap. It also stays declared under `codemode.mode: "only"`, which hides direct tools.
     exposure: "model-only",
+    // pi passes no context here; a relative scriptPath resolves against the active session's cwd.
+    reachesTools: (input) =>
+      workflowToolReach(input, (scriptPath) => readFileSync(resolve(sessionDirs()?.cwd ?? process.cwd(), scriptPath), "utf8")),
     promptGuidelines: [
       "Use workflow only when the user opted into workflow orchestration via `dynamax`, sticky `/workflow:dynamax`, an explicit request to run/author a workflow, or a command/skill instruction.",
       `Before writing or editing an inline workflow script, read the workflow-authoring skill (${WORKFLOW_AUTHORING_SKILL_PATH}); it is the script API and pattern reference.`,
