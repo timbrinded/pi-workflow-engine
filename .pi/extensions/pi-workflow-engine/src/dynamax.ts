@@ -4,6 +4,7 @@ import { completeCurrentArgument } from "./command-completions.ts";
 import type { DynamaxShortcuts } from "./dynamax-shortcuts.ts";
 import { appendSectionToForcedPrompt } from "./prompt-sections.ts";
 import { sessionKey } from "./session-identity.ts";
+import { WORKFLOW_TOOL_NAME } from "./types.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
 import { dot, GLYPH } from "./ui/kit.ts";
 import { setWorkflowInspectorShortcut } from "./ui/workflow-widget.ts";
@@ -310,8 +311,11 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
   });
 
   pi.on("before_agent_start", (event, ctx) => {
-    const runtime = getDynamaxRuntime(runtimes, ctx);
     const options = event.systemPromptOptions;
+    // Subagent sessions load this extension but withhold the workflow tool, so a `dynamax` in a
+    // subagent prompt must neither permit that tool nor consume the one-shot.
+    if (!options.selectedTools.includes(WORKFLOW_TOOL_NAME)) return undefined;
+    const runtime = getDynamaxRuntime(runtimes, ctx);
     if (!applyDynamaxPromptSection(options.sections, runtime.state, event.messageType)) return undefined;
     updateDynamaxSurfaces(ctx, runtime);
     return appendSectionToForcedPrompt(options, DYNAMAX_SECTION);

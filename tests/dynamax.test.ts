@@ -615,11 +615,31 @@ test("the before_agent_start hook passes the run's message type through", async 
 
   await input({ source: "interactive", text: "dynamax look into it" }, ctx);
   const custom: Record<string, string> = {};
-  await beforeAgentStart({ messageType: "custom", systemPrompt: "base", systemPromptOptions: { sections: custom } }, ctx);
+  await beforeAgentStart({ messageType: "custom", systemPrompt: "base", systemPromptOptions: { selectedTools: ["workflow"], sections: custom } }, ctx);
   assert.equal(custom[DYNAMAX_SECTION], undefined);
   const user: Record<string, string> = {};
-  await beforeAgentStart({ messageType: "user", systemPrompt: "base", systemPromptOptions: { sections: user } }, ctx);
+  await beforeAgentStart({ messageType: "user", systemPrompt: "base", systemPromptOptions: { selectedTools: ["workflow"], sections: user } }, ctx);
   assert.equal(user[DYNAMAX_SECTION], DYNAMAX_REMINDER);
+});
+
+test("a run without the workflow tool gets no Dynamax section and leaves the one-shot armed", async () => {
+  const captured = captureDynamax("ctrl+shift+x");
+  const input = captured.handlers.get("input")?.[0];
+  const beforeAgentStart = captured.handlers.get("before_agent_start")?.[0];
+  if (!input || !beforeAgentStart) throw new Error("expected Dynamax lifecycle handlers");
+  const { ctx } = createFakeContext("subagent");
+
+  // A subagent's prompt arrives as an interactive input, and its session withholds the workflow tool.
+  await input({ source: "interactive", text: "review src/dynamax.ts for regressions" }, ctx);
+  const subagent: Record<string, string> = {};
+  const result = await beforeAgentStart({ messageType: "user", systemPrompt: "base", systemPromptOptions: { selectedTools: ["read"], sections: subagent } }, ctx);
+  assert.equal(result, undefined);
+  assert.deepEqual(subagent, {});
+  assert.equal(captured.handle.isActive(ctx), true, "the one-shot still waits for a run that can use it");
+
+  const host: Record<string, string> = {};
+  await beforeAgentStart({ messageType: "user", systemPrompt: "base", systemPromptOptions: { selectedTools: ["read", "workflow"], sections: host } }, ctx);
+  assert.equal(host[DYNAMAX_SECTION], DYNAMAX_REMINDER);
 });
 
 test("/workflow:dynamax with no argument toggles sticky mode", async () => {
@@ -791,7 +811,7 @@ test("one-shot Dynamax status remains visible for the active turn", async () => 
   assert.equal(ui.statuses.get(DYNAMAX_STATUS_KEY), "◆ dynamax · next prompt");
 
   const sections: Record<string, string> = {};
-  const result = await beforeAgentStart({ systemPrompt: "base", systemPromptOptions: { sections } }, ctx);
+  const result = await beforeAgentStart({ systemPrompt: "base", systemPromptOptions: { selectedTools: ["workflow"], sections } }, ctx);
   // A section patch keeps pi's cached prompt head; returning systemPrompt would force a full replacement.
   assert.equal(result, undefined);
   assert.equal(sections[DYNAMAX_SECTION], DYNAMAX_REMINDER);
@@ -811,7 +831,7 @@ test("Dynamax appends to a prompt an earlier extension forced, since pi renders 
   const { ctx } = createFakeContext("forced-prompt");
 
   await input({ source: "interactive", text: "dynamax review this" }, ctx);
-  const result = await beforeAgentStart({ systemPrompt: "Forced.", systemPromptOptions: { sections: {}, forceSystemPrompt: "Forced." } }, ctx);
+  const result = await beforeAgentStart({ systemPrompt: "Forced.", systemPromptOptions: { selectedTools: ["workflow"], sections: {}, forceSystemPrompt: "Forced." } }, ctx);
 
   assert.deepEqual(result, { systemPrompt: `Forced.\n\n<${DYNAMAX_SECTION}>\n${DYNAMAX_REMINDER}\n</${DYNAMAX_SECTION}>` });
 });
