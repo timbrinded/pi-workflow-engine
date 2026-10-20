@@ -568,7 +568,7 @@ function isPhaseSnapshot(value: unknown): boolean {
 
 function isAgentSnapshot(value: unknown): boolean {
   if (!isRecord(value) || !isFiniteNumber(value.id) || typeof value.label !== "string") return false;
-  if (value.status !== "queued" && value.status !== "running" && value.status !== "done" && value.status !== "failed") return false;
+  if (value.status !== "queued" && value.status !== "running" && value.status !== "done" && value.status !== "failed" && value.status !== "skipped") return false;
   if (!isFiniteNumber(value.toolUses)) return false;
   if (value.startedAt !== undefined && !isFiniteNumber(value.startedAt)) return false;
   if (value.doneAt !== undefined && !isFiniteNumber(value.doneAt)) return false;

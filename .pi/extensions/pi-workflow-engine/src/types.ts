@@ -101,6 +101,8 @@ export interface WorkflowProgressSource {
   snapshot(): WorkflowProgressSnapshot;
   /** Durable lifecycle state of the run, so a finished snapshot can tell completed from failed. */
   readonly state?: () => WorkflowRunState;
+  /** Skip one running agent by its progress row id; false when it is no longer running. */
+  readonly skipAgent?: (agentId: number) => boolean;
 }
 
 /** Options for a single `agent()` call. */

@@ -51,6 +51,7 @@ function createProgress(): CaptureProgress {
     agentTool() {},
     agentDone() {},
     agentFailed() {},
+    agentSkipped() {},
     phase() {},
     event(event: WorkflowProgressEvent) {
       events.push(event);

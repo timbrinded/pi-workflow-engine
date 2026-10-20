@@ -62,11 +62,11 @@ function queuedRecord(runId: string): WorkflowRunRecord {
   });
 }
 
-function completedRecord(runId: string, at = 3): WorkflowRunRecord {
+function completedRecord(runId: string, at = 3, finalProgress: Partial<WorkflowProgressSnapshot> = {}): WorkflowRunRecord {
   const running = transitionWorkflowRun(queuedRecord(runId), { state: "running", progress: progress(runId), at: 2 });
   return transitionWorkflowRun(running, {
     state: "completed",
-    progress: progress(runId, { doneAt: at }),
+    progress: progress(runId, { doneAt: at, ...finalProgress }),
     usage: USAGE,
     result: { summary: "done" },
     at,
@@ -237,10 +237,15 @@ test("project run store atomically reloads records and isolates corrupt or futur
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-run-store-"));
   try {
     const store = new ProjectWorkflowRunStore(cwd);
-    await store.save(completedRecord("kept"));
+    const agents = [
+      { id: 1, label: "finder", status: "done" as const, toolUses: 1, startedAt: 2, doneAt: 3 },
+      { id: 2, label: "slow", status: "skipped" as const, toolUses: 0, startedAt: 2, doneAt: 3 },
+    ];
+    await store.save(completedRecord("kept", 3, { phases: [{ title: "Find", agents }] }));
     const reloaded = await new ProjectWorkflowRunStore(cwd).load("kept");
     assert.equal(reloaded?.state, "completed");
     assert.equal(reloaded?.runId, "kept");
+    assert.deepEqual(reloaded?.progress.phases[0]?.agents.map((agent) => agent.status), ["done", "skipped"]);
     assert.equal((await stat(workflowRunRecordPath(cwd, "kept"))).mode & 0o777, 0o600);
 
     const futureFields = { ...completedRecord("future-fields"), futureField: { nested: true } };

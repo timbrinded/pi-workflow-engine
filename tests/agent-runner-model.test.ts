@@ -105,7 +105,7 @@ test("a model routing failure gets its own failed row instead of failing a same-
   const rows = tracker.snapshot().phases.flatMap((phase) => phase.agents);
   assert.deepEqual(rows.map((row) => [row.label, row.status]), [["agent", "done"], ["agent", "failed"]]);
   assert.match(rows[1]?.error ?? "", /openai\/missing/);
-  assert.deepEqual(tracker.statusCounts(), { queued: 0, running: 0, done: 1, failed: 1, total: 2 });
+  assert.deepEqual(tracker.statusCounts(), { queued: 0, running: 0, done: 1, failed: 1, skipped: 0, total: 2 });
 });
 
 test("runAgent refuses to start once the run is over budget", async () => {

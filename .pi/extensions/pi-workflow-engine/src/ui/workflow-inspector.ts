@@ -40,6 +40,12 @@ export interface WorkflowInspectorOutcome {
 
 type OutcomeSource = WorkflowInspectorOutcome | (() => WorkflowInspectorOutcome | undefined);
 
+/** Actions on a live run. A retained or finished run has none, so its inspector is read-only. */
+export interface WorkflowInspectorControls {
+  /** Skip one running agent by its progress row id; false when it is no longer running. */
+  readonly skipAgent?: (agentId: number) => boolean;
+}
+
 /** The tables need about 80 columns, so narrow terminals give the inspector nearly full width instead of 80%. */
 export const WORKFLOW_INSPECTOR_OVERLAY_OPTIONS = {
   overlay: true,
@@ -51,9 +57,10 @@ export async function showWorkflowInspector(
   ui: Pick<ExtensionContext["ui"], "custom">,
   snapshot: () => WorkflowProgressSnapshot,
   outcome?: OutcomeSource,
+  controls?: WorkflowInspectorControls,
 ): Promise<void> {
   await ui.custom<void>(
-    (...[tui, theme, , done]) => new WorkflowInspector(snapshot, tui, theme, () => done(undefined), outcome),
+    (...[tui, theme, , done]) => new WorkflowInspector(snapshot, tui, theme, () => done(undefined), outcome, controls),
     WORKFLOW_INSPECTOR_OVERLAY_OPTIONS,
   );
 }
@@ -113,6 +120,12 @@ export class WorkflowInspector {
   private readonly cursorIndexes = new Map<TabId, number>();
   private readonly scrollOffsets = new Map<TabId, number>();
   private readonly expanded = new Set<string>();
+  /** Agents whose skip was sent; they keep running until their session winds down. */
+  private readonly skipRequested = new Set<number>();
+  /** Agent armed by a first skip press; any other key disarms it. */
+  private pendingSkip: number | undefined;
+  /** One-keypress footer warning, as in the runs browser. */
+  private notice: string | undefined;
   private refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
@@ -121,6 +134,7 @@ export class WorkflowInspector {
     private readonly theme: Theme,
     private readonly close: () => void,
     private readonly outcomeSource?: OutcomeSource,
+    private readonly controls?: WorkflowInspectorControls,
   ) {}
 
   handleInput(data: string): void {
@@ -128,6 +142,10 @@ export class WorkflowInspector {
       this.close();
       return;
     }
+    const armedSkip = this.pendingSkip;
+    const hadNotice = this.notice !== undefined;
+    this.pendingSkip = undefined;
+    this.notice = undefined;
     const tabs = this.tabs(this.outcome());
     const digit = TAB_DIGITS.findIndex((candidate) => matchesKey(data, candidate));
     if (matchesKey(data, "tab") || matchesKey(data, "right")) this.tabIndex = (this.tabIndex + 1) % tabs.length;
@@ -142,7 +160,8 @@ export class WorkflowInspector {
     else if (matchesKey(data, "g") || matchesKey(data, "home")) this.move(-Infinity);
     else if (data === "G" || matchesKey(data, "shift+g") || matchesKey(data, "end")) this.move(Infinity);
     else if (matchesKey(data, "enter") || matchesKey(data, "return")) this.toggleExpanded();
-    else return;
+    else if (matchesKey(data, "s")) this.skipSelected(armedSkip);
+    else if (!hadNotice) return;
     this.tui.requestRender();
   }
 
@@ -175,11 +194,12 @@ export class WorkflowInspector {
     const title = `${this.theme.fg("accent", GLYPH.workflow)} ${this.theme.bold(snapshot.title)}`;
     // Border chrome around the two labels: `╭─ ` + title + ` ` … ` ` + right + ` ─╮`, plus one fill cell.
     const rightRoom = Math.max(0, width - visibleWidth(title) - 9);
+    const skippable = this.skippableAgent(active, snapshot, status) !== undefined;
     return frame(
       [tabLine, "", ...visible, ...Array.from({ length: viewRows - visible.length }, () => "")],
       width,
       this.theme,
-      { title, right: this.headerStatus(snapshot, status, rightRoom), footer: this.footer(active, rows, viewRows, offset, below, width) },
+      { title, right: this.headerStatus(snapshot, status, rightRoom), footer: this.footer(active, rows, viewRows, offset, below, width, skippable) },
     );
   }
 
@@ -250,6 +270,29 @@ export class WorkflowInspector {
     else this.expanded.add(key);
   }
 
+  /** Skipping ends live work, so like stopping a run in the runs browser it takes a second press on the same agent. */
+  private skipSelected(armed: number | undefined): void {
+    const snapshot = this.snapshotProvider();
+    const agent = this.skippableAgent(this.activeTab(), snapshot, runStatus(snapshot, this.outcome()?.state));
+    if (!agent) return;
+    if (armed !== agent.id) {
+      this.pendingSkip = agent.id;
+      this.notice = `press s again to skip ${agent.label}`;
+      return;
+    }
+    if (this.controls?.skipAgent?.(agent.id)) this.skipRequested.add(agent.id);
+    else this.notice = `${agent.label} is no longer running`;
+  }
+
+  /** The selected agent when it can be skipped: a running row of a live run whose source accepts skips. */
+  private skippableAgent(tab: TabId, snapshot: WorkflowProgressSnapshot, status: RunStatus): AgentRowSnapshot | undefined {
+    if (!this.controls?.skipAgent || tab !== "agents" || !status.live) return undefined;
+    const agents = snapshot.phases.flatMap((phase) => phase.agents);
+    const selected = this.selectedKey("agents", agents.map(agentKey));
+    const agent = agents.find((candidate) => agentKey(candidate) === selected);
+    return agent?.status === "running" && !this.skipRequested.has(agent.id) ? agent : undefined;
+  }
+
   /** Resolves the cursor by key so live rows inserted above it do not move the selection. */
   private cursorIndex(tab: TabId, keys: readonly string[]): number {
     const byKey = keys.indexOf(this.cursorKeys.get(tab) ?? "");
@@ -301,25 +344,30 @@ export class WorkflowInspector {
     const th = this.theme;
     const agents = snapshot.phases.flatMap((phase) => phase.agents);
     const failed = agents.filter((agent) => agent.status === "failed").length;
-    // A run that finished around failed agents is complete but not clean.
-    const degraded = !status.live && failed > 0 && status.color === "success";
+    const skipped = agents.filter((agent) => agent.status === "skipped").length;
+    // A run that finished around failed or skipped agents is complete but not clean.
+    const degraded = !status.live && failed + skipped > 0 && status.color === "success";
     const state = degraded ? th.fg("warning", `${GLYPH.warning} ${status.word}`) : th.fg(status.color, `${status.glyph} ${status.word}`);
     const failures = failed > 0 ? th.fg("error", `${failed} failed`) : undefined;
+    const skips = skipped > 0 ? th.fg("warning", `${skipped} skipped`) : undefined;
     const runId = th.fg("dim", `run ${snapshot.runId.slice(0, 8)}`);
     if (status.live) {
-      const finished = agents.filter((agent) => agent.status === "done" || agent.status === "failed").length;
+      const finished = agents.filter((agent) => agent.status === "done" || agent.status === "failed" || agent.status === "skipped").length;
       const progress = agents.length > 0 ? `${snapshot.currentPhase} ${finished}/${agents.length}` : snapshot.currentPhase;
-      return fitParts([state, th.fg("muted", progress), failures, th.fg("muted", formatDuration(Date.now() - snapshot.startedAt)), runId], room, th);
+      return fitParts([state, th.fg("muted", progress), failures, skips, th.fg("muted", formatDuration(Date.now() - snapshot.startedAt)), runId], room, th);
     }
     const elapsed = snapshot.doneAt !== undefined ? th.fg("muted", formatDuration(snapshot.doneAt - snapshot.startedAt)) : undefined;
-    return fitParts([state, failures, elapsed, runId], room, th);
+    return fitParts([state, failures, skips, elapsed, runId], room, th);
   }
 
-  private footer(tab: TabId, rows: readonly Row[], viewRows: number, offset: number, below: number, width: number): string {
+  private footer(tab: TabId, rows: readonly Row[], viewRows: number, offset: number, below: number, width: number, skippable: boolean): string {
+    if (this.notice) return this.theme.fg("warning", `${GLYPH.warning} ${this.notice}`);
     const clipped = rows.length > viewRows;
     const pairs: (readonly [string, string])[] = [["tab", "sections"]];
     if (LIST_TABS.has(tab) && selectableKeys(rows).length > 0) pairs.push(["↑↓", "move"], ["enter", "expand"]);
     else if (clipped) pairs.push(["↑↓", "scroll"]);
+    // Like the runs browser's action keys, skip is listed only while the selection can take it.
+    if (skippable) pairs.push(["s", "skip"]);
     pairs.push(["q", "close"]);
     const hints = keyHints(pairs, this.theme);
     const scroll = [offset > 0 ? `↑ ${offset} more` : undefined, below > 0 ? `↓ ${below} more` : undefined].filter(Boolean).join("  ");
@@ -367,6 +415,7 @@ export class WorkflowInspector {
           countNote(phase.agents, "running", "accent", th),
           countNote(phase.agents, "queued", "dim", th),
           countNote(phase.agents, "failed", "error", th),
+          countNote(phase.agents, "skipped", "warning", th),
         ],
         th,
       );
@@ -449,9 +498,8 @@ export class WorkflowInspector {
     const now = Date.now();
     const rows: Row[] = [];
     for (const phase of phases) {
-      const failed = phase.agents.filter((agent) => agent.status === "failed").length;
-      const note = failed > 0 ? ` ${th.fg("error", `${failed} failed`)}` : "";
-      rows.push({ text: `  ${th.bold(th.fg("muted", phase.title))}${note}`, heading: true });
+      const notes = joinParts([countNote(phase.agents, "failed", "error", th), countNote(phase.agents, "skipped", "warning", th)], th);
+      rows.push({ text: `  ${th.bold(th.fg("muted", phase.title))}${notes ? ` ${notes}` : ""}`, heading: true });
       for (const agent of phase.agents) {
         const key = agentKey(agent);
         const cursor = key === selected ? th.fg("accent", GLYPH.cursor) : " ";
@@ -460,7 +508,8 @@ export class WorkflowInspector {
         const tools = agent.toolUses > 0 ? `${agent.toolUses} tool${agent.toolUses === 1 ? "" : "s"}` : "";
         const expanded = this.expanded.has(key);
         // Expanded rows carry the full error and tool below, so the inline note would repeat them.
-        const note = expanded ? "" : agentNote(agent, th);
+        const skipping = agent.status === "running" && this.skipRequested.has(agent.id);
+        const note = skipping ? th.fg("warning", "skipping…") : expanded ? "" : agentNote(agent, th);
         const line = `${cursor} ${agentGlyph(agent, th)} ${label}  ${padStartVisible(th.fg("muted", duration), 6)}  ${fit(th.fg("dim", tools), 8)}  ${note}`;
         rows.push({ text: line.trimEnd(), key });
         if (expanded) rows.push(...this.agentDetails(agent, phase, snapshot, width));
@@ -474,6 +523,7 @@ export class WorkflowInspector {
     const fields: [string, string][] = [];
     if (agent.error) fields.push(["error", th.fg("error", agent.error)]);
     if (agent.status === "queued") fields.push(["status", th.fg("muted", "queued, waiting for a free agent slot")]);
+    if (agent.status === "skipped") fields.push(["status", th.fg("warning", "skipped by the user; its result was dropped")]);
     if (agent.lastTool) {
       const calls = agent.toolUses > 1 ? th.fg("dim", ` · last of ${agent.toolUses} tool calls`) : "";
       fields.push(["tool", `${agent.lastTool}${calls}`]);
@@ -611,6 +661,7 @@ function phaseGlyph(phase: PhaseSnapshot, activeAndLive: boolean): { glyph: stri
   if (agents.length > 0 && agents.every((agent) => agent.status === "queued")) return { glyph: GLYPH.queued, color: "dim" };
   if (agents.some((agent) => agent.status === "queued")) return { glyph: GLYPH.running, color: "accent" };
   if (agents.length > 0 && agents.every((agent) => agent.status === "failed")) return { glyph: GLYPH.failed, color: "error" };
+  if (agents.length > 0 && agents.every((agent) => agent.status === "skipped")) return { glyph: GLYPH.skipped, color: "warning" };
   return { glyph: GLYPH.done, color: "success" };
 }
 
@@ -655,6 +706,8 @@ function agentGlyph(agent: AgentRowSnapshot, theme: Theme): string {
       return theme.fg("success", GLYPH.done);
     case "failed":
       return theme.fg("error", GLYPH.failed);
+    case "skipped":
+      return theme.fg("warning", GLYPH.skipped);
     case "running":
       return theme.fg("accent", GLYPH.running);
     case "queued":
@@ -664,6 +717,7 @@ function agentGlyph(agent: AgentRowSnapshot, theme: Theme): string {
 
 function agentNote(agent: AgentRowSnapshot, theme: Theme): string {
   if (agent.status === "failed") return theme.fg("error", firstLine(agent.error ?? "failed"));
+  if (agent.status === "skipped") return theme.fg("warning", "skipped");
   if (agent.status === "queued") return theme.fg("dim", "queued");
   if (agent.status === "running" && agent.lastTool) return theme.fg("dim", agent.lastTool);
   return "";

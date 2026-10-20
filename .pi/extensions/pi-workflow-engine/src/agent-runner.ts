@@ -1,6 +1,6 @@
 import { assertWorkflowBudgetAvailable } from "./budget.ts";
 import { WorkflowAgentTimeoutError } from "./agent-limits.ts";
-import { abortReason, linkAbortSignal, throwIfAborted } from "./cancellation.ts";
+import { abortReason, linkAbortSignal, throwIfAborted, WorkflowAgentSkippedError } from "./cancellation.ts";
 import { executeAgentAttempt } from "./agent-attempt.ts";
 import {
   createAgentReplayPlan,
@@ -66,7 +66,7 @@ export async function runAgent(
           const agentRc: RunContext = { ...rc, signal: liveScope.signal };
           throwIfAborted(agentRc.signal);
           if (!isReplayEnabled(replay)) assertWorkflowBudgetAvailable(agentRc.budget);
-          rc.progress.agentStart(rowId);
+          rc.progress.agentStart(rowId, liveScope.skip);
           if (replay.kind === "disabled") {
             rc.progress.log(`${label}: resume disabled for this call (${replay.reason})`);
           }
@@ -107,6 +107,8 @@ export async function runAgent(
               await agentRc.retryScheduler.sleep(delayMs, agentRc.signal);
               continue;
             }
+            // A skip that lands as the attempt finishes still wins, so its result is neither returned nor journaled.
+            liveScope.throwIfSkipped();
             const settlement = await settleAgentAttempt({ rc: agentRc, label, outcome });
             if (settlement.kind === "retry-live") {
               attemptPlan = { kind: "off" };
@@ -125,8 +127,13 @@ export async function runAgent(
       let failure = error;
       if (liveScope.signal.aborted) failure = abortReason(liveScope.signal);
       if (rc.signal?.aborted) failure = abortReason(rc.signal);
-      rc.progress.agentFailed(rowId, failure);
-      rc.progress.log(`${label} failed: ${unknownErrorMessage(failure)}`);
+      if (failure instanceof WorkflowAgentSkippedError) {
+        rc.progress.agentSkipped(rowId);
+        rc.progress.log(`${label} skipped`);
+      } else {
+        rc.progress.agentFailed(rowId, failure);
+        rc.progress.log(`${label} failed: ${unknownErrorMessage(failure)}`);
+      }
       throw failure;
     } finally {
       liveScope.dispose();
@@ -150,6 +157,13 @@ function createAgentLiveScope(rc: RunContext, label: string) {
         () => controller.abort(new WorkflowAgentTimeoutError(label, rc.agentTimeoutMs)),
         rc.agentTimeoutMs,
       );
+    },
+    /** Aborts only this agent; the run and its siblings carry on. */
+    skip() {
+      controller.abort(new WorkflowAgentSkippedError(label));
+    },
+    throwIfSkipped() {
+      if (controller.signal.reason instanceof WorkflowAgentSkippedError) throw controller.signal.reason;
     },
     dispose() {
       if (timer) clearTimeout(timer);

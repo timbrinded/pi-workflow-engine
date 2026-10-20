@@ -38,10 +38,12 @@ export type CreateAgentSession = (options: CreateAgentSessionOptions) => Promise
 /** Every row update after `agentQueued` addresses that row by its id; labels are display text, not unique keys. */
 export interface AgentProgress {
   agentQueued(phase: string | undefined, label: string): number;
-  agentStart(id: number): void;
+  /** `skip` aborts the row's live agent; the tracker offers it to the inspector only while the row runs. */
+  agentStart(id: number, skip?: () => void): void;
   agentTool(id: number, tool: string): void;
   agentDone(id: number): void;
   agentFailed(id: number, error: unknown): void;
+  agentSkipped(id: number): void;
   event(event: WorkflowProgressEvent): void;
   log(message: string): void;
 }

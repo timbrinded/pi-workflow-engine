@@ -124,7 +124,11 @@ export async function runResolvedWorkflow(
     },
   );
   durableProgress = durableRun;
-  const progressSource = { snapshot: () => progress.snapshot(), state: () => durableRun.state };
+  const progressSource = {
+    snapshot: () => progress.snapshot(),
+    state: () => durableRun.state,
+    skipAgent: (agentId: number) => progress.skipAgent(agentId),
+  };
   const worktrees = dependencies.worktrees ?? new WorktreeRegistry(ctx.cwd);
   const runAbortController = new AbortController();
   const unlinkContextAbortSignal = linkAbortSignal(ctx.signal, runAbortController);
@@ -132,7 +136,7 @@ export async function runResolvedWorkflow(
   const workflowOutcome = await captureOutcome(async () => {
     await notifyLifecycleObserver(progress, "progress source callback", () => resolvedOptions.onProgressSource?.(progressSource));
     if (resolvedOptions.inspect && ctx.hasUI && ctx.mode === "tui") {
-      void showWorkflowInspector(ctx.ui, progressSource.snapshot, () => ({ state: progressSource.state() }))
+      void showWorkflowInspector(ctx.ui, progressSource.snapshot, () => ({ state: progressSource.state() }), progressSource)
         .catch((error: unknown) => {
           try {
             progress.log(`inspector failed: ${unknownErrorMessage(error)}`);

@@ -77,6 +77,7 @@ export interface WorkflowStatusCounts {
   readonly running: number;
   readonly done: number;
   readonly failed: number;
+  readonly skipped: number;
   readonly total: number;
 }
 
@@ -96,7 +97,7 @@ export function formatWorkflowInspection(inspection: WorkflowInspectionSource): 
     `Workflow inspector: ${inspection.name}`,
     `Run: ${snapshot.runId}`,
     `Phase: ${snapshot.currentPhase}`,
-    `Agents: ${counts.running} running, ${counts.queued} queued, ${counts.done} done, ${counts.failed} failed`,
+    `Agents: ${counts.running} running, ${counts.queued} queued, ${counts.done} done, ${counts.failed} failed${counts.skipped > 0 ? `, ${counts.skipped} skipped` : ""}`,
   ];
   const usage = formatWorkflowUsageLine(snapshot.usage);
   if (usage) lines.push(usage);
@@ -109,7 +110,7 @@ export function statusTextFromCounts(snapshot: WorkflowProgressSnapshot, counts:
   if (snapshot.doneAt !== undefined) return undefined;
 
   const displayName = snapshot.title === "code-review" ? "review" : snapshot.title;
-  const progress = counts.total > 0 ? ` ${counts.done + counts.failed}/${counts.total}` : "";
+  const progress = counts.total > 0 ? ` ${finishedAgents(counts)}/${counts.total}` : "";
   return [
     `${theme.fg("accent", GLYPH.workflow)} ${theme.fg("accent", displayName)}`,
     theme.fg("muted", `${snapshot.currentPhase}${progress}`),
@@ -117,8 +118,13 @@ export function statusTextFromCounts(snapshot: WorkflowProgressSnapshot, counts:
   ].join(dot(theme));
 }
 
+/** Agents that will not run again: done, failed, or skipped. */
+export function finishedAgents(counts: WorkflowStatusCounts): number {
+  return counts.done + counts.failed + counts.skipped;
+}
+
 export function countAgents(phases: readonly PhaseSnapshot[]): WorkflowStatusCounts {
-  const counts = { queued: 0, running: 0, done: 0, failed: 0, total: 0 };
+  const counts = { queued: 0, running: 0, done: 0, failed: 0, skipped: 0, total: 0 };
   for (const phase of phases) {
     for (const agent of phase.agents) {
       counts[agent.status]++;

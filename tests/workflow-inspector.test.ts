@@ -4,7 +4,11 @@ import { test } from "bun:test";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { createTestTheme } from "./fixtures/theme.ts";
 import type { AgentRowSnapshot, WorkflowLaneItemSnapshot, WorkflowProgressSnapshot } from "../.pi/extensions/pi-workflow-engine/src/progress-types.ts";
-import { WorkflowInspector, type WorkflowInspectorOutcome } from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
+import {
+  WorkflowInspector,
+  type WorkflowInspectorControls,
+  type WorkflowInspectorOutcome,
+} from "../.pi/extensions/pi-workflow-engine/src/ui/workflow-inspector.ts";
 import type { WorkflowUsageTotals } from "../.pi/extensions/pi-workflow-engine/src/usage.ts";
 
 const KEY = { tab: "\t", shiftTab: "\x1b[Z", left: "\x1b[D", right: "\x1b[C", up: "\x1b[A", down: "\x1b[B", enter: "\r" } as const;
@@ -105,12 +109,16 @@ function liveReview(): WorkflowProgressSnapshot {
 
 function createInspector(
   snapshot: () => WorkflowProgressSnapshot,
-  options: { rows?: number; outcome?: WorkflowInspectorOutcome | (() => WorkflowInspectorOutcome | undefined) } = {},
+  options: {
+    rows?: number;
+    outcome?: WorkflowInspectorOutcome | (() => WorkflowInspectorOutcome | undefined);
+    controls?: WorkflowInspectorControls;
+  } = {},
 ) {
   const terminal = { rows: options.rows ?? 45, columns: 140 };
   let closed = false;
   const tui = { requestRender() {}, terminal } as Pick<TUI, "requestRender" | "terminal">;
-  const inspector = new WorkflowInspector(snapshot, tui, createTestTheme(), () => (closed = true), options.outcome);
+  const inspector = new WorkflowInspector(snapshot, tui, createTestTheme(), () => (closed = true), options.outcome, options.controls);
   const text = (width: number) => stripVTControlCharacters(inspector.render(width).join("\n"));
   return { inspector, terminal, text, closed: () => closed };
 }
@@ -196,6 +204,47 @@ test("enter expands an agent with its full error, model and usage, and collapses
 
   inspector.handleInput(KEY.enter);
   assert.doesNotMatch(text(120), /model +anthropic\/claude-test/);
+});
+
+test("s skips the selected running agent on a second press, is offered only where it applies, and the row then reads as skipped", () => {
+  const skips: number[] = [];
+  let snapshot = liveReview();
+  const { inspector, text } = createInspector(() => snapshot, { controls: { skipAgent: (agentId) => (skips.push(agentId), true) } });
+  inspector.handleInput("2");
+  assert.doesNotMatch(text(120), /s skip/, "the cursor starts on a finished agent");
+  inspector.handleInput("s");
+  assert.deepEqual(skips, []);
+
+  inspector.handleInput("G");
+  assert.match(text(120), /s skip · q close/);
+  inspector.handleInput("s");
+  assert.match(text(120), /⚠ press s again to skip verify:cache\.ts/);
+  assert.deepEqual(skips, [], "the first press only arms the skip");
+  inspector.handleInput("s");
+  assert.deepEqual(skips, [4]);
+  const requested = text(120);
+  assert.match(requested, /› ● cache\.ts .*skipping…/);
+  assert.doesNotMatch(requested, /s skip/, "a skip already sent is not offered again");
+
+  const live = liveReview();
+  snapshot = {
+    ...live,
+    phases: live.phases.map((phase) => ({
+      ...phase,
+      agents: phase.agents.map((row) => (row.id === 4 ? { ...row, status: "skipped" as const, doneAt: Date.now() } : row)),
+    })),
+  };
+  const skipped = text(120);
+  assert.match(skipped.split("\n")[0] ?? "", /Verify 4\/4 · 1 failed · 1 skipped/);
+  assert.match(skipped, /Verify 1 skipped/);
+  assert.match(skipped, /› ⊘ cache\.ts .*skipped/);
+
+  const readOnly = createInspector(() => liveReview());
+  readOnly.inspector.handleInput("2");
+  readOnly.inspector.handleInput("G");
+  assert.doesNotMatch(readOnly.text(120), /s skip/, "without live controls the inspector cannot skip");
+  inspector.dispose();
+  readOnly.inspector.dispose();
 });
 
 test("a verified candidate appears once under its verdict and unverified candidates never read as pending once the run is done", () => {

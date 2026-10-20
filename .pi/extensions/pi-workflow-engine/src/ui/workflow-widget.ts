@@ -3,7 +3,7 @@ import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/p
 import type { AgentRowSnapshot, PhaseSnapshot, WorkflowProgressSnapshot } from "../progress-types.ts";
 import { formatCount } from "../text.ts";
 import { compactUsage, dot, fit, GLYPH, joinParts, keyHints, progressBar, spread, type ThemeColor } from "./kit.ts";
-import { countAgents, formatDuration, formatElapsed, type WorkflowStatusCounts } from "./workflow-format.ts";
+import { countAgents, finishedAgents, formatDuration, formatElapsed, type WorkflowStatusCounts } from "./workflow-format.ts";
 
 /** pi caps string widgets at this many rows; the component keeps to the same budget. */
 const MAX_WIDGET_LINES = 10;
@@ -64,7 +64,7 @@ export class WidthAwareWidget implements Component {
 /** `◆ background · code-review 56b57550 · Find 6/10 · 12s`: one line for a run the user sent to the background. */
 export function renderBackgroundWorkflowLine(snapshot: WorkflowProgressSnapshot, width: number, theme: Theme): string[] {
   const counts = countAgents(snapshot.phases);
-  const progress = counts.total > 0 ? `${snapshot.currentPhase} ${counts.done + counts.failed}/${counts.total}` : snapshot.currentPhase;
+  const progress = counts.total > 0 ? `${snapshot.currentPhase} ${finishedAgents(counts)}/${counts.total}` : snapshot.currentPhase;
   const line = joinParts([
     `${theme.fg("accent", GLYPH.workflow)} ${theme.fg("muted", "background")}`,
     `${theme.bold(snapshot.title)} ${theme.fg("dim", snapshot.runId.slice(0, 8))}`,
@@ -92,7 +92,7 @@ function classifyPhases(snapshot: WorkflowProgressSnapshot): ClassifiedPhases {
 
 function headerLine(snapshot: WorkflowProgressSnapshot, counts: WorkflowStatusCounts, width: number, now: number, theme: Theme): string {
   const name = `${theme.fg("accent", GLYPH.workflow)} ${theme.bold(snapshot.title)}`;
-  const finished = counts.done + counts.failed;
+  const finished = finishedAgents(counts);
   const stats = joinParts([
     counts.total > 0 ? theme.fg("text", `${finished}/${counts.total}`) : undefined,
     theme.fg("muted", formatElapsed(now - snapshot.startedAt)),
@@ -156,8 +156,8 @@ function phaseBody(
 
 /**
  * Spread the row budget over active phases by importance — a reserved share for failures so they always
- * show, then running, remaining failures, done, queued — while each phase lists its chosen rows as
- * running, failed, done, queued.
+ * show, then running, remaining failures, skipped, done, queued — while each phase lists its chosen rows
+ * in that same status order.
  */
 function planAgentRows(active: readonly PhaseSnapshot[], budget: number): Map<PhaseSnapshot, AgentRowPlan> {
   const byStatus = (status: AgentRowSnapshot["status"]) =>
@@ -177,10 +177,11 @@ function planAgentRows(active: readonly PhaseSnapshot[], budget: number): Map<Ph
   take(failed, failed.length > 0 ? Math.max(1, Math.floor(budget / 3)) : 0);
   take(byStatus("running"));
   take(failed);
+  take(byStatus("skipped"));
   take(byStatus("done"));
   take(byStatus("queued"));
 
-  const rank = { running: 0, failed: 1, done: 2, queued: 3 } as const;
+  const rank = { running: 0, failed: 1, skipped: 2, done: 3, queued: 4 } as const;
   const plans = new Map<PhaseSnapshot, AgentRowPlan>();
   for (const phase of active) {
     const shown = phase.agents.filter((agent) => chosen.has(agent)).sort((a, b) => rank[a.status] - rank[b.status]);
@@ -196,7 +197,7 @@ function agentLabelWidth(plans: ReadonlyMap<PhaseSnapshot, AgentRowPlan>, width:
 
 function finishedPhaseLine(phase: PhaseSnapshot, titleWidth: number, theme: Theme): string {
   const counts = countAgents([phase]);
-  const glyph = counts.failed === 0
+  const glyph = counts.failed === 0 && counts.skipped === 0
     ? theme.fg("success", GLYPH.done)
     : counts.failed === counts.total ? theme.fg("error", GLYPH.failed) : theme.fg("warning", GLYPH.warning);
   const span = phaseSpan(phase.agents);
@@ -204,17 +205,19 @@ function finishedPhaseLine(phase: PhaseSnapshot, titleWidth: number, theme: Them
     counts.total > 0 ? theme.fg("muted", plural(counts.total, "agent")) : undefined,
     span === undefined ? undefined : theme.fg("muted", shortDuration(span)),
     counts.failed > 0 ? theme.fg("error", `${counts.failed} failed`) : undefined,
+    counts.skipped > 0 ? theme.fg("warning", `${counts.skipped} skipped`) : undefined,
   ], theme);
   return `  ${glyph} ${theme.fg("muted", fit(phase.title, titleWidth))}  ${detail}`.trimEnd();
 }
 
 function foldedPhasesLine(phases: readonly PhaseSnapshot[], theme: Theme): string {
   const counts = countAgents(phases);
-  const glyph = counts.failed > 0 ? theme.fg("warning", GLYPH.warning) : theme.fg("success", GLYPH.done);
+  const glyph = counts.failed > 0 || counts.skipped > 0 ? theme.fg("warning", GLYPH.warning) : theme.fg("success", GLYPH.done);
   const titles = phases.map((phase) => phase.title).join(" · ");
   const detail = joinParts([
     theme.fg("muted", plural(counts.total, "agent")),
     counts.failed > 0 ? theme.fg("error", `${counts.failed} failed`) : undefined,
+    counts.skipped > 0 ? theme.fg("warning", `${counts.skipped} skipped`) : undefined,
   ], theme);
   return `  ${glyph} ${theme.fg("muted", titles)}  ${detail}`;
 }
@@ -226,6 +229,7 @@ function activePhaseLine(plan: AgentRowPlan, titleWidth: number, theme: Theme): 
     counts.queued > 0 ? theme.fg("muted", `${counts.queued} queued`) : undefined,
     counts.done > 0 ? theme.fg("muted", `${counts.done} done`) : undefined,
     counts.failed > 0 ? theme.fg("error", `${counts.failed} failed`) : undefined,
+    counts.skipped > 0 ? theme.fg("warning", `${counts.skipped} skipped`) : undefined,
     plan.hidden > 0 ? theme.fg("dim", `+${plan.hidden} more`) : undefined,
   ], theme);
   return `  ${theme.fg("accent", GLYPH.running)} ${theme.bold(fit(plan.phase.title, titleWidth))}  ${detail}`.trimEnd();
@@ -246,6 +250,8 @@ function agentGlyph(agent: AgentRowSnapshot, theme: Theme): string {
       return theme.fg("error", GLYPH.failed);
     case "done":
       return theme.fg("success", GLYPH.done);
+    case "skipped":
+      return theme.fg("warning", GLYPH.skipped);
     case "queued":
       return theme.fg("dim", GLYPH.queued);
   }
@@ -264,6 +270,8 @@ function agentDetail(agent: AgentRowSnapshot, now: number, theme: Theme): string
       ], theme);
     case "failed":
       return theme.fg("error", oneLine(agent.error ?? "failed"));
+    case "skipped":
+      return theme.fg("warning", "skipped");
     case "queued":
       return theme.fg("dim", "queued");
   }

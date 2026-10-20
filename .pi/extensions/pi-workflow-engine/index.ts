@@ -152,6 +152,7 @@ export interface ActiveWorkflowInspection {
   readonly startedAt: number;
   readonly snapshot: () => WorkflowProgressSnapshot;
   readonly state?: () => WorkflowRunState;
+  readonly skipAgent?: (agentId: number) => boolean;
 }
 
 interface SessionWorkflowInspections {
@@ -166,7 +167,9 @@ export async function openWorkflowInspector(ctx: ExtensionContext, inspection: L
     ctx.ui.notify(formatWorkflowInspection(inspection), "info");
     return;
   }
-  await showWorkflowInspector(ctx.ui, () => workflowInspectionSnapshot(inspection), () => ({ state: inspection.state?.() }));
+  // Only a live inspection can skip agents; a finished one is a snapshot.
+  const controls = "skipAgent" in inspection ? { skipAgent: inspection.skipAgent } : undefined;
+  await showWorkflowInspector(ctx.ui, () => workflowInspectionSnapshot(inspection), () => ({ state: inspection.state?.() }), controls);
 }
 
 function workflowInspectionState(pi: ExtensionAPI, ctx: ExtensionContext): SessionWorkflowInspections {
@@ -189,7 +192,7 @@ async function openAvailableWorkflowInspector(pi: ExtensionAPI, ctx: ExtensionCo
 }
 
 function bindActiveWorkflowInspection(name: string, args: string, source: WorkflowProgressSource): ActiveWorkflowInspection {
-  return { name, args, startedAt: Date.now(), snapshot: () => source.snapshot(), state: source.state };
+  return { name, args, startedAt: Date.now(), snapshot: () => source.snapshot(), state: source.state, skipAgent: source.skipAgent };
 }
 
 export function buildTemporaryWorkflowAuthorPrompt(brief: string): string {

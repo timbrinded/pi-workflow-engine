@@ -15,6 +15,7 @@ export const GLYPH = {
   failed: "✗",
   running: "●",
   queued: "○",
+  skipped: "⊘",
   warning: "⚠",
   bullet: "•",
   cursor: "›",

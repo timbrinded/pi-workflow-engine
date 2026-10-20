@@ -42,6 +42,7 @@ function createProgress(): CaptureProgress {
     agentTool: () => {},
     agentDone: () => {},
     agentFailed: () => {},
+    agentSkipped: () => {},
     log: (message) => logs.push(message),
     phase: (title) => phases.push(title),
     event: (event) => events.push(event),
