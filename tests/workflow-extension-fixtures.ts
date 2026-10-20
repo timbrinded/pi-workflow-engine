@@ -48,6 +48,8 @@ export interface CapturedWorkflowExtension {
   readonly commands: ReadonlyMap<string, CapturedCommand>;
   readonly handlers: ReadonlyMap<string, readonly CapturedHandler[]>;
   readonly sentMessages: readonly unknown[];
+  /** The options of each `sendMessage` call, index-aligned with `sentMessages`. */
+  readonly sentMessageOptions: readonly unknown[];
   readonly sentUserMessages: readonly unknown[];
   /** Run every `before_agent_start` handler in order, chaining a returned prompt the way pi does. */
   beforeAgentStart(
@@ -68,6 +70,7 @@ export function captureWorkflowExtension(
   const capturedShortcuts: CapturedShortcut[] = [];
   const capturedCommands = new Map<string, CapturedCommand>();
   const sentMessages: unknown[] = [];
+  const sentMessageOptions: unknown[] = [];
   const sentUserMessages: unknown[] = [];
   const handlers = new Map<string, CapturedHandler[]>();
   const fakePi = {
@@ -85,8 +88,9 @@ export function captureWorkflowExtension(
       const candidate = tool as CapturedTool;
       if (candidate.name === "workflow") capturedTool = candidate;
     },
-    sendMessage: (message: unknown) => {
+    sendMessage: (message: unknown, options?: unknown) => {
       sentMessages.push(message);
+      sentMessageOptions.push(options);
     },
     sendUserMessage: (content: unknown) => {
       sentUserMessages.push(content);
@@ -111,6 +115,7 @@ export function captureWorkflowExtension(
     commands: capturedCommands,
     handlers,
     sentMessages,
+    sentMessageOptions,
     sentUserMessages,
     beforeAgentStart,
   };

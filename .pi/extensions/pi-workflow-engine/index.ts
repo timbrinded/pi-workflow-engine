@@ -666,6 +666,8 @@ function registerWorkflowTool(
           ctx,
           name: resultName,
           options: runOptions,
+          // Under Dynamax the agent is orchestrating, so its completion starts a turn to act on the result.
+          wakeOnComplete: dynamax.isActive(ctx),
           async execute(backgroundCtx, backgroundOptions) {
             const envelope = await executeResolvedWorkflow(
               pi,

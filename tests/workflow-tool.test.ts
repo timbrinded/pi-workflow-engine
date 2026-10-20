@@ -550,6 +550,47 @@ export default async function run() {
   assert.match(JSON.stringify(extension.sentMessages[0]), /Detached background completed/);
 });
 
+test("a background run started while Dynamax is active wakes the agent when it completes", async () => {
+  const extension = captureWorkflowExtension();
+  const input = extension.handlers.get("input")?.[0];
+  if (!input) throw new Error("expected the Dynamax input handler");
+  const branch: unknown[] = [];
+  const ctx = {
+    ...HEADLESS_CTX,
+    mode: "rpc",
+    isIdle: () => true,
+    sessionManager: {
+      ...createSessionManager("background-wake-tool-session"),
+      getBranch: () => branch,
+      getEntries: () => branch,
+    },
+  } as unknown as ExtensionContext;
+  const script = `
+export const meta = { name: "background-wake-tool", description: "Background wake probe" };
+export default async function run() {
+  return { summary: "Woke the agent." };
+}
+`;
+  const store = new ProjectWorkflowRunStore(WORKFLOW_TOOL_TEST_CWD);
+  const startRun = async (): Promise<string> => {
+    const result = await extension.tool.execute("call-background-wake", { script, background: true }, undefined, () => {}, ctx);
+    const runId = isRecord(result) && isRecord(result.details) ? result.details.runId : undefined;
+    if (typeof runId !== "string") throw new Error("expected background run id");
+    await waitUntil(async () => (await store.load(runId))?.background?.delivery.state === "delivered", "background delivery");
+    return runId;
+  };
+  const deliveryOptions = (runId: string): unknown =>
+    extension.sentMessageOptions[extension.sentMessages.findIndex((message) => JSON.stringify(message).includes(runId))];
+
+  const silent = await startRun();
+  assert.deepEqual(deliveryOptions(silent), { triggerTurn: false });
+
+  await input({ source: "interactive", text: "dynamax run it in the background" }, ctx);
+  const woken = await startRun();
+  assert.equal((await store.load(woken))?.background?.origin.wakeOnComplete, true);
+  assert.deepEqual(deliveryOptions(woken), { triggerTurn: true });
+});
+
 test("a failed tool-invoked workflow stays available to /workflow:inspector", async () => {
   const extension = captureWorkflowExtension();
   const inspector = extension.commands.get("workflow:inspector");

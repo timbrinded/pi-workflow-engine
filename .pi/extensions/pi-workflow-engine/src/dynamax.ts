@@ -49,6 +49,8 @@ export interface DynamaxHandle {
   markOneShot(ctx: ExtensionContext): void;
   /** The current turn's output-token pool, when the user's prompt set one. */
   turnBudget(ctx: ExtensionContext): DynamaxTurnBudget | undefined;
+  /** Whether Dynamax covers this session now: sticky, a pending one-shot, or a one-shot turn in progress. */
+  isActive(ctx: ExtensionContext): boolean;
 }
 
 export const DYNAMAX_TOKEN_PATTERN = /(^|[^A-Za-z0-9_])dynamax([^A-Za-z0-9_]|$)/i;
@@ -361,6 +363,7 @@ export function registerDynamax(pi: ExtensionAPI, shortcuts: DynamaxShortcuts, o
   return {
     markOneShot,
     turnBudget: (ctx) => getDynamaxRuntime(runtimes, ctx).turnBudget,
+    isActive: (ctx) => isDynamaxActive(getDynamaxRuntime(runtimes, ctx).state),
   };
 }
 

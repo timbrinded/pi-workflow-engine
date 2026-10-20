@@ -56,6 +56,8 @@ export interface WorkflowBackgroundOrigin {
   /** Stable pi session id used to route and deduplicate completion delivery. */
   readonly sessionId: string;
   readonly requestedAt: number;
+  /** Deliver the completion with a new agent turn, because Dynamax was active when the run started. */
+  readonly wakeOnComplete?: boolean;
 }
 
 export interface WorkflowRunOptions {

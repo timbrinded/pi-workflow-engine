@@ -163,6 +163,83 @@ test("background start returns after durable metadata and delivers success once 
   }
 });
 
+function recordingPi(harness: SessionHarness, deliveries: Array<{ runId: unknown; triggerTurn: boolean | undefined }>): Pick<ExtensionAPI, "sendMessage"> {
+  const sent: SentMessage[] = [];
+  const pi = fakePi(harness, sent);
+  return {
+    sendMessage(message, options) {
+      pi.sendMessage(message, options);
+      deliveries.push({ runId: isRecord(message.details) ? message.details.runId : undefined, triggerTurn: options?.triggerTurn });
+    },
+  };
+}
+
+test("a run started under Dynamax wakes the agent on delivery while other runs arrive silently", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-wake-"));
+  const harness: SessionHarness = { branch: [], idle: true };
+  const deliveries: Array<{ runId: unknown; triggerTurn: boolean | undefined }> = [];
+  const ctx = context(cwd, "session-wake", harness);
+  const coordinator = new BackgroundWorkflowCoordinator(recordingPi(harness, deliveries));
+  try {
+    for (const [runId, wakeOnComplete] of [["background-wake-run", true], ["background-silent-run", false]] as const) {
+      await coordinator.start({
+        ctx,
+        runId,
+        name: runId,
+        async run(signal, onStarted) {
+          await runWorkflow({ ...ctx, signal }, workflow(runId, async () => ({ summary: "done" })), "", {
+            runId,
+            signal,
+            background: backgroundOrigin(ctx, 1, wakeOnComplete),
+            onRunMetadata: () => onStarted(),
+          });
+        },
+      });
+    }
+    await waitFor(async () => {
+      await coordinator.agentSettled(ctx);
+      return deliveries.length === 2;
+    });
+
+    assert.deepEqual(
+      [...deliveries].sort((left, right) => String(left.runId).localeCompare(String(right.runId))),
+      [
+        { runId: "background-silent-run", triggerTurn: false },
+        { runId: "background-wake-run", triggerTurn: true },
+      ],
+    );
+    const store = new ProjectWorkflowRunStore(cwd);
+    assert.equal((await store.load("background-wake-run"))?.background?.origin.wakeOnComplete, true);
+    assert.equal((await store.load("background-silent-run"))?.background?.origin.wakeOnComplete, undefined);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the wake request survives a restart, so recovery delivery still starts a turn", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-wake-restart-"));
+  const harness: SessionHarness = { branch: [], idle: true };
+  const ctx = context(cwd, "session-wake-restart", harness);
+  const store = new ProjectWorkflowRunStore(cwd);
+  const runId = "background-wake-restart-run";
+  const queued = createWorkflowRunRecord({
+    runId,
+    workflow: workflow("background-wake-restart", async () => undefined),
+    options: resolveWorkflowRunOptions({ background: backgroundOrigin(ctx, 1, true) }),
+    progress: progress(runId),
+  });
+  await store.save(transitionWorkflowRun(queued, { state: "running", progress: progress(runId), at: 2 }));
+  const deliveries: Array<{ runId: unknown; triggerTurn: boolean | undefined }> = [];
+  try {
+    await new BackgroundWorkflowCoordinator(recordingPi(harness, deliveries)).sessionStarted(ctx);
+
+    assert.equal((await store.load(runId))?.state, "paused");
+    assert.deepEqual(deliveries, [{ runId, triggerTurn: true }]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("RPC background activity is one pre-rendered line per run, cleared when the run settles", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-workflow-background-rpc-widget-"));
   const harness: SessionHarness = { branch: [], idle: false };

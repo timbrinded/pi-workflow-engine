@@ -15,6 +15,8 @@ export interface BackgroundWorkflowToolStartInput {
   readonly ctx: ExtensionContext;
   readonly name: string;
   readonly options: ResolvedWorkflowRunOptions;
+  /** Deliver the completion with a new agent turn instead of silently. */
+  readonly wakeOnComplete?: boolean;
   readonly execute: (ctx: ExtensionContext, options: ResolvedWorkflowRunOptions) => Promise<void>;
 }
 
@@ -39,7 +41,7 @@ export async function startBackgroundWorkflowTool(
     inspect: false,
     resultViewer: "skip",
     runId,
-    background: backgroundOrigin(input.ctx),
+    background: backgroundOrigin(input.ctx, Date.now(), input.wakeOnComplete),
   };
   try {
     await input.coordinator.start({

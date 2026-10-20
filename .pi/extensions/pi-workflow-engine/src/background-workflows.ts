@@ -298,7 +298,9 @@ export class BackgroundWorkflowCoordinator {
           display: true,
           details,
         },
-        { triggerTurn: false },
+        // A run started under Dynamax wakes the agent to act on its result; others arrive silently.
+        // Delivery waits for an idle session, and pi steers a message sent while a run starts into that run.
+        { triggerTurn: record.background.origin.wakeOnComplete === true },
       );
     }
     await markDelivery(store, runId, { state: "delivered", deliveredAt: Date.now() });
@@ -306,8 +308,13 @@ export class BackgroundWorkflowCoordinator {
   }
 }
 
-export function backgroundOrigin(ctx: Pick<ExtensionContext, "sessionManager">, requestedAt = Date.now()): WorkflowBackgroundOrigin {
-  return { sessionId: ctx.sessionManager.getSessionId(), requestedAt };
+export function backgroundOrigin(
+  ctx: Pick<ExtensionContext, "sessionManager">,
+  requestedAt = Date.now(),
+  wakeOnComplete = false,
+): WorkflowBackgroundOrigin {
+  const origin = { sessionId: ctx.sessionManager.getSessionId(), requestedAt };
+  return wakeOnComplete ? { ...origin, wakeOnComplete } : origin;
 }
 
 export function backgroundResultDetails(record: WorkflowRunRecord): BackgroundWorkflowResultDetails {

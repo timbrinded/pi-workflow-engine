@@ -150,7 +150,7 @@ Give `isolation: "worktree"` only to agents that edit files. The agent runs in a
 
 ## Run modes
 
-- `background: true` only when the user wants the run to continue after this tool call; the tool returns a run ID and the result arrives later as a message. `autoResumeOnUsageLimit: true` only for such a background run when the user wants bounded automatic continuation after a provider usage window.
+- `background: true` only when the user wants the run to continue after this tool call; the tool returns a run ID and the result arrives later as a message. Under Dynamax that message starts a new turn, so you wake to read it and choose the next step; otherwise it arrives silently for the next turn. `autoResumeOnUsageLimit: true` only for such a background run when the user wants bounded automatic continuation after a provider usage window.
 - Every call provides exactly one of `name`, `script`, or `scriptPath`.
 
 ## Save a reusable workflow
