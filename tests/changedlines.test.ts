@@ -69,7 +69,7 @@ test("code-review scope construction bounds embedded diffs and preserves context
     summary: "One changed file.",
     conventions: "Keep helpers pure.",
     diffText: "x".repeat(60_001),
-    target: "focus on parsing",
+    instructions: { heading: "User instructions (verbatim)", text: "focus on parsing" },
   });
 
   assert.match(block, /## Diff command\ngit diff HEAD/);

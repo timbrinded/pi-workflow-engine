@@ -105,6 +105,7 @@ Host-written scripts in practice reached for `Promise.all` and never for `pipeli
 ## Quality patterns
 
 - **Adversarial verify.** Give each finding to a separate verifier told to refute it, and keep only what survives. Thin evidence means not substantiated, not confirmed.
+- **Filter after discovery, not during it.** When the user sets a reporting bar (evidence or experiment requirements, severity or MVP floors, net-LOC rules, dedupe against posted comments), give finders only where to look and ask for every candidate with a nameable impact; apply the bar in verify and synthesis. Finders told that returning nothing is preferred filter out their own candidates before any verifier sees them, and the run reports nothing.
 - **Perspective-diverse verify.** For findings that matter, use two or three verifiers with different methods (read the callers, reproduce it, check the tests) and require agreement.
 - **Judge panel.** Generate several independent answers or designs, then have a judge (or several) pick or merge them against stated criteria.
 - **Loop until dry.** Repeat discovery rounds, deduping each round against everything seen so far, not only the last round. Stop when a round adds nothing new, or at a round cap or budget guard.

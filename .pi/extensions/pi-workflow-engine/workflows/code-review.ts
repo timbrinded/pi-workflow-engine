@@ -1,5 +1,5 @@
 import { challengeFindings, parseChallengeArgs } from "../src/advisory-challenge.ts";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import {
   type AdvisoryVerified,
   type AdvisoryLens,
@@ -36,6 +36,16 @@ const ScopeSchema = Type.Object({
   conventions: Type.Optional(Type.String({ description: "Relevant AGENTS.md / project conventions" })),
 });
 
+// With review instructions, scope splits them by stage: finders get only where to look, because a reporting bar in a
+// finder prompt makes finders filter their own candidates before any verifier sees them; the bar goes to synthesis.
+const InstructedScopeSchema = Type.Object({
+  ...ScopeSchema.properties,
+  conventions: Type.Optional(Type.String({ description: "Repository conventions from AGENTS.md and project docs only. Do not restate the user's review instructions, filtering rules or already-reported findings here." })),
+  focus: Type.String({ description: "Where the user wants reviewers to look: areas, files, risks and lenses named in the instructions. Exclude any filtering, evidence, reporting or deduplication rules; write (none) if the instructions name no focus." }),
+  reportingBar: Type.String({ description: "The user's filtering, evidence, severity and reporting rules restated so a reader without file access can apply them, listing every already-reported issue to exclude (read any files the instructions reference). Write (none) if the instructions set no bar." }),
+});
+type Scope = Static<typeof ScopeSchema> & Partial<Pick<Static<typeof InstructedScopeSchema>, "focus" | "reportingBar">>;
+
 // The review lenses — this is the part you customise to your codebase's real failure modes.
 const ANGLES: AdvisoryLens[] = [
   { label: "logic-bugs", category: "bug", text: "Off-by-one errors, wrong conditionals, incorrect return values, broken control flow." },
@@ -55,7 +65,7 @@ export function buildCodeReviewScopeBlock(input: {
   readonly summary: string;
   readonly conventions?: string;
   readonly diffText: string;
-  readonly target: string;
+  readonly instructions?: { readonly heading: string; readonly text: string };
 }): string {
   const diffBlock = input.diffText
     ? `\n## Diff (review is bounded to these changed lines)\n\`\`\`diff\n${
@@ -68,7 +78,7 @@ export function buildCodeReviewScopeBlock(input: {
     `## Diff command\n${input.diffCommand}\n\n## Changed files\n${input.files.map((file) => `- ${file}`).join("\n")}\n\n` +
     `## Summary\n${input.summary}\n\n## Conventions\n${input.conventions ?? "(none noted)"}\n` +
     diffBlock +
-    (input.target ? `\n## User instructions (verbatim)\n${input.target}\n` : "")
+    (input.instructions?.text ? `\n## ${input.instructions.heading}\n${input.instructions.text}\n` : "")
   );
 }
 
@@ -83,7 +93,7 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
 
   // ─── Phase 0: Scope ───
   phase("Scope");
-  const scope = await agent(
+  const scopePrompt =
     "Establish the scope of a code review.\n" +
       (target
         ? `Target / instructions (verbatim): "${target}". If it names a PR number, branch, ref range, or files, build the matching diff command (use 'gh pr diff <number>' for a PR). Otherwise use the default selection below.\n`
@@ -99,9 +109,14 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       "4. Run the chosen command to confirm the diff is non-empty.\n\n" +
       "Then: list the changed files, summarize the change in one paragraph (mention the PR if one was found), " +
       "and read any relevant AGENTS.md or project docs noting conventions a reviewer should know.\n" +
-      "Return diffCommand exactly as a reviewer should run it. Structured output only.",
-    { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium", schema: ScopeSchema },
-  );
+      "Return diffCommand exactly as a reviewer should run it. Structured output only.";
+  const scopeOptions = { phase: "Scope", label: "scope", tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS, profile: "medium" } as const;
+  const scope: Scope = target
+    ? await agent(
+        `${scopePrompt}\nKeep the user's instructions out of conventions. Return focus (where to look) and reportingBar (the self-contained filtering and reporting bar, with every already-reported issue spelled out) as separate fields.`,
+        { ...scopeOptions, schema: InstructedScopeSchema },
+      )
+    : await agent(scopePrompt, { ...scopeOptions, schema: ScopeSchema });
 
   progress({ type: "summary", key: "files", value: scope.files.join(", ") || "(none)" });
   const diffTarget = parseAllowedDiffCommand(scope.diffCommand);
@@ -149,14 +164,20 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       : {}),
   };
 
-  const scopeBlock = `Reviewed snapshot identity: ${JSON.stringify(reviewContext.snapshot ?? "unavailable")}\n` + buildCodeReviewScopeBlock({
-    diffCommand,
-    files: scope.files,
-    summary: scope.summary,
-    conventions: scope.conventions,
-    diffText,
-    target,
-  });
+  const blockFor = (instructions?: { heading: string; text: string }) =>
+    `Reviewed snapshot identity: ${JSON.stringify(reviewContext.snapshot ?? "unavailable")}\n` + buildCodeReviewScopeBlock({
+      diffCommand,
+      files: scope.files,
+      summary: scope.summary,
+      conventions: scope.conventions,
+      diffText,
+      ...(instructions ? { instructions } : {}),
+    });
+  const scopeBlock = blockFor({ heading: "User instructions (verbatim)", text: target });
+  const focus = stated(scope.focus);
+  const reportingBar = stated(scope.reportingBar);
+  const finderBlock = blockFor(focus ? { heading: "Review focus (from the user's instructions)", text: focus } : undefined);
+  if (focus) log(`review focus: ${focus}`);
 
   const pipelineResult = await runLensVerificationPipeline({
     api,
@@ -171,7 +192,7 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       return reviewAnchor ? { ...candidate, category: lens.category, reviewAnchor } : undefined;
     },
     finderPrompt: (lens) =>
-      `## Code-review finder — ${lens.label}\n\n${scopeBlock}\n` +
+      `## Code-review finder — ${lens.label}\n\n${finderBlock}\n` +
       `Review the change through ONLY this lens:\n${lens.text}\n` +
       "Only flag issues on lines that are part of the diff above (run the diff command if it is not shown). " +
       "Set reviewAnchor to the changed line causing the issue; locations and discoveryEvidence may include unchanged callers and other files. " +
@@ -197,9 +218,20 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     synthesisPrompt: (block, ranked) =>
       `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
       "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final advisory report. " +
-      "Return summary, ID selections with severity (low/medium/high) and advisory recommendation, and nextSteps. Evidence and confidence are reconstructed from verified records. Structured output only.",
+      "Return summary, ID selections with severity (low/medium/high) and advisory recommendation, and nextSteps. Evidence and confidence are reconstructed from verified records. Structured output only." +
+      (target
+        ? `${reportingBar ? `\n\n## Reporting bar (the user's rules with referenced context resolved)\n${reportingBar}` : ""}` +
+          `\n\n## Reporting bar from the user (verbatim)\n${target}\n\n` +
+          "Apply this bar when choosing which IDs to report: leave out findings it excludes, and say in the summary what you left out and why."
+        : ""),
   });
   return { ...report, reviewContext };
+}
+
+/** A scope field's text, or undefined when the scope agent left it blank or wrote (none). */
+function stated(value: string | undefined): string | undefined {
+  const text = value?.trim();
+  return text && text !== "(none)" ? text : undefined;
 }
 
 function rank(finding: AdvisoryVerified): number {
