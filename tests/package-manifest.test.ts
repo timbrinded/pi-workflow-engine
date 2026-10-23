@@ -101,8 +101,8 @@ test("npm package contains the extension tree, manifest resources, and linked do
   assert.equal(packed.status, 0, packed.stderr || packed.stdout);
 
   const parsed: unknown = JSON.parse(packed.stdout);
-  assert.ok(Array.isArray(parsed), "npm pack output must be an array");
-  const first = parsed[0];
+  // npm 11 prints an array of packages; npm 12 prints an object keyed by package name.
+  const first: unknown = Array.isArray(parsed) ? parsed[0] : isRecord(parsed) ? Object.values(parsed)[0] : undefined;
   assert.ok(isRecord(first), "npm pack output must describe the package");
   const files = first.files;
   assert.ok(Array.isArray(files), "npm pack output must include files");
