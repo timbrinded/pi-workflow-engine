@@ -606,7 +606,7 @@ Only tune these when a workflow is too slow, too expensive, or too noisy:
 | `--max-agents=N` / `PI_WORKFLOW_MAX_AGENTS=N` | Cap live model calls across the complete run, including sub-workflows. Default `64`; values are clamped to `1`–`10000`. Replay hits do not consume the cap. The `workflow` tool field is `maxAgents`. This is independent of the `/workflow:size` prompt guideline. |
 | `--agent-timeout-ms=N` / `PI_WORKFLOW_AGENT_TIMEOUT_MS=N` | Abort one live agent after this duration. Default `1800000` (30 minutes); values are clamped to `1000`–`86400000`. The session is aborted and its isolated worktree is cleaned up. The `workflow` tool field is `agentTimeoutMs`. |
 | `--agent-retries=N` / `PI_WORKFLOW_AGENT_RETRIES=N` | Restart the whole agent after a transient provider or transport failure that pi's in-session turn retry could not recover. Default `0`; values are clamped to `0`–`10`. Backoff starts at one second, doubles, and caps at 30 seconds. The `workflow` tool field is `agentRetries`. |
-| `--budget=N` / `PI_WORKFLOW_BUDGET=N` | Set an output-token ceiling across recorded subagent attempts, including failed provider attempts. `agent()` throws `WorkflowBudgetExceededError` before starting another model request once the ceiling is reached; agents already running may overshoot because the engine does not reserve per-agent estimates. |
+| `--budget=N` / `PI_WORKFLOW_BUDGET=N` | Set an output-token ceiling across recorded subagent attempts, including failed provider attempts. `agent()` throws `WorkflowBudgetExceededError` before starting another model request once the ceiling is reached; agents already running may overshoot because the engine does not reserve per-agent estimates. The `workflow` tool has no budget field; see [Turn budget directive](#turn-budget-directive). |
 | `--perf` / `PI_WORKFLOW_PERF=1` | Include internal timing aggregates. Usage/cost totals are reported separately from perf. |
 | `PI_WORKFLOW_LANE_ITEM_LIMIT=N` | Cap retained progress lane items. |
 
@@ -636,15 +636,17 @@ do not count, and values under 1,000 tokens are ignored so a `+1` in ordinary
 prose never caps a run. The first such token in a typed prompt wins; prompts
 that extensions send are not read.
 
-While the pool is active, a `workflow` tool call without its own `budget` runs
-with the pool's remainder as its budget (clamped to the tool's budget range),
-and each synchronous run's output tokens are subtracted once it finishes,
-failed or not. When less than one token remains, the tool refuses the call and
-tells the agent the turn's budget is spent. An explicit `budget` on the call
-can only lower that ceiling, is refused the same way once the pool is spent, and
-its spend is subtracted too. The pool clears when the run that
+While the pool is active, every `workflow` tool call runs with the pool's
+remainder as its budget (clamped to the run budget range), and each
+synchronous run's output tokens are subtracted once it finishes, failed or not.
+When less than one token remains, the tool refuses the call and tells the agent
+the turn's budget is spent. The pool clears when the run that
 received the prompt settles, so it still covers the run after pi retries a
 provider error or compacts an overflowing context within that run.
+
+The `workflow` tool has no `budget` field, so the host agent cannot choose a
+ceiling: one it guesses can run out before a run's final stage. Without a pool,
+a tool run takes `PI_WORKFLOW_BUDGET` if it is set and is otherwise unbudgeted.
 
 Background runs receive the current remainder as their budget but do not draw
 the pool down, because their usage lands after the turn. Parallel `workflow`

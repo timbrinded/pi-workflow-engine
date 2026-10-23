@@ -129,7 +129,7 @@ const keep = answers.real?.type === "bool" ? answers.real.probability > 0.5 : tr
 
 ## Budget
 
-`api.budget.total` is the output-token ceiling (`null` when unset); `spent()` and `remaining()` are live. When the user's prompt carries a `+500k`-style directive, every run that turn is capped at the remaining pool (its own `budget` can only lower that), and synchronous runs draw the pool down; once it is spent the tool refuses further runs that turn. Once the ceiling is reached `agent()` rejects with `WorkflowBudgetExceededError` (a `null` slot inside `parallel`); agents already running can overshoot. Scale fleets from `total`, and guard every loop with it so an unbudgeted run still terminates:
+`api.budget.total` is the output-token ceiling (`null` when unset); `spent()` and `remaining()` are live. Only the user sets a budget: the `workflow` tool takes none. When the user's prompt carries a `+500k`-style directive, every run that turn is capped at the remaining pool, and synchronous runs draw the pool down; once it is spent the tool refuses further runs that turn. Once the ceiling is reached `agent()` rejects with `WorkflowBudgetExceededError` (a `null` slot inside `parallel`); agents already running can overshoot. Scale fleets from `total`, and guard every loop with it so an unbudgeted run still terminates:
 
 ```js
 const width = api.budget.total ? Math.max(2, Math.min(8, Math.floor(api.budget.total / 40_000))) : 4;

@@ -147,20 +147,18 @@ export type DynamaxTurnBudgetResolution =
   | { readonly kind: "spent"; readonly total: number };
 
 /**
- * A run's budget. Without a turn pool it is the explicit one, if any. The user's pool caps every run in
- * its turn: the remainder, clamped to the run budget range, is the budget, and an explicit one can only
- * lower it. A pool with less than `min` left is spent.
+ * A tool run's budget. Only the user sets one: without a turn pool this adds none, and the pool caps
+ * every run in its turn at the remainder, clamped to the run budget range. A pool with less than `min`
+ * left is spent.
  */
 export function resolveTurnBudget(
-  explicit: number | undefined,
   pool: DynamaxTurnBudget | undefined,
   range: { readonly min: number; readonly max: number },
 ): DynamaxTurnBudgetResolution {
-  if (pool === undefined) return { kind: "budget", budget: explicit };
+  if (pool === undefined) return { kind: "budget", budget: undefined };
   const remaining = pool.remaining();
   if (remaining < range.min) return { kind: "spent", total: pool.total };
-  const cap = Math.min(range.max, Math.floor(remaining));
-  return { kind: "budget", budget: explicit === undefined ? cap : Math.min(explicit, cap) };
+  return { kind: "budget", budget: Math.min(range.max, Math.floor(remaining)) };
 }
 
 export function markDynamaxOneShot(state: DynamaxState): void {

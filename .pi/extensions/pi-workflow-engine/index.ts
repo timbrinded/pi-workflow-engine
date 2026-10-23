@@ -646,13 +646,6 @@ function registerWorkflowTool(
           description: "Maximum delay accepted from a provider reset hint before automatic resume",
         }),
       ),
-      budget: Type.Optional(
-        Type.Integer({
-          minimum: WORKFLOW_BUDGET_MIN,
-          maximum: WORKFLOW_BUDGET_MAX,
-          description: "Optional output-token ceiling for the run; agent() throws once it is exceeded",
-        }),
-      ),
       perf: Type.Optional(Type.Boolean({ description: "Include workflow performance timing aggregates in the result details" })),
       resumeFromRunId: Type.Optional(Type.String({ minLength: 1, description: "Workflow run id to resume from by replaying matching completed agent results" })),
       resumeEditedWorkflow: Type.Optional(
@@ -681,7 +674,7 @@ function registerWorkflowTool(
         if (unavailable) return unavailable;
       }
       const turnBudget = dynamax.turnBudget(ctx);
-      const budget = resolveTurnBudget(params.budget, turnBudget, { min: WORKFLOW_BUDGET_MIN, max: WORKFLOW_BUDGET_MAX });
+      const budget = resolveTurnBudget(turnBudget, { min: WORKFLOW_BUDGET_MIN, max: WORKFLOW_BUDGET_MAX });
       if (budget.kind === "spent") {
         return workflowToolError(
           `The user's +${budget.total} output-token budget for this turn is spent by its earlier workflow runs. Do not start another workflow this turn unless the user raises the budget.`,

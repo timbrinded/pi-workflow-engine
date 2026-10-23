@@ -516,7 +516,7 @@ test("the workflow tool is a model-only orchestrator that codemode scripts canno
   assert.equal(captureWorkflowTool().exposure, "model-only");
 });
 
-test("a +N prompt directive defaults the run budget to the turn pool until the run settles", async () => {
+test("the host cannot budget a tool run; a +N directive caps it until the run settles", async () => {
   const extension = captureWorkflowExtension();
   const input = extension.handlers.get("input")?.[0];
   if (!input) throw new Error("expected an input handler");
@@ -533,9 +533,11 @@ export default async function run({ budget }) {
   const budgetOf = async (params: { budget?: number } = {}) =>
     toolResultText(await extension.tool.execute("call-turn-budget", { script, ...params }, undefined, () => {}, ctx));
 
+  // The host model cannot set a ceiling: the ones it guessed ran out before a run's final synthesis.
+  assert.equal("budget" in extension.tool.parameters.properties, false);
   await input({ source: "interactive", text: "+5k run the probe" }, ctx);
   assert.match(await budgetOf(), /budget 5000/);
-  assert.match(await budgetOf({ budget: 1234 }), /budget 1234/);
+  assert.match(await budgetOf({ budget: 1234 }), /budget 5000/);
   // A provider retry or overflow compaction ends a loop with agent_end and continues the same run.
   await emit("agent_end", { type: "agent_end", messages: [] });
   assert.match(await budgetOf(), /budget 5000/);
