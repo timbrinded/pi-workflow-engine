@@ -199,7 +199,8 @@ for (const { when, diff, summary, nextSteps } of [
   });
 }
 
-test("code-review verifies one candidate and passes evidence into synthesis", async () => {
+/** code-review over one changed line where the logic-bugs finder surfaces one candidate that is confirmed. */
+async function reviewOneConfirmedCandidate(args = "", scope: Record<string, unknown> = {}) {
   const surviving = candidate("confirmed bug", "bug");
   const api = createScriptedApi([
     {
@@ -207,6 +208,7 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
       files: ["src/example.ts"],
       summary: "One risky change.",
       conventions: "Prefer direct tests.",
+      ...scope,
     },
     { candidates: [surviving] },
     emptyCandidates(),
@@ -215,7 +217,7 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
     emptyCandidates(),
     { verdict: "CONFIRMED", evidence: ["src/example.ts:12 proves the bug"] },
     report("One confirmed bug.", [{ ...finding("confirmed bug", "bug"), sourceCandidateIds: identifyCandidates([surviving], "logic-bugs")[0]!.sourceCandidateIds }]),
-  ]);
+  ], args);
 
   const result = asReportResult(await codeReview(api, {
     captureReviewMaterial: async () => ({
@@ -224,6 +226,11 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
       snapshot: { status: "unavailable", reason: "fixture" },
     }),
   }));
+  return { api, result };
+}
+
+test("code-review verifies one candidate and passes evidence into synthesis", async () => {
+  const { api, result } = await reviewOneConfirmedCandidate();
   const synthesize = api.calls.find((call) => call.label === "synthesize");
 
   assert.equal(result.summary, "One confirmed bug.");
@@ -238,6 +245,24 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
   assert.ok(api.calls.filter((call) => call.label?.startsWith("find:")).every((call) => call.profile === "medium"));
   assert.ok(api.calls.filter((call) => call.label?.startsWith("verify:")).every((call) => call.profile === "small"));
 });
+
+for (const { when, args, reportingBar } of [
+  { when: "have none", args: "look at the parser", reportingBar: "(none)" },
+  { when: "state one", args: "look at the parser; only report bugs with a failing input", reportingBar: "Only report bugs with a failing input." },
+]) {
+  test(`code-review gives finders only the focus and synthesis the reporting bar when the instructions ${when}`, async () => {
+    const { api } = await reviewOneConfirmedCandidate(args, { focus: "the parser", reportingBar });
+    const prompts = (prefix: string) => api.calls.filter((call) => call.label?.startsWith(prefix)).map((call) => call.prompt);
+    const [synthesis = ""] = prompts("synthesize");
+
+    assert.deepEqual([prompts("find:").length, prompts("verify:").length], [5, 1]);
+    assert.ok(prompts("find:").every((prompt) => prompt.includes("the parser") && !prompt.includes(args)));
+    assert.ok(prompts("verify:").every((prompt) => prompt.includes(args)));
+    // A focus alone must not tell synthesis to drop verified findings outside it.
+    assert.equal(synthesis.includes("## Reporting bar"), reportingBar !== "(none)");
+    assert.equal(synthesis.includes(args), reportingBar !== "(none)");
+  });
+}
 
 test("refactor-scout returns the empty report when no files are scoped", async () => {
   const api = createScriptedApi([

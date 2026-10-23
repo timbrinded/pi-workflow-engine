@@ -219,10 +219,11 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       `## Synthesis: final code-review report\n\n${ranked.length} findings survived independent verification.\n\n${block}\n\n` +
       "Merge findings with the same root cause, rank most-severe first (correctness bugs above cleanups), and produce the final advisory report. " +
       "Return summary, ID selections with severity (low/medium/high) and advisory recommendation, and nextSteps. Evidence and confidence are reconstructed from verified records. Structured output only." +
-      (target
-        ? `${reportingBar ? `\n\n## Reporting bar (the user's rules with referenced context resolved)\n${reportingBar}` : ""}` +
-          `\n\n## Reporting bar from the user (verbatim)\n${target}\n\n` +
-          "Apply this bar when choosing which IDs to report: leave out findings it excludes, and say in the summary what you left out and why."
+      // Only a stated bar filters: a focus alone must not drop verified findings outside it.
+      (reportingBar
+        ? `\n\n## Reporting bar (the user's rules with referenced context resolved)\n${reportingBar}` +
+          `\n\n## User instructions (verbatim)\n${target}\n\n` +
+          "Apply the reporting bar when choosing which IDs to report: leave out findings it excludes, and say in the summary what you left out and why."
         : ""),
   });
   return { ...report, reviewContext };

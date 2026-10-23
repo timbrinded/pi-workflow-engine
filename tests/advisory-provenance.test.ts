@@ -119,6 +119,24 @@ test("challenge is opt-in, bounded, and failures preserve the candidate as unres
   assert.equal(coverage[0]?.failed, 1);
 });
 
+test("challenges fit the agent limit and keep an admission for synthesis", async () => {
+  const findings: AdvisoryVerified[] = ["a", "b"].map((lens) => ({ ...identifyCandidates([candidate], lens)[0]!, verdict: "PLAUSIBLE", evidence: ["verifier"] }));
+  const labels: string[] = [];
+  const logs: string[] = [];
+  const api = apiFor((_prompt, options) => {
+    labels.push(options.label!);
+    return options.label?.startsWith("challenge:") ? { outcome: "no-counterexample", evidence: [] } : { outcome: "upheld", evidence: [], reason: "held" };
+  });
+  // Four admissions left: one challenge (two agents) fits beside synthesis, a second would take its slot.
+  api.agents = { max: 9, remaining: () => 4 - labels.length };
+  api.log = (line) => logs.push(line);
+
+  await challengeFindings(api, findings, "snapshot", { maxChallenges: 2 }, []);
+
+  assert.deepEqual(labels.map((label) => label.split(":")[0]), ["challenge", "adjudicate"]);
+  assert.deepEqual(logs, ["Challenging 1 of 2 findings to fit the agent limit"]);
+});
+
 for (const value of ["", "-1", "abc", "1.5", "Infinity"]) {
   test(`invalid challenge value ${JSON.stringify(value)} fails before discovery`, async () => {
     const args = `src --challenge=${value}`;

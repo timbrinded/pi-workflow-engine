@@ -41,7 +41,7 @@ export function needsChallenge(finding: AdvisoryVerified): boolean {
 
 /** A bounded recipe using existing agent/parallel calls, not a new runtime primitive. */
 export async function challengeFindings<T extends AdvisoryVerified>(
-  api: Pick<WorkflowApi, "agent" | "parallel">,
+  api: Pick<WorkflowApi, "agent" | "agents" | "log" | "parallel">,
   findings: T[],
   context: string,
   options: AdvisoryChallengeOptions,
@@ -49,7 +49,10 @@ export async function challengeFindings<T extends AdvisoryVerified>(
 ): Promise<T[]> {
   const limit = Number.isFinite(options.maxChallenges) ? Math.max(0, Math.min(10, Math.trunc(options.maxChallenges))) : 0;
   if (limit === 0) return findings;
-  const selected = findings.filter((finding) => finding.verdict !== "REFUTED" && (options.shouldChallenge ?? needsChallenge)(finding)).slice(0, limit);
+  const eligible = findings.filter((finding) => finding.verdict !== "REFUTED" && (options.shouldChallenge ?? needsChallenge)(finding)).slice(0, limit);
+  // A challenge takes two agents; keep one admission for the synthesis that follows.
+  const selected = eligible.slice(0, Math.max(0, Math.floor((api.agents.remaining() - 1) / 2)));
+  if (selected.length < eligible.length) api.log(`Challenging ${selected.length} of ${eligible.length} findings to fit the agent limit`);
   const replacements = new Map<string, T>();
   await collectAdvisoryStage(api, "Challenge", selected.map((finding) => ({ id: finding.candidateId, run: async () => {
     // Preserve the candidate as unresolved if either independent stage fails.

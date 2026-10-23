@@ -129,11 +129,14 @@ export async function runLensVerificationPipeline(
   // candidates; then each verifier judges a batch, so no candidate goes unverified and synthesis still runs.
   const batches = verificationBatches(candidates, Math.max(1, api.agents.remaining() - 1));
   if (batches.length < candidates.length) api.log(`Verifying ${candidates.length} candidates in ${batches.length} batch(es) to fit the agent limit`);
-  const verified = (await collectAdvisoryStage(api, "Verify", batches.map((batch) => ({
-    id: batch.map((candidate) => candidate.candidateId).join(","),
-    ...(batch.length === 1 ? { candidate: batch[0] } : {}),
-    run: () => verifyBatch(api, batch, verifierPrompt),
-  })), coverage)).flat();
+  // Each candidate keeps its own coverage branch, so a failed batch still lists every candidate it held.
+  const verified = await collectAdvisoryStage(api, "Verify", batches.flatMap((batch) => {
+    let judged: Promise<AdvisoryVerified[]> | undefined;
+    return batch.map((candidate, index) => ({
+      id: candidate.candidateId, candidate,
+      run: async () => (await (judged ??= verifyBatch(api, batch, verifierPrompt)))[index]!,
+    }));
+  }), coverage);
   return { verified, rawCandidates, dropped, coverage };
 }
 

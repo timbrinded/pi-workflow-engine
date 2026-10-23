@@ -151,3 +151,24 @@ test("an agent limit short of one verifier per candidate batches them and keeps 
     ["candidate two", "CONFIRMED"],
   ]);
 });
+
+test("a failed batch verifier leaves every candidate it held in the coverage", async () => {
+  const found = [candidateFor("one"), candidateFor("two"), candidateFor("three")];
+  let admitted = 0;
+  const agent = (async (_prompt: string, opts?: AgentOptions) => {
+    admitted++;
+    if (opts?.label?.startsWith("find:")) return { candidates: opts.label === "find:alpha" ? found : [] };
+    throw new Error("batch verifier failed schema validation");
+  }) as WorkflowApi["agent"];
+  const result = await runLensVerificationPipeline({
+    api: { agent, agents: { max: 4, remaining: () => 4 - admitted }, classify: noClassifier, parallel: bindParallel({}), phase() {}, progress() {}, log() {} },
+    lenses, perLens: 3,
+    finderPrompt: () => "find", verifierPrompt: () => "verify",
+  });
+
+  const verify = result.coverage.find((stage) => stage.stage === "Verify");
+  assert.equal(admitted, 3, "one batch verifier runs for all three candidates");
+  assert.deepEqual(result.verified, []);
+  assert.deepEqual([verify?.expected, verify?.failed], [3, 3]);
+  assert.deepEqual(verify?.failures.map((failure) => failure.candidate?.summary).sort(), ["candidate one", "candidate three", "candidate two"]);
+});

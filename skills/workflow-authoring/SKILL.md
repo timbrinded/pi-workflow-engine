@@ -46,7 +46,7 @@ export default async function run(api) {
 | `workflow(nameOrRef, args?)` | Runs another workflow as a sub-step and returns its result: a registered workflow by name, or an inline-format script file via `{ scriptPath }`, relative to the workflow cwd. `args` is a string or any JSON value, which the child reads as `input` and `args`. One level of nesting only. Rejects on an unknown name, an unreadable `scriptPath`, or a script that does not compile. |
 | `phase(title)` / `log(message)` / `progress(event)` | Drive the live progress tree, logs, counters, and lanes. |
 | `budget` | `{ total, spent(), remaining() }` in output tokens; `total` is `null` when the run has no budget. |
-| `agents` | `{ max, remaining() }`: the run's live-agent limit and the admissions left before `agent()` throws (journal replays take none). |
+| `agents` | `{ max, remaining() }`: the run's live-agent limit and the admissions left before `agent()` throws. It is a live reading, not a reservation: agents running alongside, and retries, take admissions too, and journal replays take none, so a resumed run reads more. |
 | `input` | The arguments verbatim: the `/workflow` command's string, or the JSON value the tool call or `workflow()` passed; `""` when none was given. |
 | `args`, `cwd`, `signal` | The arguments as text (a string as is, any other JSON value as JSON text, `""` when none), the host working directory, and the run's abort signal. |
 
