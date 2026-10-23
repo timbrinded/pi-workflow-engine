@@ -58,6 +58,7 @@ export interface LensVerificationPipelineOptions {
   lenses: readonly AdvisoryLens[];
   perLens: number;
   finderPhase?: "Find" | "Hypothesize";
+  finderProfile?: AgentOptions["profile"];
   finderPrompt(lens: AdvisoryLens): string;
   /** One verifier's prompt. It gets several candidates only when the agent limit leaves fewer verifiers than candidates. */
   verifierPrompt(candidates: readonly IdentifiedAdvisoryCandidate[]): string;
@@ -85,7 +86,7 @@ export interface AdvisoryBackfillDefaults {
 export async function runLensVerificationPipeline(
   options: LensVerificationPipelineOptions,
 ): Promise<LensVerificationPipelineResult> {
-  const { api, lenses, perLens, finderPhase = "Find", finderPrompt, verifierPrompt, boundCandidate } = options;
+  const { api, lenses, perLens, finderPhase = "Find", finderProfile = "small", finderPrompt, verifierPrompt, boundCandidate } = options;
   const coverage: AdvisoryStageCoverage[] = [];
   let rawCandidates = 0;
   let overCap = 0;
@@ -94,7 +95,7 @@ export async function runLensVerificationPipeline(
     const result = await api.agent(finderPrompt(lens), {
       phase: finderPhase, label: `${finderPhase.toLowerCase()}:${lens.label}`,
       tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS,
-      profile: "small", schema: AdvisoryCandidatesSchema,
+      profile: finderProfile, schema: AdvisoryCandidatesSchema,
     });
     rawCandidates += result.candidates.length;
     api.progress({ type: "counter_delta", key: "candidates", label: "candidates", delta: result.candidates.length });

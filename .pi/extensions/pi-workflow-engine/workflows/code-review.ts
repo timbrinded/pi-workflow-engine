@@ -162,6 +162,8 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     api,
     lenses: ANGLES,
     perLens: PER_ANGLE,
+    // Finders on `small` (thinking low by default) returned nothing on real PRs; they are the stage that must dig.
+    finderProfile: "medium",
     boundCandidate: (candidate, lens) => {
       const reviewAnchor = candidate.reviewAnchor
         ? diffAnchor(changed, candidate.reviewAnchor)

@@ -235,7 +235,7 @@ test("code-review verifies one candidate and passes evidence into synthesis", as
   assert.deepEqual(synthesize?.tools, []);
   assert.equal(synthesize?.resume, "read-only");
   assert.equal(synthesize?.profile, "medium");
-  assert.ok(api.calls.filter((call) => call.label?.startsWith("find:")).every((call) => call.profile === "small"));
+  assert.ok(api.calls.filter((call) => call.label?.startsWith("find:")).every((call) => call.profile === "medium"));
   assert.ok(api.calls.filter((call) => call.label?.startsWith("verify:")).every((call) => call.profile === "small"));
 });
 
