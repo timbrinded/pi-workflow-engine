@@ -28,6 +28,7 @@ function createFakeApi(overrides: Partial<WorkflowApi> = {}, onAgent?: (opts: Ag
     input: "",
     cwd: process.cwd(),
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
+    agents: { max: 64, remaining: () => 64 },
     signal: undefined,
     ...overrides,
   };

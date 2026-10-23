@@ -62,6 +62,7 @@ function scriptedApi(responses: readonly unknown[], args: string): ScriptedApi {
     input: args,
     cwd: process.cwd(),
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
+    agents: { max: 64, remaining: () => 64 },
     signal: undefined,
   };
 }

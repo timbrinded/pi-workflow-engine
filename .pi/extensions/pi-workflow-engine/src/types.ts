@@ -280,8 +280,18 @@ export interface WorkflowApi {
    * `agent()` throws `WorkflowBudgetExceededError` once the ceiling is reached.
    */
   budget: WorkflowBudget;
+  /**
+   * The run's live-agent limit. `remaining()` is live: admissions left before `agent()` throws
+   * `WorkflowAgentLimitError` (journal replays take none). Reserve what later stages need before a fan-out.
+   */
+  agents: WorkflowAgentCapacity;
   /** Abort signal for the run, propagated from the host. */
   signal: AbortSignal | undefined;
+}
+
+export interface WorkflowAgentCapacity {
+  readonly max: number;
+  remaining(): number;
 }
 
 export type WorkflowRun = (api: WorkflowApi) => Promise<unknown>;

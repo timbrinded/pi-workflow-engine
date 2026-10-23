@@ -32,4 +32,8 @@ export class WorkflowAgentLimiter {
     if (this.admitted >= this.maxAgents) throw new WorkflowAgentLimitError(this.maxAgents);
     this.admitted++;
   }
+
+  remaining(): number {
+    return Math.max(0, this.maxAgents - this.admitted);
+  }
 }

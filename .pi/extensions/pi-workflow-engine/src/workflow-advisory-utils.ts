@@ -1,4 +1,4 @@
-import { AdvisoryCandidatesSchema, AdvisoryVerdictSchema, formatAdvisoryLocation, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
+import { AdvisoryBatchVerdictSchema, AdvisoryCandidatesSchema, AdvisoryVerdictSchema, formatAdvisoryLocation, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
 import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, mergeCandidateInto, repoPathCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
 import { isFatalWorkflowError } from "./cancellation.ts";
 import { WorkflowClassifierUnavailableError } from "./classify.ts";
@@ -54,13 +54,26 @@ export function publishVerifiedKeptProgress(
 }
 
 export interface LensVerificationPipelineOptions {
-  api: Pick<WorkflowApi, "agent" | "classify" | "parallel" | "phase" | "progress" | "log">;
+  api: Pick<WorkflowApi, "agent" | "agents" | "classify" | "parallel" | "phase" | "progress" | "log">;
   lenses: readonly AdvisoryLens[];
   perLens: number;
   finderPhase?: "Find" | "Hypothesize";
   finderPrompt(lens: AdvisoryLens): string;
-  verifierPrompt(candidate: IdentifiedAdvisoryCandidate): string;
+  /** One verifier's prompt. It gets several candidates only when the agent limit leaves fewer verifiers than candidates. */
+  verifierPrompt(candidates: readonly IdentifiedAdvisoryCandidate[]): string;
   boundCandidate?(candidate: IdentifiedAdvisoryCandidate, lens: AdvisoryLens): IdentifiedAdvisoryCandidate | undefined;
+}
+
+/** The candidate section of a verifier prompt: one record, or a batch judged in one pass. */
+export function verifierCandidates(
+  candidates: readonly IdentifiedAdvisoryCandidate[],
+  heading: { one: string; many: string },
+  fields: (candidate: IdentifiedAdvisoryCandidate) => string,
+): string {
+  if (candidates.length === 1) return `## ${heading.one}\n${fields(candidates[0]!)}`;
+  return `## ${heading.many} (${candidates.length}: the run's agent limit leaves one verifier for several)\n` +
+    candidates.map((candidate) => `### candidateId ${candidate.candidateId}\n${fields(candidate)}`).join("\n\n") +
+    "\n\nJudge each on its own evidence and return one verdict per candidateId.";
 }
 
 export interface AdvisoryBackfillDefaults {
@@ -111,19 +124,50 @@ export async function runLensVerificationPipeline(
   }
   const dropped = overCap + duplicateOrOutOfScope;
   api.phase("Verify");
-  const verified = await collectAdvisoryStage(api, "Verify", candidates.map((candidate) => ({
-    id: candidate.candidateId, candidate, run: async (): Promise<AdvisoryVerified> => {
-      const location = primaryLocation(candidate);
-      const judged = await api.agent(`${verifierPrompt(candidate)}\nCandidate record: ${JSON.stringify(candidate)}`, {
-        phase: "Verify", label: `verify:${location.file.split("/").pop() ?? location.file}`,
-        tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS,
-        profile: "small", schema: AdvisoryVerdictSchema,
-      });
-      recordVerdictProgress(api.progress, candidate, judged);
-      return { ...candidate, verdict: judged.verdict, evidence: judged.evidence };
-    },
-  })), coverage);
+  // Keep one admission for the synthesis that follows. A host-set agent limit can leave fewer verifiers than
+  // candidates; then each verifier judges a batch, so no candidate goes unverified and synthesis still runs.
+  const batches = verificationBatches(candidates, Math.max(1, api.agents.remaining() - 1));
+  if (batches.length < candidates.length) api.log(`Verifying ${candidates.length} candidates in ${batches.length} batch(es) to fit the agent limit`);
+  const verified = (await collectAdvisoryStage(api, "Verify", batches.map((batch) => ({
+    id: batch.map((candidate) => candidate.candidateId).join(","),
+    ...(batch.length === 1 ? { candidate: batch[0] } : {}),
+    run: () => verifyBatch(api, batch, verifierPrompt),
+  })), coverage)).flat();
   return { verified, rawCandidates, dropped, coverage };
+}
+
+/** Split candidates into at most `count` batches, keeping candidates in one file together where it fits. */
+function verificationBatches(candidates: readonly IdentifiedAdvisoryCandidate[], count: number): IdentifiedAdvisoryCandidate[][] {
+  if (candidates.length <= count) return candidates.map((candidate) => [candidate]);
+  const byFile = [...candidates].sort((a, b) => primaryLocation(a).file.localeCompare(primaryLocation(b).file));
+  const size = Math.ceil(byFile.length / count);
+  return Array.from({ length: Math.ceil(byFile.length / size) }, (_, index) => byFile.slice(index * size, (index + 1) * size));
+}
+
+async function verifyBatch(
+  api: Pick<WorkflowApi, "agent" | "progress">,
+  batch: readonly IdentifiedAdvisoryCandidate[],
+  verifierPrompt: LensVerificationPipelineOptions["verifierPrompt"],
+): Promise<AdvisoryVerified[]> {
+  const location = primaryLocation(batch[0]!);
+  const options = {
+    phase: "Verify", label: `verify:${location.file.split("/").pop() ?? location.file}${batch.length > 1 ? ` +${batch.length - 1}` : ""}`,
+    tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS,
+  } as const;
+  if (batch.length === 1) {
+    const candidate = batch[0]!;
+    const judged = await api.agent(`${verifierPrompt(batch)}\nCandidate record: ${JSON.stringify(candidate)}`, { ...options, profile: "small", schema: AdvisoryVerdictSchema });
+    recordVerdictProgress(api.progress, candidate, judged);
+    return [{ ...candidate, verdict: judged.verdict, evidence: judged.evidence }];
+  }
+  // One agent does several verifiers' work, so it gets the medium route.
+  const judged = await api.agent(`${verifierPrompt(batch)}\nCandidate records: ${JSON.stringify(batch)}`, { ...options, profile: "medium", schema: AdvisoryBatchVerdictSchema });
+  const verdicts = new Map(judged.verdicts.map((verdict) => [verdict.candidateId, verdict]));
+  return batch.map((candidate) => {
+    const verdict = verdicts.get(candidate.candidateId) ?? { verdict: "NOT_SUBSTANTIATED" as const, evidence: ["The batch verifier returned no verdict for this candidate."] };
+    recordVerdictProgress(api.progress, candidate, verdict);
+    return { ...candidate, verdict: verdict.verdict, evidence: verdict.evidence };
+  });
 }
 
 /** TypeSafe Jev routes in preference order. Jev is the classifier the duplicate merge was measured with. */

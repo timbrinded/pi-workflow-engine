@@ -38,6 +38,14 @@ export const AdvisoryVerdictSchema = Type.Object({
   evidence: Type.Array(Type.String({ description: "Quoted or cited evidence supporting the verdict." })),
 });
 
+export const AdvisoryBatchVerdictSchema = Type.Object({
+  verdicts: Type.Array(Type.Object({
+    candidateId: Type.String({ description: "The candidateId of the record this verdict judges." }),
+    verdict: AdvisoryVerifierVerdictSchema,
+    evidence: Type.Array(Type.String({ description: "Quoted or cited evidence supporting the verdict." })),
+  }), { description: "One verdict per candidate record, each judged on its own." }),
+});
+
 export const AdvisoryFindingSchema = Type.Object({
   verdict: Type.Optional(AdvisoryVerifierVerdictSchema),
   sourceCandidateIds: Type.Optional(Type.Array(Type.String())),

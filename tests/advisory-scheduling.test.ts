@@ -11,6 +11,9 @@ const noClassifier: WorkflowApi["classify"] = async () => {
   throw new WorkflowClassifierUnavailableError("no classifier in this test");
 };
 
+/** An agent limit the pipeline never reaches. */
+const roomy: WorkflowApi["agents"] = { max: 64, remaining: () => 64 };
+
 const lenses: AdvisoryLens[] = [
   { label: "alpha", category: "bug", text: "alpha lens" },
   { label: "beta", category: "bug", text: "beta lens" },
@@ -31,6 +34,7 @@ test("finder-barrier scheduling starts all finders before verifiers", async () =
   const result = await runLensVerificationPipeline({
     api: {
       agent,
+      agents: roomy,
       classify: noClassifier,
       parallel: bindParallel({ limit: 10 }),
       phase() {},
@@ -40,7 +44,7 @@ test("finder-barrier scheduling starts all finders before verifiers", async () =
     lenses,
     perLens: 2,
     finderPrompt: (lens) => `find ${lens.label}`,
-    verifierPrompt: (candidate) => `verify ${candidate.summary}`,
+    verifierPrompt: ([candidate]) => `verify ${candidate!.summary}`,
   });
 
   assert.equal(result.verified.length, 2);
@@ -70,7 +74,7 @@ test("verifier output cannot replace discovery identities or evidence fields", a
     };
   }) as WorkflowApi["agent"];
   const result = await runLensVerificationPipeline({
-    api: { agent, classify: noClassifier, parallel: bindParallel({}), phase() {}, progress() {}, log() {} },
+    api: { agent, agents: roomy, classify: noClassifier, parallel: bindParallel({}), phase() {}, progress() {}, log() {} },
     lenses: lenses.slice(0, 1), perLens: 1,
     finderPrompt: () => "find", verifierPrompt: () => "verify",
   });
@@ -100,7 +104,7 @@ test("candidates over the per-lens cap are logged per lens and counted as droppe
   const events: WorkflowProgressEvent[] = [];
   const logs: string[] = [];
   const result = await runLensVerificationPipeline({
-    api: { agent, classify: noClassifier, parallel: bindParallel({}), phase() {}, progress: (event) => events.push(event), log: (line) => logs.push(line) },
+    api: { agent, agents: roomy, classify: noClassifier, parallel: bindParallel({}), phase() {}, progress: (event) => events.push(event), log: (line) => logs.push(line) },
     lenses, perLens: 2,
     finderPrompt: () => "find", verifierPrompt: () => "verify",
   });
@@ -116,4 +120,34 @@ test("candidates over the per-lens cap are logged per lens and counted as droppe
   assert.equal(result.rawCandidates, 5);
   assert.equal(result.dropped, 2);
   assert.deepEqual(result.verified.map((record) => record.summary).sort(), ["candidate alpha-2", "candidate beta-2", "candidate shared"]);
+});
+
+test("an agent limit short of one verifier per candidate batches them and keeps a slot for synthesis", async () => {
+  const found = [candidateFor("one"), candidateFor("two"), candidateFor("three")];
+  const verifierProfiles: unknown[] = [];
+  let admitted = 0;
+  const agent = (async (prompt: string, opts?: AgentOptions) => {
+    admitted++;
+    if (opts?.label?.startsWith("find:")) return { candidates: opts.label === "find:alpha" ? found : [] };
+    verifierProfiles.push(opts?.profile);
+    // The batch verifier judges two of the three records and omits the third.
+    const records = JSON.parse(prompt.slice(prompt.indexOf("Candidate records: ") + "Candidate records: ".length)) as { candidateId: string; summary: string }[];
+    return { verdicts: records.filter((record) => record.summary !== "candidate three").map((record) => ({ candidateId: record.candidateId, verdict: "CONFIRMED", evidence: [`checked ${record.summary}`] })) };
+  }) as WorkflowApi["agent"];
+  const logs: string[] = [];
+  const result = await runLensVerificationPipeline({
+    // Four admissions: two finders, then two left — one verifier and one kept for synthesis.
+    api: { agent, agents: { max: 4, remaining: () => 4 - admitted }, classify: noClassifier, parallel: bindParallel({}), phase() {}, progress() {}, log: (line) => logs.push(line) },
+    lenses, perLens: 3,
+    finderPrompt: () => "find", verifierPrompt: (candidates) => `verify ${candidates.length}`,
+  });
+
+  assert.deepEqual(verifierProfiles, ["medium"]);
+  assert.equal(admitted, 3);
+  assert.ok(logs.includes("Verifying 3 candidates in 1 batch(es) to fit the agent limit"));
+  assert.deepEqual(result.verified.map((record) => [record.summary, record.verdict]).sort(), [
+    ["candidate one", "CONFIRMED"],
+    ["candidate three", "NOT_SUBSTANTIATED"],
+    ["candidate two", "CONFIRMED"],
+  ]);
 });

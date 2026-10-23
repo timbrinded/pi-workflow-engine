@@ -10,6 +10,7 @@ import {
   formatLocation,
   formatRankedFinding,
   runLensVerificationPipeline,
+  verifierCandidates,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
@@ -83,10 +84,11 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       `Surface up to ${PER_LENS} candidates. Use category exactly "${lens.category}". ` +
       "Each candidate must include a one-line summary, locations, impact on maintainability or future correctness, and an optional safe first recommendation. " +
       "Only include opportunities where a small, reviewable first step is plausible. Structured output only.",
-    verifierPrompt: (candidate) =>
-      `## Refactor-scout verifier\n\n${scopeBlock}\n## Candidate\n` +
-      `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n` +
-      `Recommendation: ${candidate.recommendation ?? "(none supplied)"}\n\n` +
+    verifierPrompt: (candidates) =>
+      `## Refactor-scout verifier\n\n${scopeBlock}\n` +
+      verifierCandidates(candidates, { one: "Candidate", many: "Candidates" }, (candidate) =>
+        `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n` +
+        `Recommendation: ${candidate.recommendation ?? "(none supplied)"}`) + "\n\n" +
       "Read the relevant files and return CONFIRMED, PLAUSIBLE, NOT_SUBSTANTIATED, or REFUTED. " +
       "Default toward REFUTED if the opportunity is generic, too broad, not evidenced by code, or lacks a safe first step. " +
       "Evidence must quote or cite code. Structured output only.",

@@ -8,6 +8,7 @@ import {
   formatLocation,
   formatRankedFinding,
   runLensVerificationPipeline,
+  verifierCandidates,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
@@ -77,10 +78,11 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       `Consider ONLY this hypothesis lens:\n${lens.text}\n\n` +
       `Surface up to ${PER_LENS} root-cause hypotheses. Use category exactly "${lens.category}". ` +
       "Each hypothesis must include a one-line summary, locations, impact explaining how it produces the symptom, and an optional recommendation for the next validation step. Structured output only.",
-    verifierPrompt: (candidate) =>
-      `## Diagnose verifier\n\n${scopeBlock}\n## Hypothesis\n` +
-      `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n` +
-      `Recommended validation: ${candidate.recommendation ?? "(none supplied)"}\n\n` +
+    verifierPrompt: (candidates) =>
+      `## Diagnose verifier\n\n${scopeBlock}\n` +
+      verifierCandidates(candidates, { one: "Hypothesis", many: "Hypotheses" }, (candidate) =>
+        `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n` +
+        `Recommended validation: ${candidate.recommendation ?? "(none supplied)"}`) + "\n\n" +
       "Read relevant files and, when useful, run only safe read-only diagnostic commands from the scoped command list or commands explicitly requested by the user. " +
       "Do not run mutation, install, commit, network, or destructive commands. Return CONFIRMED, PLAUSIBLE, NOT_SUBSTANTIATED, or REFUTED with evidence. " +
       "Use NOT_SUBSTANTIATED when evidence is missing; REFUTED requires disproof. Structured output only.",

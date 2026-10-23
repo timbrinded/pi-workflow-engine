@@ -474,6 +474,7 @@ export async function runWorkflowWithContext(
     input,
     cwd: rc.cwd,
     budget: rc.budget,
+    agents: { max: rc.agentLimiter.maxAgents, remaining: () => rc.agentLimiter.remaining() },
     signal: rc.signal,
   };
 

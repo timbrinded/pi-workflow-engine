@@ -9,6 +9,7 @@ import {
   formatEvidence,
   formatLocation,
   runLensVerificationPipeline,
+  verifierCandidates,
   EMPTY_LENS_REVIEW_STATS,
   verdictConfidence,
   DEFAULT_ADVISORY_TOOL_HINTS,
@@ -175,11 +176,11 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       `Surface up to ${PER_ANGLE} candidates. Use category exactly "${lens.category}". Each candidate must include a one-line summary, ` +
       "locations with the changed file and a line that appears in the diff, and impact describing the concrete failure or maintenance scenario. " +
       "Pass through anything with a nameable impact — a separate verifier judges them next. Structured output only.",
-    verifierPrompt: (candidate) =>
-      `## Code-review verifier\n\n${scopeBlock}\n## Candidate\n` +
-      `Location: ${formatLocation(candidate)}\n` +
-      `Category: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n\n` +
-      "Run the diff command, read the relevant file(s), and return exactly one verdict (CONFIRMED / PLAUSIBLE / NOT_SUBSTANTIATED / REFUTED) " +
+    verifierPrompt: (candidates) =>
+      `## Code-review verifier\n\n${scopeBlock}\n` +
+      verifierCandidates(candidates, { one: "Candidate", many: "Candidates" }, (candidate) =>
+        `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}`) + "\n\n" +
+      "Run the diff command, read the relevant file(s), and return exactly one verdict per candidate (CONFIRMED / PLAUSIBLE / NOT_SUBSTANTIATED / REFUTED) " +
       "with evidence quoting the line(s). Use NOT_SUBSTANTIATED when evidence is insufficient; use REFUTED only for concrete disproof. Structured output only.",
   });
   const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, pipelineResult.coverage);

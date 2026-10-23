@@ -9,6 +9,7 @@ import {
   EMPTY_LENS_REVIEW_STATS,
   formatLocation,
   runLensVerificationPipeline,
+  verifierCandidates,
   DEFAULT_ADVISORY_TOOL_HINTS,
   DEFAULT_ADVISORY_TOOLS,
 } from "../src/workflow-advisory-utils.ts";
@@ -85,10 +86,11 @@ export default async function run(api: WorkflowApi): Promise<unknown> {
       `Surface up to ${PER_LENS} candidates. Use category exactly "${lens.category}". ` +
       "Each candidate must include a one-line summary, locations, impact stating the suspected performance consequence and workload where it matters, " +
       "and an optional recommendation. Prefer measurement recommendations when evidence is weak. Structured output only.",
-    verifierPrompt: (candidate) =>
-      `## Perf-review verifier\n\n${scopeBlock}\n## Candidate\n` +
-      `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n` +
-      `Recommendation: ${candidate.recommendation ?? "(none supplied)"}\n\n` +
+    verifierPrompt: (candidates) =>
+      `## Perf-review verifier\n\n${scopeBlock}\n` +
+      verifierCandidates(candidates, { one: "Candidate", many: "Candidates" }, (candidate) =>
+        `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}\n` +
+        `Recommendation: ${candidate.recommendation ?? "(none supplied)"}`) + "\n\n" +
       "Read relevant files and package/scripts. Run only safe read-only measurement or inspection commands when useful. " +
       "Return CONFIRMED, PLAUSIBLE, NOT_SUBSTANTIATED, or REFUTED with evidence from code, scripts, config, or measurement output. " +
       "Default toward PLAUSIBLE or REFUTED when no measurement exists; do not overstate a bottleneck. Structured output only.",
