@@ -1,5 +1,13 @@
 import { join } from "node:path";
-import { formatAdvisoryLocation, isAdvisoryReport, type AdvisoryFinding, type AdvisoryReport } from "./advisory-schema.ts";
+import { Type, type Static } from "typebox";
+import { Value } from "typebox/value";
+import {
+  AdvisoryVerifierVerdictSchema,
+  formatAdvisoryLocation,
+  isAdvisoryReport,
+  type AdvisoryFinding,
+  type AdvisoryReport,
+} from "./advisory-schema.ts";
 import { isRecord } from "./guards.ts";
 import { WORKFLOW_RUNS_DIR } from "./journal.ts";
 import { workflowRunScriptFile } from "./workflow-run-record.ts";
@@ -49,10 +57,18 @@ export function formatWorkflowRunFileLines(runId: string, scriptPersisted: boole
   ];
 }
 
+/** A verified candidate as lens reviews retain it beside their report, reduced to the fields the host listing reads. */
+const VerifiedCandidateSchema = Type.Object({
+  sourceCandidateIds: Type.Array(Type.String()),
+  summary: Type.String(),
+  verdict: AdvisoryVerifierVerdictSchema,
+});
+type VerifiedCandidate = Static<typeof VerifiedCandidateSchema>;
+
 /** A workflow result as the host model reads it: advisory reports as findings, other values as bounded JSON. */
 export function formatResultForContext(result: unknown): string {
   if (typeof result === "string") return result;
-  if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(result);
+  if (isAdvisoryReport(result)) return formatAdvisoryReportForContext(result, unreportedCandidates(result));
   const summary = workflowResultSummary(result);
   if (summary !== undefined && isRecord(result) && Object.keys(result).length === 1) return summary;
   const json = formatResultJson(result);
@@ -60,7 +76,20 @@ export function formatResultForContext(result: unknown): string {
   return summary === undefined ? json : `${summary}\n\n${json}`;
 }
 
-function formatAdvisoryReportForContext(report: AdvisoryReport): string {
+/**
+ * Verified candidates that no finding draws on: ones synthesis left out under the reporting bar, and refuted
+ * ones. Listing them lets the host resolve the candidate IDs a synthesis summary cites when it explains an
+ * exclusion, without reading the run record.
+ */
+function unreportedCandidates(report: AdvisoryReport & { readonly verification?: unknown }): VerifiedCandidate[] {
+  const { verification } = report;
+  if (!Array.isArray(verification)) return [];
+  const reported = new Set(report.findings.flatMap((finding) => finding.sourceCandidateIds ?? []));
+  return verification.filter((entry): entry is VerifiedCandidate =>
+    Value.Check(VerifiedCandidateSchema, entry) && !entry.sourceCandidateIds.some((id) => reported.has(id)));
+}
+
+function formatAdvisoryReportForContext(report: AdvisoryReport, unreported: readonly VerifiedCandidate[]): string {
   const lines = [report.summary];
   const issues = toReviewIssues(report);
   if (issues.length > 0) {
@@ -77,6 +106,10 @@ function formatAdvisoryReportForContext(report: AdvisoryReport): string {
         `- Recommendation: ${finding.recommendation}`,
       );
     }
+  }
+  if (unreported.length > 0) {
+    lines.push("", "Verified but not reported (verdict, candidate IDs):",
+      ...unreported.map((candidate) => `- ${candidate.verdict} ${candidate.sourceCandidateIds.join(", ")}: ${candidate.summary}`));
   }
   if (report.gaps && report.gaps.length > 0) {
     lines.push("", "Coverage gaps:", ...report.gaps.map((gap) => `- ${gap}`));

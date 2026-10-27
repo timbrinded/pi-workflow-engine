@@ -477,20 +477,31 @@ export default async function run() { return ${result}; }`;
   assert.ok(oversized.length < 25_000, `expected a bounded result, got ${oversized.length} characters`);
 });
 
-test("the workflow tool gives the host agent the viewer's finding id, review anchor and coverage gaps", async () => {
+test("the workflow tool gives the host agent the viewer's finding id, review anchor, unreported candidates and coverage gaps", async () => {
   const tool = captureWorkflowTool();
   const finding = {
-    summary: "Anchored finding.", category: "bug", severity: "high", confidence: "high",
+    summary: "Anchored finding.", category: "bug", severity: "high", confidence: "high", sourceCandidateIds: ["c-reported"],
     locations: [{ file: "src/caller.ts", line: 90 }], reviewAnchor: { file: "src/app.ts", line: 12 },
     evidence: ["line 12"], impact: "Breaks callers.", recommendation: "Fix the changed line.",
   };
+  const verified = (sourceCandidateIds: string[], summary: string, verdict: string) => ({
+    candidateId: sourceCandidateIds[0], sourceCandidateIds, summary, verdict, category: "bug",
+    locations: [{ file: "src/app.ts", line: 12 }], impact: "Impact.", evidence: ["Evidence."],
+  });
+  const verification = [
+    verified(["c-reported"], "Candidate behind the reported finding.", "CONFIRMED"),
+    verified(["c-bar", "c-bar-twin"], "Candidate the reporting bar excluded.", "PLAUSIBLE"),
+    verified(["c-refuted"], "Candidate the verifier refuted.", "REFUTED"),
+  ];
   const script = `export const meta = { name: "anchored-review", description: "Anchor probe" };
-export default async function run() { return ${JSON.stringify({ summary: "Review incomplete.", findings: [finding], nextSteps: [], status: "incomplete", gaps: ["verify/correctness: provider timeout"] })}; }`;
+export default async function run() { return ${JSON.stringify({ summary: "Review incomplete.", findings: [finding], nextSteps: [], status: "incomplete", gaps: ["verify/correctness: provider timeout"], verification })}; }`;
 
   const text = toolResultText(await tool.execute("call-anchored-review", { script }, undefined, () => {}, HEADLESS_CTX));
 
   assert.match(text, /### R001: Anchored finding\./);
   assert.match(text, /- Location: src\/app\.ts:12, src\/caller\.ts:90/);
+  assert.match(text, /Verified but not reported \(verdict, candidate IDs\):\n- PLAUSIBLE c-bar, c-bar-twin: Candidate the reporting bar excluded\.\n- REFUTED c-refuted: Candidate the verifier refuted\./);
+  assert.doesNotMatch(text, /Candidate behind the reported finding/);
   assert.match(text, /Coverage gaps:\n- verify\/correctness: provider timeout/);
 });
 
