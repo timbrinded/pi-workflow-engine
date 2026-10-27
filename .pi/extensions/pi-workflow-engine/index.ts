@@ -616,7 +616,7 @@ function registerWorkflowTool(
       parallelSubmissionLimit: Type.Optional(Type.Number({ description: "Optional limit for eagerly submitted parallel thunks" })),
       maxAgents: Type.Optional(
         Type.Integer({
-          description: `Maximum live model calls started across this run; replay hits are excluded; clamped to ${WORKFLOW_MAX_AGENTS_MIN}-${WORKFLOW_MAX_AGENTS_MAX}`,
+          description: `Maximum live model calls started across this run; replay hits are excluded; clamped to ${WORKFLOW_MAX_AGENTS_MIN}-${WORKFLOW_MAX_AGENTS_MAX}. Leave unset for a registered workflow unless the user asks for a cap: it sizes its own stages`,
         }),
       ),
       agentTimeoutMs: Type.Optional(

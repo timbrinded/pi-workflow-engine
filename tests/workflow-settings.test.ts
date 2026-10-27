@@ -57,7 +57,7 @@ test("setWorkflowSize writes only the size", () => {
 test("each size maps to its agent guideline; off adds no line", () => {
   assert.equal(
     workflowSizeGuidelineLine("medium"),
-    "Workflow size guideline: medium — keep each workflow under 10 agents unless the user asks for more; the user changes this with /workflow:size.",
+    "Workflow size guideline: medium — keep each workflow script you author under 10 agents unless the user asks for more; registered workflows size their own stages, so run them without maxAgents unless the user sets a cap. The user changes this with /workflow:size.",
   );
   assert.match(workflowSizeGuidelineLine("small") ?? "", /under 5 agents/);
   assert.match(workflowSizeGuidelineLine("large") ?? "", /under 25 agents/);
@@ -95,7 +95,7 @@ test("/workflow:size updates the session's catalog line and keeps maxAgents as t
     (await extension.beforeAgentStart({ selectedTools: ["workflow"], sections: {} }, ctx as ExtensionContext)).sections[WORKFLOWS_SECTION] ?? "";
 
   await command.handler("large --project", ctx);
-  assert.match(notifications.at(-1) ?? "", /^Workflow size guideline: large \(project config .*\) — keep each workflow under 25 agents/);
+  assert.match(notifications.at(-1) ?? "", /^Workflow size guideline: large \(project config .*\) — keep each authored workflow script under 25 agents unless the user asks for more; registered workflows are not capped by it\./);
   assert.match(notifications.at(-1) ?? "", /maxAgents run limit \(default 64\) stays the hard cap/);
   assert.match(await catalog(), /Workflow size guideline: large/);
 

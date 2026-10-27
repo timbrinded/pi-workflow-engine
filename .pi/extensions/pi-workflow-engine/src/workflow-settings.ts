@@ -65,7 +65,7 @@ export function setWorkflowSize(configPath: string, size: WorkflowSizeGuideline)
 /** The catalog line for a size, or undefined when the guideline is off. */
 export function workflowSizeGuidelineLine(size: WorkflowSizeGuideline): string | undefined {
   if (size === "off") return undefined;
-  return `Workflow size guideline: ${size} — keep each workflow under ${SIZE_AGENT_LIMITS[size]} agents unless the user asks for more; the user changes this with /workflow:size.`;
+  return `Workflow size guideline: ${size} — keep each workflow script you author under ${SIZE_AGENT_LIMITS[size]} agents unless the user asks for more; registered workflows size their own stages, so run them without maxAgents unless the user sets a cap. The user changes this with /workflow:size.`;
 }
 
 type WorkflowSizeCommand =
@@ -76,7 +76,7 @@ type WorkflowSizeCommand =
 const USAGE = "Usage: /workflow:size [small|medium|large|off] [--user|--project]";
 const SIZE_COMPLETIONS = WORKFLOW_SIZE_GUIDELINES.map((value) => ({
   value,
-  description: value === "off" ? "No size guideline in the prompt" : `Keep each workflow under ${SIZE_AGENT_LIMITS[value]} agents`,
+  description: value === "off" ? "No size guideline in the prompt" : `Keep each authored workflow under ${SIZE_AGENT_LIMITS[value]} agents`,
 }));
 const SCOPE_COMPLETIONS = [
   { value: "--user", description: "Write the user-level workflow settings" },
@@ -110,7 +110,7 @@ export function formatWorkflowSize(resolved: ResolvedWorkflowSize): string {
   const source = resolved.source === "default" ? "default" : `${resolved.source} config ${resolved.configPath}`;
   const rule = resolved.size === "off"
     ? "no size guideline is added to the prompt"
-    : `keep each workflow under ${SIZE_AGENT_LIMITS[resolved.size]} agents unless the user asks for more`;
+    : `keep each authored workflow script under ${SIZE_AGENT_LIMITS[resolved.size]} agents unless the user asks for more; registered workflows are not capped by it`;
   return [
     `Workflow size guideline: ${resolved.size} (${source}) — ${rule}.`,
     `The maxAgents run limit (default ${DEFAULT_WORKFLOW_MAX_AGENTS}) stays the hard cap on live agents per run.`,

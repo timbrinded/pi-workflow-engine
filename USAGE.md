@@ -207,13 +207,13 @@ The catalog ends with one line telling the host agent how large to make each wor
 
 ```text
 /workflow:size                    # show the current guideline and where it comes from
-/workflow:size small              # keep each workflow under 5 agents
+/workflow:size small              # keep each authored workflow under 5 agents
 /workflow:size medium             # under 10 agents (the default)
 /workflow:size large --project    # under 25 agents, for this project only
 /workflow:size off                # leave the line out
 ```
 
-The line reads, for example, `Workflow size guideline: medium — keep each workflow under 10 agents unless the user asks for more; the user changes this with /workflow:size.` The setting is stored like the model profiles: `~/.pi/agent/workflow-settings.json` for the user, overridden by `<project>/.pi/workflow-settings.json`; setting a size writes the user file unless `--project` is given. A minimal file is `{ "size": "small" }`. Changing it rebuilds the current session's catalog once.
+The line reads, for example, `Workflow size guideline: medium — keep each workflow script you author under 10 agents unless the user asks for more; registered workflows size their own stages, so run them without maxAgents unless the user sets a cap. The user changes this with /workflow:size.` The setting is stored like the model profiles: `~/.pi/agent/workflow-settings.json` for the user, overridden by `<project>/.pi/workflow-settings.json`; setting a size writes the user file unless `--project` is given. A minimal file is `{ "size": "small" }`. Changing it rebuilds the current session's catalog once.
 
 The guideline only shapes what the host agent writes. The `maxAgents` run limit (default `64`, see [Runtime knobs](#runtime-knobs)) stays the separate hard cap: once a run has started that many live agents, further `agent()` calls fail with `WorkflowAgentLimitError`, whatever the guideline says.
 

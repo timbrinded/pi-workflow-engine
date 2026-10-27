@@ -81,12 +81,12 @@ test("the size guideline closes the catalog, falls back to the default, and is l
     new WorkflowCatalogPrompt({ discover: async () => workflows, size, log: (message) => logs.push(message) }).section(sessionContext("catalog-size"));
 
   const large = (await render(() => "large")) ?? "";
-  assert.match(large, /- one: First\.\n\nWorkflow size guideline: large — keep each workflow under 25 agents unless the user asks for more; the user changes this with \/workflow:size\.$/);
+  assert.match(large, /- one: First\.\n\nWorkflow size guideline: large — keep each workflow script you author under 25 agents unless the user asks for more; registered workflows size their own stages, so run them without maxAgents unless the user sets a cap\. The user changes this with \/workflow:size\.$/);
   assert.doesNotMatch((await render(() => "off")) ?? "", /size guideline/);
   const fallback = await render(() => {
     throw new Error("bad settings");
   });
-  assert.match(fallback ?? "", /Workflow size guideline: medium — keep each workflow under 10 agents/);
+  assert.match(fallback ?? "", /Workflow size guideline: medium — keep each workflow script you author under 10 agents/);
   assert.match(logs.at(-1) ?? "", /using medium: bad settings/);
 });
 
