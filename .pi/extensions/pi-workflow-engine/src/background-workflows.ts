@@ -1,8 +1,6 @@
-import { join } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { WorkflowAbortError, WorkflowPauseError } from "./cancellation.ts";
 import { isRecord } from "./guards.ts";
-import { WORKFLOW_RUNS_DIR } from "./journal.ts";
 import type { WorkflowBackgroundOrigin } from "./types.ts";
 import {
   stopWorkflowRunRecord,
@@ -11,7 +9,7 @@ import {
   type WorkflowRunState,
 } from "./workflow-run-record.ts";
 import { updateWorkflowRunDelivery, type WorkflowRunDelivery } from "./workflow-run-background.ts";
-import { ProjectWorkflowRunStore, WORKFLOW_RUN_RECORD_SUFFIX, type WorkflowRunStore } from "./workflow-run-store.ts";
+import { ProjectWorkflowRunStore, type WorkflowRunStore } from "./workflow-run-store.ts";
 import { truncateText } from "./text.ts";
 import { formatWorkflowUsageLine } from "./usage.ts";
 import { workflowResultSummary } from "./workflow-execution.ts";
@@ -375,10 +373,7 @@ function wokenDeliveryBody(record: WorkflowRunRecord, summary: string): string {
 
 /** The retained record, script and journal, relative to the workflow cwd like the synchronous result's lines. */
 function backgroundRunFileLines(record: WorkflowRunRecord): string[] {
-  return [
-    `Record: ${join(WORKFLOW_RUNS_DIR, `${record.runId}${WORKFLOW_RUN_RECORD_SUFFIX}`)}`,
-    ...formatWorkflowRunFileLines(record.runId, record.scriptFile !== undefined),
-  ];
+  return formatWorkflowRunFileLines(record.runId, record.scriptFile !== undefined);
 }
 
 function sessionHasBackgroundDelivery(ctx: ExtensionContext, runId: string): boolean {

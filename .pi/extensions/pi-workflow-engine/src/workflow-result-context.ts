@@ -3,6 +3,7 @@ import { formatAdvisoryLocation, isAdvisoryReport, type AdvisoryFinding, type Ad
 import { isRecord } from "./guards.ts";
 import { WORKFLOW_RUNS_DIR } from "./journal.ts";
 import { workflowRunScriptFile } from "./workflow-run-record.ts";
+import { WORKFLOW_RUN_RECORD_SUFFIX } from "./workflow-run-store.ts";
 import { toReviewIssues } from "./review/review-issues.ts";
 import { formatPerfSummary } from "./perf.ts";
 import { prettyJson } from "./text.ts";
@@ -35,11 +36,13 @@ export function formatWorkflowRunLine(run: { readonly runId: string; readonly re
 }
 
 /**
- * Where the host model can read what the run did, relative to the workflow cwd: the persisted script it
- * can edit and rerun with `scriptPath`, and the replay journal of completed agent results.
+ * Where the host model can read what the run did, relative to the workflow cwd: the record holding the full
+ * result, the persisted script it can edit and rerun with `scriptPath`, and the replay journal of completed
+ * agent results.
  */
 export function formatWorkflowRunFileLines(runId: string, scriptPersisted: boolean): string[] {
   return [
+    `Record: ${join(WORKFLOW_RUNS_DIR, `${runId}${WORKFLOW_RUN_RECORD_SUFFIX}`)}`,
     ...(scriptPersisted ? [`Script: ${join(WORKFLOW_RUNS_DIR, workflowRunScriptFile(runId))}`] : []),
     `Journal: ${join(WORKFLOW_RUNS_DIR, `${runId}.jsonl`)}`,
     "If the result is empty or unexpected, read the journal before diagnosing.",

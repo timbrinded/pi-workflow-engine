@@ -355,6 +355,7 @@ export default async function run() { return { summary: "${value}" }; }`;
   if (typeof runId !== "string") throw new Error("expected a run id");
   const scriptPath = `.pi/.workflow-runs/${runId}.script.js`;
   const text = toolResultText(first);
+  assert.match(text, new RegExp(`Record: \\.pi/\\.workflow-runs/${runId}\\.run\\.json`));
   assert.match(text, new RegExp(`Script: ${scriptPath.replaceAll(".", "\\.")}`));
   assert.match(text, new RegExp(`Journal: \\.pi/\\.workflow-runs/${runId}\\.jsonl`));
   assert.match(text, /If the result is empty or unexpected, read the journal before diagnosing\./);
@@ -420,13 +421,13 @@ test("a scriptPath must name a bounded regular file, so a FIFO or a huge file is
   }
 });
 
-test("a failed inline run names its script and journal for the next attempt", async () => {
+test("a failed inline run names its record, script and journal for the next attempt", async () => {
   const script = `export const meta = { name: "failing-iterate", description: "Failing iterate probe" };
 export default async function run() { throw new Error("broken step"); }`;
   const failed = await captureWorkflowTool().execute("call-failing-iterate", { script }, undefined, () => {}, HEADLESS_CTX);
 
   const text = toolResultText(failed);
-  assert.match(text, /Workflow failing-iterate failed: broken step\n\nRun: \S+\nScript: \.pi\/\.workflow-runs\/\S+\.script\.js\nJournal: /);
+  assert.match(text, /Workflow failing-iterate failed: broken step\n\nRun: \S+\nRecord: \.pi\/\.workflow-runs\/\S+\.run\.json\nScript: \.pi\/\.workflow-runs\/\S+\.script\.js\nJournal: /);
 });
 
 test("inline workflow request compiles and runs without LLM calls", async () => {
