@@ -59,6 +59,19 @@ test("synthesis cannot invent an extra finding or select a refuted source", () =
   assert.deepEqual(backfillAdvisoryFindings([selection("hallucination"), selection("a")], [source], { impact: "default" }), []);
 });
 
+test("synthesis merging a cleanup with a verified bug keeps the higher-ranked classification", () => {
+  const bug = { ...verified("src/app.ts", 10, ["Reproduced failure"], "Wrong result", "Repair"), discoveryLenses: ["simplification"] };
+  const cleanup = { ...verified("src/caller.ts", 30, ["Maintenance evidence"], "Redundant code", "Simplify"), candidateId: "b", sourceCandidateIds: ["b"], category: "cleanup", discoveryLenses: ["conventions"] };
+  const [finding] = backfillAdvisoryFindings([
+    { sourceCandidateIds: ["b", "a"], severity: "high", recommendation: "Fix the shared cause" },
+  ], [bug, cleanup], { impact: "default" });
+
+  assert.equal(finding?.category, "bug");
+  assert.deepEqual(finding?.sourceCandidateIds, ["b", "a"]);
+  assert.deepEqual(new Set(finding?.discoveryLenses), new Set(["simplification", "conventions"]));
+  assert.deepEqual(finding?.evidence, ["Maintenance evidence", "Reproduced failure"]);
+});
+
 test("failed synthesis retains verified evidence and unknown selections become a visible gap", async () => {
   const { resolveAdvisorySynthesis } = await import("../.pi/extensions/pi-workflow-engine/src/workflow-advisory-utils.ts");
   const source = { ...verified("src/app.ts", 10, ["proof"], "impact", "repair"), candidateId: "a" };

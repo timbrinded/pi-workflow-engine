@@ -21,6 +21,7 @@ export const AdvisoryLocationSchema = Type.Object({
 
 export const AdvisoryCandidateSchema = Type.Object({
   discoveryEvidence: Type.Optional(Type.Array(Type.String())),
+  discoveryLenses: Type.Optional(Type.Array(Type.String(), { description: "Discovery lenses recorded by the workflow, independent of the finding category." })),
   reviewAnchor: Type.Optional(AdvisoryLocationSchema),
   summary: Type.String({ description: "One-line candidate finding or hypothesis." }),
   category: Type.String({ description: "Workflow-specific category such as bug, duplication, root-cause, or io." }),
@@ -38,17 +39,26 @@ export const AdvisoryVerdictSchema = Type.Object({
   evidence: Type.Array(Type.String({ description: "Quoted or cited evidence supporting the verdict." })),
 });
 
-export const AdvisoryBatchVerdictSchema = Type.Object({
-  verdicts: Type.Array(Type.Object({
-    candidateId: Type.String({ description: "The candidateId of the record this verdict judges." }),
-    verdict: AdvisoryVerifierVerdictSchema,
-    evidence: Type.Array(Type.String({ description: "Quoted or cited evidence supporting the verdict." })),
-  }), { description: "One verdict per candidate record, each judged on its own." }),
-});
+/** Single and batch verification share the same classification contract. */
+export function advisoryVerdictSchemas(categories?: readonly string[]) {
+  const verdict = categories
+    ? Type.Object({ ...AdvisoryVerdictSchema.properties, category: Type.Union(categories.map((category) => Type.Literal(category)), {
+      description: "Classify the verified failure mode independently of its discovery lens; justify the category in evidence.",
+    }) })
+    : AdvisoryVerdictSchema;
+  const batch = Type.Object({
+    verdicts: Type.Array(Type.Object({
+      candidateId: Type.String({ description: "The candidateId of the record this verdict judges." }),
+      ...verdict.properties,
+    }), { description: "One verdict per candidate record, each judged on its own." }),
+  });
+  return { verdict, batch };
+}
 
 export const AdvisoryFindingSchema = Type.Object({
   verdict: Type.Optional(AdvisoryVerifierVerdictSchema),
   sourceCandidateIds: Type.Optional(Type.Array(Type.String())),
+  discoveryLenses: Type.Optional(Type.Array(Type.String())),
   reviewAnchor: Type.Optional(AdvisoryLocationSchema),
   summary: Type.String({ description: "One-line final finding." }),
   category: Type.String({ description: "Workflow-specific category for grouping and display." }),

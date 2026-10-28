@@ -71,6 +71,7 @@ test("verifier output cannot replace discovery identities or evidence fields", a
       candidateId: "invented", sourceCandidateIds: ["invented"],
       summary: "invented summary", category: "invented", locations: [],
       reviewAnchor: { file: "invented.ts", line: 1 }, discoveryEvidence: ["invented evidence"],
+      discoveryLenses: ["invented"],
     };
   }) as WorkflowApi["agent"];
   const result = await runLensVerificationPipeline({
@@ -87,6 +88,7 @@ test("verifier output cannot replace discovery identities or evidence fields", a
   assert.deepEqual(record.locations, candidate.locations);
   assert.equal(record.reviewAnchor, undefined);
   assert.equal(record.discoveryEvidence, undefined);
+  assert.deepEqual(record.discoveryLenses, ["alpha"]);
   assert.deepEqual(record.evidence, ["verified evidence"]);
 });
 

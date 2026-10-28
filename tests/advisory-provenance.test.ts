@@ -5,6 +5,7 @@ import { identifyCandidates, dedupeCandidates, type AdvisoryStageCoverage } from
 import { challengeFindings, parseChallengeArgs } from "../.pi/extensions/pi-workflow-engine/src/advisory-challenge.ts";
 import type { AdvisoryCandidate, AdvisoryReport } from "../.pi/extensions/pi-workflow-engine/src/advisory-schema.ts";
 import type { AdvisoryVerified } from "../.pi/extensions/pi-workflow-engine/src/workflow-advisory-utils.ts";
+import { Value } from "typebox/value";
 import type { WorkflowApi, AgentOptions } from "../.pi/extensions/pi-workflow-engine/src/types.ts";
 import codeReview from "../.pi/extensions/pi-workflow-engine/workflows/code-review.ts";
 import diagnose from "../.pi/extensions/pi-workflow-engine/workflows/diagnose.ts";
@@ -25,6 +26,78 @@ const workflows = [
   { name: "code-review", run: (api: WorkflowApi) => codeReview(api, { captureReviewMaterial: material }) },
   { name: "diagnose", run: diagnose }, { name: "perf-review", run: perfReview }, { name: "refactor-scout", run: refactorScout },
 ];
+
+for (const capacity of [64, 8]) {
+  test(`code review applies cleanup filters to verified categories with ${capacity === 8 ? "batched" : "individual"} verification`, async () => {
+    const discoveries: Record<string, AdvisoryCandidate[]> = {
+      "find:simplification": [{ ...candidate, category: "cleanup", summary: "Recovery reports failure after a successful action", discoveryEvidence: ["The recovery path reads an inaccessible dependency."] }],
+      "find:conventions": [{ ...candidate, category: "cleanup", summary: "Management link opens an access-denied page", discoveryEvidence: ["The link ignores the target's permission guard."] }],
+      "find:logic-bugs": [{ ...candidate, summary: "Redundant condition has no behavioral effect", discoveryEvidence: ["The replacement adds lines without changing behavior."] }],
+    };
+    const judged = new Map<string, { candidateId: string; category: string; evidence: string[] }>();
+    let admitted = 0;
+    let verifierCalls = 0;
+    const api = apiFor((prompt, options) => {
+      admitted++;
+      let response: unknown;
+      if (options.label === "scope") {
+        response = { diffCommand: "git diff", files: ["src/app.ts"], summary: "scope", focus: "(none)", reportingBar: "Retain cleanup findings only when the proposed change reduces lines of code. Attempt to reproduce behavioral bugs." };
+      } else if (options.label?.startsWith("find:")) {
+        response = { candidates: discoveries[options.label] ?? [] };
+      } else if (options.label?.startsWith("verify:")) {
+        verifierCalls++;
+        const marker = prompt.includes("Candidate records: ") ? "Candidate records: " : "Candidate record: ";
+        const parsed = JSON.parse(prompt.slice(prompt.lastIndexOf(marker) + marker.length)) as { candidateId: string; summary: string } | { candidateId: string; summary: string }[];
+        const records = Array.isArray(parsed) ? parsed : [parsed];
+        const verdicts = records.map((record) => {
+          const category = record.summary === "Redundant condition has no behavioral effect" ? "cleanup" : "bug";
+          const evidence = [category === "bug" ? `Reproduced behavioral failure: ${record.summary}` : "Confirmed maintenance-only change; it adds lines."];
+          judged.set(record.summary, { candidateId: record.candidateId, category, evidence });
+          return { candidateId: record.candidateId, verdict: "CONFIRMED", category, evidence };
+        });
+        response = Array.isArray(parsed) ? { verdicts } : verdicts[0];
+        assert.ok(options.schema);
+        for (const category of [undefined, "maintenance"]) {
+          const invalid = verdicts.map((verdict) => ({ ...verdict, category }));
+          assert.equal(Value.Check(options.schema, Array.isArray(parsed) ? { verdicts: invalid } : invalid[0]), false);
+        }
+      } else if (options.label === "synthesize") {
+        // A deterministic synthesis policy applies the user's cleanup rule to the records it actually receives.
+        const findings = prompt.split(/### \[\d+\] IDs: /).slice(1).flatMap((block) => {
+          if (!block.includes("\nCategory: bug\n")) return [];
+          const ids = block.match(/^([a-f0-9, ]+)/)?.[1]?.trim().split(", ");
+          assert.ok(ids);
+          return [{ sourceCandidateIds: ids, severity: "medium", recommendation: "Repair the reproduced failure." }];
+        });
+        response = { summary: "Behavioral bugs retained; maintenance-only changes excluded by the cleanup rule.", findings, nextSteps: [] };
+      } else {
+        throw new Error(`Unexpected agent call: ${options.label}`);
+      }
+      assert.ok(options.schema);
+      assert.ok(Value.Check(options.schema, response), `Invalid ${options.label} fixture`);
+      return response;
+    });
+    api.args = "Attempt to reproduce behavioral bugs; retain cleanup findings only when the proposed change reduces lines of code.";
+    api.agents = { max: capacity, remaining: () => capacity - admitted };
+
+    const result = await codeReview(api, { captureReviewMaterial: material }) as AdvisoryReport & { verification: AdvisoryVerified[] };
+
+    assert.equal(verifierCalls, capacity === 8 ? 1 : 3);
+    assert.equal(result.findings.length, 2);
+    assert.ok(result.findings.every((finding) => finding.category === "bug"));
+    assert.ok(result.findings.every((finding) => finding.summary !== "Redundant condition has no behavioral effect"));
+    for (const finding of result.findings) {
+      const verdict = judged.get(finding.summary)!;
+      assert.deepEqual(finding.sourceCandidateIds, [verdict.candidateId]);
+      const lens = Object.entries(discoveries).find(([, candidates]) => candidates.some((discovery) => discovery.summary === finding.summary))![0].slice("find:".length);
+      assert.deepEqual(finding.discoveryLenses, [lens]);
+      assert.ok(finding.evidence.includes(verdict.evidence[0]!));
+      assert.ok(finding.evidence.some((evidence) => Object.values(discoveries).flat().some((discovery) => discovery.discoveryEvidence?.includes(evidence))));
+    }
+    const maintenance = result.verification.find((finding) => finding.summary === "Redundant condition has no behavioral effect");
+    assert.equal(maintenance?.category, "cleanup");
+  });
+}
 for (const workflow of workflows) {
   for (const failure of ["finder", "verifier"] as const) {
     test(`${workflow.name} preserves ${failure} failure and cannot report a clean result`, async () => {
@@ -75,6 +148,7 @@ test("near-exact duplicates from different lenses preserve all identities and di
   const merged = dedupeCandidates([first, second]);
   assert.equal(merged.length, 1);
   assert.deepEqual(merged[0]?.sourceCandidateIds, [first.candidateId!, second.candidateId!]);
+  assert.deepEqual(merged[0]?.discoveryLenses, ["first", "second"]);
   assert.deepEqual(merged[0]?.discoveryEvidence, ["first evidence", "second evidence"]);
   assert.deepEqual(identifyCandidates([candidate], "same"), identifyCandidates([candidate], "same"));
 });
