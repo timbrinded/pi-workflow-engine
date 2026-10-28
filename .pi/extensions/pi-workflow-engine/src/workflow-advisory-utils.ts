@@ -164,7 +164,12 @@ async function verifyBatch(
   const schemas = advisoryVerdictSchemas(categories);
   const applyVerdict = (candidate: IdentifiedAdvisoryCandidate, verdict: AdvisoryVerdict & { category?: string }): AdvisoryVerified => {
     recordVerdictProgress(api.progress, candidate, verdict);
-    return { ...candidate, category: categories ? verdict.category ?? candidate.category : candidate.category, verdict: verdict.verdict, evidence: verdict.evidence };
+    return {
+      ...candidate,
+      category: categories?.length ? verdict.category ?? candidate.category : candidate.category,
+      verdict: verdict.verdict,
+      evidence: verdict.evidence,
+    };
   };
   if (batch.length === 1) {
     const candidate = batch[0]!;
@@ -175,7 +180,12 @@ async function verifyBatch(
   const judged = await api.agent(`${verifierPrompt(batch)}\nCandidate records: ${JSON.stringify(batch)}`, { ...options, profile: "medium", schema: schemas.batch });
   const verdicts = new Map(judged.verdicts.map((verdict) => [verdict.candidateId, verdict]));
   return batch.map((candidate) => {
-    const verdict = verdicts.get(candidate.candidateId) ?? { verdict: "NOT_SUBSTANTIATED" as const, evidence: ["The batch verifier returned no verdict for this candidate."] };
+    // An unjudged candidate keeps the finder's category guess and is marked NOT_SUBSTANTIATED.
+    const verdict = verdicts.get(candidate.candidateId) ?? {
+      verdict: "NOT_SUBSTANTIATED" as const,
+      category: candidate.category,
+      evidence: ["The batch verifier returned no verdict for this candidate."],
+    };
     return applyVerdict(candidate, verdict);
   });
 }

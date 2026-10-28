@@ -229,7 +229,8 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
           "Apply the reporting bar to the verified categories when choosing which IDs to report; cleanup-only rules apply only to findings verified as cleanup. Leave out findings it excludes, and say in the summary what you left out and why."
         : ""),
   });
-  // A merged report is a bug if any selected evidence record verifies a behavioral failure.
+  // Any selected record classified as a bug keeps the merged finding in that category.
+  // The merged verdict still reflects the weakest selected verdict.
   // Keep primary-source selection (anchors and fallback advice) in the shared synthesis layer.
   const bugCandidateIds = new Set(verified.filter((finding) => finding.category === "bug").flatMap((finding) => finding.sourceCandidateIds));
   return {

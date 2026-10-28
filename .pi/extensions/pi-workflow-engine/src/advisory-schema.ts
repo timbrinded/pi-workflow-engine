@@ -40,7 +40,7 @@ export const AdvisoryVerdictSchema = Type.Object({
 
 /** Single and batch verification share the same classification contract. */
 export function advisoryVerdictSchemas(categories?: readonly string[]) {
-  const verdict = categories
+  const verdict = categories?.length
     ? Type.Object({ ...AdvisoryVerdictSchema.properties, category: Type.Union(categories.map((category) => Type.Literal(category)), {
       description: "Classify the verified failure mode independently of its discovery lens; justify the category in evidence.",
     }) })
