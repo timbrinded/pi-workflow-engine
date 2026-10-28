@@ -11,6 +11,7 @@ function verified(file: string, line: number, evidence: string[], impact: string
   return {
     candidateId: "a",
     sourceCandidateIds: ["a"],
+    discoveryLenses: ["logic-bugs"],
     summary: "candidate",
     category: "bug",
     locations: [{ file, line }],
@@ -57,6 +58,20 @@ test("synthesis cannot invent an extra finding or select a refuted source", () =
   const source = { ...verified("src/app.ts", 10, ["disproof"], "impact", "recommendation"), candidateId: "a", verdict: "REFUTED" as const };
   const selection = (id: string) => ({ sourceCandidateIds: [id], severity: "high" as const, recommendation: "Invented repair" });
   assert.deepEqual(backfillAdvisoryFindings([selection("hallucination"), selection("a")], [source], { impact: "default" }), []);
+});
+
+test("synthesis preserves the selected primary source for other advisory categories", () => {
+  const first = { ...verified("src/app.ts", 10, ["First evidence"], "Duplication", "Extract duplicate branches"), category: "duplication", reviewAnchor: { file: "src/app.ts", line: 10 } };
+  const second = { ...verified("src/caller.ts", 30, ["Second evidence"], "Boundary", "Move responsibility to its owner"), candidateId: "b", sourceCandidateIds: ["b"], category: "boundary", reviewAnchor: { file: "src/caller.ts", line: 30 } };
+  const [finding] = backfillAdvisoryFindings([
+    { sourceCandidateIds: ["b", "a"], severity: "high", recommendation: "" },
+  ], [first, second], { impact: "default" });
+
+  assert.equal(finding?.category, "boundary");
+  assert.deepEqual(finding?.reviewAnchor, { file: "src/caller.ts", line: 30 });
+  assert.equal(finding?.recommendation, "Move responsibility to its owner");
+  assert.deepEqual(finding?.sourceCandidateIds, ["b", "a"]);
+  assert.deepEqual(finding?.evidence, ["Second evidence", "First evidence"]);
 });
 
 test("failed synthesis retains verified evidence and unknown selections become a visible gap", async () => {

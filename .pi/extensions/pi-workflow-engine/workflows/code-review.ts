@@ -185,6 +185,7 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
     perLens: PER_ANGLE,
     // Finders on `small` (thinking low by default) returned nothing on real PRs; they are the stage that must dig.
     finderProfile: "medium",
+    verifierCategories: ["bug", "cleanup"],
     boundCandidate: (candidate, lens) => {
       const reviewAnchor = candidate.reviewAnchor
         ? diffAnchor(changed, candidate.reviewAnchor)
@@ -196,7 +197,7 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       `Review the change through ONLY this lens:\n${lens.text}\n` +
       "Only flag issues on lines that are part of the diff above (run the diff command if it is not shown). " +
       "Set reviewAnchor to the changed line causing the issue; locations and discoveryEvidence may include unchanged callers and other files. " +
-      `Surface up to ${PER_ANGLE} candidates. Use category exactly "${lens.category}". Each candidate must include a one-line summary, ` +
+      `Surface up to ${PER_ANGLE} candidates. Use initial category "${lens.category}"; verification will classify the actual failure mode independently of this lens. Each candidate must include a one-line summary, ` +
       "locations with the changed file and a line that appears in the diff, and impact describing the concrete failure or maintenance scenario. " +
       "Pass through anything with a nameable impact — a separate verifier judges them next. Structured output only.",
     verifierPrompt: (candidates) =>
@@ -204,7 +205,9 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       verifierCandidates(candidates, { one: "Candidate", many: "Candidates" }, (candidate) =>
         `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}`) + "\n\n" +
       "Run the diff command, read the relevant file(s), and return exactly one verdict per candidate (CONFIRMED / PLAUSIBLE / NOT_SUBSTANTIATED / REFUTED) " +
-      "with evidence quoting the line(s). Use NOT_SUBSTANTIATED when evidence is insufficient; use REFUTED only for concrete disproof. Structured output only.",
+      "with evidence quoting the line(s). Also classify each candidate as bug (a behavioral correctness failure) or cleanup (maintenance-only improvement), based on the evidence, not its discovery lens or initial category. " +
+      "A reproduced behavioral failure is a bug even when a simplification or conventions lens found it. Justify the classification in evidence. " +
+      "Use NOT_SUBSTANTIATED when evidence is insufficient; use REFUTED only for concrete disproof. Structured output only.",
   });
   const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, pipelineResult.coverage);
   const report = await concludeLensReview(api, pipelineResult, verified, {
@@ -223,10 +226,20 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       (reportingBar
         ? `\n\n## Reporting bar (the user's rules with referenced context resolved)\n${reportingBar}` +
           `\n\n## User instructions (verbatim)\n${target}\n\n` +
-          "Apply the reporting bar when choosing which IDs to report: leave out findings it excludes, and say in the summary what you left out and why."
+          "Apply the reporting bar to the verified categories when choosing which IDs to report; cleanup-only rules apply only to findings verified as cleanup. Leave out findings it excludes, and say in the summary what you left out and why."
         : ""),
   });
-  return { ...report, reviewContext };
+  // Any selected record classified as a bug keeps the merged finding in that category.
+  // The merged verdict still reflects the weakest selected verdict.
+  // Keep primary-source selection (anchors and fallback advice) in the shared synthesis layer.
+  const bugCandidateIds = new Set(verified.filter((finding) => finding.category === "bug").flatMap((finding) => finding.sourceCandidateIds));
+  return {
+    ...report,
+    findings: report.findings.map((finding) => finding.sourceCandidateIds?.some((id) => bugCandidateIds.has(id))
+      ? { ...finding, category: "bug" }
+      : finding),
+    reviewContext,
+  };
 }
 
 /** A scope field's text, or undefined when the scope agent left it blank or wrote (none). */

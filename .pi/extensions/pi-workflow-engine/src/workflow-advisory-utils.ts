@@ -1,4 +1,4 @@
-import { AdvisoryBatchVerdictSchema, AdvisoryCandidatesSchema, AdvisoryVerdictSchema, formatAdvisoryLocation, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
+import { AdvisoryCandidatesSchema, advisoryVerdictSchemas, formatAdvisoryLocation, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
 import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, mergeCandidateInto, repoPathCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
 import { isFatalWorkflowError } from "./cancellation.ts";
 import { WorkflowClassifierUnavailableError } from "./classify.ts";
@@ -62,6 +62,8 @@ export interface LensVerificationPipelineOptions {
   finderPrompt(lens: AdvisoryLens): string;
   /** One verifier's prompt. It gets several candidates only when the agent limit leaves fewer verifiers than candidates. */
   verifierPrompt(candidates: readonly IdentifiedAdvisoryCandidate[]): string;
+  /** Require the verifier to classify each finding using one of these workflow-specific categories. */
+  verifierCategories?: readonly string[];
   boundCandidate?(candidate: IdentifiedAdvisoryCandidate, lens: AdvisoryLens): IdentifiedAdvisoryCandidate | undefined;
 }
 
@@ -134,7 +136,7 @@ export async function runLensVerificationPipeline(
     let judged: Promise<AdvisoryVerified[]> | undefined;
     return batch.map((candidate, index) => ({
       id: candidate.candidateId, candidate,
-      run: async () => (await (judged ??= verifyBatch(api, batch, verifierPrompt)))[index]!,
+      run: async () => (await (judged ??= verifyBatch(api, batch, verifierPrompt, options.verifierCategories)))[index]!,
     }));
   }), coverage);
   return { verified, rawCandidates, dropped, coverage };
@@ -152,25 +154,39 @@ async function verifyBatch(
   api: Pick<WorkflowApi, "agent" | "progress">,
   batch: readonly IdentifiedAdvisoryCandidate[],
   verifierPrompt: LensVerificationPipelineOptions["verifierPrompt"],
+  categories?: readonly string[],
 ): Promise<AdvisoryVerified[]> {
   const location = primaryLocation(batch[0]!);
   const options = {
     phase: "Verify", label: `verify:${location.file.split("/").pop() ?? location.file}${batch.length > 1 ? ` +${batch.length - 1}` : ""}`,
     tools: DEFAULT_ADVISORY_TOOLS, toolHints: DEFAULT_ADVISORY_TOOL_HINTS,
   } as const;
+  const schemas = advisoryVerdictSchemas(categories);
+  const applyVerdict = (candidate: IdentifiedAdvisoryCandidate, verdict: AdvisoryVerdict & { category?: string }): AdvisoryVerified => {
+    recordVerdictProgress(api.progress, candidate, verdict);
+    return {
+      ...candidate,
+      category: categories?.length ? verdict.category ?? candidate.category : candidate.category,
+      verdict: verdict.verdict,
+      evidence: verdict.evidence,
+    };
+  };
   if (batch.length === 1) {
     const candidate = batch[0]!;
-    const judged = await api.agent(`${verifierPrompt(batch)}\nCandidate record: ${JSON.stringify(candidate)}`, { ...options, profile: "small", schema: AdvisoryVerdictSchema });
-    recordVerdictProgress(api.progress, candidate, judged);
-    return [{ ...candidate, verdict: judged.verdict, evidence: judged.evidence }];
+    const judged = await api.agent(`${verifierPrompt(batch)}\nCandidate record: ${JSON.stringify(candidate)}`, { ...options, profile: "small", schema: schemas.verdict });
+    return [applyVerdict(candidate, judged)];
   }
   // One agent does several verifiers' work, so it gets the medium route.
-  const judged = await api.agent(`${verifierPrompt(batch)}\nCandidate records: ${JSON.stringify(batch)}`, { ...options, profile: "medium", schema: AdvisoryBatchVerdictSchema });
+  const judged = await api.agent(`${verifierPrompt(batch)}\nCandidate records: ${JSON.stringify(batch)}`, { ...options, profile: "medium", schema: schemas.batch });
   const verdicts = new Map(judged.verdicts.map((verdict) => [verdict.candidateId, verdict]));
   return batch.map((candidate) => {
-    const verdict = verdicts.get(candidate.candidateId) ?? { verdict: "NOT_SUBSTANTIATED" as const, evidence: ["The batch verifier returned no verdict for this candidate."] };
-    recordVerdictProgress(api.progress, candidate, verdict);
-    return { ...candidate, verdict: verdict.verdict, evidence: verdict.evidence };
+    // An unjudged candidate keeps the finder's category guess and is marked NOT_SUBSTANTIATED.
+    const verdict = verdicts.get(candidate.candidateId) ?? {
+      verdict: "NOT_SUBSTANTIATED" as const,
+      category: candidate.category,
+      evidence: ["The batch verifier returned no verdict for this candidate."],
+    };
+    return applyVerdict(candidate, verdict);
   });
 }
 
@@ -407,6 +423,7 @@ export function backfillAdvisoryFindings<Source extends AdvisoryVerified>(
     const first = records[0]!;
     return [{
       sourceCandidateIds,
+      discoveryLenses: [...new Set(records.flatMap((record) => record.discoveryLenses))],
       summary: [...new Set(records.map((record) => record.summary))].join("; "),
       category: first.category,
       severity: selection.severity,
