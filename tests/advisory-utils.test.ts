@@ -11,6 +11,7 @@ function verified(file: string, line: number, evidence: string[], impact: string
   return {
     candidateId: "a",
     sourceCandidateIds: ["a"],
+    discoveryLenses: ["logic-bugs"],
     summary: "candidate",
     category: "bug",
     locations: [{ file, line }],
@@ -59,17 +60,18 @@ test("synthesis cannot invent an extra finding or select a refuted source", () =
   assert.deepEqual(backfillAdvisoryFindings([selection("hallucination"), selection("a")], [source], { impact: "default" }), []);
 });
 
-test("synthesis merging a cleanup with a verified bug keeps the higher-ranked classification", () => {
-  const bug = { ...verified("src/app.ts", 10, ["Reproduced failure"], "Wrong result", "Repair"), discoveryLenses: ["simplification"] };
-  const cleanup = { ...verified("src/caller.ts", 30, ["Maintenance evidence"], "Redundant code", "Simplify"), candidateId: "b", sourceCandidateIds: ["b"], category: "cleanup", discoveryLenses: ["conventions"] };
+test("synthesis preserves the selected primary source for other advisory categories", () => {
+  const first = { ...verified("src/app.ts", 10, ["First evidence"], "Duplication", "Extract duplicate branches"), category: "duplication", reviewAnchor: { file: "src/app.ts", line: 10 } };
+  const second = { ...verified("src/caller.ts", 30, ["Second evidence"], "Boundary", "Move responsibility to its owner"), candidateId: "b", sourceCandidateIds: ["b"], category: "boundary", reviewAnchor: { file: "src/caller.ts", line: 30 } };
   const [finding] = backfillAdvisoryFindings([
-    { sourceCandidateIds: ["b", "a"], severity: "high", recommendation: "Fix the shared cause" },
-  ], [bug, cleanup], { impact: "default" });
+    { sourceCandidateIds: ["b", "a"], severity: "high", recommendation: "" },
+  ], [first, second], { impact: "default" });
 
-  assert.equal(finding?.category, "bug");
+  assert.equal(finding?.category, "boundary");
+  assert.deepEqual(finding?.reviewAnchor, { file: "src/caller.ts", line: 30 });
+  assert.equal(finding?.recommendation, "Move responsibility to its owner");
   assert.deepEqual(finding?.sourceCandidateIds, ["b", "a"]);
-  assert.deepEqual(new Set(finding?.discoveryLenses), new Set(["simplification", "conventions"]));
-  assert.deepEqual(finding?.evidence, ["Maintenance evidence", "Reproduced failure"]);
+  assert.deepEqual(finding?.evidence, ["Second evidence", "First evidence"]);
 });
 
 test("failed synthesis retains verified evidence and unknown selections become a visible gap", async () => {

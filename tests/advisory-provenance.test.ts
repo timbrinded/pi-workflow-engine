@@ -98,6 +98,32 @@ for (const capacity of [64, 8]) {
     assert.equal(maintenance?.category, "cleanup");
   });
 }
+
+test("code review keeps a merged behavioral bug without changing the selected primary recommendation", async () => {
+  const bug = { ...candidate, category: "cleanup", summary: "Behavioral failure", recommendation: "Repair the failure" };
+  const cleanup = { ...candidate, category: "cleanup", summary: "Related maintenance", recommendation: "Simplify the selected primary source" };
+  let selectedIds: string[] = [];
+  const api = apiFor((prompt, options) => {
+    if (options.label === "scope") return { diffCommand: "git diff", files: ["src/app.ts"], summary: "scope" };
+    if (options.label?.startsWith("find:")) return { candidates: options.label === "find:simplification" ? [bug, cleanup] : [] };
+    if (options.label?.startsWith("verify:")) {
+      const record = JSON.parse(prompt.slice(prompt.lastIndexOf("Candidate record: ") + "Candidate record: ".length)) as { summary: string };
+      return { verdict: "CONFIRMED", category: record.summary === bug.summary ? "bug" : "cleanup", evidence: [`Verified ${record.summary}`] };
+    }
+    assert.equal(options.label, "synthesize");
+    // Synthesis lists the cleanup's IDs first even though the workflow ranks the behavioral bug first.
+    selectedIds = [...prompt.matchAll(/IDs: ([a-f0-9, ]+)/g)].reverse().flatMap((match) => match[1]!.trim().split(", "));
+    assert.equal(selectedIds.length, 2);
+    return { summary: "Merged findings", findings: [{ sourceCandidateIds: selectedIds, severity: "medium", recommendation: "" }], nextSteps: [] };
+  });
+
+  const result = await codeReview(api, { captureReviewMaterial: material }) as AdvisoryReport;
+
+  assert.equal(result.findings.length, 1);
+  assert.equal(result.findings[0]?.category, "bug");
+  assert.equal(result.findings[0]?.recommendation, "Simplify the selected primary source");
+  assert.deepEqual(result.findings[0]?.sourceCandidateIds, selectedIds);
+});
 for (const workflow of workflows) {
   for (const failure of ["finder", "verifier"] as const) {
     test(`${workflow.name} preserves ${failure} failure and cannot report a clean result`, async () => {

@@ -21,7 +21,6 @@ export const AdvisoryLocationSchema = Type.Object({
 
 export const AdvisoryCandidateSchema = Type.Object({
   discoveryEvidence: Type.Optional(Type.Array(Type.String())),
-  discoveryLenses: Type.Optional(Type.Array(Type.String(), { description: "Discovery lenses recorded by the workflow, independent of the finding category." })),
   reviewAnchor: Type.Optional(AdvisoryLocationSchema),
   summary: Type.String({ description: "One-line candidate finding or hypothesis." }),
   category: Type.String({ description: "Workflow-specific category such as bug, duplication, root-cause, or io." }),
@@ -89,7 +88,7 @@ export const AdvisoryReportWithStatsSchema = Type.Object({
 
 export type AdvisoryLocation = Static<typeof AdvisoryLocationSchema>;
 export type AdvisoryCandidate = Static<typeof AdvisoryCandidateSchema>;
-export type IdentifiedAdvisoryCandidate = AdvisoryCandidate & { candidateId: string; sourceCandidateIds: string[] };
+export type IdentifiedAdvisoryCandidate = AdvisoryCandidate & { candidateId: string; sourceCandidateIds: string[]; discoveryLenses: string[] };
 export type AdvisoryVerdict = Static<typeof AdvisoryVerdictSchema>;
 export type AdvisoryFinding = Static<typeof AdvisoryFindingSchema>;
 export type AdvisoryReport = Static<typeof AdvisoryReportSchema>;

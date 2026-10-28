@@ -410,11 +410,10 @@ export function backfillAdvisoryFindings<Source extends AdvisoryVerified>(
     const sourceCandidateIds = [...new Set(records.flatMap((record) => record.sourceCandidateIds))];
     if (sourceCandidateIds.some((id) => used.has(id))) return [];
     sourceCandidateIds.forEach((id) => used.add(id));
-    // Synthesis chooses IDs, but cannot demote the highest-ranked verified classification by reordering them.
-    const first = ranked.find((record) => records.includes(record))!;
+    const first = records[0]!;
     return [{
       sourceCandidateIds,
-      discoveryLenses: [...new Set(records.flatMap((record) => record.discoveryLenses ?? []))],
+      discoveryLenses: [...new Set(records.flatMap((record) => record.discoveryLenses))],
       summary: [...new Set(records.map((record) => record.summary))].join("; "),
       category: first.category,
       severity: selection.severity,
