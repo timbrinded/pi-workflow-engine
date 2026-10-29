@@ -22,7 +22,7 @@ export function identifyCandidates(candidates: readonly AdvisoryCandidate[], len
   return candidates.map((candidate, index) => {
     const candidateId = createHash("sha256").update(JSON.stringify([lens, index, candidate])).digest("hex").slice(0, 20);
     // Identities are assigned by the workflow, never accepted from a finder.
-    return { ...candidate, candidateId, sourceCandidateIds: [candidateId], discoveryLenses: [lens] };
+    return { ...candidate, candidateId, sourceCandidateIds: [candidateId] };
   });
 }
 
@@ -57,10 +57,14 @@ export function dedupeCandidates<T extends IdentifiedAdvisoryCandidate>(candidat
 /** Fold a duplicate into the kept candidate, keeping every source id, location, impact, and piece of evidence. */
 export function mergeCandidateInto<T extends IdentifiedAdvisoryCandidate>(kept: T, duplicate: T): void {
   kept.sourceCandidateIds = [...new Set([...kept.sourceCandidateIds, ...duplicate.sourceCandidateIds])];
-  kept.discoveryLenses = [...new Set([...kept.discoveryLenses, ...duplicate.discoveryLenses])];
   kept.locations = uniqueLocations([...kept.locations, ...duplicate.locations]);
-  kept.impact = [...new Set([kept.impact, duplicate.impact])].join("\n");
+  kept.impact = joinUniqueLines([kept.impact, duplicate.impact]);
   kept.discoveryEvidence = [...new Set([...(kept.discoveryEvidence ?? []), ...(duplicate.discoveryEvidence ?? [])])];
+}
+
+/** Join texts line by line, dropping lines already present: a merged impact is itself a joined text. */
+export function joinUniqueLines(texts: readonly string[]): string {
+  return [...new Set(texts.flatMap((text) => text.split("\n")))].join("\n");
 }
 
 export function uniqueLocations(locations: AdvisoryCandidate["locations"]): AdvisoryCandidate["locations"] {

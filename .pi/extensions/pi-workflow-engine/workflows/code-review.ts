@@ -205,8 +205,8 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       verifierCandidates(candidates, { one: "Candidate", many: "Candidates" }, (candidate) =>
         `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}`) + "\n\n" +
       "Run the diff command, read the relevant file(s), and return exactly one verdict per candidate (CONFIRMED / PLAUSIBLE / NOT_SUBSTANTIATED / REFUTED) " +
-      "with evidence quoting the line(s). Also classify each candidate as bug (a behavioral correctness failure) or cleanup (maintenance-only improvement), based on the evidence, not its discovery lens or initial category. " +
-      "A reproduced behavioral failure is a bug even when a simplification or conventions lens found it. Justify the classification in evidence. " +
+      "with evidence quoting the line(s). Also classify each candidate as bug (a behavioral correctness failure) or cleanup (maintenance-only improvement), based on the evidence, not its initial category, which only reflects the lens that found it. " +
+      "A reproduced behavioral failure is a bug even when its initial category is cleanup. Justify the classification in evidence. " +
       "Use NOT_SUBSTANTIATED when evidence is insufficient; use REFUTED only for concrete disproof. Structured output only.",
   });
   const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, pipelineResult.coverage);
@@ -229,9 +229,8 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
           "Apply the reporting bar to the verified categories when choosing which IDs to report; cleanup-only rules apply only to findings verified as cleanup. Leave out findings it excludes, and say in the summary what you left out and why."
         : ""),
   });
-  // Any selected record classified as a bug keeps the merged finding in that category.
-  // The merged verdict still reflects the weakest selected verdict.
-  // Keep primary-source selection (anchors and fallback advice) in the shared synthesis layer.
+  // A merged finding is a bug when any record it draws on was verified as one; the anchor and fallback
+  // advice still come from the primary source synthesis selected.
   const bugCandidateIds = new Set(verified.filter((finding) => finding.category === "bug").flatMap((finding) => finding.sourceCandidateIds));
   return {
     ...report,

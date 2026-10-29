@@ -11,7 +11,6 @@ function verified(file: string, line: number, evidence: string[], impact: string
   return {
     candidateId: "a",
     sourceCandidateIds: ["a"],
-    discoveryLenses: ["logic-bugs"],
     summary: "candidate",
     category: "bug",
     locations: [{ file, line }],

@@ -89,8 +89,6 @@ for (const capacity of [64, 8]) {
     for (const finding of result.findings) {
       const verdict = judged.get(finding.summary)!;
       assert.deepEqual(finding.sourceCandidateIds, [verdict.candidateId]);
-      const lens = Object.entries(discoveries).find(([, candidates]) => candidates.some((discovery) => discovery.summary === finding.summary))![0].slice("find:".length);
-      assert.deepEqual(finding.discoveryLenses, [lens]);
       assert.ok(finding.evidence.includes(verdict.evidence[0]!));
       assert.ok(finding.evidence.some((evidence) => Object.values(discoveries).flat().some((discovery) => discovery.discoveryEvidence?.includes(evidence))));
     }
@@ -170,12 +168,14 @@ test("distinct defects on the same range reach verification and cross-file evide
 
 test("near-exact duplicates from different lenses preserve all identities and discovery evidence", () => {
   const first = identifyCandidates([{ ...candidate, discoveryEvidence: ["first evidence"] }], "first")[0]!;
-  const second = identifyCandidates([{ ...candidate, summary: "  WRONG   condition. ", discoveryEvidence: ["second evidence"] }], "second")[0]!;
-  const merged = dedupeCandidates([first, second]);
+  const second = identifyCandidates([{ ...candidate, summary: "  WRONG   condition. ", impact: "second impact", discoveryEvidence: ["second evidence"] }], "second")[0]!;
+  // A third copy repeats the first impact after the merge has already joined two.
+  const third = identifyCandidates([candidate], "third")[0]!;
+  const merged = dedupeCandidates([first, second, third]);
   assert.equal(merged.length, 1);
-  assert.deepEqual(merged[0]?.sourceCandidateIds, [first.candidateId!, second.candidateId!]);
-  assert.deepEqual(merged[0]?.discoveryLenses, ["first", "second"]);
+  assert.deepEqual(merged[0]?.sourceCandidateIds, [first.candidateId!, second.candidateId!, third.candidateId!]);
   assert.deepEqual(merged[0]?.discoveryEvidence, ["first evidence", "second evidence"]);
+  assert.equal(merged[0]?.impact, `${candidate.impact}\nsecond impact`);
   assert.deepEqual(identifyCandidates([candidate], "same"), identifyCandidates([candidate], "same"));
 });
 

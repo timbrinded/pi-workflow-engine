@@ -42,14 +42,15 @@ export const AdvisoryVerdictSchema = Type.Object({
 export function advisoryVerdictSchemas(categories?: readonly string[]) {
   const verdict = categories?.length
     ? Type.Object({ ...AdvisoryVerdictSchema.properties, category: Type.Union(categories.map((category) => Type.Literal(category)), {
-      description: "Classify the verified failure mode independently of its discovery lens; justify the category in evidence.",
+      description: "Classify the verified failure mode independently of the candidate's initial category; justify the category in evidence.",
     }) })
     : AdvisoryVerdictSchema;
-  const batch = Type.Object({
+  // Pinning the IDs and the count makes pi reject an omitted, extra, or mistyped verdict while the verifier can still fix it.
+  const batch = (candidateIds: readonly string[]) => Type.Object({
     verdicts: Type.Array(Type.Object({
-      candidateId: Type.String({ description: "The candidateId of the record this verdict judges." }),
+      candidateId: Type.Enum([...candidateIds], { description: "The candidateId of the record this verdict judges." }),
       ...verdict.properties,
-    }), { description: "One verdict per candidate record, each judged on its own." }),
+    }), { minItems: candidateIds.length, maxItems: candidateIds.length, description: "One verdict per candidate record, each judged on its own." }),
   });
   return { verdict, batch };
 }
@@ -57,7 +58,6 @@ export function advisoryVerdictSchemas(categories?: readonly string[]) {
 export const AdvisoryFindingSchema = Type.Object({
   verdict: Type.Optional(AdvisoryVerifierVerdictSchema),
   sourceCandidateIds: Type.Optional(Type.Array(Type.String())),
-  discoveryLenses: Type.Optional(Type.Array(Type.String())),
   reviewAnchor: Type.Optional(AdvisoryLocationSchema),
   summary: Type.String({ description: "One-line final finding." }),
   category: Type.String({ description: "Workflow-specific category for grouping and display." }),
@@ -88,7 +88,7 @@ export const AdvisoryReportWithStatsSchema = Type.Object({
 
 export type AdvisoryLocation = Static<typeof AdvisoryLocationSchema>;
 export type AdvisoryCandidate = Static<typeof AdvisoryCandidateSchema>;
-export type IdentifiedAdvisoryCandidate = AdvisoryCandidate & { candidateId: string; sourceCandidateIds: string[]; discoveryLenses: string[] };
+export type IdentifiedAdvisoryCandidate = AdvisoryCandidate & { candidateId: string; sourceCandidateIds: string[] };
 export type AdvisoryVerdict = Static<typeof AdvisoryVerdictSchema>;
 export type AdvisoryFinding = Static<typeof AdvisoryFindingSchema>;
 export type AdvisoryReport = Static<typeof AdvisoryReportSchema>;
