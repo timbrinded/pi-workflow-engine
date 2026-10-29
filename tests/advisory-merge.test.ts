@@ -9,7 +9,7 @@ import { DUPLICATE_CANDIDATE_CLASSIFIERS, mergeEquivalentCandidates } from "../.
 
 function candidate(id: string, file: string, summary: string, anchor?: string): IdentifiedAdvisoryCandidate {
   return {
-    candidateId: id, sourceCandidateIds: [id], discoveryLenses: [id], category: "bug", summary, impact: `impact of ${id}`,
+    candidateId: id, sourceCandidateIds: [id], category: "bug", summary, impact: `impact of ${id}`,
     locations: [{ file, line: 1 }], discoveryEvidence: [`evidence ${id}`],
     ...(anchor ? { reviewAnchor: { file: anchor, line: 2 } } : {}),
   };

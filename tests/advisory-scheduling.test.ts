@@ -73,7 +73,6 @@ for (const verifierCategories of [undefined, []]) {
         candidateId: "invented", sourceCandidateIds: ["invented"],
         summary: "invented summary", category: "invented", locations: [],
         reviewAnchor: { file: "invented.ts", line: 1 }, discoveryEvidence: ["invented evidence"],
-        discoveryLenses: ["invented"],
       };
       assert.ok(opts?.schema);
       assert.ok(Value.Check(opts.schema, verdict), "an unclassified verifier must accept its ordinary verdict fields");
@@ -94,7 +93,6 @@ for (const verifierCategories of [undefined, []]) {
     assert.deepEqual(record.locations, candidate.locations);
     assert.equal(record.reviewAnchor, undefined);
     assert.equal(record.discoveryEvidence, undefined);
-    assert.deepEqual(record.discoveryLenses, ["alpha"]);
     assert.deepEqual(record.evidence, ["verified evidence"]);
   });
 }

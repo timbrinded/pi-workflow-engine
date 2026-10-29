@@ -89,8 +89,6 @@ for (const capacity of [64, 8]) {
     for (const finding of result.findings) {
       const verdict = judged.get(finding.summary)!;
       assert.deepEqual(finding.sourceCandidateIds, [verdict.candidateId]);
-      const lens = Object.entries(discoveries).find(([, candidates]) => candidates.some((discovery) => discovery.summary === finding.summary))![0].slice("find:".length);
-      assert.deepEqual(finding.discoveryLenses, [lens]);
       assert.ok(finding.evidence.includes(verdict.evidence[0]!));
       assert.ok(finding.evidence.some((evidence) => Object.values(discoveries).flat().some((discovery) => discovery.discoveryEvidence?.includes(evidence))));
     }
@@ -174,7 +172,6 @@ test("near-exact duplicates from different lenses preserve all identities and di
   const merged = dedupeCandidates([first, second]);
   assert.equal(merged.length, 1);
   assert.deepEqual(merged[0]?.sourceCandidateIds, [first.candidateId!, second.candidateId!]);
-  assert.deepEqual(merged[0]?.discoveryLenses, ["first", "second"]);
   assert.deepEqual(merged[0]?.discoveryEvidence, ["first evidence", "second evidence"]);
   assert.deepEqual(identifyCandidates([candidate], "same"), identifyCandidates([candidate], "same"));
 });

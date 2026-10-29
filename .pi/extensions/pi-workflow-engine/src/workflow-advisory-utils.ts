@@ -179,15 +179,8 @@ async function verifyBatch(
   // One agent does several verifiers' work, so it gets the medium route.
   const judged = await api.agent(`${verifierPrompt(batch)}\nCandidate records: ${JSON.stringify(batch)}`, { ...options, profile: "medium", schema: schemas.batch });
   const verdicts = new Map(judged.verdicts.map((verdict) => [verdict.candidateId, verdict]));
-  return batch.map((candidate) => {
-    // An unjudged candidate keeps the finder's category guess and is marked NOT_SUBSTANTIATED.
-    const verdict = verdicts.get(candidate.candidateId) ?? {
-      verdict: "NOT_SUBSTANTIATED" as const,
-      category: candidate.category,
-      evidence: ["The batch verifier returned no verdict for this candidate."],
-    };
-    return applyVerdict(candidate, verdict);
-  });
+  return batch.map((candidate) => applyVerdict(candidate, verdicts.get(candidate.candidateId)
+    ?? { verdict: "NOT_SUBSTANTIATED", evidence: ["The batch verifier returned no verdict for this candidate."] }));
 }
 
 /** TypeSafe Jev routes in preference order. Jev is the classifier the duplicate merge was measured with. */
@@ -423,7 +416,6 @@ export function backfillAdvisoryFindings<Source extends AdvisoryVerified>(
     const first = records[0]!;
     return [{
       sourceCandidateIds,
-      discoveryLenses: [...new Set(records.flatMap((record) => record.discoveryLenses))],
       summary: [...new Set(records.map((record) => record.summary))].join("; "),
       category: first.category,
       severity: selection.severity,

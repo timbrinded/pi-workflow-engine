@@ -57,7 +57,6 @@ export function advisoryVerdictSchemas(categories?: readonly string[]) {
 export const AdvisoryFindingSchema = Type.Object({
   verdict: Type.Optional(AdvisoryVerifierVerdictSchema),
   sourceCandidateIds: Type.Optional(Type.Array(Type.String())),
-  discoveryLenses: Type.Optional(Type.Array(Type.String())),
   reviewAnchor: Type.Optional(AdvisoryLocationSchema),
   summary: Type.String({ description: "One-line final finding." }),
   category: Type.String({ description: "Workflow-specific category for grouping and display." }),
@@ -88,7 +87,7 @@ export const AdvisoryReportWithStatsSchema = Type.Object({
 
 export type AdvisoryLocation = Static<typeof AdvisoryLocationSchema>;
 export type AdvisoryCandidate = Static<typeof AdvisoryCandidateSchema>;
-export type IdentifiedAdvisoryCandidate = AdvisoryCandidate & { candidateId: string; sourceCandidateIds: string[]; discoveryLenses: string[] };
+export type IdentifiedAdvisoryCandidate = AdvisoryCandidate & { candidateId: string; sourceCandidateIds: string[] };
 export type AdvisoryVerdict = Static<typeof AdvisoryVerdictSchema>;
 export type AdvisoryFinding = Static<typeof AdvisoryFindingSchema>;
 export type AdvisoryReport = Static<typeof AdvisoryReportSchema>;
