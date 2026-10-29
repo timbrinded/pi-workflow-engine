@@ -1,5 +1,5 @@
 import { AdvisoryCandidatesSchema, advisoryVerdictSchemas, formatAdvisoryLocation, type AdvisoryCandidate, type AdvisoryFinding, type IdentifiedAdvisoryCandidate, type AdvisoryLocation, type AdvisoryReport, type AdvisoryVerdict } from "./advisory-schema.ts";
-import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, mergeCandidateInto, repoPathCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
+import { AdvisorySynthesisSchema, SYNTHESIS_ID_INSTRUCTIONS, withAdvisoryCoverage, collectAdvisoryStage, dedupeCandidates, identifyCandidates, joinUniqueLines, mergeCandidateInto, repoPathCandidates, uniqueLocations, type AdvisoryStageCoverage, type AdvisorySynthesis } from "./advisory-evidence.ts";
 import { isFatalWorkflowError } from "./cancellation.ts";
 import { WorkflowClassifierUnavailableError } from "./classify.ts";
 import { unknownErrorMessage } from "./unknown-error.ts";
@@ -133,10 +133,14 @@ export async function runLensVerificationPipeline(
   if (batches.length < candidates.length) api.log(`Verifying ${candidates.length} candidates in ${batches.length} batch(es) to fit the agent limit`);
   // Each candidate keeps its own coverage branch, so a failed batch still lists every candidate it held.
   const verified = await collectAdvisoryStage(api, "Verify", batches.flatMap((batch) => {
-    let judged: Promise<AdvisoryVerified[]> | undefined;
+    let judged: Promise<Array<AdvisoryVerified | Error>> | undefined;
     return batch.map((candidate, index) => ({
       id: candidate.candidateId, candidate,
-      run: async () => (await (judged ??= verifyBatch(api, batch, verifierPrompt, options.verifierCategories)))[index]!,
+      run: async () => {
+        const result = (await (judged ??= verifyBatch(api, batch, verifierPrompt, options.verifierCategories)))[index]!;
+        if (result instanceof Error) throw result;
+        return result;
+      },
     }));
   }), coverage);
   return { verified, rawCandidates, dropped, coverage };
@@ -155,7 +159,7 @@ async function verifyBatch(
   batch: readonly IdentifiedAdvisoryCandidate[],
   verifierPrompt: LensVerificationPipelineOptions["verifierPrompt"],
   categories?: readonly string[],
-): Promise<AdvisoryVerified[]> {
+): Promise<Array<AdvisoryVerified | Error>> {
   const location = primaryLocation(batch[0]!);
   const options = {
     phase: "Verify", label: `verify:${location.file.split("/").pop() ?? location.file}${batch.length > 1 ? ` +${batch.length - 1}` : ""}`,
@@ -177,10 +181,17 @@ async function verifyBatch(
     return [applyVerdict(candidate, judged)];
   }
   // One agent does several verifiers' work, so it gets the medium route.
-  const judged = await api.agent(`${verifierPrompt(batch)}\nCandidate records: ${JSON.stringify(batch)}`, { ...options, profile: "medium", schema: schemas.batch });
-  const verdicts = new Map(judged.verdicts.map((verdict) => [verdict.candidateId, verdict]));
-  return batch.map((candidate) => applyVerdict(candidate, verdicts.get(candidate.candidateId)
-    ?? { verdict: "NOT_SUBSTANTIATED", evidence: ["The batch verifier returned no verdict for this candidate."] }));
+  const judged = await api.agent(`${verifierPrompt(batch)}\nCandidate records: ${JSON.stringify(batch)}`,
+    { ...options, profile: "medium", schema: schemas.batch(batch.map((candidate) => candidate.candidateId)) });
+  const verdicts = Map.groupBy(judged.verdicts, (verdict) => verdict.candidateId);
+  return batch.map((candidate) => {
+    // A repeated ID passes the schema and leaves another unjudged. Neither candidate was verified,
+    // so each fails its branch and the coverage reports it.
+    const [verdict, ...repeated] = verdicts.get(candidate.candidateId) ?? [];
+    if (!verdict) return new Error("The batch verifier returned no verdict for this candidate.");
+    if (repeated.length > 0) return new Error(`The batch verifier returned ${repeated.length + 1} verdicts for this candidate.`);
+    return applyVerdict(candidate, verdict);
+  });
 }
 
 /** TypeSafe Jev routes in preference order. Jev is the classifier the duplicate merge was measured with. */
@@ -424,7 +435,7 @@ export function backfillAdvisoryFindings<Source extends AdvisoryVerified>(
       locations: uniqueLocations(records.flatMap((record) => record.locations)),
       ...(first.reviewAnchor ? { reviewAnchor: first.reviewAnchor } : {}),
       evidence: [...new Set(records.flatMap((record) => [...(record.discoveryEvidence ?? []), ...record.evidence]))],
-      impact: [...new Set(records.map((record) => record.impact || defaults.impact))].join("\n"),
+      impact: joinUniqueLines(records.map((record) => record.impact || defaults.impact)),
       recommendation: selection.recommendation || first.recommendation || defaults.recommendation || "",
     }];
   });

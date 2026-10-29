@@ -137,9 +137,17 @@ test("an agent limit short of one verifier per candidate batches them and keeps 
     admitted++;
     if (opts?.label?.startsWith("find:")) return { candidates: opts.label === "find:alpha" ? found : [] };
     verifierProfiles.push(opts?.profile);
-    // The batch verifier judges two of the three records and omits the third.
     const records = JSON.parse(prompt.slice(prompt.indexOf("Candidate records: ") + "Candidate records: ".length)) as { candidateId: string; summary: string }[];
-    return { verdicts: records.filter((record) => record.summary !== "candidate three").map((record) => ({ candidateId: record.candidateId, verdict: "CONFIRMED", category: "cleanup", evidence: [`checked ${record.summary}`] })) };
+    const verdict = (record: { candidateId: string; summary: string }, outcome: string) =>
+      ({ candidateId: record.candidateId, verdict: outcome, category: "cleanup", evidence: [`checked ${record.summary}`] });
+    const [one, two] = records.filter((record) => record.summary !== "candidate three");
+    assert.ok(opts?.schema && one && two);
+    assert.ok(!Value.Check(opts.schema, { verdicts: [verdict(one, "CONFIRMED"), verdict(two, "CONFIRMED")] }), "the schema must reject an omitted verdict");
+    assert.ok(!Value.Check(opts.schema, { verdicts: [one, two, { ...two, candidateId: "mistyped" }].map((record) => verdict(record, "CONFIRMED")) }), "the schema must reject an unknown candidateId");
+    // Judging "two" twice passes the schema and leaves "three" unjudged.
+    const judged = { verdicts: [verdict(one, "CONFIRMED"), verdict(two, "CONFIRMED"), verdict(two, "REFUTED")] };
+    assert.ok(Value.Check(opts.schema, judged));
+    return judged;
   }) as WorkflowApi["agent"];
   const logs: string[] = [];
   const result = await runLensVerificationPipeline({
@@ -153,10 +161,12 @@ test("an agent limit short of one verifier per candidate batches them and keeps 
   assert.deepEqual(verifierProfiles, ["medium"]);
   assert.equal(admitted, 3);
   assert.ok(logs.includes("Verifying 3 candidates in 1 batch(es) to fit the agent limit"));
-  assert.deepEqual(result.verified.map((record) => [record.summary, record.verdict, record.category]).sort(), [
-    ["candidate one", "CONFIRMED", "cleanup"],
-    ["candidate three", "NOT_SUBSTANTIATED", "bug"],
-    ["candidate two", "CONFIRMED", "cleanup"],
+  // Unjudged candidates are coverage gaps, not findings that keep the finder's category.
+  assert.deepEqual(result.verified.map((record) => [record.summary, record.verdict, record.category]), [["candidate one", "CONFIRMED", "cleanup"]]);
+  const verify = result.coverage.find((stage) => stage.stage === "Verify");
+  assert.deepEqual(verify?.failures.map((failure) => [failure.candidate?.summary, failure.reason]).sort(), [
+    ["candidate three", "The batch verifier returned no verdict for this candidate."],
+    ["candidate two", "The batch verifier returned 2 verdicts for this candidate."],
   ]);
 });
 

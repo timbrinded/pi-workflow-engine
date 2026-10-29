@@ -205,8 +205,8 @@ export default async function run(api: WorkflowApi, dependencies: CodeReviewDepe
       verifierCandidates(candidates, { one: "Candidate", many: "Candidates" }, (candidate) =>
         `Location: ${formatLocation(candidate)}\nCategory: ${candidate.category}\nSummary: ${candidate.summary}\nImpact: ${candidate.impact}`) + "\n\n" +
       "Run the diff command, read the relevant file(s), and return exactly one verdict per candidate (CONFIRMED / PLAUSIBLE / NOT_SUBSTANTIATED / REFUTED) " +
-      "with evidence quoting the line(s). Also classify each candidate as bug (a behavioral correctness failure) or cleanup (maintenance-only improvement), based on the evidence, not its discovery lens or initial category. " +
-      "A reproduced behavioral failure is a bug even when a simplification or conventions lens found it. Justify the classification in evidence. " +
+      "with evidence quoting the line(s). Also classify each candidate as bug (a behavioral correctness failure) or cleanup (maintenance-only improvement), based on the evidence, not its initial category, which only reflects the lens that found it. " +
+      "A reproduced behavioral failure is a bug even when its initial category is cleanup. Justify the classification in evidence. " +
       "Use NOT_SUBSTANTIATED when evidence is insufficient; use REFUTED only for concrete disproof. Structured output only.",
   });
   const verified = await challengeFindings(api, pipelineResult.verified, scopeBlock, challengeConfig.options, pipelineResult.coverage);

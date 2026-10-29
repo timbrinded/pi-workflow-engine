@@ -58,8 +58,13 @@ export function dedupeCandidates<T extends IdentifiedAdvisoryCandidate>(candidat
 export function mergeCandidateInto<T extends IdentifiedAdvisoryCandidate>(kept: T, duplicate: T): void {
   kept.sourceCandidateIds = [...new Set([...kept.sourceCandidateIds, ...duplicate.sourceCandidateIds])];
   kept.locations = uniqueLocations([...kept.locations, ...duplicate.locations]);
-  kept.impact = [...new Set([kept.impact, duplicate.impact])].join("\n");
+  kept.impact = joinUniqueLines([kept.impact, duplicate.impact]);
   kept.discoveryEvidence = [...new Set([...(kept.discoveryEvidence ?? []), ...(duplicate.discoveryEvidence ?? [])])];
+}
+
+/** Join texts line by line, dropping lines already present: a merged impact is itself a joined text. */
+export function joinUniqueLines(texts: readonly string[]): string {
+  return [...new Set(texts.flatMap((text) => text.split("\n")))].join("\n");
 }
 
 export function uniqueLocations(locations: AdvisoryCandidate["locations"]): AdvisoryCandidate["locations"] {

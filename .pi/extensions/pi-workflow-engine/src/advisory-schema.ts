@@ -42,14 +42,15 @@ export const AdvisoryVerdictSchema = Type.Object({
 export function advisoryVerdictSchemas(categories?: readonly string[]) {
   const verdict = categories?.length
     ? Type.Object({ ...AdvisoryVerdictSchema.properties, category: Type.Union(categories.map((category) => Type.Literal(category)), {
-      description: "Classify the verified failure mode independently of its discovery lens; justify the category in evidence.",
+      description: "Classify the verified failure mode independently of the candidate's initial category; justify the category in evidence.",
     }) })
     : AdvisoryVerdictSchema;
-  const batch = Type.Object({
+  // Pinning the IDs and the count makes pi reject an omitted, extra, or mistyped verdict while the verifier can still fix it.
+  const batch = (candidateIds: readonly string[]) => Type.Object({
     verdicts: Type.Array(Type.Object({
-      candidateId: Type.String({ description: "The candidateId of the record this verdict judges." }),
+      candidateId: Type.Enum([...candidateIds], { description: "The candidateId of the record this verdict judges." }),
       ...verdict.properties,
-    }), { description: "One verdict per candidate record, each judged on its own." }),
+    }), { minItems: candidateIds.length, maxItems: candidateIds.length, description: "One verdict per candidate record, each judged on its own." }),
   });
   return { verdict, batch };
 }
